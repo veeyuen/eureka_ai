@@ -414,7 +414,7 @@ def main():
         page_title="Yureek Market Research Assistant", 
         layout="wide"
     )
-    st.title("💹 Yureek AI Market Analyst – Self‑Consistency + Cross‑Model Verification")
+    st.title("💹 Yureeka AI-assisted Market Analyst – Self‑Consistency + Cross‑Model Verification")
     
     st.markdown("""
     This assistant combines:
@@ -432,7 +432,7 @@ def main():
     if st.button("Analyze") and q:
         # Domain validation
         if not is_finance_query(q):
-            st.error("❌ Query not recognized as financial domain. Please ask about markets, finance, or economics.")
+            st.error("❌ Query not recognized as being relevant to finance, markets or business. Please reword your question.")
             return
 
         # --- Self‑Consistency Stage ---
