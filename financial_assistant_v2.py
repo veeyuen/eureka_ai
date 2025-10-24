@@ -41,7 +41,7 @@ genai.configure(api_key=GEMINI_KEY)
 gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 RESPONSE_TEMPLATE = """
-You are a financial research assistant. Return ONLY valid JSON formatted as:
+You are an AI research assistant. Return ONLY valid JSON formatted as:
 {
   "summary": "Brief summary of findings.",
   "key_insights": ["Insight 1", "Insight 2"],
