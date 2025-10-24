@@ -54,7 +54,7 @@ You are a financial research assistant. Return ONLY valid JSON formatted as:
 """
 
 SYSTEM_PROMPT = (
-    "You only answer topics in finance, economics, or markets.\n"
+    "You are a research analyst that only answers topics in business, finance, economics, or markets.\n"
     "Output strictly in the JSON structure below:\n"
     f"{RESPONSE_TEMPLATE}"
 )
@@ -72,7 +72,7 @@ def load_models():
     return classifier, embed
 
 # Domain classifier and embedder
-ALLOWED_TOPICS = ["finance", "economics", "markets", "business", "macroeconomics"]
+ALLOWED_TOPICS = ["finance", "economics", "markets", "business", "macroeconomics", "products"]
 domain_classifier, embedder = load_models()
 
 # ----------------------------
