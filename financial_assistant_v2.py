@@ -54,7 +54,7 @@ You are an AI research assistant. Return ONLY valid JSON formatted as:
 """
 
 SYSTEM_PROMPT = (
-    "You are a research analyst that only answers topics in consumer products, business, finance, economics, or markets.\n"
+    "You are an AI research analyst that only answers topics related to business, finance, economics, or markets.\n"
     "Output strictly in the JSON structure below:\n"
     f"{RESPONSE_TEMPLATE}"
 )
