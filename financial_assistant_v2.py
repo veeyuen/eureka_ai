@@ -431,9 +431,9 @@ def main():
 
     if st.button("Analyze") and q:
         # Domain validation
-        if not is_finance_query(q):
-            st.error("❌ Query not recognized as being relevant to finance, markets or business. Please reword your question.")
-            return
+       # if not is_finance_query(q):
+       #     st.error("❌ Query not recognized as being relevant to finance, markets or business. Please reword your question.")
+       #     return
 
         # --- Self‑Consistency Stage ---
         responses, scores = generate_self_consistent_responses(q, 3) # num paths = 3
