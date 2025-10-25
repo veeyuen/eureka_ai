@@ -72,7 +72,7 @@ def load_models():
     return classifier, embed
 
 # Domain classifier and embedder
-ALLOWED_TOPICS = ["finance", "economics", "markets", "business", "macroeconomics", "consumer products"]
+ALLOWED_TOPICS = ["finance", "economics", "markets", "business", "macroeconomics"]
 domain_classifier, embedder = load_models()
 
 # ----------------------------
