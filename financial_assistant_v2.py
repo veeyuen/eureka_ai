@@ -1,10 +1,7 @@
 # =========================================================
-# AI FINANCIAL RESEARCH ASSISTANT – HYBRID VERIFICATION v5.2
-# DEBUGGED VERSION with Streamlit Cloud Support
-# Combines:
-#   - Self‑consistency reasoning (Perplexity Sonar)
-#   - Cross‑model validation (Gemini 2.0 Flash)
-# With comprehensive error handling and bug fixes.
+# AI FINANCIAL RESEARCH ASSISTANT – HYBRID VERIFICATION v5.3
+# WITH WEB SEARCH INTEGRATION (SerpAPI + ScrapingDog)
+# Complete standalone version - ready to deploy
 # =========================================================
 
 import os
@@ -18,6 +15,8 @@ from transformers import pipeline
 from collections import Counter
 import google.generativeai as genai
 import numpy as np
+from bs4 import BeautifulSoup
+import re
 
 # ----------------------------
 # STEP 1: CONFIGURATION
@@ -26,12 +25,16 @@ import numpy as np
 try:
     PERPLEXITY_KEY = st.secrets["PERPLEXITY_API_KEY"]
     GEMINI_KEY = st.secrets["GEMINI_API_KEY"]
+    SERPAPI_KEY = st.secrets.get("SERPAPI_KEY", "")
+    SCRAPINGDOG_KEY = st.secrets.get("SCRAPINGDOG_KEY", "")
 except:
     PERPLEXITY_KEY = os.getenv("PERPLEXITY_API_KEY")
     GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+    SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
+    SCRAPINGDOG_KEY = os.getenv("SCRAPINGDOG_KEY", "")
 
 if not PERPLEXITY_KEY or not GEMINI_KEY:
-    st.error("Missing API keys. Please set PERPLEXITY_API_KEY and GEMINI_API_KEY in Streamlit secrets or environment variables.")
+    st.error("Missing API keys. Please set PERPLEXITY_API_KEY and GEMINI_API_KEY.")
     st.stop()
 
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
@@ -49,7 +52,8 @@ You are a research assistant. Return ONLY valid JSON formatted as:
   "visual_data": {"labels": ["Q1","Q2"], "values": [2.3,2.5]},
   "table": [{"Country": "US", "GDP": 25.5, "Inflation": 3.4}],
   "sources": ["https://imf.org", "https://reuters.com"],
-  "confidence_score": 85
+  "confidence_score": 85,
+  "data_freshness": "As of [date]"
 }
 """
 
@@ -59,27 +63,7 @@ SYSTEM_PROMPT = (
     f"{RESPONSE_TEMPLATE}"
 )
 
-#SYSTEM_PROMPT = (
-
-#"You are an AI research analyst that only answers topics related to business, finance, economics, or markets.\n"
-
-#"Before producing any output, evaluate the user’s query:\n"
-#"- If the query is clearly about business, finance, economics, or markets, proceed normally.\n"
-#"- If the query is unrelated to these topics, respond with a short, polite JSON‑formatted message that declines the request and briefly reminds the user which subjects you cover.\n"
-
-#"You must never attempt to answer or speculate on topics outside this approved list.\n"
-
-#"Output strictly in the following JSON structure for all cases:\n"
-#{
-#  "status": "accepted" or "declined",
-#  "category": "<identified domain if applicable>",
-#  "response": f"{RESPONSE_TEMPLATE}"
-#}
-#)
-
-
-
-# Cache model loading to avoid reloading on every Streamlit rerun
+# Cache model loading
 @st.cache_resource
 def load_models():
     """Load ML models once and cache them"""
@@ -96,31 +80,179 @@ ALLOWED_TOPICS = ["finance", "economics", "markets", "business", "macroeconomics
 domain_classifier, embedder = load_models()
 
 # ----------------------------
-# STEP 2: CORE HELPERS
+# STEP 2: WEB SEARCH FUNCTIONS
 # ----------------------------
-def is_finance_query(query: str, threshold=0.65):
-    """Check if query is related to finance/economics"""
+def search_serpapi(query: str, num_results: int = 5):
+    """Search using SerpAPI (Google Search)"""
+    if not SERPAPI_KEY:
+        st.info("💡 SerpAPI key not configured. Add SERPAPI_KEY to secrets for enhanced web search.")
+        return []
+    
+    url = "https://serpapi.com/search"
+    params = {
+        "engine": "google",
+        "q": f"{query} finance economics markets",
+        "api_key": SERPAPI_KEY,
+        "num": num_results,
+        "tbm": "nws",  # News results
+        "tbs": "qdr:m"  # Past month
+    }
+    
     try:
-        r = domain_classifier(query, ALLOWED_TOPICS)
-        return r["scores"][0] >= threshold
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        results = []
+        
+        # Extract news results
+        for item in data.get("news_results", [])[:num_results]:
+            results.append({
+                "title": item.get("title", ""),
+                "link": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+                "date": item.get("date", ""),
+                "source": item.get("source", {}).get("name", "")
+            })
+        
+        # Fallback to organic results if no news
+        if not results:
+            for item in data.get("organic_results", [])[:num_results]:
+                results.append({
+                    "title": item.get("title", ""),
+                    "link": item.get("link", ""),
+                    "snippet": item.get("snippet", ""),
+                    "date": "",
+                    "source": item.get("source", "")
+                })
+        
+        if results:
+            st.success(f"✅ Found {len(results)} sources via SerpAPI")
+        return results
+        
+    except requests.exceptions.RequestException as e:
+        st.warning(f"⚠️ SerpAPI search error: {e}")
+        return []
     except Exception as e:
-        st.warning(f"Domain classification error: {e}")
-        return True  # Allow query to proceed if classifier fails
+        st.warning(f"⚠️ Error processing SerpAPI results: {e}")
+        return []
 
-def query_perplexity(query: str, temperature=0.7):
-    """Query Perplexity API with proper error handling"""
+
+def scrape_url_scrapingdog(url: str):
+    """Scrape content from URL using ScrapingDog"""
+    if not SCRAPINGDOG_KEY:
+        return None
+    
+    api_url = "https://api.scrapingdog.com/scrape"
+    params = {
+        "api_key": SCRAPINGDOG_KEY,
+        "url": url,
+        "dynamic": "false"
+    }
+    
+    try:
+        response = requests.get(api_url, params=params, timeout=15)
+        response.raise_for_status()
+        
+        # Parse HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove unwanted elements
+        for element in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            element.decompose()
+        
+        # Extract text
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        
+        return text[:3000]  # Limit to 3000 chars
+        
+    except Exception as e:
+        st.warning(f"⚠️ ScrapingDog error for {url[:50]}: {e}")
+        return None
+
+
+def fetch_web_context(query: str, num_sources: int = 3):
+    """Fetch web context by searching and optionally scraping"""
+    # Step 1: Search for sources
+    search_results = search_serpapi(query, num_results=5)
+    
+    if not search_results:
+        return {
+            "search_results": [],
+            "scraped_content": {},
+            "summary": "",
+            "sources": []
+        }
+    
+    # Step 2: Scrape top results (if ScrapingDog is configured)
+    scraped_content = {}
+    if SCRAPINGDOG_KEY:
+        st.info(f"🔍 Scraping top {min(num_sources, len(search_results))} sources...")
+        for i, result in enumerate(search_results[:num_sources]):
+            url = result["link"]
+            content = scrape_url_scrapingdog(url)
+            if content:
+                scraped_content[url] = content
+                st.success(f"✓ Scraped {i+1}/{num_sources}: {result['source']}")
+    
+    # Step 3: Create summary
+    context_parts = []
+    for r in search_results:
+        date_str = f" ({r['date']})" if r['date'] else ""
+        context_parts.append(
+            f"**{r['title']}**{date_str}\n"
+            f"Source: {r['source']}\n"
+            f"{r['snippet']}\n"
+            f"URL: {r['link']}"
+        )
+    
+    summary = "\n\n---\n\n".join(context_parts)
+    sources = [r["link"] for r in search_results]
+    
+    return {
+        "search_results": search_results,
+        "scraped_content": scraped_content,
+        "summary": summary,
+        "sources": sources
+    }
+
+# ----------------------------
+# STEP 3: ENHANCED QUERY FUNCTIONS
+# ----------------------------
+def query_perplexity_with_context(query: str, web_context: dict, temperature=0.7):
+    """Query Perplexity with web-scraped context"""
+    
+    # Build enhanced prompt with web context
+    if web_context["summary"]:
+        context_section = f"""
+LATEST WEB RESEARCH (Current as of today):
+{web_context['summary']}
+
+"""
+        # Add scraped content if available
+        if web_context['scraped_content']:
+            context_section += "\nDETAILED CONTENT FROM TOP SOURCES:\n"
+            for url, content in list(web_context['scraped_content'].items())[:2]:
+                context_section += f"\nFrom {url}:\n{content[:800]}...\n"
+        
+        enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
+    else:
+        enhanced_query = f"{SYSTEM_PROMPT}\n\nUser Question: {query}"
+    
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}", 
         "Content-Type": "application/json"
     }
     
-    # Updated payload - Perplexity doesn't support system role in the same way
     payload = {
         "model": "sonar",
         "temperature": temperature,
-        "max_tokens": 1000,
+        "max_tokens": 2000,
         "messages": [
-            {"role": "user", "content": f"{SYSTEM_PROMPT}\n\nUser Question: {query}"}
+            {"role": "user", "content": enhanced_query}
         ]
     }
     
@@ -129,52 +261,54 @@ def query_perplexity(query: str, temperature=0.7):
             PERPLEXITY_URL, 
             headers=headers, 
             json=payload, 
-            timeout=30
+            timeout=45
         )
         
-        # Debug: Show response status and content if error
         if resp.status_code != 200:
             error_detail = resp.text
             st.error(f"Perplexity API Error {resp.status_code}: {error_detail}")
             raise Exception(f"Perplexity returned {resp.status_code}: {error_detail}")
         
-        resp.raise_for_status()
         response_data = resp.json()
         
-        # Debug: Check response structure
         if "choices" not in response_data:
-            st.error(f"Unexpected response structure: {response_data}")
-            raise Exception(f"No 'choices' in response: {response_data}")
+            raise Exception(f"No 'choices' in response")
         
         content = response_data["choices"][0]["message"]["content"]
         
-        # Validate content is not empty
         if not content or not content.strip():
             raise Exception("Perplexity returned empty response")
         
-        # Try to parse as JSON to validate format
+        # Validate JSON and inject sources
         try:
-            json.loads(content)
+            parsed = json.loads(content)
+            # Add our web sources
+            if web_context["sources"]:
+                existing_sources = parsed.get("sources", [])
+                all_sources = existing_sources + web_context["sources"]
+                parsed["sources"] = list(set(all_sources))[:10]  # Unique, max 10
+                parsed["data_freshness"] = "Current (web-scraped + real-time search)"
+            content = json.dumps(parsed)
         except json.JSONDecodeError:
-            # If not valid JSON, wrap it in a structured format
-            st.warning("Perplexity returned non-JSON response, reformatting...")
+            # If not valid JSON, wrap it
+            st.warning("Reformatting Perplexity response...")
             content = json.dumps({
                 "summary": content[:500],
                 "key_insights": [content[:200]],
                 "metrics": {},
                 "visual_data": {},
                 "table": [],
-                "sources": [],
-                "confidence_score": 50
+                "sources": web_context["sources"],
+                "confidence_score": 50,
+                "data_freshness": "Current (web-scraped)"
             })
         
         return content
-    except requests.exceptions.Timeout:
-        raise Exception("Perplexity API timeout after 30 seconds")
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"Perplexity API request error: {e}")
-    except (KeyError, IndexError) as e:
-        raise Exception(f"Unexpected Perplexity response structure: {e}")
+        
+    except Exception as e:
+        st.error(f"Perplexity query error: {e}")
+        raise
+
 
 def query_gemini(query: str):
     """Query Gemini API with proper error handling"""
@@ -190,15 +324,12 @@ def query_gemini(query: str):
         )
         content = response.text
         
-        # Validate content is not empty
         if not content or not content.strip():
             raise Exception("Gemini returned empty response")
         
-        # Try to parse as JSON to validate format
         try:
             json.loads(content)
         except json.JSONDecodeError:
-            # If not valid JSON, wrap it in a structured format
             st.warning("Gemini returned non-JSON response, reformatting...")
             content = json.dumps({
                 "summary": content[:500],
@@ -213,7 +344,6 @@ def query_gemini(query: str):
         return content
     except Exception as e:
         st.warning(f"Gemini API error: {e}")
-        # Return valid JSON fallback
         return json.dumps({
             "summary": "Gemini validation unavailable due to API error.",
             "key_insights": ["Cross-validation could not be performed"],
@@ -225,23 +355,22 @@ def query_gemini(query: str):
         })
 
 # ----------------------------
-# STEP 3: SELF‑CONSISTENCY PROMPTING
+# STEP 4: SELF-CONSISTENCY WITH WEB SEARCH
 # ----------------------------
-def generate_self_consistent_responses(query, n=5):
-    """Generate multiple responses and track alignment"""
-    st.info(f"Generating {n} independent Perplexity analyst responses...")
+def generate_self_consistent_responses_with_web(query, web_context, n=3):
+    """Generate multiple responses with web context"""
+    st.info(f"Generating {n} independent analyst responses with web context...")
     responses, scores = [], []
     success_count = 0
     
     for i in range(n):
         try:
-            r = query_perplexity(query, temperature=0.8)
+            r = query_perplexity_with_context(query, web_context, temperature=0.8)
             responses.append(r)
             scores.append(parse_confidence(r))
             success_count += 1
         except Exception as e:
             st.warning(f"Attempt {i+1}/{n} failed: {e}")
-            # Don't add empty responses - maintain alignment
             continue
     
     if success_count == 0:
@@ -250,6 +379,7 @@ def generate_self_consistent_responses(query, n=5):
     
     st.success(f"Successfully generated {success_count}/{n} responses")
     return responses, scores
+
 
 def majority_vote(responses):
     """Select most common response via voting"""
@@ -260,24 +390,24 @@ def majority_vote(responses):
         return ""
     return Counter(cleaned).most_common(1)[0][0]
 
+
 def parse_confidence(text):
     """Extract confidence score from JSON response"""
     try:
         js = json.loads(text)
         conf = js.get("confidence_score", 0)
         return float(conf)
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
+    except (json.JSONDecodeError, ValueError, TypeError):
         return 0.0
 
 # ----------------------------
-# STEP 4: VALIDATION FUNCTIONS
+# STEP 5: VALIDATION FUNCTIONS
 # ----------------------------
 def semantic_similarity_score(a, b):
     """Calculate semantic similarity between two texts"""
     try:
         v1, v2 = embedder.encode([a, b])
         sim = util.cos_sim(v1, v2)
-        # Extract scalar value properly from tensor
         if hasattr(sim, 'item'):
             score = sim.item()
         elif hasattr(sim, 'shape'):
@@ -288,6 +418,7 @@ def semantic_similarity_score(a, b):
     except Exception as e:
         st.warning(f"Embedding error: {e}")
         return 0.0
+
 
 def numeric_alignment_score(j1, j2):
     """Compare numeric metrics between two JSON responses"""
@@ -304,7 +435,6 @@ def numeric_alignment_score(j1, j2):
             try:
                 v1, v2 = float(m1[key]), float(m2[key])
                 
-                # Handle zero values
                 if v1 == 0 and v2 == 0:
                     diff = 0
                 elif max(abs(v1), abs(v2)) == 0:
@@ -324,12 +454,11 @@ def numeric_alignment_score(j1, j2):
     return round(alignment * 100, 2)
 
 # ----------------------------
-# STEP 5: DASHBOARD RENDERER
+# STEP 6: DASHBOARD RENDERER
 # ----------------------------
-def render_dashboard(response, final_conf, sem_conf, num_conf):
+def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None):
     """Render the financial dashboard with results"""
     
-    # Validate response is not empty
     if not response or not response.strip():
         st.error("Received empty response from model")
         return
@@ -339,18 +468,14 @@ def render_dashboard(response, final_conf, sem_conf, num_conf):
     except json.JSONDecodeError as e:
         st.error(f"Invalid JSON returned by model: {e}")
         st.write("**Raw response received:**")
-        st.code(response[:1000], language="text")  # Show first 1000 chars
-        st.info("💡 **Troubleshooting tips:**")
-        st.markdown("""
-        - The API may not be following the JSON format instructions
-        - Try rephrasing your question to be more specific
-        - Check API key validity and rate limits
-        - The model might be returning plain text instead of JSON
-        """)
+        st.code(response[:1000], language="text")
         return
 
-    # Confidence score display
-    st.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+    # Confidence and freshness display
+    col1, col2 = st.columns(2)
+    col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+    freshness = data.get("data_freshness", "Unknown")
+    col2.metric("Data Freshness", freshness)
     
     # Main summary
     st.header("📊 Financial Summary")
@@ -408,14 +533,23 @@ def render_dashboard(response, final_conf, sem_conf, num_conf):
     else:
         st.info("No tabular data available.")
 
-    # Sources
-    st.subheader("Sources")
+    # Sources - PROMINENT DISPLAY
+    st.subheader("📚 Sources & References")
     sources = data.get("sources", [])
     if sources:
-        for s in sources:
-            st.markdown(f"- [{s}]({s})")
+        st.success(f"✅ Information from {len(sources)} sources:")
+        for i, s in enumerate(sources, 1):
+            st.markdown(f"{i}. [{s}]({s})")
     else:
         st.info("No sources cited.")
+    
+    # Show web search stats if available
+    if web_context and web_context.get("search_results"):
+        with st.expander("🔍 Web Search Details"):
+            st.write(f"**Sources Found:** {len(web_context['search_results'])}")
+            st.write(f"**Pages Scraped:** {len(web_context.get('scraped_content', {}))}")
+            for result in web_context['search_results']:
+                st.markdown(f"- **{result['title']}** ({result.get('source', 'Unknown')})")
 
     # Validation metrics
     st.subheader("Validation Metrics")
@@ -427,42 +561,61 @@ def render_dashboard(response, final_conf, sem_conf, num_conf):
         col2.info("No numeric data to compare")
 
 # ----------------------------
-# STEP 6: MAIN WORKFLOW
+# STEP 7: MAIN WORKFLOW
 # ----------------------------
 def main():
     st.set_page_config(
-        page_title="Yureek Market Research Assistant", 
+        page_title="Yureeka Market Research Assistant", 
         layout="wide"
     )
-    st.title("💹 Yureeka AI-assisted Market Analyst – Self‑Consistency + Cross‑Model Verification")
+    st.title("💹 Yureeka AI Market Analyst")
+    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search")
     
-    st.markdown("""
-    This assistant combines:
-    - **Self-consistency reasoning** via multiple Perplexity analyses
-    - **Cross-model validation** using Gemini 2.0 Flash
-    - **Semantic and numeric alignment** scoring
-    """)
+    # Show web search status
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("""
+        This assistant combines:
+        - **Self-consistency reasoning** via multiple Perplexity analyses
+        - **Cross-model validation** using Gemini 2.0 Flash
+        - **Live web search** (SerpAPI + ScrapingDog)
+        - **Semantic and numeric alignment** scoring
+        """)
+    with col2:
+        web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Not configured"
+        st.metric("Web Search", web_status)
 
     q = st.text_input("Enter your question about markets, finance, or economics:")
-   # n_paths = st.slider(
-   #     "Number of self‑consistent analysts (Perplexity)", 
-   #     3, 10, 5
-   # )
+    
+    # Web search toggle
+    use_web_search = st.checkbox(
+        "🌐 Enable live web search (recommended for current data)", 
+        value=bool(SERPAPI_KEY),
+        disabled=not SERPAPI_KEY,
+        help="Searches the web for latest information before analysis"
+    )
 
     if st.button("Analyze") and q:
-        # Domain validation
-       # if not is_finance_query(q):
-       #     st.error("❌ Query not recognized as being relevant to finance, markets or business. Please reword your question.")
-       #     return
-
-        # --- Self‑Consistency Stage ---
-        responses, scores = generate_self_consistent_responses(q, 3) # num paths = 3
+        
+        # Fetch web context if enabled
+        web_context = {}
+        if use_web_search:
+            with st.spinner("🔍 Searching the web for latest information..."):
+                web_context = fetch_web_context(q, num_sources=3)
+        
+        # Generate responses
+        if web_context and web_context.get("search_results"):
+            responses, scores = generate_self_consistent_responses_with_web(q, web_context, n=3)
+        else:
+            st.info("📚 Proceeding with AI model knowledge only...")
+            # Fallback to original method without web context
+            empty_context = {"search_results": [], "scraped_content": {}, "summary": "", "sources": []}
+            responses, scores = generate_self_consistent_responses_with_web(q, empty_context, n=3)
         
         if not responses or not scores:
             st.error("Primary model failed to generate any valid responses.")
             return
         
-        # Validate alignment
         if len(responses) != len(scores):
             st.error("Internal error: response/score alignment mismatch")
             return
@@ -479,14 +632,13 @@ def main():
             st.error("Could not determine primary response.")
             return
 
-        # --- Independent Validation Stage ---
+        # Cross-validation with Gemini
         st.info("Cross‑verifying via Gemini 2.0 Flash...")
         secondary_resp = query_gemini(q)
 
-        # --- Scoring ---
+        # Scoring
         sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
         
-        # Parse JSON safely
         try:
             j1 = json.loads(chosen_primary)
         except json.JSONDecodeError:
@@ -507,10 +659,10 @@ def main():
         
         final_conf = np.mean(confidence_components)
 
-        # --- Display ---
-        render_dashboard(chosen_primary, final_conf, sem_conf, num_conf)
+        # Display results
+        render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context)
         
-        # Debug info (collapsible)
+        # Debug info
         with st.expander("🔍 Debug Information"):
             st.write("**Primary Response (Perplexity):**")
             st.code(chosen_primary, language="json")
@@ -518,6 +670,8 @@ def main():
             st.code(secondary_resp, language="json")
             st.write(f"**All Confidence Scores:** {scores}")
             st.write(f"**Selected Best Score:** {base_conf}")
+            if web_context:
+                st.write(f"**Web Sources Found:** {len(web_context.get('search_results', []))}")
 
 # ----------------------------
 # RUN STREAMLIT
