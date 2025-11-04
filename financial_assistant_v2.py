@@ -502,19 +502,11 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None)
         return
 
     # Confidence and freshness display
-  #  col1, col2 = st.columns(2)
-  #  col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
-  #  freshness = data.get("data_freshness", "Unknown")
-  #  col2.metric("Data Freshness", freshness)
-
-    # For UI display, show breakdown:
-    st.subheader("Confidence Score Breakdown")
-    st.write(f"- Base model confidence: {base_conf:.1f}%")
-    st.write(f"- Semantic similarity: {sem_conf:.1f}%")
-    st.write(f"- Numeric alignment: {num_conf if num_conf is not None else 'N/A'}")
-    st.write(f"- Source quality confidence: {src_conf:.1f}%")
-    st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
-    
+    col1, col2 = st.columns(2)
+    col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+    freshness = data.get("data_freshness", "Unknown")
+    col2.metric("Data Freshness", freshness)
+  
     # Main summary
     st.header("📊 Financial Summary")
     st.write(data.get("summary", "No summary available."))
