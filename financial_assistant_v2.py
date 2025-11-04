@@ -43,6 +43,27 @@ PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 genai.configure(api_key=GEMINI_KEY)
 gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
+# ----------------------------
+# SOURCE RELIABILITY CLASSIFIER
+# ----------------------------
+def classify_source_reliability(source):
+    source = source.lower()
+    high_sources = ["gov", "imf", "worldbank", "world bank", "central bank", "fed", "ecb", "bank of england"]
+    medium_sources = ["reuters", "bloomberg", "ft.com", "financial times", "cnbc", "wsj", "the economist"]
+    low_sources = ["blog", "medium.com", "wordpress", "promotions", "advertisement", "sponsored", "blogger"]
+
+    for high in high_sources:
+        if high in source:
+            return "✅ High"
+    for medium in medium_sources:
+        if medium in source:
+            return "⚠️ Medium"
+    for low in low_sources:
+        if low in source:
+            return "❌ Low"
+    return "⚠️ Medium"  # Default if no match
+
+
 RESPONSE_TEMPLATE = """
 You are a research assistant. Return ONLY valid JSON formatted as:
 {
@@ -173,7 +194,7 @@ def scrape_url_scrapingdog(url: str):
         st.warning(f"⚠️ ScrapingDog error for {url[:50]}: {e}")
         return None
 
-
+'''
 def fetch_web_context(query: str, num_sources: int = 3):
     """Fetch web context by searching and optionally scraping"""
     # Step 1: Search for sources
@@ -217,6 +238,49 @@ def fetch_web_context(query: str, num_sources: int = 3):
         "scraped_content": scraped_content,
         "summary": summary,
         "sources": sources
+    }
+'''
+def fetch_web_context(query: str, num_sources: int = 3):
+    """Fetch web context by searching and optionally scraping, apply reliability bands"""
+    search_results = search_serpapi(query, num_results=5)
+    if not search_results:
+        return {
+            "search_results": [],
+            "scraped_content": {},
+            "summary": "",
+            "sources": [],
+            "source_reliability": [],
+        }
+    scraped_content = {}
+    if SCRAPINGDOG_KEY:
+        st.info(f"🔍 Scraping top {min(num_sources, len(search_results))} sources...")
+        for i, result in enumerate(search_results[:num_sources]):
+            url = result["link"]
+            content = scrape_url_scrapingdog(url)
+            if content:
+                scraped_content[url] = content
+                st.success(f"✓ Scraped {i+1}/{num_sources}: {result['source']}")
+    # Build context and assign reliability
+    context_parts = []
+    reliabilities = []
+    for r in search_results:
+        date_str = f" ({r['date']})" if r['date'] else ""
+        reliability = classify_source_reliability(r.get("link", "") + " " + r.get("source", ""))
+        reliabilities.append(reliability)
+        context_parts.append(
+            f"**{r['title']}**{date_str}\n"
+            f"Source: {r['source']} [{reliability}]\n"
+            f"{r['snippet']}\n"
+            f"URL: {r['link']}"
+        )
+    summary = "\n\n---\n\n".join(context_parts)
+    sources = [r["link"] for r in search_results]
+    return {
+        "search_results": search_results,
+        "scraped_content": scraped_content,
+        "summary": summary,
+        "sources": sources,
+        "source_reliability": reliabilities,
     }
 
 # ----------------------------
@@ -456,6 +520,7 @@ def numeric_alignment_score(j1, j2):
 # ----------------------------
 # STEP 6: DASHBOARD RENDERER
 # ----------------------------
+'''
 def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None):
     """Render the financial dashboard with results"""
     
@@ -559,6 +624,116 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None)
         col2.metric("Numeric Alignment", f"{num_conf:.2f}%")
     else:
         col2.info("No numeric data to compare")
+
+'''
+
+def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None):
+    """Render the financial dashboard with results and source reliability bands"""
+    
+    if not response or not response.strip():
+        st.error("Received empty response from model")
+        return
+    
+    try:
+        data = json.loads(response)
+    except json.JSONDecodeError as e:
+        st.error(f"Invalid JSON returned by model: {e}")
+        st.write("**Raw response received:**")
+        st.code(response[:1000], language="text")
+        return
+
+    # Confidence and freshness display
+    col1, col2 = st.columns(2)
+    col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+    freshness = data.get("data_freshness", "Unknown")
+    col2.metric("Data Freshness", freshness)
+    
+    # Main summary
+    st.header("📊 Financial Summary")
+    st.write(data.get("summary", "No summary available."))
+
+    # Key insights
+    st.subheader("Key Insights")
+    insights = data.get("key_insights", [])
+    if insights:
+        for insight in insights:
+            st.markdown(f"- {insight}")
+    else:
+        st.info("No key insights provided.")
+
+    # Metrics display
+    st.subheader("Metrics")
+    mets = data.get("metrics", {})
+    if mets:
+        cols = st.columns(len(mets))
+        for i, (k, v) in enumerate(mets.items()):
+            cols[i].metric(k, v)
+    else:
+        st.info("No metrics available.")
+
+    # Visualization
+    st.subheader("Trend Visualization")
+    vis = data.get("visual_data", {})
+    if "labels" in vis and "values" in vis:
+        try:
+            df = pd.DataFrame({
+                "Period": vis["labels"], 
+                "Value": vis["values"]
+            })
+            fig = px.line(
+                df, 
+                x="Period", 
+                y="Value", 
+                title="Quarterly Trends", 
+                markers=True
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Could not render visualization: {e}")
+    else:
+        st.info("No visual data available.")
+
+    # Data table
+    st.subheader("Data Table")
+    tab = data.get("table", [])
+    if tab:
+        try:
+            st.dataframe(pd.DataFrame(tab), use_container_width=True)
+        except Exception as e:
+            st.warning(f"Could not render table: {e}")
+    else:
+        st.info("No tabular data available.")
+
+    # Sources - PROMINENT DISPLAY WITH RELIABILITY BANDS
+    st.subheader("📚 Sources & References")
+    sources = data.get("sources", [])
+    if sources:
+        st.success(f"✅ Information from {len(sources)} sources:")
+        for i, s in enumerate(sources, 1):
+            rank = classify_source_reliability(s)
+            st.markdown(f"{i}. [{s}]({s})  — {rank}")
+    else:
+        st.info("No sources cited.")
+    
+    # Show web search stats if available, with reliability bands
+    if web_context and web_context.get("search_results"):
+        with st.expander("🔍 Web Search Details"):
+            st.write(f"**Sources Found:** {len(web_context['search_results'])}")
+            st.write(f"**Pages Scraped:** {len(web_context.get('scraped_content', {}))}")
+            for idx, result in enumerate(web_context['search_results']):
+                rank = web_context.get('source_reliability', [])
+                reliab = rank[idx] if idx < len(rank) else classify_source_reliability(result['link'] + ' ' + result.get('source',''))
+                st.markdown(f"- **{result['title']}** ({result.get('source', 'Unknown')}) [{reliab}]")
+
+    # Validation metrics
+    st.subheader("Validation Metrics")
+    col1, col2 = st.columns(2)
+    col1.metric("Semantic Similarity", f"{sem_conf:.2f}%")
+    if num_conf is not None:
+        col2.metric("Numeric Alignment", f"{num_conf:.2f}%")
+    else:
+        col2.info("No numeric data to compare")
+
 
 # ----------------------------
 # STEP 7: MAIN WORKFLOW
