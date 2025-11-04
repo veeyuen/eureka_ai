@@ -601,7 +601,7 @@ def main():
         This assistant combines:
         - **Self-consistency reasoning** via multiple Perplexity analyses
         - **Cross-model validation** using Gemini 2.0 Flash
-        - **Live web search** (SerpAPI + ScrapingDog)
+        - **Live web search**
         - **Semantic and numeric alignment** scoring
         """)
     with col2:
