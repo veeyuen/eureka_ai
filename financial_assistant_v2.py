@@ -63,6 +63,17 @@ def classify_source_reliability(source):
             return "❌ Low"
     return "⚠️ Medium"  # Default if no match
 
+def source_quality_confidence(sources):
+    weights = {"✅ High": 1.0, "⚠️ Medium": 0.6, "❌ Low": 0.3}
+    total_score = 0
+    count = 0
+    for source in sources:
+        rank = classify_source_reliability(source)
+        score = weights.get(rank, 0.6)
+        total_score += score
+        count += 1
+    return total_score / count if count > 0 else 0.6
+
 
 RESPONSE_TEMPLATE = """
 You are a research assistant. Return ONLY valid JSON formatted as:
@@ -491,10 +502,18 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None)
         return
 
     # Confidence and freshness display
-    col1, col2 = st.columns(2)
-    col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
-    freshness = data.get("data_freshness", "Unknown")
-    col2.metric("Data Freshness", freshness)
+  #  col1, col2 = st.columns(2)
+  #  col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+  #  freshness = data.get("data_freshness", "Unknown")
+  #  col2.metric("Data Freshness", freshness)
+
+    # For UI display, show breakdown:
+    st.subheader("Confidence Score Breakdown")
+    st.write(f"- Base model confidence: {base_conf:.1f}%")
+    st.write(f"- Semantic similarity: {sem_conf:.1f}%")
+    st.write(f"- Numeric alignment: {num_conf if num_conf is not None else 'N/A'}")
+    st.write(f"- Source quality confidence: {src_conf:.1f}%")
+    st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
     
     # Main summary
     st.header("📊 Financial Summary")
@@ -676,12 +695,21 @@ def main():
         base_conf = max_score
 
         # Calculate final confidence
-        confidence_components = [base_conf, sem_conf]
-        if num_conf is not None:
-            confidence_components.append(num_conf)
+       # confidence_components = [base_conf, sem_conf]
+        #if num_conf is not None:
+        #    confidence_components.append(num_conf)
         
+        #final_conf = np.mean(confidence_components)
+
+        # When calculating final confidence:
+        src_conf = source_quality_confidence(data.get("sources", []))
+        
+        if num_conf is not None:
+            confidence_components = [base_conf, sem_conf, num_conf, src_conf]
+            
         final_conf = np.mean(confidence_components)
 
+        
         # Display results
         render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context)
         
