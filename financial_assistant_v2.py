@@ -708,7 +708,7 @@ def main():
 
         # When calculating final confidence:
         # Compute source quality confidence from the decoded JSON response 'data'
-        src_conf = source_quality_confidence(data.get("sources", [])) * 100  # scale to percentage
+        src_conf = source_quality_confidence(j1.get("sources", [])) * 100  # scale to percentage
 
         confidence_components = [base_conf, sem_conf]
         if num_conf is not None:
