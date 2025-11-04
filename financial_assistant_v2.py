@@ -502,7 +502,7 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
         return
 
     # Confidence and freshness display
-  #  col1, col2 = st.columns(2)
+    col1, col2 = st.columns(2)
   #  col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
     
     # Confidence breakdown display
