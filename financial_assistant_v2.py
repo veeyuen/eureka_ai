@@ -486,7 +486,7 @@ def numeric_alignment_score(j1, j2):
 # STEP 6: DASHBOARD RENDERER
 # ----------------------------
 
-def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None):
+def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None, base_conf=None, src_conf=None):
     """Render the financial dashboard with results and source reliability bands"""
     
     if not response or not response.strip():
@@ -502,10 +502,23 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None)
         return
 
     # Confidence and freshness display
-    col1, col2 = st.columns(2)
-    col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+  #  col1, col2 = st.columns(2)
+  #  col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+    
+    # Confidence breakdown display
+    st.subheader("Confidence Score Breakdown")
+    st.write(f"- Base model confidence: {base_conf:.1f}%")
+    st.write(f"- Semantic similarity confidence: {sem_conf:.1f}%")
+    st.write(f"- Numeric alignment confidence: {num_conf if num_conf is not None else 'N/A'}%")
+    st.write(f"- Source quality confidence: {src_conf:.1f}%")
+    st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
+
+    
+    
     freshness = data.get("data_freshness", "Unknown")
     col2.metric("Data Freshness", freshness)
+
+    
   
     # Main summary
     st.header("📊 Financial Summary")
@@ -694,16 +707,19 @@ def main():
         #final_conf = np.mean(confidence_components)
 
         # When calculating final confidence:
-        src_conf = source_quality_confidence(data.get("sources", []))
-        
+        # Compute source quality confidence from the decoded JSON response 'data'
+        src_conf = source_quality_confidence(data.get("sources", [])) * 100  # scale to percentage
+
+        confidence_components = [base_conf, sem_conf]
         if num_conf is not None:
-            confidence_components = [base_conf, sem_conf, num_conf, src_conf]
-            
+            confidence_components.append(num_conf)
+        confidence_components.append(src_conf)
+
         final_conf = np.mean(confidence_components)
 
         
         # Display results
-        render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context)
+        render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context, base_conf, src_conf)
         
         # Debug info
         with st.expander("🔍 Debug Information"):
