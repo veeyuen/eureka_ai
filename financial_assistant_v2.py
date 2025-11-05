@@ -77,7 +77,7 @@ versions_history = [
 
 def classify_source_reliability(source):
     source = source.lower()
-    high_sources = ["gov", "imf", "worldbank", "world bank", "central bank", "fed", "ecb", "bank of england", "eu"]
+    high_sources = ["gov", "imf", "worldbank", "world bank", "central bank", "fed", "ecb", "bank of england", "eu", "ceic"]
     medium_sources = ["reuters", "bloomberg", "ft.com", "financial times", "cnbc", "wsj", "the economist"]
     low_sources = ["blog", "medium.com", "wordpress", "promotions", "advertisement", "sponsored", "blogger"]
 
