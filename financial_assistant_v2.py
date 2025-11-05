@@ -699,7 +699,7 @@ def main():
         layout="wide"
     )
     st.title("💹 Yureeka AI Market Analyst")
-    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search")
+    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search + Version control + Drift monitoring")
     
     # Show web search status
     col1, col2 = st.columns([3, 1])
@@ -710,6 +710,7 @@ def main():
         - **Cross-model validation** using Gemini 2.0 Flash
         - **Live web search**
         - **Semantic and numeric alignment** scoring
+        - **Version control & drift monitoring via evolution layer
         """)
     with col2:
         web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Not configured"
