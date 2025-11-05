@@ -16,6 +16,7 @@ from collections import Counter
 import google.generativeai as genai
 import numpy as np
 from bs4 import BeautifulSoup
+from datetime import datetime
 import re
 
 # ----------------------------
@@ -46,6 +47,34 @@ gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 # ----------------------------
 # SOURCE RELIABILITY CLASSIFIER
 # ----------------------------
+
+versions_history = [
+    {
+        "version": "V1 (Jul 10)",
+        "timestamp": "2025-07-10T12:00:00",
+        "metrics": {"Penetration (%)": 12.5, "GDP Growth (%)": 2.3},
+        "confidence": 68,
+        "sources_freshness": 70,
+        "change_reason": "Quarterly update"
+    },
+    {
+        "version": "V2 (Aug 28)",
+        "timestamp": "2025-08-28T15:30:00",
+        "metrics": {"Penetration (%)": 13.1, "GDP Growth (%)": 2.5},
+        "confidence": 74,
+        "sources_freshness": 80,
+        "change_reason": "New economic data release"
+    },
+    {
+        "version": "V3 (Oct 2)",
+        "timestamp": "2025-10-02T09:20:00",
+        "metrics": {"Penetration (%)": 12.9, "GDP Growth (%)": 2.4},
+        "confidence": 71,
+        "sources_freshness": 75,
+        "change_reason": "Minor adjustments"
+    },
+]
+
 def classify_source_reliability(source):
     source = source.lower()
     high_sources = ["gov", "imf", "worldbank", "world bank", "central bank", "fed", "ecb", "bank of england"]
@@ -74,6 +103,21 @@ def source_quality_confidence(sources):
         count += 1
     return total_score / count if count > 0 else 0.6
 
+def time_ago(ts_str):
+    ts = datetime.fromisoformat(ts_str)
+    delta = datetime.now() - ts
+    if delta.days > 0:
+        return f"{delta.days}d ago"
+    elif delta.seconds > 3600:
+        return f"{delta.seconds // 3600}h ago"
+    elif delta.seconds > 60:
+        return f"{delta.seconds // 60}m ago"
+    else:
+        return "Just now"
+
+def display_metric_with_delta(label, current, previous):
+    delta = current - previous
+    st.metric(label=label, value=f"{current:.2f}%", delta=f"{delta:+.2f}pp")
 
 RESPONSE_TEMPLATE = """
 You are a research assistant. Return ONLY valid JSON formatted as:
@@ -486,6 +530,45 @@ def numeric_alignment_score(j1, j2):
 # STEP 6: DASHBOARD RENDERER
 # ----------------------------
 
+def render_evolution_layer(versions_history):
+    st.subheader("Evolution Layer - Version Control & Drift")
+
+    # 1. Version selector
+    version_labels = [v["version"] for v in versions_history]
+    selected_ver = st.radio("Select version", version_labels, horizontal=True)
+    selected_index = version_labels.index(selected_ver)
+
+    # Show updated timestamp
+    updated_ts = versions_history[selected_index]["timestamp"]
+    st.markdown(f"**Updated:** {time_ago(updated_ts)}")
+
+    # Display metrics with deltas (if previous version exists)
+    current_metrics = versions_history[selected_index]["metrics"]
+    if selected_index > 0:
+        prev_metrics = versions_history[selected_index - 1]["metrics"]
+    else:
+        prev_metrics = current_metrics
+
+    for metric_name, current_val in current_metrics.items():
+        previous_val = prev_metrics.get(metric_name, current_val)
+        display_metric_with_delta(metric_name, current_val, previous_val)
+
+    # Show change reason
+    st.markdown(f"*Reason for change:* {versions_history[selected_index]['change_reason']}")
+
+    # 4. Confidence drift sparkline
+    confidence_points = [v["confidence"] for v in versions_history]
+    df_conf = pd.DataFrame({"Version": version_labels, "Confidence": confidence_points})
+    fig = px.line(df_conf, x="Version", y="Confidence", title="Confidence Drift", height=150)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 5. Source freshness bar
+    freshness = versions_history[selected_index]["sources_freshness"]
+    st.progress(int(freshness))
+    st.caption(f"{freshness}% of ✅ sources updated recently")
+
+
+
 def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None, base_conf=None, src_conf=None):
     """Render the financial dashboard with results and source reliability bands"""
     
@@ -513,12 +596,9 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     st.write(f"- Source quality confidence: {src_conf:.1f}%")
     st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
 
-    
-    
     freshness = data.get("data_freshness", "Unknown")
     col2.metric("Data Freshness", freshness)
 
-    
   
     # Main summary
     st.header("📊 Financial Summary")
@@ -606,6 +686,9 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     else:
         col2.info("No numeric data to compare")
 
+    # Evolution layer
+
+    render_evolution_layer(versions_history)
 
 # ----------------------------
 # STEP 7: MAIN WORKFLOW
