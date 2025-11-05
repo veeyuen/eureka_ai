@@ -135,6 +135,7 @@ You are a research assistant. Return ONLY valid JSON formatted as:
 
 SYSTEM_PROMPT = (
     "You are an AI research analyst that only answers topics related to business, finance, economics, or markets.\n"
+    "If you receive a query unrelated to those topics politely decline the request.\n"
     "Output strictly in the JSON structure below:\n"
     f"{RESPONSE_TEMPLATE}"
 )
