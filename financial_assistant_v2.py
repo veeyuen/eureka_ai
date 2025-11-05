@@ -295,7 +295,7 @@ def fetch_web_context(query: str, num_sources: int = 3):
 # ----------------------------
 # STEP 3: ENHANCED QUERY FUNCTIONS
 # ----------------------------
-def query_perplexity_with_context(query: str, web_context: dict, temperature=0.7):
+def query_perplexity_with_context(query: str, web_context: dict, temperature=0.2):
     """Query Perplexity with web-scraped context"""
     
     # Build enhanced prompt with web context
@@ -391,7 +391,7 @@ def query_gemini(query: str):
         response = gemini_model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
+                temperature=0.1,
                 max_output_tokens=1000,
             )
         )
@@ -710,7 +710,7 @@ def main():
         - **Cross-model validation** using Gemini 2.0 Flash
         - **Live web search**
         - **Semantic and numeric alignment** scoring
-        - **Version control & drift monitoring via evolution layer
+        - Version control & drift monitoring via evolution layer
         """)
     with col2:
         web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Not configured"
