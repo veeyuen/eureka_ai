@@ -42,7 +42,8 @@ PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 
 # Configure Gemini properly
 genai.configure(api_key=GEMINI_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+#gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+gemini_model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ----------------------------
 # SOURCE RELIABILITY CLASSIFIER
