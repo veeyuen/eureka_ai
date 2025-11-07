@@ -86,8 +86,13 @@ You are a research assistant. Return ONLY valid JSON formatted as:
 }
 """
 SYSTEM_PROMPT = (
-    "You are an AI research analyst focused on finance, economics, or markets. \n"
-    "Output strictly in the JSON format below:\n"
+    "You are an AI research analyst focused on topics related to finance, economics, and markets.\n"
+    "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
+    "that are specifically relevant to the exact question the user asks.\n"
+    "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
+    "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
+    "If the question is about macroeconomic indicators, you may include GDP growth, inflation, etc.\n"
+    "Strictly follow this JSON structure:\n"
     f"{RESPONSE_TEMPLATE}"
 )
 
@@ -390,8 +395,8 @@ def numeric_alignment_score(j1, j2):
 def filter_relevant_metrics(question, metrics):
     relevant_metrics = {}
     for metric_name in metrics:
-        result = domain_classifier(question, [metric_name], multi_label=False)
-        score = result['scores'][0] if 'scores' in result else 0
+        classification = domain_classifier(question, [metric_name], multi_label=False)
+        score = classification.get("scores", [0])[0]
         if score > 0.5:
             relevant_metrics[metric_name] = metrics[metric_name]
     return relevant_metrics
@@ -406,7 +411,7 @@ def render_dynamic_metrics(question, metrics):
     for i, (k, v) in enumerate(to_display.items()):
         try:
             val = f"{float(v):.2f}"
-        except:
+        except Exception:
             val = str(v)
         cols[i].metric(k, val)
 
@@ -502,7 +507,9 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     else:
         st.info("No key insights provided.")
 
-    st.subheader("Metrics")
+    st.subheader("Metrics")  # RENDER METRICS PANEL
+    
+                         
     metrics = data.get("metrics", {})
     render_dynamic_metrics(user_question, metrics)
 
