@@ -1,6 +1,6 @@
 # =========================================================
 # AI FINANCIAL RESEARCH ASSISTANT – HYBRID VERIFICATION v5.5
-# WITH WEB SEARCH, DYNAMIC METRICS, CONFIDENCE BREAKDOWN, AND EVOLUTION LAYER
+# WITH WEB SEARCH, DYNAMIC METRICS, CONFIDENCE BREAKDOWN & EVOLUTION LAYER
 # =========================================================
 
 import os
@@ -15,9 +15,11 @@ from collections import Counter
 import google.generativeai as genai
 import numpy as np
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# STEP 1: CONFIGURATION
+# ----------------------------
+# CONFIGURATION
+# ----------------------------
 try:
     PERPLEXITY_KEY = st.secrets["PERPLEXITY_API_KEY"]
     GEMINI_KEY = st.secrets["GEMINI_API_KEY"]
@@ -30,19 +32,22 @@ except:
     SCRAPINGDOG_KEY = os.getenv("SCRAPINGDOG_KEY", "")
 
 if not PERPLEXITY_KEY or not GEMINI_KEY:
-    st.error("Missing API keys. Set PERPLEXITY_API_KEY and GEMINI_API_KEY.")
+    st.error("Missing API keys. Please set PERPLEXITY_API_KEY and GEMINI_API_KEY.")
     st.stop()
 
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 genai.configure(api_key=GEMINI_KEY)
 gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
-# SOURCE RELIABILITY CLASSIFIER
+# ----------------------------
+# SOURCE RELIABILITY
+# ----------------------------
 def classify_source_reliability(source):
     source = source.lower() if isinstance(source, str) else ""
     high_sources = ["gov", "imf", "worldbank", "world bank", "central bank", "fed", "ecb", "bank of england"]
     medium_sources = ["reuters", "bloomberg", "ft.com", "financial times", "cnbc", "wsj", "the economist"]
     low_sources = ["blog", "medium.com", "wordpress", "promotions", "advertisement", "sponsored", "blogger"]
+
     for high in high_sources:
         if high in source:
             return "✅ High"
@@ -52,18 +57,21 @@ def classify_source_reliability(source):
     for low in low_sources:
         if low in source:
             return "❌ Low"
-    return "⚠️ Medium"
+    return "⚠️ Medium"  # default
 
 def source_quality_confidence(sources):
     weights = {"✅ High": 1.0, "⚠️ Medium": 0.6, "❌ Low": 0.3}
-    total, count = 0, 0
-    for src in sources:
-        rank = classify_source_reliability(src)
-        total += weights.get(rank, 0.6)
+    total_score = 0
+    count = 0
+    for source in sources:
+        rank = classify_source_reliability(source)
+        total_score += weights.get(rank, 0.6)
         count += 1
-    return total / count if count else 0.6
+    return total_score / count if count > 0 else 0.6
 
-# PROMPT CONSTANTS
+# ----------------------------
+# PROMPTS AND MODELS
+# ----------------------------
 RESPONSE_TEMPLATE = """
 You are a research assistant. Return ONLY valid JSON formatted as:
 {
@@ -78,58 +86,386 @@ You are a research assistant. Return ONLY valid JSON formatted as:
 }
 """
 SYSTEM_PROMPT = (
-    "You are an AI analyst answering about finance, economics, and markets. "
-    "Only include metrics relevant to the question, strictly following the JSON format:\n"
+    "You are an AI research analyst focused on finance, economics, or markets. \n"
+    "Output strictly in the JSON format below:\n"
     f"{RESPONSE_TEMPLATE}"
 )
 
 @st.cache_resource
 def load_models():
-    cls = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
-    emb = SentenceTransformer("all-MiniLM-L6-v2")
-    return cls, emb
+    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
+    embed = SentenceTransformer("all-MiniLM-L6-v2")
+    return classifier, embed
 
 domain_classifier, embedder = load_models()
 
-# Web search and scraping functions (search_serpapi, scrape_url_scrapingdog, fetch_web_context)
-# [Identical to earlier but with source defensive parsing]
+# ----------------------------
+# WEB SEARCH FUNCTIONS
+# ----------------------------
+def search_serpapi(query: str, num_results: int = 5):
+    if not SERPAPI_KEY:
+        st.info("💡 SerpAPI key not configured.")
+        return []
+    url = "https://serpapi.com/search"
+    params = {
+        "engine": "google",
+        "q": f"{query} finance economics markets",
+        "api_key": SERPAPI_KEY,
+        "num": num_results,
+        "tbm": "nws",
+        "tbs": "qdr:m"
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        results = []
+        for item in data.get("news_results", [])[:num_results]:
+            src = item.get("source")
+            source_name = src.get("name", "") if isinstance(src, dict) else (src if isinstance(src, str) else "")
+            results.append({
+                "title": item.get("title", ""),
+                "link": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+                "date": item.get("date", ""),
+                "source": source_name
+            })
+        if not results:
+            for item in data.get("organic_results", [])[:num_results]:
+                src = item.get("source", "")
+                source_name = src if isinstance(src, str) else ""
+                results.append({
+                    "title": item.get("title", ""),
+                    "link": item.get("link", ""),
+                    "snippet": item.get("snippet", ""),
+                    "date": "",
+                    "source": source_name
+                })
+        if results:
+            st.success(f"✅ Found {len(results)} sources via SerpAPI")
+        return results
+    except requests.exceptions.RequestException as e:
+        st.warning(f"⚠️ SerpAPI search error: {e}")
+        return []
+    except Exception as e:
+        st.warning(f"⚠️ Error processing SerpAPI results: {e}")
+        return []
 
-# AI query functions with temperature 0.2 for stability: query_perplexity_with_context, query_gemini
+def scrape_url_scrapingdog(url: str):
+    if not SCRAPINGDOG_KEY:
+        return None
+    api_url = "https://api.scrapingdog.com/scrape"
+    params = {
+        "api_key": SCRAPINGDOG_KEY,
+        "url": url,
+        "dynamic": "false"
+    }
+    try:
+        response = requests.get(api_url, params=params, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        for element in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            element.decompose()
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        return text[:3000]
+    except Exception as e:
+        st.warning(f"⚠️ ScrapingDog error for {url[:50]}: {e}")
+        return None
 
-# Self consistency and validation functions as before
+def fetch_web_context(query: str, num_sources: int = 3):
+    search_results = search_serpapi(query, num_results=5)
+    if not search_results:
+        return {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
+    scraped_content = {}
+    if SCRAPINGDOG_KEY:
+        st.info(f"🔍 Scraping top {min(num_sources, len(search_results))} sources...")
+        for i, result in enumerate(search_results[:num_sources]):
+            url = result["link"]
+            content = scrape_url_scrapingdog(url)
+            if content:
+                scraped_content[url] = content
+                st.success(f"✓ Scraped {i+1}/{num_sources}: {result['source']}")
+    context_parts = []
+    reliabilities = []
+    for r in search_results:
+        date_str = f" ({r['date']})" if r['date'] else ""
+        reliability = classify_source_reliability(r.get("link", "") + " " + r.get("source", ""))
+        reliabilities.append(reliability)
+        context_parts.append(
+            f"**{r['title']}**{date_str}\n"
+            f"Source: {r['source']} [{reliability}]\n"
+            f"{r['snippet']}\n"
+            f"URL: {r['link']}"
+        )
+    summary = "\n\n---\n\n".join(context_parts)
+    sources = [r["link"] for r in search_results]
+    return {
+        "search_results": search_results,
+        "scraped_content": scraped_content,
+        "summary": summary,
+        "sources": sources,
+        "source_reliability": reliabilities,
+    }
 
-# Dynamic metrics filtering and display based on user question
+# ----------------------------
+# AI QUERY FUNCTIONS
+# ----------------------------
+def query_perplexity_with_context(query: str, web_context: dict, temperature=0.2):
+    if web_context.get("summary"):
+        context_section = f"""
+LATEST WEB RESEARCH (Current as of today):
+{web_context['summary']}
+
+"""
+        if web_context.get('scraped_content'):
+            context_section += "\nDETAILED CONTENT FROM TOP SOURCES:\n"
+            for url, content in list(web_context['scraped_content'].items())[:2]:
+                context_section += f"\nFrom {url}:\n{content[:800]}...\n"
+        enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
+    else:
+        enhanced_query = f"{SYSTEM_PROMPT}\n\nUser Question: {query}"
+    headers = {
+        "Authorization": f"Bearer {PERPLEXITY_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "sonar",
+        "temperature": temperature,
+        "max_tokens": 2000,
+        "messages": [{"role": "user", "content": enhanced_query}],
+    }
+    try:
+        resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=45)
+        resp.raise_for_status()
+        response_data = resp.json()
+        if "choices" not in response_data:
+            raise Exception("No 'choices' in response")
+        content = response_data["choices"][0]["message"]["content"]
+        if not content.strip():
+            raise Exception("Perplexity returned empty response")
+        try:
+            parsed = json.loads(content)
+            if web_context.get("sources"):
+                existing_sources = parsed.get("sources", [])
+                all_sources = existing_sources + web_context["sources"]
+                parsed["sources"] = list(set(all_sources))[:10]
+                parsed["data_freshness"] = "Current (web-scraped + real-time search)"
+            content = json.dumps(parsed)
+        except json.JSONDecodeError:
+            st.warning("Reformatting Perplexity response to JSON...")
+            content = json.dumps({
+                "summary": content[:500],
+                "key_insights": [content[:200]],
+                "metrics": {},
+                "visual_data": {},
+                "table": [],
+                "sources": web_context.get("sources", []),
+                "confidence_score": 50,
+                "data_freshness": "Current (web-scraped)"
+            })
+        return content
+    except Exception as e:
+        st.error(f"Perplexity query error: {e}")
+        raise
+
+def query_gemini(query: str):
+    prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
+    try:
+        response = gemini_model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.2,
+                max_output_tokens=1000,
+            ),
+        )
+        content = response.text
+        if not content.strip():
+            raise Exception("Gemini returned empty response")
+        try:
+            json.loads(content)
+        except json.JSONDecodeError:
+            st.warning("Gemini returned non-JSON response, reformatting...")
+            content = json.dumps({
+                "summary": content[:500],
+                "key_insights": [content[:200]],
+                "metrics": {},
+                "visual_data": {},
+                "table": [],
+                "sources": [],
+                "confidence_score": 50,
+            })
+        return content
+    except Exception as e:
+        st.warning(f"Gemini API error: {e}")
+        return json.dumps({
+            "summary": "Gemini validation unavailable due to API error.",
+            "key_insights": ["Cross-validation could not be performed"],
+            "metrics": {},
+            "visual_data": {},
+            "table": [],
+            "sources": [],
+            "confidence_score": 0,
+        })
+
+# ----------------------------
+# SELF-CONSISTENCY FUNCTIONS
+# ----------------------------
+def generate_self_consistent_responses_with_web(query, web_context, n=3):
+    st.info(f"Generating {n} independent analyst responses with web context...")
+    responses, scores = [], []
+    success_count = 0
+    for i in range(n):
+        try:
+            r = query_perplexity_with_context(query, web_context, temperature=0.2)
+            responses.append(r)
+            scores.append(parse_confidence(r))
+            success_count += 1
+        except Exception as e:
+            st.warning(f"Attempt {i+1}/{n} failed: {e}")
+            continue
+    if success_count == 0:
+        st.error("All Perplexity API calls failed.")
+        return [], []
+    st.success(f"Successfully generated {success_count}/{n} responses")
+    return responses, scores
+
+def majority_vote(responses):
+    if not responses:
+        return ""
+    cleaned = [r.strip() for r in responses if r]
+    if not cleaned:
+        return ""
+    return Counter(cleaned).most_common(1)[0][0]
+
+def parse_confidence(text):
+    try:
+        js = json.loads(text)
+        return float(js.get("confidence_score", 0))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return 0.0
+
+# ----------------------------
+# VALIDATION FUNCTIONS
+# ----------------------------
+def semantic_similarity_score(a, b):
+    try:
+        v1, v2 = embedder.encode([a, b])
+        sim = util.cos_sim(v1, v2)
+        score = sim.item() if hasattr(sim, "item") else float(sim[0][0])
+        return round(score * 100, 2)
+    except Exception as e:
+        st.warning(f"Embedding error: {e}")
+        return 0.0
+
+def numeric_alignment_score(j1, j2):
+    m1 = j1.get("metrics", {})
+    m2 = j2.get("metrics", {})
+    if not m1 or not m2:
+        return None
+    total_diff = 0
+    count = 0
+    for key in m1:
+        if key in m2:
+            try:
+                v1, v2 = float(m1[key]), float(m2[key])
+                if v1 == 0 and v2 == 0:
+                    diff = 0
+                elif max(abs(v1), abs(v2)) == 0:
+                    diff = 0
+                else:
+                    diff = abs(v1 - v2) / max(abs(v1), abs(v2))
+                total_diff += diff
+                count += 1
+            except (ValueError, TypeError):
+                continue
+    if count == 0:
+        return None
+    alignment = 1 - (total_diff / count)
+    return round(alignment * 100, 2)
+
+# ----------------------------
+# DYNAMIC METRICS FILTERING AND DISPLAY
+# ----------------------------
 def filter_relevant_metrics(question, metrics):
     relevant_metrics = {}
-    for m in metrics:
-        res = domain_classifier(question, [m], multi_label=False)
-        score = res['scores'][0] if 'scores' in res else 0
+    for metric_name in metrics:
+        result = domain_classifier(question, [metric_name], multi_label=False)
+        score = result['scores'][0] if 'scores' in result else 0
         if score > 0.5:
-            relevant_metrics[m] = metrics[m]
+            relevant_metrics[metric_name] = metrics[metric_name]
     return relevant_metrics
 
 def render_dynamic_metrics(question, metrics):
     if not metrics:
         st.info("No metrics available.")
         return
-    filtered = filter_relevant_metrics(question, metrics)
-    to_show = filtered if filtered else metrics
-    cols = st.columns(len(to_show))
-    for i, (k,v) in enumerate(to_show.items()):
+    relevant_metrics = filter_relevant_metrics(question, metrics)
+    to_display = relevant_metrics if relevant_metrics else metrics
+    cols = st.columns(len(to_display))
+    for i, (k, v) in enumerate(to_display.items()):
         try:
             val = f"{float(v):.2f}"
         except:
             val = str(v)
         cols[i].metric(k, val)
 
-# Evolution layer helpers: time_ago, display_metric_with_delta, render_evolution_layer
-# [Same structured as before]
+# ----------------------------
+# EVOLUTION LAYER IMPLEMENTATION
+# ----------------------------
+def time_ago(ts_str):
+    ts = datetime.fromisoformat(ts_str)
+    delta = datetime.now() - ts
+    if delta.days > 0:
+        return f"{delta.days}d ago"
+    elif delta.seconds > 3600:
+        return f"{delta.seconds // 3600}h ago"
+    elif delta.seconds > 60:
+        return f"{delta.seconds // 60}m ago"
+    else:
+        return "Just now"
 
-# Updated render_dashboard with dynamic metrics and confidence breakdown display,
-# plus evolution layer rendering if versions_history is provided.
-def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None, base_conf=None, src_conf=None, versions_history=None, user_question=""):
+def display_metric_with_delta(label, current, previous):
+    delta = current - previous
+    st.metric(label=label, value=f"{current:.2f}%", delta=f"{delta:+.2f}pp")
+
+def render_evolution_layer(versions_history):
+    st.subheader("Evolution Layer - Version Control & Drift")
+
+    version_labels = [v["version"] for v in versions_history]
+    selected_ver = st.radio("Select version", version_labels, horizontal=True)
+    selected_index = version_labels.index(selected_ver)
+
+    updated_ts = versions_history[selected_index]["timestamp"]
+    st.markdown(f"**Updated:** {time_ago(updated_ts)}")
+
+    current_metrics = versions_history[selected_index]["metrics"]
+    previous_metrics = versions_history[selected_index - 1]["metrics"] if selected_index > 0 else current_metrics
+
+    for m, curr_val in current_metrics.items():
+        prev_val = previous_metrics.get(m, curr_val)
+        display_metric_with_delta(m, curr_val, prev_val)
+
+    st.markdown(f"*Reason for change:* {versions_history[selected_index]['change_reason']}")
+
+    confidence_points = [v["confidence"] for v in versions_history]
+    df_conf = pd.DataFrame({"Version": version_labels, "Confidence": confidence_points})
+    fig = px.line(df_conf, x="Version", y="Confidence", title="Confidence Drift", height=150)
+    st.plotly_chart(fig, use_container_width=True)
+
+    freshness = versions_history[selected_index]["sources_freshness"]
+    st.progress(int(freshness))
+    st.caption(f"{freshness}% of ✅ sources updated recently")
+
+# ----------------------------
+# DASHBOARD RENDERER
+# ----------------------------
+def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
+                     base_conf=None, src_conf=None, versions_history=None, user_question=""):
     if not response or not response.strip():
-        st.error("Received empty response")
+        st.error("Received empty response from model")
         return
     try:
         data = json.loads(response)
@@ -217,24 +553,26 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     if versions_history:
         render_evolution_layer(versions_history)
 
+# ----------------------------
 # MAIN WORKFLOW
+# ----------------------------
 def main():
     st.set_page_config(page_title="Yureeka Market Research Assistant", layout="wide")
     st.title("💹 Yureeka AI Market Analyst")
-    st.caption("Self-Consistency + Cross-Model Validation + Web Search + Evolution Layer + Dynamic Metrics")
+    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search + Dynamic Metrics + Evolution Layer")
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
+    c1, c2 = st.columns([3, 1])
+    with c1:
         st.markdown("""
         This assistant combines:
-        - Self-consistency reasoning via multiple analyses
+        - Self-consistency via multiple AI analyses
         - Cross-model validation
-        - Live web search
-        - Dynamic metrics tailored to question
-        - Confidence score breakdown
-        - Evolution layer for versioning and metric drift
+        - Live web search integration
+        - Dynamic metrics relevant to your question
+        - Confidence score component breakdown
+        - Evolution layer for version control and metric drift
         """)
-    with col2:
+    with c2:
         web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Not configured"
         st.metric("Web Search", web_status)
 
@@ -247,7 +585,7 @@ def main():
             with st.spinner("Searching the web for latest info..."):
                 web_context = fetch_web_context(q, num_sources=3)
 
-        if web_context.get("search_results"):
+        if web_context and web_context.get("search_results"):
             responses, scores = generate_self_consistent_responses_with_web(q, web_context, n=3)
         else:
             st.info("Using AI model knowledge only...")
@@ -269,7 +607,7 @@ def main():
 
         chosen_primary = best_response or voted_response
         if not chosen_primary:
-            st.error("Could not determine primary response.")
+            st.error("Could not determine the primary response.")
             return
 
         st.info("Cross-validating with Gemini 2.0 Flash...")
@@ -295,9 +633,10 @@ def main():
         if num_conf is not None:
             confidence_components.append(num_conf)
         confidence_components.append(src_conf)
+
         final_conf = np.mean(confidence_components)
 
-        # Example version history (replace with actual stored versions)
+        # Placeholder for versions history - link to real source as needed
         versions_history = [
             {
                 "version": "V1 (Jul 10)",
@@ -305,7 +644,7 @@ def main():
                 "metrics": j1.get("metrics", {}),
                 "confidence": base_conf,
                 "sources_freshness": 80,
-                "change_reason": "Initial version"
+                "change_reason": "Initial version",
             },
             {
                 "version": "V2 (Aug 28)",
@@ -313,21 +652,28 @@ def main():
                 "metrics": j1.get("metrics", {}),
                 "confidence": base_conf * 0.98,
                 "sources_freshness": 75,
-                "change_reason": "Quarterly update"
+                "change_reason": "Quarterly update",
             },
             {
                 "version": "V3 (Nov 3)",
-                "timestamp": datetime.now().isoformat(timespec='minutes'),
+                "timestamp": datetime.now().isoformat(timespec="minutes"),
                 "metrics": j1.get("metrics", {}),
                 "confidence": final_conf,
                 "sources_freshness": 78,
-                "change_reason": "Latest analysis"
+                "change_reason": "Latest analysis",
             },
         ]
 
         render_dashboard(
-            chosen_primary, final_conf, sem_conf, num_conf, web_context,
-            base_conf, src_conf, versions_history, user_question=q
+            chosen_primary,
+            final_conf,
+            sem_conf,
+            num_conf,
+            web_context,
+            base_conf,
+            src_conf,
+            versions_history,
+            user_question=q,
         )
 
         with st.expander("Debug Information"):
