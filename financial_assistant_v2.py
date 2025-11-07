@@ -46,7 +46,7 @@ def classify_source_reliability(source):
     source = source.lower() if isinstance(source, str) else ""
     high_sources = ["gov", "imf", "worldbank", "world bank", "central bank", "fed", "ecb", "bank of england", "eu", "reuters", "financial times", "wsj", "oecd", "bank of korea", "tradingeconomics",
                     "the economist", "ft.com", "bloomberg", "investopedia", "marketwatch", "bank of canada", "reserve bank of australia", "monetary authority of singapore", "HKMA", "bank of japan", 
-                    "adb", "unfpa"]
+                    "adb", "unfpa", "deloitte", "accenture", "kpmg"]
     medium_sources = ["wikipedia", "forbes", "cnbc", "yahoo finance", "ceic", "kaggle", "statista"]
     low_sources = ["blog", "medium.com", "wordpress", "promotions", "advertisement", "sponsored", "blogger"]
 
@@ -88,12 +88,13 @@ You are a research assistant. Return ONLY valid JSON formatted as:
 }
 """
 SYSTEM_PROMPT = (
-    "You are an AI research analyst focused on topics related to finance, economics, and markets.\n"
+    "You are an AI research analyst focused on topics related to business, finance, economics, and markets.\n"
     "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
     "that are specifically relevant to the exact question the user asks.\n"
     "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
     "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
     "If the question is about macroeconomic indicators, you may include GDP growth, inflation, etc.\n"
+    "If the question is not related to any of the above topics politely decline to answer the question.\n"
     "Strictly follow this JSON structure:\n"
     f"{RESPONSE_TEMPLATE}"
 )
@@ -321,7 +322,9 @@ def query_gemini(query: str):
 # SELF-CONSISTENCY & VALIDATION
 # ----------------------------
 def generate_self_consistent_responses_with_web(query, web_context, n=3):
-    st.info(f"Generating {n} independent analyst responses with web context...")
+    #st.info(f"Generating {n} independent analyst responses with web context...")
+    st.info(f"Generating analysis with up-to-date content...")
+
     responses, scores = [], []
     success_count = 0
     for i in range(n):
@@ -336,7 +339,9 @@ def generate_self_consistent_responses_with_web(query, web_context, n=3):
     if success_count == 0:
         st.error("All Perplexity API calls failed.")
         return [], []
-    st.success(f"Successfully generated {success_count}/{n} responses")
+   # st.success(f"Successfully generated {success_count}/{n} responses")
+    st.success(f"Successfully generated analysis")
+
     return responses, scores
 
 def majority_vote(responses):
@@ -608,7 +613,7 @@ def main():
         if web_context and web_context.get("search_results"):
             responses, scores = generate_self_consistent_responses_with_web(q, web_context, n=3)
         else:
-            st.info("Using AI model knowledge only...")
+            st.info("Using internal model knowledge only...")
             empty_ctx = {"search_results": [], "scraped_content": {}, "summary": "", "sources": []}
             responses, scores = generate_self_consistent_responses_with_web(q, empty_ctx, n=3)
 
