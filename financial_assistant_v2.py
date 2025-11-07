@@ -1,5 +1,5 @@
 # =========================================================
-# AI FINANCIAL RESEARCH ASSISTANT – HYBRID VERIFICATION v5.5
+# AI FINANCIAL RESEARCH ASSISTANT – HYBRID VERIFICATION v5.6
 # WITH WEB SEARCH, DYNAMIC METRICS, CONFIDENCE BREAKDOWN & EVOLUTION LAYER
 # =========================================================
 
@@ -40,7 +40,7 @@ genai.configure(api_key=GEMINI_KEY)
 gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 # ----------------------------
-# SOURCE RELIABILITY
+# SOURCE RELIABILITY CLASSIFIER
 # ----------------------------
 def classify_source_reliability(source):
     source = source.lower() if isinstance(source, str) else ""
@@ -57,7 +57,7 @@ def classify_source_reliability(source):
     for low in low_sources:
         if low in source:
             return "❌ Low"
-    return "⚠️ Medium"  # default
+    return "⚠️ Medium"  # default fallback
 
 def source_quality_confidence(sources):
     weights = {"✅ High": 1.0, "⚠️ Medium": 0.6, "❌ Low": 0.3}
@@ -251,7 +251,7 @@ LATEST WEB RESEARCH (Current as of today):
             if web_context.get("sources"):
                 existing_sources = parsed.get("sources", [])
                 all_sources = existing_sources + web_context["sources"]
-                parsed["sources"] = list(set(all_sources))[:10]
+                parsed["sources"] = list(set(all_sources))[:10]  # unique max 10
                 parsed["data_freshness"] = "Current (web-scraped + real-time search)"
             content = json.dumps(parsed)
         except json.JSONDecodeError:
@@ -311,7 +311,7 @@ def query_gemini(query: str):
         })
 
 # ----------------------------
-# SELF-CONSISTENCY FUNCTIONS
+# SELF-CONSISTENCY & VALIDATION
 # ----------------------------
 def generate_self_consistent_responses_with_web(query, web_context, n=3):
     st.info(f"Generating {n} independent analyst responses with web context...")
@@ -347,9 +347,6 @@ def parse_confidence(text):
     except (json.JSONDecodeError, ValueError, TypeError):
         return 0.0
 
-# ----------------------------
-# VALIDATION FUNCTIONS
-# ----------------------------
 def semantic_similarity_score(a, b):
     try:
         v1, v2 = embedder.encode([a, b])
@@ -387,8 +384,9 @@ def numeric_alignment_score(j1, j2):
     return round(alignment * 100, 2)
 
 # ----------------------------
-# DYNAMIC METRICS FILTERING AND DISPLAY
+# DYNAMIC METRICS FILTERING & DISPLAY
 # ----------------------------
+
 def filter_relevant_metrics(question, metrics):
     relevant_metrics = {}
     for metric_name in metrics:
@@ -413,8 +411,9 @@ def render_dynamic_metrics(question, metrics):
         cols[i].metric(k, val)
 
 # ----------------------------
-# EVOLUTION LAYER IMPLEMENTATION
+# EVOLUTION LAYER
 # ----------------------------
+
 def time_ago(ts_str):
     ts = datetime.fromisoformat(ts_str)
     delta = datetime.now() - ts
@@ -428,8 +427,12 @@ def time_ago(ts_str):
         return "Just now"
 
 def display_metric_with_delta(label, current, previous):
-    delta = current - previous
-    st.metric(label=label, value=f"{current:.2f}%", delta=f"{delta:+.2f}pp")
+    if current is None or previous is None:
+        display_val = str(current) if current is not None else "N/A"
+        st.metric(label=label, value=display_val)
+    else:
+        delta = current - previous
+        st.metric(label=label, value=f"{current:.2f}%", delta=f"{delta:+.2f}pp")
 
 def render_evolution_layer(versions_history):
     st.subheader("Evolution Layer - Version Control & Drift")
@@ -442,7 +445,8 @@ def render_evolution_layer(versions_history):
     st.markdown(f"**Updated:** {time_ago(updated_ts)}")
 
     current_metrics = versions_history[selected_index]["metrics"]
-    previous_metrics = versions_history[selected_index - 1]["metrics"] if selected_index > 0 else current_metrics
+    previous_metrics = (versions_history[selected_index - 1]["metrics"]
+                        if selected_index > 0 else current_metrics)
 
     for m, curr_val in current_metrics.items():
         prev_val = previous_metrics.get(m, curr_val)
@@ -460,8 +464,9 @@ def render_evolution_layer(versions_history):
     st.caption(f"{freshness}% of ✅ sources updated recently")
 
 # ----------------------------
-# DASHBOARD RENDERER
+# RENDER DASHBOARD
 # ----------------------------
+
 def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
                      base_conf=None, src_conf=None, versions_history=None, user_question=""):
     if not response or not response.strip():
@@ -556,6 +561,7 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
 # ----------------------------
 # MAIN WORKFLOW
 # ----------------------------
+
 def main():
     st.set_page_config(page_title="Yureeka Market Research Assistant", layout="wide")
     st.title("💹 Yureeka AI Market Analyst")
@@ -633,10 +639,8 @@ def main():
         if num_conf is not None:
             confidence_components.append(num_conf)
         confidence_components.append(src_conf)
-
         final_conf = np.mean(confidence_components)
 
-        # Placeholder for versions history - link to real source as needed
         versions_history = [
             {
                 "version": "V1 (Jul 10)",
