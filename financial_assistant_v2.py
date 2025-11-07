@@ -479,13 +479,17 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     if not response or not response.strip():
         st.error("Received empty response from model")
         return
+
     try:
+        # Parse JSON string into dict
         data = json.loads(response)
     except Exception as e:
         st.error(f"Invalid JSON: {e}")
         st.code(response[:800])
         return
 
+    # Display only summary text (not entire JSON)
+                         
     col1, col2 = st.columns(2)
     col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
     freshness = data.get("data_freshness", "Unknown")
@@ -499,8 +503,9 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
 
     st.header("📊 Financial Summary")
-    st.write(data.get("summary", "No summary available."))
-
+    summary_text = data.get("summary", "No summary available.")
+    st.write(summary_text)
+    
     st.subheader("Key Insights")
     insights = data.get("key_insights", [])
     if insights:
