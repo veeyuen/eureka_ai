@@ -517,7 +517,7 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     st.write(f"- Source quality confidence: {src_conf:.1f}%")
     st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
 
-    st.header("📊 Financial Summary")
+    st.header("📊 Summary Analysis")
     summary_text = data.get("summary", "No summary available.")
     st.write(summary_text)
     
