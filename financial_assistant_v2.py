@@ -183,7 +183,7 @@ def scrape_url_scrapingdog(url: str):
         st.warning(f"⚠️ ScrapingDog error for {url[:50]}: {e}")
         return None
 
-def fetch_web_context(query: str, num_sources: int = 3):
+def fetch_web_context(query: str, num_sources: int = 3): 
     search_results = search_serpapi(query, num_results=5)
     if not search_results:
         return {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
@@ -243,7 +243,7 @@ LATEST WEB RESEARCH (Current as of today):
         "model": "sonar",
         "temperature": temperature,
         "max_tokens": 2000,
-        "top_p": 0.9,              # even safer, try 0.7 or lower
+        "top_p": 0.8,              # even safer, try 0.7 or lower
         "messages": [{"role": "user", "content": enhanced_query}],
     }
     try:
@@ -286,7 +286,7 @@ def query_gemini(query: str):
         response = gemini_model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.2,
+                temperature=0.1,
                 max_output_tokens=1000,
             ),
         )
@@ -322,7 +322,7 @@ def query_gemini(query: str):
 # ----------------------------
 # SELF-CONSISTENCY & VALIDATION
 # ----------------------------
-def generate_self_consistent_responses_with_web(query, web_context, n=3):
+def generate_self_consistent_responses_with_web(query, web_context, n=1):  # generate one response
     #st.info(f"Generating {n} independent analyst responses with web context...")
     st.info(f"Generating analysis with up-to-date content...")
 
