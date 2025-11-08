@@ -221,7 +221,7 @@ def fetch_web_context(query: str, num_sources: int = 3):
 # ----------------------------
 # AI QUERY FUNCTIONS
 # ----------------------------
-def query_perplexity_with_context(query: str, web_context: dict, temperature=0.2):
+def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
     if web_context.get("summary"):
         context_section = f"""
 LATEST WEB RESEARCH (Current as of today):
@@ -329,7 +329,7 @@ def generate_self_consistent_responses_with_web(query, web_context, n=3):
     success_count = 0
     for i in range(n):
         try:
-            r = query_perplexity_with_context(query, web_context, temperature=0.2)
+            r = query_perplexity_with_context(query, web_context, temperature=0.1)
             responses.append(r)
             scores.append(parse_confidence(r))
             success_count += 1
