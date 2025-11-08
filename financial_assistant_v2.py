@@ -93,8 +93,8 @@ SYSTEM_PROMPT = (
     "that are specifically relevant to the exact question the user asks.\n"
     "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
     "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
-    "If the question is about macroeconomic indicators, you may include GDP growth, inflation, etc.\n"
-    "If the question is not related to any of the above topics politely decline to answer the question.\n"
+    "If the question is related to macroeconomics or the underlying drivers are macroeconomic, you may include GDP growth, inflation, etc.\n"
+    "If the question is not related to business, finance, economics or markets politely decline to answer the question.\n"
     "Strictly follow this JSON structure:\n"
     f"{RESPONSE_TEMPLATE}"
 )
