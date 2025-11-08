@@ -243,6 +243,7 @@ LATEST WEB RESEARCH (Current as of today):
         "model": "sonar",
         "temperature": temperature,
         "max_tokens": 2000,
+        "top_p": 0.7,              # even safer, try 0.7 or lower
         "messages": [{"role": "user", "content": enhanced_query}],
     }
     try:
