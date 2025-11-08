@@ -110,6 +110,7 @@ domain_classifier, embedder = load_models()
 # ----------------------------
 # WEB SEARCH FUNCTIONS
 # ----------------------------
+@st.cache_data(ttl=3600)  # cache for 1 hour
 def search_serpapi(query: str, num_results: int = 5):
     if not SERPAPI_KEY:
         st.info("💡 SerpAPI key not configured.")
@@ -150,8 +151,11 @@ def search_serpapi(query: str, num_results: int = 5):
                     "source": source_name
                 })
         if results:
+             # sort results by source name for stable order
             st.success(f"✅ Found {len(results)} sources via SerpAPI")
-        return results
+            results.sort(key=lambda x: x.get("source", "").lower())
+        return results[:num_results]
+     #   return results
     except requests.exceptions.RequestException as e:
         st.warning(f"⚠️ SerpAPI search error: {e}")
         return []
@@ -187,10 +191,14 @@ def fetch_web_context(query: str, num_sources: int = 3):
     search_results = search_serpapi(query, num_results=5)
     if not search_results:
         return {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
+
+    # Sort the results by URL or source name for consistency
+    search_results_sorted = sorted(search_results, key=lambda x: x.get("link", "").lower())
+    
     scraped_content = {}
     if SCRAPINGDOG_KEY:
-        st.info(f"🔍 Scraping top {min(num_sources, len(search_results))} sources...")
-        for i, result in enumerate(search_results[:num_sources]):
+        st.info(f"🔍 Scraping top {min(num_sources, len(search_results_sorted))} sources...")
+        for i, result in enumerate(search_results_sorted[:num_sources]):
             url = result["link"]
             content = scrape_url_scrapingdog(url)
             if content:
@@ -198,7 +206,8 @@ def fetch_web_context(query: str, num_sources: int = 3):
                 st.success(f"✓ Scraped {i+1}/{num_sources}: {result['source']}")
     context_parts = []
     reliabilities = []
-    for r in search_results:
+
+    for r in search_results_sorted:
         date_str = f" ({r['date']})" if r['date'] else ""
         reliability = classify_source_reliability(r.get("link", "") + " " + r.get("source", ""))
         reliabilities.append(reliability)
@@ -211,7 +220,7 @@ def fetch_web_context(query: str, num_sources: int = 3):
     summary = "\n\n---\n\n".join(context_parts)
     sources = [r["link"] for r in search_results]
     return {
-        "search_results": search_results,
+        "search_results": search_results_sorted,
         "scraped_content": scraped_content,
         "summary": summary,
         "sources": sources,
