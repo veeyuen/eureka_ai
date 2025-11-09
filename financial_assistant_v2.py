@@ -420,19 +420,41 @@ def filter_relevant_metrics(question, metrics):
             relevant_metrics[metric_name] = metrics[metric_name]
     return relevant_metrics
 
+#def render_dynamic_metrics(question, metrics):
+#    if not metrics:
+#        st.info("No metrics available.")
+#        return
+#    relevant_metrics = filter_relevant_metrics(question, metrics)
+#    to_display = relevant_metrics if relevant_metrics else metrics
+#    cols = st.columns(len(to_display))
+#    for i, (k, v) in enumerate(to_display.items()):
+#        try:
+#            val = f"{float(v):.2f}"
+#        except Exception:
+#            val = str(v)
+#        cols[i].metric(k, val)
+
 def render_dynamic_metrics(question, metrics):
     if not metrics:
         st.info("No metrics available.")
         return
+
     relevant_metrics = filter_relevant_metrics(question, metrics)
     to_display = relevant_metrics if relevant_metrics else metrics
     cols = st.columns(len(to_display))
+
     for i, (k, v) in enumerate(to_display.items()):
-        try:
-            val = f"{float(v):.2f}"
-        except Exception:
-            val = str(v)
-        cols[i].metric(k, val)
+        if isinstance(v, list):
+            # Render list as markdown bullet points inside the column
+            md_list = "\n".join(f"- {item}" for item in v)
+            cols[i].markdown(f"**{k}**\n\n{md_list}")
+        else:
+            try:
+                val = f"{float(v):.2f}"
+            except Exception:
+                val = str(v)
+            cols[i].metric(k, val)
+
 
 # ----------------------------
 # EVOLUTION LAYER
