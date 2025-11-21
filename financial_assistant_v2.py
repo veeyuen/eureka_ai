@@ -668,23 +668,24 @@ def main():
         if not chosen_primary:
             st.error("Could not determine the primary response.")
             return
+            
+## SWITCH OFF GEMINI
+     #   st.info("Cross-validating with Gemini 2.0 Flash...")
+     #   secondary_resp = query_gemini(q)
 
-        st.info("Cross-validating with Gemini 2.0 Flash...")
-        secondary_resp = query_gemini(q)
+     #   sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
 
-        sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
-
-        try:
+     #   try:
             j1 = json.loads(chosen_primary)
-        except Exception:
-            j1 = {}
+     #   except Exception:
+     #       j1 = {}
 
-        try:
-            j2 = json.loads(secondary_resp)
-        except Exception:
-            j2 = {}
+     #   try:
+     #       j2 = json.loads(secondary_resp)
+     #   except Exception:
+     #       j2 = {}
 
-        num_conf = numeric_alignment_score(j1, j2)
+     #   num_conf = numeric_alignment_score(j1, j2)
         base_conf = max_score
         src_conf = source_quality_confidence(j1.get("sources", [])) * 100
 
