@@ -537,12 +537,12 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     freshness = data.get("data_freshness", "Unknown")
     col2.metric("Data Freshness", freshness)
 
-    st.subheader("Confidence Score Breakdown")
-    st.write(f"- Base model confidence: {base_conf:.1f}%")
-    st.write(f"- Semantic similarity confidence: {sem_conf:.1f}%")
-    st.write(f"- Numeric alignment confidence: {num_conf if num_conf is not None else 'N/A'}%")
-    st.write(f"- Source quality confidence: {src_conf:.1f}%")
-    st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
+  #  st.subheader("Confidence Score Breakdown")
+  #  st.write(f"- Base model confidence: {base_conf:.1f}%")
+  #  st.write(f"- Semantic similarity confidence: {sem_conf:.1f}%")
+  #  st.write(f"- Numeric alignment confidence: {num_conf if num_conf is not None else 'N/A'}%")
+  #  st.write(f"- Source quality confidence: {src_conf:.1f}%")
+  #  st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
 
     st.header("📊 Summary Analysis")
     summary_text = data.get("summary", "No summary available.")
@@ -602,6 +602,37 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
                 rank_list = web_context.get('source_reliability', [])
                 reliab = rank_list[idx] if idx < len(rank_list) else classify_source_reliability(result['link'] + " " + result.get('source', ''))
                 st.markdown(f"- **{result['title']}** ({result.get('source', 'Unknown')}) [{reliab}]")
+
+    # Confidence Score Components #
+
+    st.subheader("Confidence Scores Breakdown")
+
+    # Prepare data as a dictionary of labels and scores
+    conf_data = {
+    "Confidence Aspect": [
+        "Base Model Confidence",
+        "Semantic Similarity Confidence",
+        "Numeric Alignment Confidence",
+        "Source Quality Confidence",
+        "Overall Confidence"
+    ],
+    "Score (%)": [
+        base_conf,
+        sem_conf,
+        num_conf if num_conf is not None else float('nan'),
+        src_conf,
+        final_conf
+    ]
+    }
+    # END #
+# Convert to DataFrame
+conf_df = pd.DataFrame(conf_data)
+
+# Format scores with two decimals; replace NaN with 'N/A'
+conf_df["Score (%)"] = conf_df["Score (%)"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+
+# Display as a table replacing the current metric cards
+st.table(conf_df)
 
     st.subheader("Validation Metrics")
     c1, c2 = st.columns(2)
