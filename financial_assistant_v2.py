@@ -676,7 +676,7 @@ def main():
      #   sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
 
      #   try:
-            j1 = json.loads(chosen_primary)
+     #       j1 = json.loads(chosen_primary)
      #   except Exception:
      #       j1 = {}
 
