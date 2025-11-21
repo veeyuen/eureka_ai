@@ -603,7 +603,7 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
                 reliab = rank_list[idx] if idx < len(rank_list) else classify_source_reliability(result['link'] + " " + result.get('source', ''))
                 st.markdown(f"- **{result['title']}** ({result.get('source', 'Unknown')}) [{reliab}]")
 
-    # Confidence Score Components #
+    # Confidence Score Components NEW SECTION BEGIN#
 
     st.subheader("Confidence Scores Breakdown")
 
@@ -624,15 +624,17 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
         final_conf
     ]
     }
-    # END #
-# Convert to DataFrame
-conf_df = pd.DataFrame(conf_data)
+    
+    # Convert to DataFrame
+    conf_df = pd.DataFrame(conf_data)
 
-# Format scores with two decimals; replace NaN with 'N/A'
-conf_df["Score (%)"] = conf_df["Score (%)"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+    # Format scores with two decimals; replace NaN with 'N/A'
+    conf_df["Score (%)"] = conf_df["Score (%)"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
 
-# Display as a table replacing the current metric cards
-st.table(conf_df)
+    # Display as a table replacing the current metric cards
+    st.table(conf_df)
+
+    ## NEW SECTION END ##
 
     st.subheader("Validation Metrics")
     c1, c2 = st.columns(2)
