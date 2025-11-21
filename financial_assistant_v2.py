@@ -687,7 +687,7 @@ def main():
 
      #   num_conf = numeric_alignment_score(j1, j2)
         base_conf = max_score
-        src_conf = source_quality_confidence(j1.get("sources", [])) * 100
+    #    src_conf = source_quality_confidence(j1.get("sources", [])) * 100
 
         confidence_components = [base_conf, sem_conf]
         if num_conf is not None:
