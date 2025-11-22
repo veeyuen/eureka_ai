@@ -516,8 +516,11 @@ def render_evolution_layer(versions_history):
 # RENDER DASHBOARD
 # ----------------------------
 
+#def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
+#                     base_conf=None, src_conf=None, versions_history=None, user_question=""):
 def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
-                     base_conf=None, src_conf=None, versions_history=None, user_question=""):
+                     base_conf=None, src_conf=None, versions_history=None, user_question="", secondary_resp=None):
+
     if not response or not response.strip():
         st.error("Received empty response from model")
         return
@@ -780,17 +783,30 @@ def main():
             },
         ]
 
+       # render_dashboard(
+       #     chosen_primary,
+       #     final_conf,
+       #     sem_conf,
+       #     num_conf,
+       #     web_context,
+       #     base_conf,
+       #     src_conf,
+       #     versions_history,
+       #     user_question=q,
+       # )
         render_dashboard(
-            chosen_primary,
-            final_conf,
-            sem_conf,
-            num_conf,
-            web_context,
-            base_conf,
-            src_conf,
-            versions_history,
-            user_question=q,
+        chosen_primary,
+        final_conf,
+        sem_conf,
+        num_conf,
+        web_context,
+        base_conf,
+        src_conf,
+        versions_history,
+        user_question=q,
+        secondary_resp=secondary_resp  # pass it here
         )
+
 
         with st.expander("Debug Information"):
             st.write("Primary Response:")
