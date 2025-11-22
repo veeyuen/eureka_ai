@@ -294,6 +294,45 @@ LATEST WEB RESEARCH (Current as of today):
         st.error(f"Perplexity query error: {e}")
         raise
 
+#def query_gemini(query: str):
+#    prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
+#    try:
+#        response = gemini_model.generate_content(
+#            prompt,
+#            generation_config=genai.types.GenerationConfig(
+#                temperature=0.1,
+#                max_output_tokens=1000,
+#            ),
+#        )
+#        content = response.text
+#        if not content.strip():
+#            raise Exception("Gemini returned empty response")
+#        try:
+#            json.loads(content)
+#        except json.JSONDecodeError:
+#            st.warning("Gemini returned non-JSON response, reformatting...")
+#            content = json.dumps({
+#                "summary": content[:500],
+#                "key_insights": [content[:200]],
+#                "metrics": {},
+#                "visual_data": {},
+#                "table": [],
+#                "sources": [],
+#                "confidence_score": 50,
+#            })
+#        return content
+#    except Exception as e:
+#        st.warning(f"Gemini API error: {e}")
+#        return json.dumps({
+#            "summary": "Gemini validation unavailable due to API error.",
+#            "key_insights": ["Cross-validation could not be performed"],
+#            "metrics": {},
+#            "visual_data": {},
+#            "table": [],
+#           "sources": [],
+#            "confidence_score": 0,
+#        })
+
 def query_gemini(query: str):
     prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
     try:
@@ -304,8 +343,12 @@ def query_gemini(query: str):
                 max_output_tokens=1000,
             ),
         )
-        content = response.text
-        if not content.strip():
+        # Defensive: check if response contains any candidates or parts
+        content = getattr(response, "text", None)
+        if not content or not content.strip():
+            # Try to extract diagnostics if available
+            finish_reason = getattr(response, "finish_reason", None)
+            st.warning(f"Gemini returned empty response. finish_reason={finish_reason}")
             raise Exception("Gemini returned empty response")
         try:
             json.loads(content)
