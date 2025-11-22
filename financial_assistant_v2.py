@@ -648,7 +648,7 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
 
     # Optionally, display full response for deeper inspection
         with st.expander("Show full Gemini model JSON response"):
-        st.json(gemini_json)
+            st.json(gemini_json)
 
     except Exception as e:
         st.warning(f"Could not parse Gemini response: {e}")
