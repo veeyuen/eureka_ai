@@ -636,6 +636,29 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
 
     ## NEW SECTION END ##
 
+    ## DISPLAY OUTPUT FROM GEMINI ##
+    st.subheader("Secondary Gemini Model Output")
+
+    # Display the raw JSON or a key summary from the Gemini model response
+    try:
+        gemini_json = json.loads(secondary_resp)
+    # Show a brief summary (adjust field names as per your JSON structure)
+        summary_text = gemini_json.get("summary", "No summary available.")
+        st.markdown(f"**Summary:** {summary_text}")
+
+    # Optionally, display full response for deeper inspection
+        with st.expander("Show full Gemini model JSON response"):
+        st.json(gemini_json)
+
+    except Exception as e:
+        st.warning(f"Could not parse Gemini response: {e}")
+        st.text(secondary_resp)
+
+    # Existing semantic similarity display
+    st.metric("Semantic Similarity", f"{sem_conf:.2f}%")
+
+    ## END GEMINI OUTPUT##
+    
     st.subheader("Validation Metrics")
     c1, c2 = st.columns(2)
     c1.metric("Semantic Similarity", f"{sem_conf:.2f}%")
