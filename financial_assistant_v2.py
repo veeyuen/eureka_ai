@@ -649,7 +649,6 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
                 reliab = rank_list[idx] if idx < len(rank_list) else classify_source_reliability(result['link'] + " " + result.get('source', ''))
                 st.markdown(f"- **{result['title']}** ({result.get('source', 'Unknown')}) [{reliab}]")
 
-    # Confidence Score Components NEW SECTION BEGIN#
 
     st.subheader("Confidence Scores Breakdown")
 
@@ -679,6 +678,23 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
 
     # Display as a table replacing the current metric cards
     st.table(conf_df)
+
+    # NEW VERACITY SCORE SECTION
+    st.subheader("Veracity Layer Scores Breakdown")
+    veracity_data = {
+    "Aspect": ["Summary Similarity", "Key Insights Similarity", "Table Similarity", "Graphical Data Similarity", "Overall Veracity Score"],
+    "Score (%)": [
+        veracity_scores.get("summary_score", 0),
+        veracity_scores.get("insights_score", 0),
+        veracity_scores.get("table_score", 0),
+        veracity_scores.get("graph_score", 0),
+        veracity_scores.get("overall_score", 0),
+    ],
+    }
+    veracity_df = pd.DataFrame(veracity_data)
+    veracity_df["Score (%)"] = veracity_df["Score (%)"].map(lambda x: f"{x:.2f}")
+    st.table(veracity_df)
+
 
     ## NEW SECTION END ##
 
@@ -718,7 +734,131 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
 
 # ----------------------------
 # MAIN WORKFLOW
+# Includes a multi_modal_compare() function that compares two JSON outputs from your LLMs, covering textual, tabular, and graphical data
 # ----------------------------
+
+def compare_texts(text1, text2):
+    if not text1 or not text2:
+        return 0.0
+    embeddings = embedder.encode([text1, text2], convert_to_tensor=True)
+    sim = util.cos_sim(embeddings[0], embeddings[1])
+    return float(sim.item()) * 100
+
+def compare_key_insights(list1, list2):
+    if not list1 or not list2:
+        return 0.0
+    sims = []
+    for t1 in list1:
+        best_sim = 0
+        for t2 in list2:
+            sim = compare_texts(t1, t2)
+            if sim > best_sim:
+                best_sim = sim
+        sims.append(best_sim)
+    return np.mean(sims) if sims else 0.0
+
+def compare_tables(table1, table2):
+    if not table1 or not table2:
+        return 0.0
+    
+    try:
+        df1 = pd.DataFrame(table1)
+        df2 = pd.DataFrame(table2)
+    except Exception:
+        return 0.0
+
+    # Align columns and rows by intersection (simple, more complex alignment can be done)
+    common_cols = list(set(df1.columns) & set(df2.columns))
+    if not common_cols:
+        return 0.0
+
+    df1_common = df1[common_cols].reset_index(drop=True)
+    df2_common = df2[common_cols].reset_index(drop=True)
+
+    # Truncate to shortest length for fair comparison
+    min_len = min(len(df1_common), len(df2_common))
+    df1_common = df1_common.iloc[:min_len]
+    df2_common = df2_common.iloc[:min_len]
+
+    scores = []
+    for col in common_cols:
+        col1 = df1_common[col]
+        col2 = df2_common[col]
+
+        # Numeric columns - compare mean relative difference
+        if pd.api.types.is_numeric_dtype(col1) and pd.api.types.is_numeric_dtype(col2):
+            diffs = np.abs(col1 - col2)
+            max_vals = np.maximum(np.abs(col1), np.abs(col2))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                rel_diffs = np.where(max_vals != 0, diffs / max_vals, 0)
+            score = 100.0 - (np.nanmean(rel_diffs) * 100)
+            scores.append(max(0, min(100, score)))
+        else:
+            # Non-numeric: fraction exact matches ignoring case and whitespace
+            matches = col1.astype(str).str.strip().str.lower() == col2.astype(str).str.strip().str.lower()
+            score = (matches.sum() / len(matches)) * 100
+            scores.append(score)
+    return np.mean(scores) if scores else 0.0
+
+def compare_graphical_data(vis1, vis2):
+    if not vis1 or not vis2:
+        return 0.0
+    labels1 = vis1.get("labels", [])
+    labels2 = vis2.get("labels", [])
+
+    values1 = vis1.get("values", [])
+    values2 = vis2.get("values", [])
+
+    if labels1 != labels2:
+        return 0.0  # Or partial credit with fuzzy matching labels
+
+    if not values1 or not values2 or len(values1) != len(values2):
+        return 0.0
+
+    vals1 = np.array(values1)
+    vals2 = np.array(values2)
+
+    # Percent similarity using normalized difference
+    diff = np.abs(vals1 - vals2)
+    max_vals = np.maximum(np.abs(vals1), np.abs(vals2))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rel_diff = np.where(max_vals != 0, diff / max_vals, 0)
+    score = 100.0 - (np.nanmean(rel_diff) * 100)
+    return max(0, min(100, score))
+
+def multi_modal_compare(json1, json2):
+    # Textual comparisons
+    summary_score = compare_texts(json1.get("summary", ""), json2.get("summary", ""))
+    insights_score = compare_key_insights(json1.get("key_insights", []), json2.get("key_insights", []))
+
+    # Tabular comparison
+    table_score = compare_tables(json1.get("table", []), json2.get("table", []))
+
+    # Graphical data comparison
+    graph_score = compare_graphical_data(json1.get("visual_data", {}), json2.get("visual_data", {}))
+
+    # Aggregate overall (weights can be tuned)
+    weights = {
+        "summary": 0.3,
+        "insights": 0.2,
+        "table": 0.3,
+        "graph": 0.2,
+    }
+    overall_score = (
+        summary_score * weights["summary"] +
+        insights_score * weights["insights"] +
+        table_score * weights["table"] +
+        graph_score * weights["graph"]
+    )
+
+    return {
+        "summary_score": summary_score,
+        "insights_score": insights_score,
+        "table_score": table_score,
+        "graph_score": graph_score,
+        "overall_score": overall_score,
+    }
+
 
 def main():
     st.set_page_config(page_title="Yureeka Market Research Assistant", layout="wide")
@@ -789,6 +929,9 @@ def main():
         except Exception:
             j2 = {}
 
+        veracity_scores = multi_modal_compare(j1, j2)
+
+
         num_conf = numeric_alignment_score(j1, j2)
         base_conf = max_score
         src_conf = source_quality_confidence(j1.get("sources", [])) * 100
@@ -797,7 +940,10 @@ def main():
         if num_conf is not None:
             confidence_components.append(num_conf)
         confidence_components.append(src_conf)
-        final_conf = np.mean(confidence_components)
+     #   final_conf = np.mean(confidence_components)
+
+        # Incorporate veracity_scores["overall_score"] into final confidence if desired:
+        final_conf = np.mean([base_conf, sem_conf, num_conf if num_conf is not None else 0, src_conf, veracity_scores["overall_score"]])
 
         versions_history = [
             {
