@@ -340,7 +340,7 @@ def query_gemini(query: str):
             prompt,
             generation_config=genai.types.GenerationConfig(
                 temperature=0.1,
-                max_output_tokens=1000,
+                max_output_tokens=2000,
             ),
         )
         # Defensive: check if response contains any candidates or parts
