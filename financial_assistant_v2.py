@@ -559,7 +559,7 @@ def render_evolution_layer(versions_history):
 # RENDER DASHBOARD
 # ----------------------------
 
-render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context, base_conf, src_conf, versions_history, user_question=q, secondary_resp=secondary_resp, veracity_scores=veracity_scores):
+def render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context, base_conf, src_conf, versions_history, user_question=q, secondary_resp=secondary_resp, veracity_scores=veracity_scores):
     if not response or not response.strip():
         st.error("Received empty response from model")
         return
