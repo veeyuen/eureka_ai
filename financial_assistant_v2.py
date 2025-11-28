@@ -559,7 +559,11 @@ def render_evolution_layer(versions_history):
 # RENDER DASHBOARD
 # ----------------------------
 
-def render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context, base_conf, src_conf, versions_history, user_question=q, secondary_resp=secondary_resp, veracity_scores=veracity_scores):
+def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
+                     base_conf=None, src_conf=None, versions_history=None,
+                     user_question="", secondary_resp=None, veracity_scores=None):
+
+    
     if not response or not response.strip():
         st.error("Received empty response from model")
         return
@@ -678,6 +682,7 @@ def render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context
     # NEW VERACITY SCORE SECTION
     st.subheader("Veracity Layer Scores Breakdown")
 
+
     if veracity_scores is not None:
         veracity_data = {
         "Aspect": [
@@ -700,10 +705,6 @@ def render_dashboard(chosen_primary, final_conf, sem_conf, num_conf, web_context
         st.table(veracity_df)
     else:
         st.info("Veracity scores not available.")
-
-    veracity_df = pd.DataFrame(veracity_data)
-    veracity_df["Score (%)"] = veracity_df["Score (%)"].map(lambda x: f"{x:.2f}")
-    st.table(veracity_df)
 
 
     ## NEW SECTION END ##
@@ -1003,7 +1004,8 @@ def main():
         src_conf,
         versions_history,
         user_question=q,
-        secondary_resp=secondary_resp  # pass it here
+        secondary_resp=secondary_resp,
+        veracity_scores=veracity_scores  # ← ADD THIS LINE
         )
 
 
