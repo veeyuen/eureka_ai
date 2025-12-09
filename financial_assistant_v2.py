@@ -275,10 +275,10 @@ LATEST WEB RESEARCH (Current as of today):
                 existing_sources = parsed.get("sources", [])
                 all_sources = existing_sources + web_context["sources"]
                 parsed["sources"] = list(set(all_sources))[:10]  # unique max 10
-                parsed["data_freshness"] = "Current (web-scraped + real-time search)"
+                parsed["data_freshness"] = "Current (real-time search)"
             content = json.dumps(parsed)
         except json.JSONDecodeError:
-            st.warning("Reformatting Perplexity response to JSON...")
+        #    st.warning("Reformatting Perplexity response to JSON...")
             content = json.dumps({
                 "summary": content[:500],
                 "key_insights": [content[:200]],
@@ -353,7 +353,7 @@ def query_gemini(query: str):
         try:
             json.loads(content)
         except json.JSONDecodeError:
-            st.warning("Gemini returned non-JSON response, reformatting...")
+         #   st.warning("Gemini returned non-JSON response, reformatting...")
             content = json.dumps({
                 "summary": content[:500],
                 "key_insights": [content[:200]],
@@ -874,7 +874,7 @@ def multi_modal_compare(json1, json2):
 def main():
     st.set_page_config(page_title="Yureeka Market Research Assistant", layout="wide")
     st.title("💹 Yureeka AI Market Analyst")
-    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search + Dynamic Metrics + Evolution Layer")
+#    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search + Dynamic Metrics + Evolution Layer")
 
     c1, c2 = st.columns([3, 1])
     with c1:
