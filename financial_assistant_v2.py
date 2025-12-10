@@ -943,18 +943,33 @@ def main():
         veracity_scores = multi_modal_compare(j1, j2)
 
 
+   #     num_conf = numeric_alignment_score(j1, j2)
+   #     base_conf = max_score
+   #     src_conf = source_quality_confidence(j1.get("sources", [])) * 100
+
+   #     confidence_components = [base_conf, sem_conf]
+   #     if num_conf is not None:
+   #         confidence_components.append(num_conf)
+   #     confidence_components.append(src_conf)
+    
+        # Incorporate veracity_scores["overall_score"] into final confidence if desired:
+   #     final_conf = np.mean([base_conf, sem_conf, num_conf if num_conf is not None else 0, src_conf, veracity_scores["overall_score"]])
         num_conf = numeric_alignment_score(j1, j2)
         base_conf = max_score
         src_conf = source_quality_confidence(j1.get("sources", [])) * 100
 
-        confidence_components = [base_conf, sem_conf]
+        # Build components dynamically; omit num_conf if None
+        confidence_components = [
+            base_conf,
+            sem_conf,
+            src_conf,
+            veracity_scores["overall_score"],
+        ]
         if num_conf is not None:
             confidence_components.append(num_conf)
-        confidence_components.append(src_conf)
-     #   final_conf = np.mean(confidence_components)
 
-        # Incorporate veracity_scores["overall_score"] into final confidence if desired:
-        final_conf = np.mean([base_conf, sem_conf, num_conf if num_conf is not None else 0, src_conf, veracity_scores["overall_score"]])
+        final_conf = np.mean(confidence_components)
+
 
         versions_history = [
             {
