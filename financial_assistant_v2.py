@@ -741,7 +741,8 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
         c2.info("No numeric data to compare")
 
     if versions_history:
-        render_evolution_layer(versions_history)
+        st.caption("See the 'Evolution Layer' page for full version and drift analysis.")
+#        render_evolution_layer(versions_history)
 
 # ----------------------------
 # MAIN WORKFLOW
@@ -972,31 +973,35 @@ def main():
 
 
         versions_history = [
-            {
-                "version": "V1 (Jul 10)",
-                "timestamp": "2025-07-10T12:00:00",
-                "metrics": j1.get("metrics", {}),
-                "confidence": base_conf,
-                "sources_freshness": 80,
-                "change_reason": "Initial version",
-            },
-            {
-                "version": "V2 (Aug 28)",
-                "timestamp": "2025-08-28T15:30:00",
-                "metrics": j1.get("metrics", {}),
-                "confidence": base_conf * 0.98,
-                "sources_freshness": 75,
-                "change_reason": "Quarterly update",
-            },
-            {
-                "version": "V3 (Nov 3)",
-                "timestamp": datetime.now().isoformat(timespec="minutes"),
-                "metrics": j1.get("metrics", {}),
-                "confidence": final_conf,
-                "sources_freshness": 78,
-                "change_reason": "Latest analysis",
-            },
+        {
+        "version": "V1 (Jul 10)",
+        "timestamp": "2025-07-10T12:00:00",
+        "metrics": j1.get("metrics", {}),
+        "confidence": base_conf,
+        "sources_freshness": 80,
+        "change_reason": "Initial version",
+        },
+        {
+        "version": "V2 (Aug 28)",
+        "timestamp": "2025-08-28T15:30:00",
+        "metrics": j1.get("metrics", {}),
+        "confidence": base_conf * 0.98,
+        "sources_freshness": 75,
+        "change_reason": "Quarterly update",
+        },
+        {
+        "version": "V3 (Nov 3)",
+        "timestamp": datetime.now().isoformat(timespec="minutes"),
+        "metrics": j1.get("metrics", {}),
+        "confidence": final_conf,
+        "sources_freshness": 78,
+        "change_reason": "Latest analysis",
+        },
         ]
+
+        # Save for other pages
+        st.session_state["versions_history"] = versions_history
+
 
        # render_dashboard(
        #     chosen_primary,
