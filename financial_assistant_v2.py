@@ -1000,7 +1000,16 @@ def main():
         ]
 
         # Save for other pages
-        st.session_state["versions_history"] = versions_history
+       # st.session_state["versions_history"] = versions_history
+
+        # Store ALL versions for individual pages (NEW)
+        st.session_state["all_versions"] = versions_history
+        st.session_state["current_analysis"] = {
+        "summary": data.get("summary", ""),
+        "metrics": j1.get("metrics", {}),
+        "confidence": final_conf
+        }
+
 
 
        # render_dashboard(
