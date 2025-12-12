@@ -233,12 +233,12 @@ def search_serpapi(query: str, num_results: int = 5):
         tbs = "qdr:m"
     
     params = {
-        "engine": "google",
-        "q": search_terms,
-        "api_key": SERPAPI_KEY,
-        "num": num_results,
-        "tbm": tbm,
-        "tbs": tbs
+    "engine": "google",
+    "q": search_terms,
+    "api_key": SERPAPI_KEY,
+    "num": num_results,
+    "tbm": tbm,
+    "tbs": tbs
     }
 
     url = "https://serpapi.com/search"
