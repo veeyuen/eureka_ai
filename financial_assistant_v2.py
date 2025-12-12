@@ -78,7 +78,7 @@ def source_quality_confidence(sources):
 # PROMPTS AND MODELS
 # ----------------------------
 RESPONSE_TEMPLATE = """
-You are a research assistant. Return ONLY valid JSON formatted as:
+You are a market research assistant. Return ONLY valid JSON formatted as:
 {
   "summary": "Brief summary of findings.",
   "key_insights": ["Insight 1", "Insight 2"],
@@ -880,13 +880,8 @@ def main():
     c1, c2 = st.columns([3, 1])
     with c1:
         st.markdown("""
-        This assistant combines:
-        - Self-consistency via multiple AI analyses
-        - Cross-model validation
-        - Live web search integration
-        - Dynamic metrics relevant to your question
-        - Confidence score component breakdown
-        - Evolution layer for version control and metric drift
+        Yureeka is a research assistant that assists in providing succinct and accurate answers to your market related questions.  
+        You may ask any question that is related to finance, economics or the markets. 
         """)
     with c2:
         web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Not configured"
