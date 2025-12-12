@@ -9,6 +9,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import base64
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
 from collections import Counter
