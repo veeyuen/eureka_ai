@@ -157,7 +157,7 @@ def search_serpapi(query: str, num_results: int = 5):
                 })
         if results:
              # sort results by source name for stable order
-            st.success(f"✅ Found {len(results)} sources via SerpAPI")
+   #         st.success(f"✅ Found {len(results)} sources via SerpAPI")
             results.sort(key=lambda x: x.get("source", "").lower())
         return results[:num_results]
      #   return results
@@ -381,7 +381,7 @@ def query_gemini(query: str):
 # ----------------------------
 def generate_self_consistent_responses_with_web(query, web_context, n=1):  # generate one response
     #st.info(f"Generating {n} independent analyst responses with web context...")
-    st.info(f"Generating analysis with up-to-date content...")
+    st.info(f"Generating analysis...")
 
     responses, scores = [], []
     success_count = 0
@@ -398,7 +398,7 @@ def generate_self_consistent_responses_with_web(query, web_context, n=1):  # gen
         st.error("All Perplexity API calls failed.")
         return [], []
    # st.success(f"Successfully generated {success_count}/{n} responses")
-    st.success(f"Successfully generated analysis")
+#    st.success(f"Successfully generated analysis")
 
     return responses, scores
 
