@@ -176,6 +176,13 @@ CRITICAL: ALWAYS provide a COMPLETE response with:
 - top_entities (3+ companies/countries)
 - trends_forecast (2+ trends)
 
+FOLLOW EXACTLY:
+
+1. Return ONLY a single JSON object. NO markdown, NO code blocks, NO explanations.
+2. NO references like [1][2] inside JSON strings.
+3. NO text before or after the JSON { ... }
+4. Use ONLY these fields from the template below.
+
 EVEN IF WEB DATA IS SPARSE, use your knowledge to provide substantive analysis.
 
 For "electric vehicle market":
