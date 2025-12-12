@@ -973,7 +973,7 @@ def main():
 
         # Save JSON output
 
-        OUTPUT_DIR = "outputs/json_runs"  # relative to your script
+        OUTPUT_DIR = "./analysis_outputs"
         
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
