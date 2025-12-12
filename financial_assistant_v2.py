@@ -232,6 +232,8 @@ def search_serpapi(query: str, num_results: int = 5):
         "tbm": tbm,
         "tbs": tbs
     }
+
+    url = "https://serpapi.com/search"
     
     # rest of your existing function...
     try:
