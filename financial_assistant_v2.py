@@ -467,10 +467,17 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
         content = content.strip()
         
         # Remove common markdown wrappers
+     #   if content.startswith("```
+     #       content = content.split("```json", 1).split("```
+     #   elif content.startswith("```"):
+     #       content = content.split("``````", 1)[0].strip()
+
+        # Remove common markdown wrappers
         if content.startswith("```
             content = content.split("```json", 1).split("```
         elif content.startswith("```"):
             content = content.split("``````", 1)[0].strip()
+
         
         # Remove trailing references like [1][2] that break JSON
         content = re.sub(r'\[\d+\]', '', content).strip()
@@ -1018,11 +1025,6 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     try:
         # Parse JSON string into dict
         data = json.loads(response)
-        # TEMP DEBUG - remove after confirming
-        st.sidebar.write("**DEBUG - Raw data keys:**")
-        st.sidebar.json(list(data.keys()))
-        st.sidebar.write("**Metrics structure:**")
-        st.sidebar.json(data.get("primary_metrics", "MISSING"))
     except Exception as e:
         st.error(f"Invalid JSON: {e}")
         st.code(response[:800])
@@ -1468,7 +1470,7 @@ def main():
         "confidence": final_conf,
         "sources_freshness": 78,
         "change_reason": "Latest analysis",
-        },
+        }
         ]
 
         # Save for other pages
