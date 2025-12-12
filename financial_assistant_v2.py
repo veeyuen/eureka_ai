@@ -196,11 +196,23 @@ f"{RESPONSE_TEMPLATE}"
 """ 
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner="Loading AI models...")
+#def load_models():
+#    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
+#    embed = SentenceTransformer("all-MiniLM-L6-v2")
+#    return classifier, embed
 def load_models():
-    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
-    embed = SentenceTransformer("all-MiniLM-L6-v2")
-    return classifier, embed
+    try:
+        classifier = pipeline(
+            "zero-shot-classification",
+            model="facebook/bart-large-mnli",
+            device=-1
+        )
+        embed = SentenceTransformer("all-MiniLM-L6-v2")
+        return classifier, embed
+    except Exception as e:
+        st.error(f"Model loading failed: {e}")
+        st.stop()
 
 domain_classifier, embedder = load_models()
 
@@ -272,7 +284,9 @@ def search_serpapi(query: str, num_results: int = 5):
         if results:
              # sort results by source name for stable order
    #         st.success(f"✅ Found {len(results)} sources via SerpAPI")
-            results.sort(key=lambda x: x.get("source", "").lower())
+    #        results.sort(key=lambda x: x.get("source", "").lower())
+        # Add secondary sort key for stability
+            results.sort(key=lambda x: (x.get("source", "").lower(), x.get("link", "")))
         return results[:num_results]
      #   return results
     except requests.exceptions.RequestException as e:
@@ -476,13 +490,18 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
         content = content.strip()
 
         # Remove common markdown wrappers
+        # Remove markdown code blocks properly
+        content = content.strip()
         if content.startswith("```json"):
-            content = content.split("``````", 1)[0].strip()
-        elif content.startswith("```"):
-            content = content.split("``````", 1)[0].strip()  
-        
-        # Remove trailing references like [1][2] that break JSON
-        content = re.sub(r'\[\d+\]', '', content).strip()
+            content = content[7:]  # Remove ```json
+        if content.startswith("```"):
+            content = content[3:]  # Remove ```
+        if content.endswith("```"):
+            content = content[:-3]  # Remove trailing ```
+        content = content.strip()
+
+        # Remove citation references like [1], [2] that break JSON
+        content = re.sub(r'\[\d+\]', '', content)
         
         try:
             parsed = json.loads(content)
@@ -746,11 +765,19 @@ def render_dynamic_metrics(question, metrics):
     
     if isinstance(metrics, dict):
         for key, value in metrics.items():
-            if isinstance(value, dict):  # New schema: {"name": "...", "value": 25, "unit": "%"}
-                display_metrics[value.get("name", key)] = value.get("value", value)
-            else:  # Old schema: {"GDP Growth": 2.5}
+         #   if isinstance(value, dict):  # New schema: {"name": "...", "value": 25, "unit": "%"}
+         #       display_metrics[value.get("name", key)] = value.get("value", value)
+            if isinstance(value, dict) and "value" in value:
+                metric_name = value.get("name", key)
+                metric_val = value["value"]
+                metric_unit = value.get("unit", "")
+                display_metrics[metric_name] = f"{metric_val}{metric_unit}"
+            elif isinstance(value, dict):
+    # Old schema dict, skip or flatten
+                continue
+            else:
                 display_metrics[key] = value
-    
+            
     relevant_metrics = filter_relevant_metrics(question, display_metrics)
     to_display = relevant_metrics if relevant_metrics else display_metrics
     
@@ -1230,16 +1257,33 @@ def main():
         src_conf = source_quality_confidence(j1.get("sources", [])) * 100
 
         # Build components dynamically; omit num_conf if None
-        confidence_components = [
-            base_conf,
-            sem_conf,
-            src_conf,
-            veracity_scores["overall_score"],
-        ]
-        if num_conf is not None:
-            confidence_components.append(num_conf)
+    #    confidence_components = [
+    #        base_conf,
+    #        sem_conf,
+    #        src_conf,
+    #        veracity_scores["overall_score"],
+    #    ]
+    #    if num_conf is not None:
+    #        confidence_components.append(num_conf)
 
-        final_conf = np.mean(confidence_components)
+    #    final_conf = np.mean(confidence_components)
+
+        # Use consistent weighting
+        weights = {
+        'base': 0.25,
+        'semantic': 0.20,
+        'source': 0.20,
+        'veracity': 0.20,
+        'numeric': 0.15
+        }
+
+        final_conf = (
+        base_conf * weights['base'] +
+        sem_conf * weights['semantic'] +
+        src_conf * weights['source'] +
+        veracity_scores["overall_score"] * weights['veracity'] +
+        (num_conf * weights['numeric'] if num_conf is not None else 0)
+        )
 
         # Save JSON output
 
