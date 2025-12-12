@@ -689,26 +689,63 @@ def filter_relevant_metrics(question, metrics):
 #            val = str(v)
 #        cols[i].metric(k, val)
 
+#def render_dynamic_metrics(question, metrics):
+#    if not metrics:
+#        st.info("No metrics available.")
+#        return
+
+#    relevant_metrics = filter_relevant_metrics(question, metrics)
+#    to_display = relevant_metrics if relevant_metrics else metrics
+#    cols = st.columns(len(to_display))
+
+#    for i, (k, v) in enumerate(to_display.items()):
+#        if isinstance(v, list):
+#            # Render list as markdown bullet points inside the column
+#            md_list = "\n".join(f"- {item}" for item in v)
+#            cols[i].markdown(f"**{k}**\n\n{md_list}")
+#        else:
+#            try:
+#                val = f"{float(v):.2f}"
+#            except Exception:
+#                val = str(v)
+#            cols[i].metric(k, val)
+
 def render_dynamic_metrics(question, metrics):
     if not metrics:
         st.info("No metrics available.")
         return
 
-    relevant_metrics = filter_relevant_metrics(question, metrics)
-    to_display = relevant_metrics if relevant_metrics else metrics
-    cols = st.columns(len(to_display))
-
+    # Handle both flat metrics (old schema) and nested metrics (new schema)
+    display_metrics = {}
+    
+    if isinstance(metrics, dict):
+        for key, value in metrics.items():
+            if isinstance(value, dict):  # New schema: {"name": "...", "value": 25, "unit": "%"}
+                display_metrics[value.get("name", key)] = value.get("value", value)
+            else:  # Old schema: {"GDP Growth": 2.5}
+                display_metrics[key] = value
+    
+    relevant_metrics = filter_relevant_metrics(question, display_metrics)
+    to_display = relevant_metrics if relevant_metrics else display_metrics
+    
+    if not to_display:
+        st.info("No relevant metrics found.")
+        return
+    
+    cols = st.columns(min(4, len(to_display)))  # Max 4 columns
+    
     for i, (k, v) in enumerate(to_display.items()):
+        col = cols[i % len(cols)]  # Cycle through columns if >4 metrics
+        
         if isinstance(v, list):
-            # Render list as markdown bullet points inside the column
             md_list = "\n".join(f"- {item}" for item in v)
-            cols[i].markdown(f"**{k}**\n\n{md_list}")
+            col.markdown(f"**{k}**\n\n{md_list}")
         else:
             try:
                 val = f"{float(v):.2f}"
-            except Exception:
+            except (ValueError, TypeError):
                 val = str(v)
-            cols[i].metric(k, val)
+            col.metric(k, val)
 
 
 # ----------------------------
