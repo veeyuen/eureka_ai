@@ -992,6 +992,8 @@ def main():
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(output_payload, f, ensure_ascii=False, indent=2)
             st.success(f"Saved JSON output to {filepath}")
+            st.info(f"**Current working dir:** `{current_dir}`")
+            st.info(f"**Saving files to:** `{os.path.abspath(OUTPUT_DIR)}`")
         except Exception as e:
             st.warning(f"Could not save JSON output: {e}")
 
