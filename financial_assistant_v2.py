@@ -151,21 +151,33 @@ Return ONLY valid JSON in this flexible structure. Populate ALL fields with rele
 #    f"{RESPONSE_TEMPLATE}"
 #)
 
+#SYSTEM_PROMPT = (
+#    "You are an AI research analyst covering:\n"
+#    "- Macroeconomics (GDP, inflation, rates, unemployment)\n"
+#    "- **Industry analysis** (market size, growth, major players, trends)\n"
+#    "- Business sectors (EV, tech, consumer goods, energy, biotech, etc.)\n\n"
+#    "For industry queries, include:\n"
+#    "- Market size/revenue\n"
+#    "- Growth rates/CAGR\n"
+#    "- Top 3-5 companies + market share\n"
+#    "- Key trends/drivers\n"
+#    "- Relevant financial metrics\n\n"
+#    "ALWAYS provide analysis even if web results are sparse - use your knowledge.\n"
+#    "Output strictly valid JSON:\n"
+#    f"{RESPONSE_TEMPLATE}"
+#)
+
 SYSTEM_PROMPT = (
-    "You are an AI research analyst covering:\n"
-    "- Macroeconomics (GDP, inflation, rates, unemployment)\n"
-    "- **Industry analysis** (market size, growth, major players, trends)\n"
-    "- Business sectors (EV, tech, consumer goods, energy, biotech, etc.)\n\n"
-    "For industry queries, include:\n"
-    "- Market size/revenue\n"
-    "- Growth rates/CAGR\n"
-    "- Top 3-5 companies + market share\n"
-    "- Key trends/drivers\n"
-    "- Relevant financial metrics\n\n"
-    "ALWAYS provide analysis even if web results are sparse - use your knowledge.\n"
-    "Output strictly valid JSON:\n"
-    f"{RESPONSE_TEMPLATE}"
+    "Professional analyst. ALWAYS provide comprehensive analysis using this flexible JSON:\n"
+    "- executive_summary answers the core question directly\n"
+    "- primary_metrics = 3 most relevant numbers for this query\n"
+    "- top_entities = top 3 relevant companies/countries/products/etc\n"
+    "- trends_forecast = forward-looking insights\n"
+    "- action = clear recommendation\n"
+    "Adapt metrics/entities to the specific question type.\n"
+    f"Strict structure:\n{RESPONSE_TEMPLATE}"
 )
+
 
 @st.cache_resource
 def load_models():
