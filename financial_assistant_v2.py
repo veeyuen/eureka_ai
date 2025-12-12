@@ -767,7 +767,7 @@ def render_evolution_layer(versions_history):
 # ----------------------------
 # RENDER DASHBOARD
 # ----------------------------
-
+'''
 def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
                      base_conf=None, src_conf=None, versions_history=None,
                      user_question="", secondary_resp=None, veracity_scores=None):
@@ -952,6 +952,193 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     if versions_history:
         st.caption("See the 'Evolution Layer' page for full version and drift analysis.")
 #        render_evolution_layer(versions_history)
+'''
+def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
+                     base_conf=None, src_conf=None, versions_history=None,
+                     user_question="", secondary_resp=None, veracity_scores=None):
+
+    if not response or not response.strip():
+        st.error("Received empty response from model")
+        return
+
+    try:
+        # Parse JSON string into dict
+        data = json.loads(response)
+    except Exception as e:
+        st.error(f"Invalid JSON: {e}")
+        st.code(response[:800])
+        return
+
+    # FLEXIBLE SCHEMA HANDLING - supports both old and new formats
+    col1, col2 = st.columns(2)
+    col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+    freshness = (
+        data.get("data_freshness") or 
+        data.get("freshness") or 
+        "Unknown"
+    )
+    col2.metric("Data Freshness", freshness)
+
+    # 📊 Summary Analysis - flexible field mapping
+    st.header("📊 Summary Analysis")
+    summary_text = (
+        data.get("summary") or           # Old schema
+        data.get("executive_summary") or # New schema
+        "No summary available."
+    )
+    st.write(summary_text)
+    
+    # Key Insights
+    st.subheader("Key Insights")
+    insights = (
+        data.get("key_insights") or       # Old schema
+        data.get("key_findings") or       # New schema
+        []
+    )
+    if insights:
+        for insight in insights:
+            st.markdown(f"- {insight}")
+    else:
+        st.info("No key insights provided.")
+
+    # Metrics - flexible handling
+    st.subheader("Metrics")
+    metrics = (
+        data.get("metrics") or                   # Old schema
+        data.get("primary_metrics") or {}        # New schema
+    )
+    render_dynamic_metrics(user_question, metrics)
+
+    # Trend Visualization
+    st.subheader("Trend Visualization")
+    vis = (
+        data.get("visual_data") or                    # Old schema
+        data.get("visualization_data", {}) or {}      # New schema
+    )
+    if "labels" in vis and "values" in vis:
+        try:
+            df = pd.DataFrame({"Period": vis["labels"], "Value": vis["values"]})
+            fig = px.line(df, x="Period", y="Value", title="Trends", markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Visualization error: {e}")
+    elif "trend_line" in vis:
+        trend_line = vis.get("trend_line", {})
+        if "labels" in trend_line and "values" in trend_line:
+            df = pd.DataFrame({"Period": trend_line["labels"], "Value": trend_line["values"]})
+            fig = px.line(df, x="Period", y="Value", title="Trend Line", markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No visual data available.")
+
+    # Data Table
+    st.subheader("Data Table")
+    table = (
+        data.get("table") or              # Old schema
+        data.get("benchmark_table") or [] # New schema
+    )
+    if table:
+        try:
+            st.dataframe(pd.DataFrame(table), use_container_width=True)
+        except Exception as e:
+            st.warning(f"Table rendering error: {e}")
+    else:
+        st.info("No tabular data available.")
+
+    # Sources & References
+    st.subheader("📚 Sources & References")
+    sources = data.get("sources", [])
+    if sources:
+        st.success(f"✅ {len(sources)} sources:")
+        for i, s in enumerate(sources, 1):
+            rank = classify_source_reliability(s) if s else "Unknown"
+            st.markdown(f"{i}. [{s}]({s}) — {rank}")
+    else:
+        st.info("No sources cited.")
+
+    # Web Search Details
+    if web_context and web_context.get("search_results"):
+        with st.expander("🔍 Web Search Details"):
+            st.write(f"**Sources Found:** {len(web_context['search_results'])}")
+            st.write(f"**Pages Scraped:** {len(web_context.get('scraped_content', {}))}")
+            for idx, result in enumerate(web_context["search_results"]):
+                rank_list = web_context.get('source_reliability', [])
+                reliab = rank_list[idx] if idx < len(rank_list) else classify_source_reliability(result['link'] + " " + result.get('source', ''))
+                st.markdown(f"- **{result['title']}** ({result.get('source', 'Unknown')}) [{reliab}]")
+
+    # Confidence Scores Breakdown (unchanged)
+    st.subheader("Confidence Scores Breakdown")
+    conf_data = {
+        "Confidence Aspect": [
+            "Base Model Confidence",
+            "Semantic Similarity Confidence",
+            "Numeric Alignment Confidence",
+            "Source Quality Confidence",
+            "Overall Confidence"
+        ],
+        "Score (%)": [
+            base_conf,
+            sem_conf,
+            num_conf if num_conf is not None else float('nan'),
+            src_conf,
+            final_conf
+        ]
+    }
+    conf_df = pd.DataFrame(conf_data)
+    conf_df["Score (%)"] = conf_df["Score (%)"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+    st.table(conf_df)
+
+    # Veracity Layer Scores Breakdown
+    st.subheader("Veracity Layer Scores Breakdown")
+    if veracity_scores is not None:
+        veracity_data = {
+            "Aspect": [
+                "Summary Similarity",
+                "Key Insights Similarity",
+                "Table Similarity",
+                "Graphical Data Similarity",
+                "Overall Veracity Score",
+            ],
+            "Score (%)": [
+                veracity_scores.get("summary_score", 0),
+                veracity_scores.get("insights_score", 0),
+                veracity_scores.get("table_score", 0),
+                veracity_scores.get("graph_score", 0),
+                veracity_scores.get("overall_score", 0),
+            ],
+        }
+        veracity_df = pd.DataFrame(veracity_data)
+        veracity_df["Score (%)"] = veracity_df["Score (%)"].map(lambda x: f"{x:.2f}")
+        st.table(veracity_df)
+    else:
+        st.info("Veracity scores not available.")
+
+    # Secondary Gemini Model Output
+    st.subheader("Secondary Gemini Model Output")
+    try:
+        gemini_json = json.loads(secondary_resp)
+        summary_text = gemini_json.get("summary", "No summary available.")
+        st.markdown(f"**Summary:** {summary_text}")
+        with st.expander("Show full Gemini model JSON response"):
+            st.json(gemini_json)
+    except Exception as e:
+        st.warning(f"Could not parse Gemini response: {e}")
+        st.text(secondary_resp)
+
+    st.metric("Semantic Similarity", f"{sem_conf:.2f}%")
+
+    # Validation Metrics
+    st.subheader("Validation Metrics")
+    c1, c2 = st.columns(2)
+    c1.metric("Semantic Similarity", f"{sem_conf:.2f}%")
+    if num_conf is not None:
+        c2.metric("Numeric Alignment", f"{num_conf:.2f}%")
+    else:
+        c2.info("No numeric data to compare")
+
+    if versions_history:
+        st.caption("See the 'Evolution Layer' page for full version and drift analysis.")
+
 
 # ----------------------------
 # MAIN WORKFLOW
