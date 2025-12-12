@@ -80,19 +80,63 @@ def source_quality_confidence(sources):
 # ----------------------------
 # PROMPTS AND MODELS
 # ----------------------------
+#RESPONSE_TEMPLATE = """
+#You are a research assistant. Return ONLY valid JSON formatted as:
+#{
+#  "summary": "Brief summary of findings.",
+#  "key_insights": ["Insight 1", "Insight 2"],
+#  "metrics": {"GDP Growth (%)": number, "Inflation (%)": number, "Unemployment (%)": number},
+#  "visual_data": {"labels": ["Q1","Q2"], "values": [2.3,2.5]},
+#  "table": [{"Country": "US", "GDP": 25.5, "Inflation": 3.4}],
+#  "sources": ["https://imf.org", "https://reuters.com"],
+#  "confidence_score": 85,
+#  "data_freshness": "As of [date]"
+#}
+#"""
+
 RESPONSE_TEMPLATE = """
-You are a research assistant. Return ONLY valid JSON formatted as:
+Return ONLY valid JSON in this flexible structure. Populate ALL fields with relevant data:
+
 {
-  "summary": "Brief summary of findings.",
-  "key_insights": ["Insight 1", "Insight 2"],
-  "metrics": {"GDP Growth (%)": number, "Inflation (%)": number, "Unemployment (%)": number},
-  "visual_data": {"labels": ["Q1","Q2"], "values": [2.3,2.5]},
-  "table": [{"Country": "US", "GDP": 25.5, "Inflation": 3.4}],
-  "sources": ["https://imf.org", "https://reuters.com"],
-  "confidence_score": 85,
-  "data_freshness": "As of [date]"
+  "executive_summary": "1-2 sentence high-level answer to the core question",
+  "primary_metrics": {
+    "metric_1": {"name": "Key Metric 1", "value": 25.5, "unit": "%"},
+    "metric_2": {"name": "Key Metric 2", "value": 623, "unit": "$B"},
+    "metric_3": {"name": "Key Metric 3", "value": 12.5, "unit": "x"}
+  },
+  "key_findings": [
+    "Finding 1 with quantified impact",
+    "Finding 2 explaining drivers",
+    "Finding 3 highlighting opportunities/risks"
+  ],
+  "top_entities": [
+    {"name": "Entity 1", "share": "25%", "growth": "15%"},
+    {"name": "Entity 2", "share": "18%", "growth": "22%"},
+    {"name": "Entity 3", "share": "12%", "growth": "-3%"}
+  ],
+  "trends_forecast": [
+    {"trend": "Trend description", "direction": "↑/↓/↔", "timeline": "2025-2027"},
+    {"trend": "Another trend", "direction": "↑", "timeline": "2026"}
+  ],
+  "visualization_data": {
+    "trend_line": {"labels": ["2023","2024","2025"], "values": [18,22,25]},
+    "comparison_bars": {"categories": ["A","B","C"], "values": [25,18,12]}
+  },
+  "benchmark_table": [
+    {"category": "Company A", "value_1": 25.5, "value_2": 623},
+    {"category": "Company B", "value_1": 18.2, "value_2": 450}
+  ],
+  "sources": ["source1.com", "source2.com"],
+  "confidence": 87,
+  "freshness": "Dec 2025",
+  "action": {
+    "recommendation": "Buy/Hold/Neutral/Sell",
+    "confidence": "High/Medium/Low",
+    "rationale": "1-sentence reason"
+  }
 }
 """
+
 #SYSTEM_PROMPT = (
 #    "You are a research analyst focused on topics related to industry analysis, business sectors, finance, economics, and markets.\n"
 #    "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
