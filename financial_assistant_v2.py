@@ -1298,20 +1298,6 @@ def main():
         "metrics": j1.get("metrics", {}),
         "confidence": final_conf
         }
-
-
-
-       # render_dashboard(
-       #     chosen_primary,
-       #     final_conf,
-       #     sem_conf,
-       #     num_conf,
-       #     web_context,
-       #     base_conf,
-       #     src_conf,
-       #     versions_history,
-       #     user_question=q,
-       # )
         render_dashboard(
         chosen_primary,
         final_conf,
@@ -1326,6 +1312,9 @@ def main():
         veracity_scores=veracity_scores  # ← ADD THIS LINE
         )
 
+
+
+        
 
         with st.expander("Debug Information"):
             st.write("Primary Response:")
