@@ -183,7 +183,8 @@ For "electric vehicle market":
 - Leaders: Tesla (18%), BYD (15%), VW (9%)
 - Trends: battery costs ↓60%, China 60% global sales
 
-NEVER return empty fields. Output ONLY valid JSON:
+NEVER return empty fields. Output ONLY valid JSON:\n"
+f"{RESPONSE_TEMPLATE}"
 """ 
 
 
