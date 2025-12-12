@@ -975,7 +975,7 @@ def main():
 
         OUTPUT_DIR = "outputs/json_runs"  # relative to your script
         
-        os.makedirs(OUTPUT_DIR,, exist_ok=True)
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
 
         output_payload = {
         "primary_response": j1,
