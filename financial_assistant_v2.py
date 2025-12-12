@@ -970,34 +970,26 @@ def main():
 
         # Save JSON output
 
-        OUTPUT_DIR = str(Path.home() / "Desktop" / "Yureeka_outputs")
-        
-        try:
-            os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
-        # Show where it will save
-            st.info(f"📁 Saving outputs to: `{OUTPUT_DIR}`")
-    
-            output_payload = {
-            "primary_response": j1,
-            "secondary_response": j2,
-            "final_confidence": final_conf,
-            "veracity_scores": veracity_scores,
-            "question": q,
-            }
-    
-            filename = datetime.now().strftime("run_%Y%m%d_%H%M%S.json")
-            filepath = os.path.join(OUTPUT_DIR, filename)
-    
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(output_payload, f, ensure_ascii=False, indent=2)
-    
-            st.success(f"✅ Saved: `{filename}`")
-            st.caption(f"Full path: `{filepath}`")
-    
-        except Exception as e:
-            st.error(f"Save failed: {e}")
+        # ---- DOWNLOAD JSON INSTEAD OF SAVING ----
+        output_payload = {
+        "primary_response": j1,
+        "secondary_response": j2,
+        "final_confidence": final_conf,
+        "veracity_scores": veracity_scores,
+        "question": q,
+        "timestamp": datetime.now().isoformat()
+        }
 
+        json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
+        b64 = base64.b64encode(json_str.encode()).decode()
+        filename = f"yureeka_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        href = f'<a href="data:application/json;base64,{b64}" download="{filename}">💾 Download Analysis JSON</a> (Right-click → Save As)'
+
+        st.markdown(href, unsafe_allow_html=True)
+        st.success("✅ Analysis ready for download!")
+
+
+        
         versions_history = [
         {
         "version": "V1 (Jul 10)",
