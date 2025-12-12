@@ -78,7 +78,7 @@ def source_quality_confidence(sources):
 # PROMPTS AND MODELS
 # ----------------------------
 RESPONSE_TEMPLATE = """
-You are a market research assistant. Return ONLY valid JSON formatted as:
+You are a research assistant. Return ONLY valid JSON formatted as:
 {
   "summary": "Brief summary of findings.",
   "key_insights": ["Insight 1", "Insight 2"],
@@ -91,7 +91,7 @@ You are a market research assistant. Return ONLY valid JSON formatted as:
 }
 """
 SYSTEM_PROMPT = (
-    "You are a research/market analyst focused on topics related to business, finance, economics, and markets.\n"
+    "You are a research analyst focused on topics related to business, finance, economics, and markets.\n"
     "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
     "that are specifically relevant to the exact question the user asks.\n"
     "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
