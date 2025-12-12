@@ -1017,6 +1017,11 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     try:
         # Parse JSON string into dict
         data = json.loads(response)
+        # TEMP DEBUG - remove after confirming
+        st.sidebar.write("**DEBUG - Raw data keys:**")
+        st.sidebar.json(list(data.keys()))
+        st.sidebar.write("**Metrics structure:**")
+        st.sidebar.json(data.get("primary_metrics", "MISSING"))
     except Exception as e:
         st.error(f"Invalid JSON: {e}")
         st.code(response[:800])
