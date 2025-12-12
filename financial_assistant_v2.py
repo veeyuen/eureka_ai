@@ -16,6 +16,8 @@ import google.generativeai as genai
 import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+from pathlib import Path
+
 
 # ----------------------------
 # CONFIGURATION
