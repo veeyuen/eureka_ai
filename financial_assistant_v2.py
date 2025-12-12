@@ -971,6 +971,28 @@ def main():
 
         final_conf = np.mean(confidence_components)
 
+        # Save JSON output
+        
+        os.makedirs('/Users/veesheenyuen/code/veeyuen/Yureeka', exist_ok=True)
+
+        output_payload = {
+        "primary_response": j1,
+        "secondary_response": j2,
+        "final_confidence": final_conf,
+        "veracity_scores": veracity_scores,
+        "question": q,
+        }
+
+        filename = datetime.now().strftime("run_%Y%m%d_%H%M%S.json")
+        filepath = os.path.join(OUTPUT_DIR, filename)
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(output_payload, f, ensure_ascii=False, indent=2)
+            st.success(f"Saved JSON output to {filepath}")
+        except Exception as e:
+            st.warning(f"Could not save JSON output: {e}")
+
 
         versions_history = [
         {
