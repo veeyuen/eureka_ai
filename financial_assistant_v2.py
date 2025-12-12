@@ -238,8 +238,7 @@ def search_serpapi(query: str, num_results: int = 5):
     "api_key": SERPAPI_KEY,
     "num": num_results,
     "tbm": tbm,
-    "tbs": tbs
-    }
+    "tbs": tbs}
 
     url = "https://serpapi.com/search"
     
