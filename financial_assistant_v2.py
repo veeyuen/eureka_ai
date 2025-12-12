@@ -883,8 +883,8 @@ def main():
     c1, c2 = st.columns([3, 1])
     with c1:
         st.markdown("""
-        Yureeka is a research assistant that assists in providing succinct and accurate answers to your market related questions.  You may ask any question that is related to finance, economics or the markets. 
-        This product is currently in prototype stage. Please direct your feedback to [      ].
+        Yureeka is a research assistant that assists in providing succinct and accurate answers to your market related questions.  You may ask any 
+        question that is related to finance, economics or the markets. This product is currently in prototype stage.
         """)
     with c2:
         web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Not configured"
