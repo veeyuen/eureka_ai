@@ -968,30 +968,33 @@ def main():
 
         # Save JSON output
 
-        OUTPUT_DIR = "./analysis_outputs"
+        OUTPUT_DIR = str(Path.home() / "Desktop" / "Yureeka_outputs")
         
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-        output_payload = {
-        "primary_response": j1,
-        "secondary_response": j2,
-        "final_confidence": final_conf,
-        "veracity_scores": veracity_scores,
-        "question": q,
-        }
-
-        filename = datetime.now().strftime("run_%Y%m%d_%H%M%S.json")
-        filepath = os.path.join(OUTPUT_DIR, filename)
-
         try:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+        # Show where it will save
+            st.info(f"📁 Saving outputs to: `{OUTPUT_DIR}`")
+    
+            output_payload = {
+            "primary_response": j1,
+            "secondary_response": j2,
+            "final_confidence": final_conf,
+            "veracity_scores": veracity_scores,
+            "question": q,
+            }
+    
+            filename = datetime.now().strftime("run_%Y%m%d_%H%M%S.json")
+            filepath = os.path.join(OUTPUT_DIR, filename)
+    
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(output_payload, f, ensure_ascii=False, indent=2)
-            st.success(f"Saved JSON output to {filepath}")
-            st.info(f"**Current working dir:** `{current_dir}`")
-            st.info(f"**Saving files to:** `{os.path.abspath(OUTPUT_DIR)}`")
+    
+            st.success(f"✅ Saved: `{filename}`")
+            st.caption(f"Full path: `{filepath}`")
+    
         except Exception as e:
-            st.warning(f"Could not save JSON output: {e}")
-
+            st.error(f"Save failed: {e}")
 
         versions_history = [
         {
