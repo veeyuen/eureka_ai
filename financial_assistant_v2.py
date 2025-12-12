@@ -52,7 +52,7 @@ def classify_source_reliability(source):
     source = source.lower() if isinstance(source, str) else ""
     high_sources = ["gov", "imf", "worldbank", "world bank", "central bank", "fed", "ecb", "bank of england", "eu", "reuters", "financial times", "wsj", "oecd", "bank of korea", "tradingeconomics",
                     "the economist", "ft.com", "bloomberg", "investopedia", "marketwatch", "bank of canada", "reserve bank of australia", "monetary authority of singapore", "HKMA", "bank of japan", 
-                    "adb", "unfpa", "deloitte", "accenture", "kpmg", "ey"]
+                    "adb", "unfpa", "deloitte", "accenture", "kpmg", "ey", "mckinsey", "bain"]
     medium_sources = ["wikipedia", "forbes", "cnbc", "yahoo finance", "ceic", "kaggle", "statista"]
     low_sources = ["blog", "medium.com", "wordpress", "promotions", "advertisement", "sponsored", "blogger"]
 
@@ -93,17 +93,33 @@ You are a research assistant. Return ONLY valid JSON formatted as:
   "data_freshness": "As of [date]"
 }
 """
+#SYSTEM_PROMPT = (
+#    "You are a research analyst focused on topics related to business, finance, economics, and markets.\n"
+#    "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
+#    "that are specifically relevant to the exact question the user asks.\n"
+#    "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
+#    "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
+#    "For example, if the user asks about the size of the sneaker market in Asia, include metrics like market size in USD, projected growth rates,"
+#    "and exclude unrelated metrics such as inflation or unemployment. Also include information on the major brands of sneakers involved and the trends in the marketplace.\n"
+#    "If the question is related to macroeconomics or the underlying drivers are macroeconomic, you may include macroeconomic indicators such as GDP growth, inflation, population size etc.\n"
+#    "If the question is not related to business, finance, economics or the markets politely decline to answer the question.\n"
+#    "Strictly follow this JSON structure:\n"
+#    f"{RESPONSE_TEMPLATE}"
+#)
+
 SYSTEM_PROMPT = (
-    "You are a research analyst focused on topics related to business, finance, economics, and markets.\n"
-    "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
-    "that are specifically relevant to the exact question the user asks.\n"
-    "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
-    "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
-    "For example, if the user asks about the size of the sneaker market in Asia, include metrics like market size in USD, projected growth rates,"
-    "and exclude unrelated metrics such as inflation or unemployment. Also include information on the major brands of sneakers involved and the trends in the marketplace.\n"
-    "If the question is related to macroeconomics or the underlying drivers are macroeconomic, you may include macroeconomic indicators such as GDP growth, inflation, population size etc.\n"
-    "If the question is not related to business, finance, economics or the markets politely decline to answer the question.\n"
-    "Strictly follow this JSON structure:\n"
+    "You are an AI research analyst covering:\n"
+    "- Macroeconomics (GDP, inflation, rates, unemployment)\n"
+    "- **Industry analysis** (market size, growth, major players, trends)\n"
+    "- Business sectors (EV, tech, consumer goods, energy, biotech, etc.)\n\n"
+    "For industry queries, include:\n"
+    "- Market size/revenue\n"
+    "- Growth rates/CAGR\n"
+    "- Top 3-5 companies + market share\n"
+    "- Key trends/drivers\n"
+    "- Relevant financial metrics\n\n"
+    "ALWAYS provide analysis even if web results are sparse - use your knowledge.\n"
+    "Output strictly valid JSON:\n"
     f"{RESPONSE_TEMPLATE}"
 )
 
@@ -118,20 +134,41 @@ domain_classifier, embedder = load_models()
 # ----------------------------
 # WEB SEARCH FUNCTIONS
 # ----------------------------
-@st.cache_data(ttl=3600)  # cache for 1 hour
+@st.cache_data(ttl=3600)
 def search_serpapi(query: str, num_results: int = 5):
     if not SERPAPI_KEY:
         st.info("💡 SerpAPI key not configured.")
         return []
-    url = "https://serpapi.com/search"
+    
+    # SMART QUERY CLASSIFICATION
+    query_lower = query.lower()
+    industry_keywords = ["industry", "market", "sector", "ev", "electric", "vehicle", 
+                        "sneaker", "semiconductor", "biotech", "battery", "renewable"]
+    macro_keywords = ["gdp", "inflation", "unemployment", "interest", "fed", "ecb"]
+    
+    if any(kw in query_lower for kw in industry_keywords):
+        search_terms = f"{query} market size growth players trends 2025"
+        tbm = ""  # All results, not just news
+        tbs = ""  # No time restriction
+    elif any(kw in query_lower for kw in macro_keywords):
+        search_terms = f"{query} latest data"
+        tbm = "nws"
+        tbs = "qdr:m"
+    else:
+        search_terms = f"{query} finance economics markets"
+        tbm = "nws"
+        tbs = "qdr:m"
+    
     params = {
         "engine": "google",
-        "q": f"{query} finance economics markets",
+        "q": search_terms,
         "api_key": SERPAPI_KEY,
         "num": num_results,
-        "tbm": "nws",
-        "tbs": "qdr:m"
+        "tbm": tbm,
+        "tbs": tbs
     }
+    
+    # rest of your existing function...
     try:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
@@ -238,8 +275,79 @@ def fetch_web_context(query: str, num_sources: int = 3):
 # ----------------------------
 # AI QUERY FUNCTIONS
 # ----------------------------
+#def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
+#    if web_context.get("summary"):
+#        context_section = f"""
+#LATEST WEB RESEARCH (Current as of today):
+#{web_context['summary']}
+
+#        if web_context.get('scraped_content'):
+#            context_section += "\nDETAILED CONTENT FROM TOP SOURCES:\n"
+#            for url, content in list(web_context['scraped_content'].items())[:2]:
+#                context_section += f"\nFrom {url}:\n{content[:800]}...\n"
+#        enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
+#    else:
+#        enhanced_query = f"{SYSTEM_PROMPT}\n\nUser Question: {query}"
+#    headers = {
+#        "Authorization": f"Bearer {PERPLEXITY_KEY}",
+#        "Content-Type": "application/json",
+#    }
+#    payload = {
+#        "model": "sonar",
+#        "temperature": temperature,
+#        "max_tokens": 2000,
+#        "top_p": 0.8,              # even safer, try 0.7 or lower
+#        "messages": [{"role": "user", "content": enhanced_query}],
+#    }
+#    try:
+#        resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=45)
+#        resp.raise_for_status()
+#        response_data = resp.json()
+#        if "choices" not in response_data:
+#            raise Exception("No 'choices' in response")
+#        content = response_data["choices"][0]["message"]["content"]
+#        if not content.strip():
+#            raise Exception("Perplexity returned empty response")
+#        try:
+#            parsed = json.loads(content)
+#            if web_context.get("sources"):
+#                existing_sources = parsed.get("sources", [])
+#                all_sources = existing_sources + web_context["sources"]
+#                parsed["sources"] = list(set(all_sources))[:10]  # unique max 10
+#                parsed["data_freshness"] = "Current (real-time search)"
+#            content = json.dumps(parsed)
+#        except json.JSONDecodeError:
+#        #    st.warning("Reformatting Perplexity response to JSON...")
+#            content = json.dumps({
+#                "summary": content[:500],
+#                "key_insights": [content[:200]],
+#                "metrics": {},
+#                "visual_data": {},
+#                "table": [],
+#                "sources": web_context.get("sources", []),
+#                "confidence_score": 50,
+#                "data_freshness": "Current (web-scraped)"
+#            })
+#        return content
+#    except Exception as e:
+#        st.error(f"Perplexity query error: {e}")
+#        raise
+
 def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
-    if web_context.get("summary"):
+    # FALLBACK: Check web context quality
+    search_results_count = len(web_context.get("search_results", []))
+    if not web_context.get("summary") or search_results_count < 2:
+        # Weak web results - prioritize model knowledge
+        enhanced_query = (
+            f"{SYSTEM_PROMPT}\n\n"
+            f"User Question: {query}\n\n"
+            f"Web search returned only {search_results_count} results. "
+            f"Use your industry knowledge and general analysis capabilities "
+            f"to provide a comprehensive answer with relevant metrics, "
+            f"trends, and major players."
+        )
+    else:
+        # Strong web results - use web context (existing logic)
         context_section = f"""
 LATEST WEB RESEARCH (Current as of today):
 {web_context['summary']}
@@ -250,8 +358,7 @@ LATEST WEB RESEARCH (Current as of today):
             for url, content in list(web_context['scraped_content'].items())[:2]:
                 context_section += f"\nFrom {url}:\n{content[:800]}...\n"
         enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
-    else:
-        enhanced_query = f"{SYSTEM_PROMPT}\n\nUser Question: {query}"
+    
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}",
         "Content-Type": "application/json",
@@ -260,7 +367,7 @@ LATEST WEB RESEARCH (Current as of today):
         "model": "sonar",
         "temperature": temperature,
         "max_tokens": 2000,
-        "top_p": 0.8,              # even safer, try 0.7 or lower
+        "top_p": 0.8,
         "messages": [{"role": "user", "content": enhanced_query}],
     }
     try:
@@ -278,10 +385,10 @@ LATEST WEB RESEARCH (Current as of today):
                 existing_sources = parsed.get("sources", [])
                 all_sources = existing_sources + web_context["sources"]
                 parsed["sources"] = list(set(all_sources))[:10]  # unique max 10
-                parsed["data_freshness"] = "Current (real-time search)"
+                parsed["data_freshness"] = "Current (web-scraped + real-time search)"
             content = json.dumps(parsed)
         except json.JSONDecodeError:
-        #    st.warning("Reformatting Perplexity response to JSON...")
+            st.warning("Reformatting Perplexity response to JSON...")
             content = json.dumps({
                 "summary": content[:500],
                 "key_insights": [content[:200]],
@@ -296,6 +403,7 @@ LATEST WEB RESEARCH (Current as of today):
     except Exception as e:
         st.error(f"Perplexity query error: {e}")
         raise
+
 
 #def query_gemini(query: str):
 #    prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
