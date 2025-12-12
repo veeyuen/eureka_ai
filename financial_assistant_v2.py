@@ -474,13 +474,13 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
 
         # Remove common markdown wrappers
         # ENHANCED JSON CLEANING - strip markdown wrappers and references
-    content = content.strip()
+        content = content.strip()
 
-    # Remove common markdown wrappers
-    if content.startswith("```json"):
-        content = content.split("``````", 1)[0].strip()
-    elif content.startswith("```"):
-        content = content.split("``````", 1)[0].strip()  
+        # Remove common markdown wrappers
+        if content.startswith("```json"):
+            content = content.split("``````", 1)[0].strip()
+        elif content.startswith("```"):
+            content = content.split("``````", 1)[0].strip()  
         
         # Remove trailing references like [1][2] that break JSON
         content = re.sub(r'\[\d+\]', '', content).strip()
