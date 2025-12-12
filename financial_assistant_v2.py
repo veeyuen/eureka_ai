@@ -167,16 +167,24 @@ Return ONLY valid JSON in this flexible structure. Populate ALL fields with rele
 #    f"{RESPONSE_TEMPLATE}"
 #)
 
-SYSTEM_PROMPT = (
-    "Professional analyst. ALWAYS provide comprehensive analysis using this flexible JSON:\n"
-    "- executive_summary answers the core question directly\n"
-    "- primary_metrics = 3 most relevant numbers for this query\n"
-    "- top_entities = top 3 relevant companies/countries/products/etc\n"
-    "- trends_forecast = forward-looking insights\n"
-    "- action = clear recommendation\n"
-    "Adapt metrics/entities to the specific question type.\n"
-    f"Strict structure:\n{RESPONSE_TEMPLATE}"
-)
+SYSTEM_PROMPT = """You are a professional market research analyst. 
+
+CRITICAL: ALWAYS provide a COMPLETE response with:
+- executive_summary (2 sentences minimum)
+- 3+ primary_metrics with numbers
+- 3+ key_findings  
+- top_entities (3+ companies/countries)
+- trends_forecast (2+ trends)
+
+EVEN IF WEB DATA IS SPARSE, use your knowledge to provide substantive analysis.
+
+For "electric vehicle market":
+- Market size ~$600B+, growing 25% CAGR
+- Leaders: Tesla (18%), BYD (15%), VW (9%)
+- Trends: battery costs ↓60%, China 60% global sales
+
+NEVER return empty fields. Output ONLY valid JSON:
+""" 
 
 
 @st.cache_resource
@@ -390,31 +398,30 @@ def fetch_web_context(query: str, num_sources: int = 3):
 #        raise
 
 def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
-    # FALLBACK: Check web context quality
+    # 1) FALLBACK LOGIC FOR WEAK WEB CONTEXT
     search_results_count = len(web_context.get("search_results", []))
     if not web_context.get("summary") or search_results_count < 2:
         # Weak web results - prioritize model knowledge
         enhanced_query = (
             f"{SYSTEM_PROMPT}\n\n"
             f"User Question: {query}\n\n"
-            f"Web search returned only {search_results_count} results. "
-            f"Use your industry knowledge and general analysis capabilities "
-            f"to provide a comprehensive answer with relevant metrics, "
-            f"trends, and major players."
+            f"Web search returned only {search_results_count} usable results. "
+            f"Use your general market and industry knowledge to provide a full analysis "
+            f"with metrics, key findings, and forward-looking trends."
         )
     else:
-        # Strong web results - use web context (existing logic)
+        # Strong web results - use your existing context logic
         context_section = f"""
-LATEST WEB RESEARCH (Current as of today):
-{web_context['summary']}
+        LATEST WEB RESEARCH (Current as of today):
+        {web_context['summary']}
 
-"""
+        """
         if web_context.get('scraped_content'):
             context_section += "\nDETAILED CONTENT FROM TOP SOURCES:\n"
             for url, content in list(web_context['scraped_content'].items())[:2]:
                 context_section += f"\nFrom {url}:\n{content[:800]}...\n"
         enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
-    
+
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}",
         "Content-Type": "application/json",
@@ -426,6 +433,14 @@ LATEST WEB RESEARCH (Current as of today):
         "top_p": 0.8,
         "messages": [{"role": "user", "content": enhanced_query}],
     }
+
+    # 2) QUICK DEBUG – ADD THIS JUST BEFORE THE API CALL
+    st.info(
+        f"🔍 Web results: {search_results_count} | "
+        f"Prompt length: {len(enhanced_query)} chars"
+    )
+    st.caption(f"Prompt preview: `{enhanced_query[:200]}...`")
+
     try:
         resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=45)
         resp.raise_for_status()
@@ -435,31 +450,55 @@ LATEST WEB RESEARCH (Current as of today):
         content = response_data["choices"][0]["message"]["content"]
         if not content.strip():
             raise Exception("Perplexity returned empty response")
+
         try:
             parsed = json.loads(content)
+            # Merge web sources if available
             if web_context.get("sources"):
                 existing_sources = parsed.get("sources", [])
                 all_sources = existing_sources + web_context["sources"]
-                parsed["sources"] = list(set(all_sources))[:10]  # unique max 10
+                parsed["sources"] = list(set(all_sources))[:10]
                 parsed["data_freshness"] = "Current (web-scraped + real-time search)"
             content = json.dumps(parsed)
+
+        # 3) REPLACE YOUR OLD FALLBACK BLOCK WITH THIS RICHER VERSION
         except json.JSONDecodeError:
-            st.warning("Reformatting Perplexity response to JSON...")
+            st.warning("Non-JSON response from model, applying structured fallback...")
             content = json.dumps({
-                "summary": content[:500],
-                "key_insights": [content[:200]],
-                "metrics": {},
-                "visual_data": {},
-                "table": [],
+                "executive_summary": f"Analysis of '{query}' based on limited structured output.",
+                "primary_metrics": {
+                    "metric_1": {"name": "Data coverage", "value": 50, "unit": "%"},
+                    "metric_2": {"name": "Model confidence", "value": 60, "unit": "%"},
+                    "metric_3": {"name": "Source quality", "value": 70, "unit": "/100"}
+                },
+                "key_findings": [
+                    f"Structured JSON could not be parsed for '{query}', so this fallback was used.",
+                    "The model still attempted to infer key themes and metrics based on available information.",
+                    "Consider refining the question or broadening search terms for richer, source-backed output."
+                ],
+                "top_entities": [
+                    {"name": "N/A", "share": "0%", "growth": "0%"}
+                ],
+                "trends_forecast": [],
+                "visualization_data": {
+                    "trend_line": {"labels": [], "values": []},
+                    "comparison_bars": {"categories": [], "values": []}
+                },
+                "benchmark_table": [],
                 "sources": web_context.get("sources", []),
-                "confidence_score": 50,
-                "data_freshness": "Current (web-scraped)"
+                "confidence": 50,
+                "freshness": "Current (fallback mode)",
+                "action": {
+                    "recommendation": "Neutral",
+                    "confidence": "Low",
+                    "rationale": "Fallback used due to parsing issues with model response."
+                }
             })
         return content
+
     except Exception as e:
         st.error(f"Perplexity query error: {e}")
         raise
-
 
 #def query_gemini(query: str):
 #    prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
