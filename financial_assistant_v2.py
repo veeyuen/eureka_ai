@@ -972,8 +972,10 @@ def main():
         final_conf = np.mean(confidence_components)
 
         # Save JSON output
+
+        OUTPUT_DIR = "outputs/json_runs"  # relative to your script
         
-        os.makedirs('/Users/veesheenyuen/code/veeyuen/Yureeka', exist_ok=True)
+        os.makedirs(OUTPUT_DIR,, exist_ok=True)
 
         output_payload = {
         "primary_response": j1,
