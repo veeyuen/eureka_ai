@@ -984,8 +984,44 @@ def render_dashboard(
     else:
         st.info("No tabular data available.")
 
+    # ... (Key Findings section ends here) ...
+    # ... (Market Dynamics: Drivers & Challenges section is likely here) ...
+
     # =========================================================
-    # 4. CONFIDENCE SCORE & VERACITY
+    # 4: TRENDS & FORECAST
+    # =========================================================
+    st.subheader("🔮 Future Trends & Forecast")
+    
+    trends = data.get("trends_forecast", [])
+    
+    if isinstance(trends, list) and trends:
+        for trend in trends:
+            # Check for the list-of-strings format (as seen in your JSON output)
+            if isinstance(trend, str):
+                st.markdown(f"- **{trend}**")
+            # Check for the list-of-dictionaries format (from the rich template)
+            elif isinstance(trend, dict):
+                trend_name = trend.get("trend", "Untitled Trend")
+                impact = trend.get("impact", "N/A")
+                timeline = trend.get("timeline", "N/A")
+                details = trend.get("details", "")
+                
+                # Render dictionary data in a richer format
+                st.markdown(f"- **{trend_name}** (Impact: {impact}, Timeline: {timeline})")
+                if details:
+                    st.markdown(f"  *{details}*")
+        
+        # Add a subtle separator after the list
+        st.markdown("---")
+    else:
+        st.info("No detailed trend forecast available in the response.")
+    
+    # =========================================================
+
+    # ... (The rest of the function, like Trend Visualization, continues here) ...
+
+    # =========================================================
+    # 5. CONFIDENCE SCORE & VERACITY
     # =========================================================
     st.subheader("Confidence Score & Veracity")
     colA, colB, colC = st.columns(3)
@@ -1014,7 +1050,7 @@ def render_dashboard(
         st.dataframe(veracity_df, use_container_width=True)
 
     # =========================================================
-    # 5. EVOLUTION LAYER & HISTORY (Fixes for timestamp parsing)
+    # 6. EVOLUTION LAYER & HISTORY (Fixes for timestamp parsing)
     # =========================================================
     st.subheader("Analysis History")
     
@@ -1040,7 +1076,7 @@ def render_dashboard(
         st.info("No historical analysis available.")
 
     # =========================================================
-    # 6. RAW SOURCES AND CONTEXT
+    # 7. RAW SOURCES AND CONTEXT
     # =========================================================
     st.subheader("Sources and Context")
     
