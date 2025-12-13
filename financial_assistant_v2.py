@@ -848,17 +848,33 @@ def render_dashboard(
     st.subheader("Key Performance Indicators (KPIs)")
     col1, col2, col3, col4 = st.columns(4)
 
-    primary_metrics = data.get("primary_metrics", {})
+    primary_metrics = data.get("primary_metrics", [])
     
-    # --- Primary Metrics: Handling the new DICT-OF-DICTS structure ---
-    if isinstance(primary_metrics, dict):
-        # We iterate over the key:value pairs (e.g., "metric_1": {...})
+    # --- Primary Metrics: Handling the current LIST-OF-STRINGS structure ---
+    if isinstance(primary_metrics, list):
+        for i, metric in enumerate(primary_metrics):
+            if not isinstance(metric, str):
+                # 🟢 This is the line that generates your current error! 
+                # The metric is a dict, but we are in the LIST block. We will skip it.
+                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}. Check if your primary_metrics template is mixed.")
+                continue 
+            
+            # This logic handles the old format like "Metric Name: Value"
+            if ':' in metric:
+                key, value = metric.split(':', 1)
+            else:
+                # If no colon, use a generic key
+                key, value = f"Metric {i+1}", metric
+                
+            col = [col1, col2, col3, col4][i % 4]
+            col.metric(key.strip(), value.strip())
+
+    # --- Primary Metrics: Fallback for the future DICT-OF-DICTS structure ---
+    elif isinstance(primary_metrics, dict):
         for i, (key, metric_dict) in enumerate(primary_metrics.items()):
             if not isinstance(metric_dict, dict):
-                st.warning(f"Skipping malformed metric entry ({key}): Expected dict, found {type(metric_dict).__name__}. Falling back to old list parser.")
-                # This will break out of the dict loop and continue to the list fallback
-                primary_metrics = data.get("primary_metrics", []) 
-                break 
+                st.warning(f"Skipping malformed metric entry ({key}): Expected dict, found {type(metric_dict).__name__}.")
+                continue 
 
             name = metric_dict.get("name", key.replace('_', ' ').title())
             value = metric_dict.get("value", "N/A")
@@ -868,32 +884,9 @@ def render_dashboard(
 
             col = [col1, col2, col3, col4][i % 4]
             col.metric(name, display_value)
-
-    # --- Primary Metrics: Fallback for the old LIST-OF-STRINGS structure ---
-    if isinstance(primary_metrics, list):
-        for i, metric in enumerate(primary_metrics):
-            if not isinstance(metric, str):
-                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}.")
-                continue 
             
-            # This logic handles the old format like "Metric Name: Value"
-            if ':' in metric:
-                key, value = metric.split(':', 1)
-            else:
-                key, value = f"Metric {i+1}", metric
-                
-            col = [col1, col2, col3, col4][i % 4]
-            col.metric(key.strip(), value.strip())
-
-    # --- Key Findings ---
-    key_findings = data.get("key_findings", [])
-    if isinstance(key_findings, list):
-        st.subheader("Key Findings & Insights")
-        for finding in key_findings:
-            # Ensure finding is a string before printing
-            if isinstance(finding, str):
-                st.markdown(f"- {finding}")
-
+    else:
+        st.info("Primary metrics data is unavailable or in an unrecognized format.")
     # =========================================================
     # 2. TREND VISUALIZATION
     # =========================================================
