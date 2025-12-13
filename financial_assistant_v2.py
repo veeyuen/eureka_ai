@@ -900,75 +900,62 @@ def render_dashboard(
     st.subheader("📈 Trend Visualization")
     
     viz_data = data.get("visualization_data", {})
-
-    col_line, col_bar = st.columns(2)
-
-    # --- Trend Line Chart ---
-    with col_line:
-        trend_line = viz_data.get("trend_line", {})
+    
+    # Check if we have the Chart.js style data structure (data, labels, datasets)
+    if viz_data and viz_data.get("data") and viz_data["data"].get("labels") and viz_data["data"].get("datasets"):
         
-        # Check if the required data structure is present
-        if trend_line and trend_line.get("labels") and trend_line.get("values"):
+        # We process the first dataset found, assuming it's the main time-series line chart
+        datasets = viz_data["data"]["datasets"]
+        labels = viz_data["data"]["labels"]
+        
+        if datasets:
             try:
-                # 1. Ensure values are numeric (Plotly needs numbers, not strings)
-                numeric_values = [float(v) for v in trend_line["values"]]
+                # 1. Extract the data from the first dataset
+                chart_data = datasets[0]["data"]
+                chart_label = datasets[0].get("label", "Value")
                 
+                # 2. Ensure values are numeric (Plotly needs numbers)
+                numeric_values = [float(v) for v in chart_data]
+                
+                # 3. Create the Plotly DataFrame
                 df_line = pd.DataFrame({
-                    'Category': trend_line["labels"],
-                    'Value': numeric_values
+                    'Category': labels,
+                    chart_label: numeric_values # Use the actual label from the JSON
                 })
                 
-                # Use the new 'title' field from the JSON
-                title_line = trend_line.get("title", "Market Trend Line Analysis")
+                # 4. Get the title
+                title_line = viz_data.get("title", "Market Trend Analysis")
                 
+                # 5. Render using Plotly
                 fig_line = px.line(
                     df_line, 
                     x='Category', 
-                    y='Value', 
+                    y=chart_label, 
                     title=title_line,
                     markers=True
                 )
-                fig_line.update_layout(yaxis_title="Value (%)") # Default to percentage or general "Value"
+                
+                # Adjust Y-axis label dynamically (optional, but helpful)
+                y_title = f"{chart_label} (USD Billion)" if 'billion' in title_line.lower() else chart_label
+                fig_line.update_layout(yaxis_title=y_title)
+                
                 st.plotly_chart(fig_line, use_container_width=True)
+                
+                # 6. Display the description text below the chart
+                description = viz_data.get("description", "")
+                if description:
+                    st.caption(f"**Analysis:** {description}")
+                    
             except Exception as e:
-                st.warning(f"Failed to render Trend Line Chart. Check 'values' format: {e}")
+                st.warning(f"Failed to render visualization data due to formatting error: {e}")
+                # Optional: Show the raw data for debug if rendering fails
+                # st.json(viz_data) 
         else:
-            st.info("Trend Line Visualization data is currently unavailable.")
+            st.info("Trend Visualization data is missing a dataset.")
 
-    # --- Comparison Bar Chart ---
-    with col_bar:
-        comparison_bars = viz_data.get("comparison_bars", {})
+    else:
+        st.info("Trend Visualization data is currently unavailable or in an unrecognized format.")
         
-        # Check if the required data structure is present
-        if comparison_bars and comparison_bars.get("categories") and comparison_bars.get("values"):
-            try:
-                # 1. Ensure values are numeric
-                numeric_values = [float(v) for v in comparison_bars["values"]]
-
-                df_bar = pd.DataFrame({
-                    'Category': comparison_bars["categories"],
-                    'Value': numeric_values
-                })
-                
-                # Use the new 'title' field from the JSON
-                title_bar = comparison_bars.get("title", "Comparison Bar Analysis")
-
-                fig_bar = px.bar(
-                    df_bar, 
-                    x='Category', 
-                    y='Value', 
-                    title=title_bar,
-                    text='Value' # Show values on the bars
-                )
-                fig_bar.update_traces(texttemplate='%{text}', textposition='outside')
-                fig_bar.update_layout(uniformtext_minsize=8, uniformtext_mode='hide', yaxis_title="Value (%)")
-                
-                st.plotly_chart(fig_bar, use_container_width=True)
-            except Exception as e:
-                st.warning(f"Failed to render Comparison Bar Chart. Check 'values' format: {e}")
-        else:
-            st.info("Comparison Bar Visualization data is currently unavailable.")
-    
 
     # =========================================================
     # 3. DATA TABLE (Fixes for missing keys & list data)
