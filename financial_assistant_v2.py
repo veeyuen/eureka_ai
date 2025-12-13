@@ -834,36 +834,44 @@ def render_dashboard(
     st.subheader("Executive Summary")
     st.info(data.get("executive_summary", "Summary not available."))
     
+    st.subheader("Key Performance Indicators (KPIs)")
     col1, col2, col3, col4 = st.columns(4)
 
-    # --- Primary Metrics ---
-    primary_metrics = data.get("primary_metrics", [])
+    primary_metrics = data.get("primary_metrics", {})
+    
+    # --- Primary Metrics: Handling the new DICT-OF-DICTS structure ---
+    if isinstance(primary_metrics, dict):
+        # We iterate over the key:value pairs (e.g., "metric_1": {...})
+        for i, (key, metric_dict) in enumerate(primary_metrics.items()):
+            if not isinstance(metric_dict, dict):
+                st.warning(f"Skipping malformed metric entry ({key}): Expected dict, found {type(metric_dict).__name__}. Falling back to old list parser.")
+                # This will break out of the dict loop and continue to the list fallback
+                primary_metrics = data.get("primary_metrics", []) 
+                break 
+
+            name = metric_dict.get("name", key.replace('_', ' ').title())
+            value = metric_dict.get("value", "N/A")
+            unit = metric_dict.get("unit", "")
+            
+            display_value = f"{value} {unit}".strip()
+
+            col = [col1, col2, col3, col4][i % 4]
+            col.metric(name, display_value)
+
+    # --- Primary Metrics: Fallback for the old LIST-OF-STRINGS structure ---
     if isinstance(primary_metrics, list):
         for i, metric in enumerate(primary_metrics):
-            
-            # FIX: Ensure the item is a string before attempting to split or strip
             if not isinstance(metric, str):
                 st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}.")
-                continue # Skip this entry and move to the next
+                continue 
             
-            # Original parsing logic follows:
+            # This logic handles the old format like "Metric Name: Value"
             if ':' in metric:
                 key, value = metric.split(':', 1)
             else:
                 key, value = f"Metric {i+1}", metric
                 
-            if i == 0:
-                col = col1
-            elif i == 1:
-                col = col2
-            elif i == 2:
-                col = col3
-            elif i == 3:
-                col = col4
-            else:
-                break # Only display first 4
-                
-            # Now, key and value are guaranteed to be strings or derived from strings
+            col = [col1, col2, col3, col4][i % 4]
             col.metric(key.strip(), value.strip())
 
     # --- Key Findings ---
