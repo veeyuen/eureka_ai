@@ -720,8 +720,13 @@ def parse_trends_to_chart(trends):
 
 # Note: Ensure 'import re' is at the top of your financial_assistant_v2 (2).py file.
 
+import json
+import streamlit as st
+import re 
+# Note: Ensure 'import re' is at the top of your financial_assistant_v2 (2).py file.
+
 def parse_json_robustly(json_string, context):
-    """Parses a JSON string safely by aggressively isolating the main JSON object and repairing common internal quote issues."""
+    """Parses a JSON string safely by aggressively isolating the main JSON object and performing safe cleaning."""
     if not json_string:
         return {}
     
@@ -740,6 +745,7 @@ def parse_json_robustly(json_string, context):
     cleaned_string = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned_string)
 
     # 2. Aggressively search for and extract the main JSON object {...}
+    # This step is critical to remove any preamble or postamble text.
     match = re.search(r'\{.*\}', cleaned_string, flags=re.DOTALL)
     
     if match:
@@ -748,38 +754,15 @@ def parse_json_robustly(json_string, context):
         st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
 
-    # 3. FIX: Targeted internal quote repair using a simple replacement before loading.
-    # This is a common heuristic: find all occurrences of a non-escaped double quote 
-    # that is *not* used as a key/value separator and escape it.
-    
-    # This pattern matches any double quote NOT preceded by an odd number of backslashes (i.e., not escaped)
-    # This is often too complex and fails. Let's use a simpler heuristic for LLM output.
-    
-    # Heuristic repair: Replace unescaped internal quotes within string values.
-    # This often fixes the majority of LLM parsing errors.
-    
-    repaired_content = json_content
-    try:
-        # Step A: Use a temporary placeholder for correctly escaped quotes
-        repaired_content = repaired_content.replace('\\"', '<<TEMP_ESCAPED>>')
-        
-        # Step B: Escape any remaining quotes (the illegal ones)
-        # This is high-risk but necessary if the LLM output is non-compliant
-        repaired_content = repaired_content.replace('"', '\\"')
-        
-        # Step C: Repair the quotes that define the structure (keys and values)
-        # Assuming the structural quotes are followed by a colon or comma/brace
-        repaired_content = repaired_content.replace('\\":', '":')
-        repaired_content = repaired_content.replace('\\",', '",')
-        repaired_content = repaired_content.replace('\\"}', '"}')
-        repaired_content = repaired_content.replace('{', '{\\').replace('}', '\\}') # Protect braces from being seen as quotes
+    # 3. Stabilized Content Cleanup (Removed high-risk heuristic replacements)
+    # Perform a minimal, non-destructive backslash cleanup, as this often relates to escaped quotes.
+    # The standard JSON library expects double-escaped backslashes (\\\\), but LLMs often output single (\).
+    # We will try a simple replacement that often fixes the issue without corrupting the structure.
+    repaired_content = json_content.replace(r'\"', '<<TEMP_QUOTE>>') # Protect correctly escaped quotes
+    repaired_content = repaired_content.replace(r'\n', ' ')           # Remove literal \n sequences if they exist
+    repaired_content = repaired_content.replace(r'\t', ' ')           # Remove literal \t sequences
+    repaired_content = repaired_content.replace('<<TEMP_QUOTE>>', r'\"') # Restore protected quotes
 
-        # Step D: Restore the already escaped quotes
-        repaired_content = repaired_content.replace('<<TEMP_ESCAPED>>', '\\"')
-
-    except Exception as e:
-        st.warning(f"Quote repair logic failed: {e}")
-        # Fallback to original content if repair fails
 
     # 4. Final attempt to load the isolated and repaired JSON string
     try:
@@ -790,13 +773,14 @@ def parse_json_robustly(json_string, context):
         st.caption(f"Error Context: {context}")
         
         # Display the problematic area around the error character
-        error_pos = e.pos if hasattr(e, 'pos') else 2121
+        error_pos = e.pos if hasattr(e, 'pos') else 1 
         start_char = max(0, error_pos - 50)
         end_char = min(len(repaired_content), error_pos + 50)
         st.markdown("**Problematic Content Snippet:**")
         st.code(repaired_content[start_char:end_char], language="text")
         
         return {"parse_error": str(e)}
+
 
 def render_dashboard(
     chosen_primary,
