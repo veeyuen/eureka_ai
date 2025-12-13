@@ -801,6 +801,8 @@ def parse_json_robustly(json_string, context):
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
 
+# Around line 970, update the function definition:
+
 def render_dashboard(
     chosen_primary,
     final_conf,
@@ -812,9 +814,10 @@ def render_dashboard(
     versions_history,
     user_question,
     secondary_resp=None,
-    veracity_scores=None
+    veracity_scores=None,
+    show_secondary_view=False # 🟢 2A. ADD THIS PARAMETER
 ):
-    """
+# ... (rest of the function)    """
     Renders the main analysis dashboard using data from the primary response.
     Includes robust fallbacks for charts and tables to address missing keys.
     """
@@ -1028,8 +1031,39 @@ def render_dashboard(
 
     # ... (The rest of the function, like Trend Visualization, continues here) ...
 
+    # Insert this block inside the render_dashboard function:
+
+    # ... (Section for Confidence Score & Veracity ends here) ...
+
     # =========================================================
-    # 5. CONFIDENCE SCORE & VERACITY
+    # 5. NEW: SECONDARY RESPONSE DISPLAY (Controlled by Toggle)
+    # =========================================================
+    if show_secondary_view and secondary_resp:
+        st.markdown("---")
+        st.subheader("🤖 Secondary Model Output (Validation)")
+        st.caption("This data comes from the secondary model (Gemini) used for cross-validation.")
+        
+        # Try to parse it for pretty printing using st.json, fall back to raw code block if needed
+        try:
+            # Use the robust parser for safe display
+            parsed_sec = parse_json_robustly(secondary_resp, "Secondary Display")
+            
+            # If parsing succeeds and doesn't return an error dict, display it
+            if "parse_error" not in parsed_sec:
+                st.json(parsed_sec, expanded=False)
+            else:
+                st.warning("Secondary response parsing failed for display. Showing raw content.")
+                st.code(secondary_resp, language="json")
+                
+        except Exception as e:
+            st.error(f"Error displaying secondary response: {e}. Showing raw content.")
+            st.code(secondary_resp, language="json")
+    # =========================================================
+
+    # ... (The rest of the dashboard, like Analysis History, continues here) ...
+
+    # =========================================================
+    # 6. CONFIDENCE SCORE & VERACITY
     # =========================================================
     st.subheader("Confidence Score & Veracity")
     colA, colB, colC = st.columns(3)
@@ -1058,7 +1092,7 @@ def render_dashboard(
         st.dataframe(veracity_df, use_container_width=True)
 
     # =========================================================
-    # 6. EVOLUTION LAYER & HISTORY (Fixes for timestamp parsing)
+    # 7. EVOLUTION LAYER & HISTORY (Fixes for timestamp parsing)
     # =========================================================
     st.subheader("Analysis History")
     
@@ -1084,7 +1118,7 @@ def render_dashboard(
         st.info("No historical analysis available.")
 
     # =========================================================
-    # 7. RAW SOURCES AND CONTEXT
+    # 8. RAW SOURCES AND CONTEXT
     # =========================================================
     st.subheader("Sources and Context")
     
@@ -1406,20 +1440,24 @@ def main():
         "metrics": j1.get("metrics", {}),
         "confidence": final_conf
         }
-        render_dashboard(
-        chosen_primary,
-        final_conf,
-        sem_conf,
-        num_conf,
-        web_context,
-        base_conf,
-        src_conf,
-        versions_history,
-        user_question=q,
-        secondary_resp=secondary_resp,
-        veracity_scores=veracity_scores  # ‚Üê ADD THIS LINE
-        )
 
+        # In main() function, inside if st.button("Analyze") and q: block, around line 570:
+
+        # CALL RENDER_DASHBOARD WITH NEW TOGGLE PARAMETER
+        render_dashboard(
+            chosen_primary,
+            final_conf,
+            sem_conf,
+            num_conf,
+            web_context,
+            base_conf,
+            src_conf,
+            versions_history,
+            user_question=q,
+            secondary_resp=secondary_resp,
+            veracity_scores=veracity_scores,
+            show_secondary_view=show_validation  # 🟢 1B. PASS THE TOGGLE HERE
+        )
 
 
         
