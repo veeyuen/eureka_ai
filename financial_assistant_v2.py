@@ -1300,8 +1300,8 @@ def main():
             st.code(secondary_resp, language="json")
             st.write(f"All Confidence Scores: {scores}")
             st.write(f"Selected Best Score: {base_conf}")
-        #    if web_context:
-        #        st.write(f"Web Sources Found: {len(web_context.get('search_results', []))}")
+            if web_context:
+                st.write(f"Web Sources Found: {len(web_context.get('search_results', []))}")
 
 if __name__ == "__main__":
     main()
