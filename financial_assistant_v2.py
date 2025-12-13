@@ -4,13 +4,11 @@
 # =========================================================
 
 import os
-import re
 import json
 import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-import base64
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
 from collections import Counter
@@ -18,8 +16,6 @@ import google.generativeai as genai
 import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from pathlib import Path
-
 
 # ----------------------------
 # CONFIGURATION
@@ -53,7 +49,7 @@ def classify_source_reliability(source):
     source = source.lower() if isinstance(source, str) else ""
     high_sources = ["gov", "imf", "worldbank", "world bank", "central bank", "fed", "ecb", "bank of england", "eu", "reuters", "financial times", "wsj", "oecd", "bank of korea", "tradingeconomics",
                     "the economist", "ft.com", "bloomberg", "investopedia", "marketwatch", "bank of canada", "reserve bank of australia", "monetary authority of singapore", "HKMA", "bank of japan", 
-                    "adb", "unfpa", "deloitte", "accenture", "kpmg", "ey", "mckinsey", "bain"]
+                    "adb", "unfpa", "deloitte", "accenture", "kpmg", "ey"]
     medium_sources = ["wikipedia", "forbes", "cnbc", "yahoo finance", "ceic", "kaggle", "statista"]
     low_sources = ["blog", "medium.com", "wordpress", "promotions", "advertisement", "sponsored", "blogger"]
 
@@ -81,161 +77,58 @@ def source_quality_confidence(sources):
 # ----------------------------
 # PROMPTS AND MODELS
 # ----------------------------
-#RESPONSE_TEMPLATE = """
-#You are a research assistant. Return ONLY valid JSON formatted as:
-#{
-#  "summary": "Brief summary of findings.",
-#  "key_insights": ["Insight 1", "Insight 2"],
-#  "metrics": {"GDP Growth (%)": number, "Inflation (%)": number, "Unemployment (%)": number},
-#  "visual_data": {"labels": ["Q1","Q2"], "values": [2.3,2.5]},
-#  "table": [{"Country": "US", "GDP": 25.5, "Inflation": 3.4}],
-#  "sources": ["https://imf.org", "https://reuters.com"],
-#  "confidence_score": 85,
-#  "data_freshness": "As of [date]"
-#}
-#"""
-
-# ----------------------------
-# 1. EXPANDED JSON TEMPLATE
-# ----------------------------
 RESPONSE_TEMPLATE = """
-Return ONLY valid JSON in this flexible structure. Populate ALL fields with deep, relevant data:
-
+You are a research assistant. Return ONLY valid JSON formatted as:
 {
-  "executive_summary": "Detailed 3-5 sentence strategic summary answering the core question, highlighting the 'so what?', and providing a forward-looking conclusion.",
-  "primary_metrics": {
-    "metric_1": {"name": "Key Metric 1", "value": "e.g. 600", "unit": "e.g. $B"},
-    "metric_2": {"name": "Key Metric 2", "value": "e.g. 12.5", "unit": "%"},
-    "metric_3": {"name": "Key Metric 3", "value": "e.g. 150", "unit": "M Units"},
-    "metric_4": {"name": "Key Metric 4", "value": "e.g. 45", "unit": "% Share"}
-  },
-  "key_findings": [
-    "Finding 1: Detailed insight with quantified impact (e.g., 'Market grew 20% due to X')",
-    "Finding 2: Strategic driver explanation",
-    "Finding 3: Emerging risk or opportunity",
-    "Finding 4: Regulatory or technological shift",
-    "Finding 5: Competitive dynamic"
-  ],
-  "market_drivers": [
-    "Driver 1: Detailed description of a factor propelling growth",
-    "Driver 2: Technological or consumer behavior catalyst"
-  ],
-  "market_challenges": [
-    "Challenge 1: Primary headwind (e.g., supply chain, regulation)",
-    "Challenge 2: Economic or competitive hurdle"
-  ],
-  "top_entities": [
-    {"name": "Entity 1", "share": "25%", "details": "Market leader, strong in [Region]"},
-    {"name": "Entity 2", "share": "15%", "details": "Challenger brand, growing 20% YoY"},
-    {"name": "Entity 3", "share": "10%", "details": "Niche player focusing on premium segment"}
-  ],
-  "trends_forecast": [
-    {"trend": "Trend Name", "impact": "High/Med/Low", "timeline": "2025-2027", "details": "Brief explanation"},
-    {"trend": "Trend Name", "impact": "High", "timeline": "2026", "details": "Brief explanation"}
-  ],
-  "visualization_data": {
-    "trend_line": {"labels": ["2023","2024","2025"], "values": [18,22,25]},
-    "comparison_bars": {"categories": ["A","B","C"], "values": [25,18,12]}
-  },
-  "benchmark_table": [
-    {"category": "Metric A", "value_1": 25.5, "value_2": 623},
-    {"category": "Metric B", "value_1": 18.2, "value_2": 450}
-  ],
-  "sources": ["source1.com", "source2.com"],
-  "confidence": 87,
-  "freshness": "Dec 2025"
+  "summary": "Brief summary of findings.",
+  "key_insights": ["Insight 1", "Insight 2"],
+  "metrics": {"GDP Growth (%)": number, "Inflation (%)": number, "Unemployment (%)": number},
+  "visual_data": {"labels": ["Q1","Q2"], "values": [2.3,2.5]},
+  "table": [{"Country": "US", "GDP": 25.5, "Inflation": 3.4}],
+  "sources": ["https://imf.org", "https://reuters.com"],
+  "confidence_score": 85,
+  "data_freshness": "As of [date]"
 }
 """
+SYSTEM_PROMPT = (
+    "You are an AI research analyst focused on topics related to business, finance, economics, and markets.\n"
+    "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
+    "that are specifically relevant to the exact question the user asks.\n"
+    "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
+    "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
+    "For example, if the user asks about the size of the sneaker market in Asia, include metrics like market size in USD, projected growth rates,"
+    "and exclude unrelated metrics such as inflation or unemployment. Also include information on the major brands of sneakers involved and the trends in the marketplace.\n"
+    "If the question is related to macroeconomics or the underlying drivers are macroeconomic, you may include macroeconomic indicators such as GDP growth, inflation, population size etc.\n"
+    "If the question is not related to business, finance, economics or markets politely decline to answer the question.\n"
+    "Strictly follow this JSON structure:\n"
+    f"{RESPONSE_TEMPLATE}"
+)
 
-# ----------------------------
-# 1. EXPANDED JSON TEMPLATE
-# ----------------------------
-# ----------------------------
-# 2. SENIOR ANALYST SYSTEM PROMPT
-# ----------------------------
-SYSTEM_PROMPT = """You are a Senior Market Research Analyst at a top-tier consulting firm (e.g., McKinsey, Goldman Sachs).
-
-YOUR GOAL: Provide a comprehensive, deep, and quantified analysis. Do not be superficial.
-
-CRITICAL INSTRUCTIONS:
-1. **Depth over Breadth:** Elaborate on *why* trends are happening, not just *what* they are.
-2. **Quantify Everything:** Use numbers, percentages, and $ values wherever possible.
-3. **Strategic Lens:** Focus on implications, opportunities, and risks.
-4. **Structure:**
-   - **Executive Summary:** A dense paragraph synthesizing the current state and future outlook.
-   - **Drivers & Challenges:** Explicitly list what pushes and pulls the market.
-   - **Entities:** Provide context on *why* they are leaders.
-
-RESPONSE FORMAT:
-1. Return ONLY a single JSON object.
-2. NO markdown, NO code blocks.
-3. Use the exact JSON structure provided below.
-4. NEVER return empty fields. Use your internal knowledge if web data is sparse.
-
-"Strictly follow this JSON structure:\n"
-f"{RESPONSE_TEMPLATE}"
-""" 
-
-
-@st.cache_resource(show_spinner="Loading AI models...")
-#def load_models():
-#    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
-#    embed = SentenceTransformer("all-MiniLM-L6-v2")
-#    return classifier, embed
+@st.cache_resource
 def load_models():
-    try:
-        classifier = pipeline(
-            "zero-shot-classification",
-            model="facebook/bart-large-mnli",
-            device=-1
-        )
-        embed = SentenceTransformer("all-MiniLM-L6-v2")
-        return classifier, embed
-    except Exception as e:
-        st.error(f"Model loading failed: {e}")
-        st.stop()
+    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
+    embed = SentenceTransformer("all-MiniLM-L6-v2")
+    return classifier, embed
 
 domain_classifier, embedder = load_models()
 
 # ----------------------------
 # WEB SEARCH FUNCTIONS
 # ----------------------------
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)  # cache for 1 hour
 def search_serpapi(query: str, num_results: int = 5):
     if not SERPAPI_KEY:
         st.info("💡 SerpAPI key not configured.")
         return []
-    
-    # SMART QUERY CLASSIFICATION
-    query_lower = query.lower()
-    industry_keywords = ["industry", "market", "sector", "ev", "electric", "vehicle", 
-                        "sneaker", "semiconductor", "biotech", "battery", "renewable"]
-    macro_keywords = ["gdp", "inflation", "unemployment", "interest", "fed", "ecb"]
-    
-    if any(kw in query_lower for kw in industry_keywords):
-        search_terms = f"{query} market size growth players trends 2025"
-        tbm = ""  # All results, not just news
-        tbs = ""  # No time restriction
-    elif any(kw in query_lower for kw in macro_keywords):
-        search_terms = f"{query} latest data"
-        tbm = "nws"
-        tbs = "qdr:m"
-    else:
-        search_terms = f"{query} finance economics markets"
-        tbm = "nws"
-        tbs = "qdr:m"
-    
-    params = {
-    "engine": "google",
-    "q": search_terms,
-    "api_key": SERPAPI_KEY,
-    "num": num_results,
-    "tbm": tbm,
-    "tbs": tbs}
-
     url = "https://serpapi.com/search"
-    
-    # rest of your existing function...
+    params = {
+        "engine": "google",
+        "q": f"{query} finance economics markets",
+        "api_key": SERPAPI_KEY,
+        "num": num_results,
+        "tbm": "nws",
+        "tbs": "qdr:m"
+    }
     try:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
@@ -264,10 +157,8 @@ def search_serpapi(query: str, num_results: int = 5):
                 })
         if results:
              # sort results by source name for stable order
-   #         st.success(f"✅ Found {len(results)} sources via SerpAPI")
-    #        results.sort(key=lambda x: x.get("source", "").lower())
-        # Add secondary sort key for stability
-            results.sort(key=lambda x: (x.get("source", "").lower(), x.get("link", "")))
+            st.success(f"✅ Found {len(results)} sources via SerpAPI")
+            results.sort(key=lambda x: x.get("source", "").lower())
         return results[:num_results]
      #   return results
     except requests.exceptions.RequestException as e:
@@ -341,39 +232,23 @@ def fetch_web_context(query: str, num_sources: int = 3):
         "source_reliability": reliabilities,
     }
 
+# ----------------------------
+# AI QUERY FUNCTIONS
+# ----------------------------
 def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
-    # FALLBACK: Check web context quality
-    search_results_count = len(web_context.get("search_results", []))
-    
-    if not web_context.get("summary") or search_results_count < 2:
-        # Weak web results - prioritize model knowledge
-        enhanced_query = (
-            f"{SYSTEM_PROMPT}\n\n"
-            f"User Question: {query}\n\n"
-            f"Web search returned only {search_results_count} usable results. "
-            f"Use your general market and industry knowledge to provide a full analysis "
-            f"with metrics, key findings, and forward-looking trends."
-        )
-    else:
-        # Strong web results - build context
+    if web_context.get("summary"):
         context_section = f"""
-        LATEST WEB RESEARCH (Current as of today):
-        {web_context['summary']}
+LATEST WEB RESEARCH (Current as of today):
+{web_context['summary']}
 
-        """
+"""
         if web_context.get('scraped_content'):
             context_section += "\nDETAILED CONTENT FROM TOP SOURCES:\n"
             for url, content in list(web_context['scraped_content'].items())[:2]:
                 context_section += f"\nFrom {url}:\n{content[:800]}...\n"
         enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
-
-    # DEBUG: Log before API call
-   # st.info(
-   ##     f"🔍 Web results: {search_results_count} | "
-   #     f"Prompt length: {len(enhanced_query)} chars"
-   # )
-   # st.caption(f"Prompt preview: `{enhanced_query[:200]}...`")
-
+    else:
+        enhanced_query = f"{SYSTEM_PROMPT}\n\nUser Question: {query}"
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}",
         "Content-Type": "application/json",
@@ -382,10 +257,9 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
         "model": "sonar",
         "temperature": temperature,
         "max_tokens": 2000,
-        "top_p": 0.8,
+        "top_p": 0.8,              # even safer, try 0.7 or lower
         "messages": [{"role": "user", "content": enhanced_query}],
     }
-
     try:
         resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=45)
         resp.raise_for_status()
@@ -395,69 +269,69 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
         content = response_data["choices"][0]["message"]["content"]
         if not content.strip():
             raise Exception("Perplexity returned empty response")
-
-        # ENHANCED JSON CLEANING - strip markdown wrappers and references
-        content = content.strip()
-    
-        # Remove common markdown wrappers
-        # Remove markdown code blocks properly
-        content = content.strip()
-        if content.startswith("```json"):
-            content = content[7:]  # Remove ```json
-        if content.startswith("```"):
-            content = content[3:]  # Remove ```
-        if content.endswith("```"):
-            content = content[:-3]  # Remove trailing ```
-        content = content.strip()
-
-        # Remove citation references like [1], [2] that break JSON
-            # Remove citation references like [1], [2] that break JSON
-        content = re.sub(r'\[\d+\]', '', content)
-
-        # Use the robust parser instead of raw json.loads
-        parsed = parse_json_robustly(content, context="Perplexity primary response")
-
-        if isinstance(parsed, dict) and "parseerror" not in parsed:
-            # Merge web sources if available
+        try:
+            parsed = json.loads(content)
             if web_context.get("sources"):
                 existing_sources = parsed.get("sources", [])
                 all_sources = existing_sources + web_context["sources"]
-                parsed["sources"] = list(set(all_sources))[:10]
-                parsed["data_freshness"] = "Current (web-scraped + real-time search)"
-
+                parsed["sources"] = list(set(all_sources))[:10]  # unique max 10
+                parsed["data_freshness"] = "Current (real-time search)"
             content = json.dumps(parsed)
-        else:
-            # RICH FALLBACK - matches your ORIGINAL dashboard schema
-            st.warning("Primary JSON invalid; using fallback schema instead.")
+        except json.JSONDecodeError:
+        #    st.warning("Reformatting Perplexity response to JSON...")
             content = json.dumps({
-                "summary": f"Comprehensive analysis of '{query}' with {search_results_count} web sources.",
-                "key_insights": [
-                    f"Web search found {search_results_count} relevant sources including Fortune Business Insights and IEA.",
-                    "Model generated detailed market analysis but JSON formatting needed correction.",
-                    "Key themes extracted: market growth, regional dominance, technological trends."
-                ],
-                "metrics": {
-                    "Web Results": search_results_count,
-                    "Source Quality": 75,
-                    "Model Confidence": 80
-                },
-                "visual_data": {
-                    "labels": [],
-                    "values": []
-                },
+                "summary": content[:500],
+                "key_insights": [content[:200]],
+                "metrics": {},
+                "visual_data": {},
                 "table": [],
                 "sources": web_context.get("sources", []),
-                "confidence_score": 75,
-                "data_freshness": "Current (web-enhanced)"
+                "confidence_score": 50,
+                "data_freshness": "Current (web-scraped)"
             })
-
         return content
-
-        
     except Exception as e:
         st.error(f"Perplexity query error: {e}")
         raise
 
+#def query_gemini(query: str):
+#    prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
+#    try:
+#        response = gemini_model.generate_content(
+#            prompt,
+#            generation_config=genai.types.GenerationConfig(
+#                temperature=0.1,
+#                max_output_tokens=1000,
+#            ),
+#        )
+#        content = response.text
+#        if not content.strip():
+#            raise Exception("Gemini returned empty response")
+#        try:
+#            json.loads(content)
+#        except json.JSONDecodeError:
+#            st.warning("Gemini returned non-JSON response, reformatting...")
+#            content = json.dumps({
+#                "summary": content[:500],
+#                "key_insights": [content[:200]],
+#                "metrics": {},
+#                "visual_data": {},
+#                "table": [],
+#                "sources": [],
+#                "confidence_score": 50,
+#            })
+#        return content
+#    except Exception as e:
+#        st.warning(f"Gemini API error: {e}")
+#        return json.dumps({
+#            "summary": "Gemini validation unavailable due to API error.",
+#            "key_insights": ["Cross-validation could not be performed"],
+#            "metrics": {},
+#            "visual_data": {},
+#            "table": [],
+#           "sources": [],
+#            "confidence_score": 0,
+#        })
 
 def query_gemini(query: str):
     prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
@@ -507,7 +381,7 @@ def query_gemini(query: str):
 # ----------------------------
 def generate_self_consistent_responses_with_web(query, web_context, n=1):  # generate one response
     #st.info(f"Generating {n} independent analyst responses with web context...")
-    st.info(f"Generating analysis...")
+    st.info(f"Generating analysis with up-to-date content...")
 
     responses, scores = [], []
     success_count = 0
@@ -524,7 +398,7 @@ def generate_self_consistent_responses_with_web(query, web_context, n=1):  # gen
         st.error("All Perplexity API calls failed.")
         return [], []
    # st.success(f"Successfully generated {success_count}/{n} responses")
-#    st.success(f"Successfully generated analysis")
+    st.success(f"Successfully generated analysis")
 
     return responses, scores
 
@@ -592,39 +466,41 @@ def filter_relevant_metrics(question, metrics):
             relevant_metrics[metric_name] = metrics[metric_name]
     return relevant_metrics
 
+#def render_dynamic_metrics(question, metrics):
+#    if not metrics:
+#        st.info("No metrics available.")
+#        return
+#    relevant_metrics = filter_relevant_metrics(question, metrics)
+#    to_display = relevant_metrics if relevant_metrics else metrics
+#    cols = st.columns(len(to_display))
+#    for i, (k, v) in enumerate(to_display.items()):
+#        try:
+#            val = f"{float(v):.2f}"
+#        except Exception:
+#            val = str(v)
+#        cols[i].metric(k, val)
 
 def render_dynamic_metrics(question, metrics):
     if not metrics:
         st.info("No metrics available.")
         return
-    
-    cols = st.columns(min(4, len(str(metrics)) // 50 + 1))  # Dynamic columns
-    
-    # HANDLE ALL CASES: strings, lists, dicts
-    if isinstance(metrics, str):
-        # Single string metric - display as key highlights
-        st.info(f"**Key Metrics:** {metrics}")
-        return
-    
-    elif isinstance(metrics, list):
-        for i, metric in enumerate(metrics[:4]):
-            col = cols[i % len(cols)]
-            if isinstance(metric, str):
-                col.metric("Metric", metric[:60] + "..." if len(metric) > 60 else metric)
-            elif isinstance(metric, dict):
-                name = metric.get('name', 'Metric')
-                value = str(metric.get('value', ''))
-                col.metric(name[:30], value)
-    
-    elif isinstance(metrics, dict):
-        items = list(metrics.items())[:4]
-        for i, (key, value) in enumerate(items):
-            col = cols[i % len(cols)]
-            display_val = str(value)[:40]
-            col.metric(key[:30], display_val)
-    
-    else:
-        st.info("Metrics format not recognized.")
+
+    relevant_metrics = filter_relevant_metrics(question, metrics)
+    to_display = relevant_metrics if relevant_metrics else metrics
+    cols = st.columns(len(to_display))
+
+    for i, (k, v) in enumerate(to_display.items()):
+        if isinstance(v, list):
+            # Render list as markdown bullet points inside the column
+            md_list = "\n".join(f"- {item}" for item in v)
+            cols[i].markdown(f"**{k}**\n\n{md_list}")
+        else:
+            try:
+                val = f"{float(v):.2f}"
+            except Exception:
+                val = str(v)
+            cols[i].metric(k, val)
+
 
 # ----------------------------
 # EVOLUTION LAYER
@@ -683,364 +559,190 @@ def render_evolution_layer(versions_history):
 # RENDER DASHBOARD
 # ----------------------------
 
-def parse_trends_to_chart(trends):
-    """Extract years/numbers from trend text for visualization"""
-    import re
-    labels, values = [], []
-    for trend in trends:
-        text = str(trend)
-        # Match years like 2023, 2024-2027
-        years = re.findall(r'20\d{2}', text)
-        # Match numbers like 25%, 20M, 11.2CAGR
-        nums = re.findall(r'[\d.]+[%B$TM]?', text)
-        labels.extend(years[:3])
-        values.extend([float(n.strip('%$BMT')) for n in nums[:3]])
-    return labels[:5], values[:5]  # Limit for chart
+def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
+                     base_conf=None, src_conf=None, versions_history=None,
+                     user_question="", secondary_resp=None, veracity_scores=None):
 
-
-def parse_json_robustly(json_string: str, context: str = "") -> dict:
-    """
-    Production-grade JSON parser for LLM outputs. Handles ALL common malformations.
-    SAFE: No backticks in regex, bulletproof string handling.
-    ALWAYS returns a dict - never raises exceptions.
-    """
     
-    if not json_string or not isinstance(json_string, str):
-        msg = "Empty or invalid JSON string provided"
-        if context:
-            st.error(f"JSON parse failed ({context}): {msg}")
-        return {"parseerror": msg}
+    if not response or not response.strip():
+        st.error("Received empty response from model")
+        return
 
-    # ========================================
-    # PHASE 1: BULLETPROOF PREPROCESSING
-    # ========================================
-    content = json_string.strip()
+    try:
+        # Parse JSON string into dict
+        data = json.loads(response)
+    except Exception as e:
+        st.error(f"Invalid JSON: {e}")
+        st.code(response[:800])
+        return
 
-    # SAFE markdown removal - NO regex backticks
-    lines = content.split('\n')
-    clean_lines = []
-    in_code_block = False
+    # Display only summary text (not entire JSON)
+                         
+    col1, col2 = st.columns(2)
+    col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
+    freshness = data.get("data_freshness", "Unknown")
+    col2.metric("Data Freshness", freshness)
 
-    for line in lines:
-        stripped_line = line.strip()
-        if stripped_line.startswith('``````'):
-            in_code_block = True
-            continue
-        if in_code_block and stripped_line == '```':
-            in_code_block = False
-            continue
-        if not in_code_block:
-            clean_lines.append(line)
+  #  st.subheader("Confidence Score Breakdown")
+  #  st.write(f"- Base model confidence: {base_conf:.1f}%")
+  #  st.write(f"- Semantic similarity confidence: {sem_conf:.1f}%")
+  #  st.write(f"- Numeric alignment confidence: {num_conf if num_conf is not None else 'N/A'}%")
+  #  st.write(f"- Source quality confidence: {src_conf:.1f}%")
+  #  st.write(f"---\n**Overall confidence: {final_conf:.1f}%**")
 
-    content = '\n'.join(clean_lines).strip()
-
-    # Clean citations and control characters
-    content = re.sub(r'\[web:\d+\]', '', content)
-    content = re.sub(r'\[\d+\]', '', content)
-    content = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', content)
+    st.header("📊 Summary Analysis")
+    summary_text = data.get("summary", "No summary available.")
+    st.write(summary_text)
     
-    # Normalize booleans/null
-    content = content.replace('True', 'true').replace('False', 'false').replace('Null', 'null')
+    st.subheader("Key Insights")
+    insights = data.get("key_insights", [])
+    if insights:
+        for insight in insights:
+            st.markdown(f"- {insight}")
+    else:
+        st.info("No key insights provided.")
 
-    def safe_parse(payload: str):
-        """Single safe parse attempt"""
+    st.subheader("Metrics")  # RENDER METRICS PANEL
+    
+                         
+    metrics = data.get("metrics", {})
+    render_dynamic_metrics(user_question, metrics)
+
+    st.subheader("Trend Visualization")
+    vis = data.get("visual_data", {})
+    if "labels" in vis and "values" in vis:
         try:
-            return json.loads(payload), None
-        except json.JSONDecodeError as e:
-            return None, str(e)
-
-    # ========================================
-    # PHASE 2: CLEAN PARSE
-    # ========================================
-    parsed, error = safe_parse(content)
-    if parsed is not None:
-        return parsed if isinstance(parsed, dict) else {"data": parsed}
-
-    # ========================================
-    # PHASE 3: TRUNCATE TRAILING GARBAGE
-    # ========================================
-    last_brace = content.rfind('}')
-    last_bracket = content.rfind(']')
-    cut_pos = max(last_brace, last_bracket)
-    
-    if cut_pos > 0:
-        truncated = content[:cut_pos + 1].strip()
-        parsed, error = safe_parse(truncated)
-        if parsed is not None:
-            return parsed if isinstance(parsed, dict) else {"data": parsed}
-
-    # ========================================
-    # PHASE 4: ITERATIVE REPAIR (max 6 attempts)
-    # ========================================
-    current = content
-    max_attempts = 6
-    
-    for attempt in range(max_attempts):
-        parsed, error = safe_parse(current)
-        if parsed is not None:
-            return parsed if isinstance(parsed, dict) else {"data": parsed}
-        
-        # Fix unterminated strings
-        if "Unterminated string" in error:
-            pos = len(current) // 2  # Approximate position
-            start_quote = current.rfind('"', 0, pos)
-            if start_quote > -1:
-                current = current[:pos] + '"' + current[pos:]
-                continue
-        
-        # Fix trailing commas
-        if "Expecting property name" in error or "trailing comma" in error:
-            current = re.sub(r',\s*([}\]])', r'\1', current)
-            continue
-        
-        # Fix unquoted keys
-        if "Expecting property name enclosed in double quotes" in error:
-            current = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', current)
-            continue
-        
-        # Truncate extra data
-        if "Extra data" in error:
-            last_brace = current.rfind('}')
-            last_bracket = current.rfind(']')
-            cut_pos = max(last_brace, last_bracket)
-            if cut_pos > 0:
-                current = current[:cut_pos + 1].strip()
-                continue
-        
-        break  # No more repairs match
-
-    # ========================================
-    # PHASE 5: EXTRACT LARGEST JSON FRAGMENT
-    # ========================================
-    json_match = re.search(r'\{[^}]*\}', current, re.DOTALL)
-    if json_match:
-        fragment = json_match.group(0)
-        parsed, _ = safe_parse(fragment)
-        if parsed is not None:
-            return parsed if isinstance(parsed, dict) else {"data": parsed}
-
-    # ========================================
-    # PHASE 6: GRACEFUL FAILURE
-    # ========================================
-    preview = (content[:200] + "...") if len(content) > 200 else content
-    error_msg = f"Failed after {max_attempts} attempts. Error: {error}"
-    
-    if context:
-        st.warning(f"JSON parse failed ({context}): {error_msg}")
-    
-    return {
-        "parseerror": error_msg,
-        "context": context,
-        "preview": preview
-    }
-
-
-def render_dashboard(
-    chosen_primary: str,
-    final_conf: float,
-    sem_conf: float,
-    num_conf: float,
-    web_context: dict,
-    base_conf: float,
-    src_conf: float,
-    versions_history: list,
-    user_question: str,
-    secondary_resp: str = None,
-    veracity_scores: dict = None,
-    show_secondary_view: bool = False,
-):
-    """
-    Renders the main analysis dashboard using data from the primary response.
-    Supports both:
-      - New schema: { "primary_response": { ... } }
-      - Legacy schema: { "summary": ..., "metrics": ... }
-    """
-
-    # Robust parse of the raw primary JSON
-    raw_data = parse_json_robustly(chosen_primary, context="Primary (render_dashboard)")
-
-    # Unwrap if outer envelope is present
-    if isinstance(raw_data, dict) and "primary_response" in raw_data:
-        data = raw_data["primary_response"]
+            df = pd.DataFrame({"Period": vis["labels"], "Value": vis["values"]})
+            fig = px.line(df, x="Period", y="Value", title="Quarterly Trends", markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Visualization error: {e}")
     else:
-        data = raw_data
+        st.info("No visual data available.")
 
-    if isinstance(data, dict) and "parseerror" in data:
-        st.error("Cannot render dashboard due to severe parsing error in the LLM response.")
-        return
+    st.subheader("Data Table")
+    table = data.get("table", [])
+    if table:
+        try:
+            st.dataframe(pd.DataFrame(table), use_container_width=True)
+        except Exception as e:
+            st.warning(f"Table rendering error: {e}")
+    else:
+        st.info("No tabular data available.")
 
-    if not isinstance(data, dict):
-        st.error("Primary response is not a valid JSON object.")
-        return
-
-    # Schema‑aware aliases
-    executive_summary = data.get("executive_summary") or data.get("summary", "")
-    drivers = data.get("drivers", [])
-    challenges = data.get("challenges", [])
-    entities = data.get("entities", [])
-    implications_block = data.get("implications_opportunities_risks", {})
-    primary_metrics = data.get("primary_metrics", {})
-    legacy_metrics = data.get("metrics", {})
+    st.subheader("📚 Sources & References")
     sources = data.get("sources", [])
-    data_freshness = data.get("data_freshness") or data.get("freshness", "")
-
-    # ======================
-    # HEADER & META
-    # ======================
-    st.header("Analysis Dashboard")
-
-    if user_question:
-        st.markdown(f"**User Question:** {user_question}")
-
-    col1, col2, col3, col4 = st.columns(4)
-    if final_conf is not None:
-        col1.metric("Final Confidence", f"{final_conf:.1f}")
-    if base_conf is not None:
-        col2.metric("Base Model Confidence", f"{base_conf:.1f}")
-    if sem_conf is not None:
-        col3.metric("Semantic Alignment", f"{sem_conf:.1f}")
-    if num_conf is not None:
-        col4.metric("Numeric Alignment", f"{num_conf:.1f}" if isinstance(num_conf, (int, float)) else "N/A")
-
-    if data_freshness:
-        st.caption(f"🕒 Data freshness: {data_freshness}")
-
-    st.markdown("---")
-
-    # ======================
-    # EXECUTIVE SUMMARY
-    # ======================
-    if executive_summary:
-        st.subheader("Executive Summary")
-        st.write(executive_summary)
-
-    # ======================
-    # DRIVERS & CHALLENGES
-    # ======================
-    if isinstance(drivers, list) and drivers:
-        st.subheader("Market Drivers")
-        for d in drivers:
-            st.markdown(f"- {d}")
-
-    if isinstance(challenges, list) and challenges:
-        st.subheader("Market Challenges")
-        for c in challenges:
-            st.markdown(f"- {c}")
-
-    # ======================
-    # ENTITIES
-    # ======================
-    if isinstance(entities, list) and entities:
-        st.subheader("Key Entities and Players")
-        for e in entities:
-            st.markdown(f"- {e}")
-
-    # ======================
-    # IMPLICATIONS / OPPORTUNITIES / RISKS
-    # ======================
-    if isinstance(implications_block, dict) and any(implications_block.values()):
-        st.subheader("Implications, Opportunities, and Risks")
-
-        if implications_block.get("opportunities"):
-            st.markdown("**Opportunities**")
-            st.write(implications_block["opportunities"])
-
-        if implications_block.get("risks"):
-            st.markdown("**Risks**")
-            st.write(implications_block["risks"])
-
-        if implications_block.get("strategic_implications"):
-            st.markdown("**Strategic Implications**")
-            st.write(implications_block["strategic_implications"])
-
-    st.markdown("---")
-
-    # ======================
-    # METRICS
-    # ======================
-    st.subheader("Key Metrics")
-
-    if isinstance(primary_metrics, dict) and primary_metrics:
-        cols = st.columns(4)
-        idx = 0
-        for key, metric in primary_metrics.items():
-            col = cols[idx % len(cols)]
-            name = metric.get("name", key)
-            value = metric.get("value", "")
-            unit = metric.get("unit", "")
-            if unit:
-                display_val = f"{value} {unit}"
-            else:
-                display_val = str(value)
-            col.metric(label=name, value=display_val)
-            idx += 1
-
-    elif isinstance(legacy_metrics, dict) and legacy_metrics:
-        cols = st.columns(4)
-        idx = 0
-        for name, val in legacy_metrics.items():
-            col = cols[idx % len(cols)]
-            col.metric(label=name, value=str(val))
-            idx += 1
+    if sources:
+        st.success(f"✅ {len(sources)} sources:")
+        for i, s in enumerate(sources, 1):
+            rank = classify_source_reliability(s) if s else "Unknown"
+            st.markdown(f"{i}. [{s}]({s}) — {rank}")
     else:
-        st.info("No structured metrics available in the analysis.")
+        st.info("No sources cited.")
 
-    st.markdown("---")
+    if web_context and web_context.get("search_results"):
+        with st.expander("🔍 Web Search Details"):
+            st.write(f"**Sources Found:** {len(web_context['search_results'])}")
+            st.write(f"**Pages Scraped:** {len(web_context.get('scraped_content', {}))}")
+            for idx, result in enumerate(web_context["search_results"]):
+                rank_list = web_context.get('source_reliability', [])
+                reliab = rank_list[idx] if idx < len(rank_list) else classify_source_reliability(result['link'] + " " + result.get('source', ''))
+                st.markdown(f"- **{result['title']}** ({result.get('source', 'Unknown')}) [{reliab}]")
 
-    # ======================
-    # SOURCES
-    # ======================
-    if isinstance(sources, list) and sources:
-        st.subheader("Sources")
-        for s in sources:
-            if isinstance(s, str):
-                st.markdown(f"- [{s}]({s})")
-            else:
-                st.markdown(f"- {s}")
 
-    # ======================
-    # WEB CONTEXT
-    # ======================
-    if isinstance(web_context, dict) and web_context.get("search_results"):
-        st.subheader("Web Search Context")
-        search_results = web_context.get("search_results", [])
-        for i, snippet in enumerate(search_results[:5]):
-            url = snippet.get("link", "N/A")
-            title = snippet.get("title", "No Title")
-            snippet_text = snippet.get("snippet", "No snippet available.")
-            with st.expander(f"Source {i+1}: {title}"):
-                st.write(f"URL: {url}")
-                st.write(snippet_text)
+    st.subheader("Confidence Scores Breakdown")
 
-    # ======================
-    # SECONDARY VALIDATION VIEW
-    # ======================
-    if show_secondary_view and secondary_resp:
-        st.markdown("---")
-        st.subheader("Secondary Validation Response (Diagnostics)")
-        sec_parsed = parse_json_robustly(secondary_resp, context="Secondary (render_dashboard)")
-        st.json(sec_parsed)
+    # Prepare data as a dictionary of labels and scores
+    conf_data = {
+    "Confidence Aspect": [
+        "Base Model Confidence",
+        "Semantic Similarity Confidence",
+        "Numeric Alignment Confidence",
+        "Source Quality Confidence",
+        "Overall Confidence"
+    ],
+    "Score (%)": [
+        base_conf,
+        sem_conf,
+        num_conf if num_conf is not None else float('nan'),
+        src_conf,
+        final_conf
+    ]
+    }
+    
+    # Convert to DataFrame
+    conf_df = pd.DataFrame(conf_data)
 
-    # ======================
-    # VERACITY SCORES
-    # ======================
-    if isinstance(veracity_scores, dict) and veracity_scores:
-        st.markdown("---")
-        st.subheader("Veracity & Validation Scores")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Summary", f"{veracity_scores.get('summary_score', 0):.1f}")
-        c2.metric("Insights", f"{veracity_scores.get('insights_score', 0):.1f}")
-        c3.metric("Table", f"{veracity_scores.get('table_score', 0):.1f}")
-        c4.metric("Graphs", f"{veracity_scores.get('graph_score', 0):.1f}")
-        c5.metric("Overall", f"{veracity_scores.get('overall_score', 0):.1f}")
+    # Format scores with two decimals; replace NaN with 'N/A'
+    conf_df["Score (%)"] = conf_df["Score (%)"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
 
-    # ======================
-    # EVOLUTION / VERSION CONTROL
-    # ======================
+    # Display as a table replacing the current metric cards
+    st.table(conf_df)
+
+    # NEW VERACITY SCORE SECTION
+    st.subheader("Veracity Layer Scores Breakdown")
+
+
+    if veracity_scores is not None:
+        veracity_data = {
+        "Aspect": [
+        "Summary Similarity",
+        "Key Insights Similarity",
+        "Table Similarity",
+        "Graphical Data Similarity",
+        "Overall Veracity Score",
+        ],
+        "Score (%)": [
+        veracity_scores.get("summary_score", 0),
+        veracity_scores.get("insights_score", 0),
+        veracity_scores.get("table_score", 0),
+        veracity_scores.get("graph_score", 0),
+        veracity_scores.get("overall_score", 0),
+        ],
+        }
+        veracity_df = pd.DataFrame(veracity_data)
+        veracity_df["Score (%)"] = veracity_df["Score (%)"].map(lambda x: f"{x:.2f}")
+        st.table(veracity_df)
+    else:
+        st.info("Veracity scores not available.")
+
+
+    ## NEW SECTION END ##
+
+    ## DISPLAY OUTPUT FROM GEMINI ##
+    st.subheader("Secondary Gemini Model Output")
+
+    # Display the raw JSON or a key summary from the Gemini model response
+    try:
+        gemini_json = json.loads(secondary_resp)
+    # Show a brief summary (adjust field names as per your JSON structure)
+        summary_text = gemini_json.get("summary", "No summary available.")
+        st.markdown(f"**Summary:** {summary_text}")
+
+    # Optionally, display full response for deeper inspection
+        with st.expander("Show full Gemini model JSON response"):
+            st.json(gemini_json)
+
+    except Exception as e:
+        st.warning(f"Could not parse Gemini response: {e}")
+        st.text(secondary_resp)
+
+    # Existing semantic similarity display
+    st.metric("Semantic Similarity", f"{sem_conf:.2f}%")
+
+    ## END GEMINI OUTPUT##
+    
+    st.subheader("Validation Metrics")
+    c1, c2 = st.columns(2)
+    c1.metric("Semantic Similarity", f"{sem_conf:.2f}%")
+    if num_conf is not None:
+        c2.metric("Numeric Alignment", f"{num_conf:.2f}%")
+    else:
+        c2.info("No numeric data to compare")
+
     if versions_history:
-        st.markdown("---")
-        st.subheader("Evolution Layer - Version Control & Drift")
-        render_evolution_layer(versions_history)
+        st.caption("See the 'Evolution Layer' page for full version and drift analysis.")
+#        render_evolution_layer(versions_history)
 
 # ----------------------------
 # MAIN WORKFLOW
@@ -1170,43 +872,41 @@ def multi_modal_compare(json1, json2):
     }
 
 
-# assume these exist elsewhere in your file
-# from your_module import (
-#     fetch_web_context,
-#     generate_self_consistent_responses_with_web,
-#     parse_json_robustly,
-#     semantic_similarity_score,
-#     numeric_alignment_score,
-#     render_dashboard,
-# )
-
 def main():
-    st.set_page_config(page_title="Yureeka Market Intelligence", layout="wide")
-    st.title("Yureeka Market Intelligence")
+    st.set_page_config(page_title="Yureeka Market Research Assistant", layout="wide")
+    st.title("💹 Yureeka AI Market Analyst")
+#    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search + Dynamic Metrics + Evolution Layer")
 
-    # 1. User input
-    q = st.text_input("Enter your market / macro question", value="", placeholder="e.g., Global electric vehicle market outlook to 2030")
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.markdown("""
+        This assistant combines:
+        - Self-consistency via multiple AI analyses
+        - Cross-model validation
+        - Live web search integration
+        - Dynamic metrics relevant to your question
+        - Confidence score component breakdown
+        - Evolution layer for version control and metric drift
+        """)
+    with c2:
+        web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Not configured"
+        st.metric("Web Search", web_status)
 
-    use_websearch = st.checkbox("Use web search for latest context", value=True)
-    show_validation = st.checkbox("Show secondary validation response", value=False)
+    q = st.text_input("Enter your question about markets, finance, or economics:")
+    use_web_search = st.checkbox("Enable live web search (recommended)", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY)
 
     if st.button("Analyze") and q:
-        # 2. Build web context
-        if use_websearch:
+        web_context = {}
+        if use_web_search:
             with st.spinner("Searching the web for latest info..."):
                 web_context = fetch_web_context(q, num_sources=3)
-        else:
-            web_context = {
-                "search_results": [],
-                "scraped_content": {},
-                "summary": "",
-                "sources": [],
-                "source_reliability": [],
-            }
 
-        # 3. Generate primary responses (Perplexity) + scores
-        with st.spinner("Generating analysis..."):
-            responses, scores = generate_self_consistent_responses_with_web(q, web_context, n=1)
+        if web_context and web_context.get("search_results"):
+            responses, scores = generate_self_consistent_responses_with_web(q, web_context, n=3)
+        else:
+            st.info("Using internal model knowledge only...")
+            empty_ctx = {"search_results": [], "scraped_content": {}, "summary": "", "sources": []}
+            responses, scores = generate_self_consistent_responses_with_web(q, empty_ctx, n=3)
 
         if not responses or not scores:
             st.error("Primary model failed to generate valid responses.")
@@ -1216,120 +916,137 @@ def main():
             st.error("Mismatch in responses and scores.")
             return
 
-        # For now, single response; keep majority_vote logic if you use n>1
-        chosen_primary = responses[0]
-        base_conf = scores[0]
+        voted_response = majority_vote(responses)
+        max_score = max(scores)
+        best_idx = scores.index(max_score)
+        best_response = responses[best_idx]
 
-        # 4. Secondary validation (Gemini)
-        st.info("Running validation...")
+        chosen_primary = best_response or voted_response
+        if not chosen_primary:
+            st.error("Could not determine the primary response.")
+            return
+            
+        st.info("Cross-validating with Gemini 2.0 Flash...")
         secondary_resp = query_gemini(q)
 
-        # 5. Parse raw JSONs with robust parser
-        raw_primary = parse_json_robustly(chosen_primary, context="Primary (main)")
-        raw_secondary = parse_json_robustly(secondary_resp, context="Secondary (main)") if secondary_resp else {}
+        sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
 
-        # 6. Unwrap new schema if present
-        if isinstance(raw_primary, dict) and "primary_response" in raw_primary:
-            j1 = raw_primary["primary_response"]
-            final_conf = float(raw_primary.get("final_confidence", base_conf))
-            veracity_scores = raw_primary.get("veracity_scores", {})
-            user_question = raw_primary.get("question", q)
-        else:
-            j1 = raw_primary if isinstance(raw_primary, dict) else {}
-            final_conf = float(j1.get("confidence_score", base_conf)) if isinstance(j1, dict) else base_conf
-            veracity_scores = {}
-            user_question = q
+        try:
+            j1 = json.loads(chosen_primary)
+        except Exception:
+            j1 = {}
 
-        if isinstance(raw_secondary, dict) and "primary_response" in raw_secondary:
-            j2 = raw_secondary["primary_response"]
-        else:
-            j2 = raw_secondary if isinstance(raw_secondary, dict) else {}
+        try:
+            j2 = json.loads(secondary_resp)
+        except Exception:
+            j2 = {}
 
-        # 7. Compute semantic and numeric alignment
-        sem_conf = semantic_similarity_score(chosen_primary, secondary_resp) if secondary_resp else 0.0
-        num_conf = numeric_alignment_score(j1, j2) if isinstance(j1, dict) and isinstance(j2, dict) else None
+        veracity_scores = multi_modal_compare(j1, j2)
 
-        # 8. Build versions history using whatever metrics are available
-        metrics_for_versions = j1.get("metrics", {}) if isinstance(j1, dict) else {}
+
+   #     num_conf = numeric_alignment_score(j1, j2)
+   #     base_conf = max_score
+   #     src_conf = source_quality_confidence(j1.get("sources", [])) * 100
+
+   #     confidence_components = [base_conf, sem_conf]
+   #     if num_conf is not None:
+   #         confidence_components.append(num_conf)
+   #     confidence_components.append(src_conf)
+    
+        # Incorporate veracity_scores["overall_score"] into final confidence if desired:
+   #     final_conf = np.mean([base_conf, sem_conf, num_conf if num_conf is not None else 0, src_conf, veracity_scores["overall_score"]])
+        num_conf = numeric_alignment_score(j1, j2)
+        base_conf = max_score
+        src_conf = source_quality_confidence(j1.get("sources", [])) * 100
+
+        # Build components dynamically; omit num_conf if None
+        confidence_components = [
+            base_conf,
+            sem_conf,
+            src_conf,
+            veracity_scores["overall_score"],
+        ]
+        if num_conf is not None:
+            confidence_components.append(num_conf)
+
+        final_conf = np.mean(confidence_components)
+
+
         versions_history = [
-            {
-                "version": "V1 (Jul 10)",
-                "timestamp": "2025-07-10T12:00:00",
-                "metrics": metrics_for_versions,
-                "confidence": final_conf,
-                "sources_freshness": 80,
-                "change_reason": "Initial version",
-            },
-            {
-                "version": "V2 (Aug 28)",
-                "timestamp": "2025-08-28T15:30:00",
-                "metrics": metrics_for_versions,
-                "confidence": final_conf * 0.98 if final_conf is not None else None,
-                "sources_freshness": 75,
-                "change_reason": "Quarterly update",
-            },
-            {
-                "version": "V3 (Nov 3)",
-                "timestamp": datetime.now().isoformat(timespec="minutes"),
-                "metrics": metrics_for_versions,
-                "confidence": final_conf,
-                "sources_freshness": 78,
-                "change_reason": "Latest analysis",
-            },
+        {
+        "version": "V1 (Jul 10)",
+        "timestamp": "2025-07-10T12:00:00",
+        "metrics": j1.get("metrics", {}),
+        "confidence": base_conf,
+        "sources_freshness": 80,
+        "change_reason": "Initial version",
+        },
+        {
+        "version": "V2 (Aug 28)",
+        "timestamp": "2025-08-28T15:30:00",
+        "metrics": j1.get("metrics", {}),
+        "confidence": base_conf * 0.98,
+        "sources_freshness": 75,
+        "change_reason": "Quarterly update",
+        },
+        {
+        "version": "V3 (Nov 3)",
+        "timestamp": datetime.now().isoformat(timespec="minutes"),
+        "metrics": j1.get("metrics", {}),
+        "confidence": final_conf,
+        "sources_freshness": 78,
+        "change_reason": "Latest analysis",
+        },
         ]
 
+        # Save for other pages
+       # st.session_state["versions_history"] = versions_history
+
+        # Store ALL versions for individual pages (NEW)
         st.session_state["all_versions"] = versions_history
         st.session_state["current_analysis"] = {
-            "summary": j1.get("executive_summary", j1.get("summary", "")) if isinstance(j1, dict) else "",
-            "metrics": metrics_for_versions,
-            "confidence": final_conf,
+        "summary": data.get("summary", ""),
+        "metrics": j1.get("metrics", {}),
+        "confidence": final_conf
         }
 
-        # 9. Offer JSON download of the full outer structure
-        output_payload = {
-            "primary_response": j1,
-            "secondary_response": j2,
-            "final_confidence": final_conf,
-            "veracity_scores": veracity_scores,
-            "question": user_question,
-            "timestamp": datetime.now().isoformat(),
-        }
 
-        json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
-        b64 = base64.b64encode(json_str.encode()).decode()
-        filename = f"yureeka_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        href = (
-            f'<a href="data:application/json;base64,{b64}" '
-            f'download="{filename}">💾 Download Analysis JSON</a> '
-            f'(Right-click → Save As)'
-        )
-        st.markdown(href, unsafe_allow_html=True)
-        st.success("✅ Analysis ready for download!")
 
-        # 10. Render dashboard with full context
+       # render_dashboard(
+       #     chosen_primary,
+       #     final_conf,
+       #     sem_conf,
+       #     num_conf,
+       #     web_context,
+       #     base_conf,
+       #     src_conf,
+       #     versions_history,
+       #     user_question=q,
+       # )
         render_dashboard(
-            chosen_primary=chosen_primary,
-            final_conf=final_conf,
-            sem_conf=sem_conf,
-            num_conf=num_conf,
-            web_context=web_context,
-            base_conf=base_conf,
-            src_conf=None,  # or your existing source freshness metric
-            versions_history=versions_history,
-            user_question=user_question,
-            secondary_resp=secondary_resp,
-            veracity_scores=veracity_scores,
-            show_secondary_view=show_validation,
+        chosen_primary,
+        final_conf,
+        sem_conf,
+        num_conf,
+        web_context,
+        base_conf,
+        src_conf,
+        versions_history,
+        user_question=q,
+        secondary_resp=secondary_resp,
+        veracity_scores=veracity_scores  # ← ADD THIS LINE
         )
 
-        # Optional debug section
+
         with st.expander("Debug Information"):
-            st.write("Primary Response (raw string):")
+            st.write("Primary Response:")
             st.code(chosen_primary, language="json")
+            st.write("Validation Response:")
+            st.code(secondary_resp, language="json")
             st.write(f"All Confidence Scores: {scores}")
-            st.write(f"Selected Base Score: {base_conf}")
-          #  if web_context:
-          #      st.write(f"Web Sources Found: {len(web_context.get('search_results', []))}")
+            st.write(f"Selected Best Score: {base_conf}")
+            if web_context:
+                st.write(f"Web Sources Found: {len(web_context.get('search_results', []))}")
 
 if __name__ == "__main__":
     main()
