@@ -398,9 +398,7 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
 
         # ENHANCED JSON CLEANING - strip markdown wrappers and references
         content = content.strip()
-        # ENHANCED JSON CLEANING - strip markdown wrappers and references
-        content = content.strip()
-
+    
         # Remove common markdown wrappers
         # Remove markdown code blocks properly
         content = content.strip()
@@ -413,25 +411,24 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
         content = content.strip()
 
         # Remove citation references like [1], [2] that break JSON
+            # Remove citation references like [1], [2] that break JSON
         content = re.sub(r'\[\d+\]', '', content)
-        
-        try:
-            parsed = json.loads(content)
-            
+
+        # Use the robust parser instead of raw json.loads
+        parsed = parse_json_robustly(content, context="Perplexity primary response")
+
+        if isinstance(parsed, dict) and "parseerror" not in parsed:
             # Merge web sources if available
             if web_context.get("sources"):
                 existing_sources = parsed.get("sources", [])
                 all_sources = existing_sources + web_context["sources"]
                 parsed["sources"] = list(set(all_sources))[:10]
                 parsed["data_freshness"] = "Current (web-scraped + real-time search)"
-            
+
             content = json.dumps(parsed)
-            
-        except json.JSONDecodeError as e:
-            st.warning(f"JSON parse failed after cleaning: {e}")
-            st.caption(f"Raw content preview: {content[:300]}...")
-            
+        else:
             # RICH FALLBACK - matches your ORIGINAL dashboard schema
+            st.warning("Primary JSON invalid; using fallback schema instead.")
             content = json.dumps({
                 "summary": f"Comprehensive analysis of '{query}' with {search_results_count} web sources.",
                 "key_insights": [
@@ -453,8 +450,9 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
                 "confidence_score": 75,
                 "data_freshness": "Current (web-enhanced)"
             })
-        
+
         return content
+
         
     except Exception as e:
         st.error(f"Perplexity query error: {e}")
