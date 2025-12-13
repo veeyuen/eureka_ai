@@ -387,11 +387,11 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
         enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
 
     # DEBUG: Log before API call
-    st.info(
-        f"🔍 Web results: {search_results_count} | "
-        f"Prompt length: {len(enhanced_query)} chars"
-    )
-    st.caption(f"Prompt preview: `{enhanced_query[:200]}...`")
+   # st.info(
+   ##     f"🔍 Web results: {search_results_count} | "
+   #     f"Prompt length: {len(enhanced_query)} chars"
+   # )
+   # st.caption(f"Prompt preview: `{enhanced_query[:200]}...`")
 
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}",
