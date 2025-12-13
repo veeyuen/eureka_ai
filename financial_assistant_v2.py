@@ -719,30 +719,56 @@ def parse_trends_to_chart(trends):
     return labels[:5], values[:5]  # Limit for chart
 
 
+import json
+import streamlit as st
+import re # Ensure 'import re' is at the top of your financial_assistant_v2.py file
+
 def parse_json_robustly(json_string, context):
-    """Parses a JSON string safely, handling decoding errors and LLM formatting issues."""
+    """Parses a JSON string safely, handling decoding errors and common LLM formatting issues."""
     if not json_string:
         return {}
+    
+    cleaned_string = json_string.strip()
+    
+    # 1. Clean up common LLM JSON wrappers (backticks, surrounding text)
+    if cleaned_string.startswith("```json"):
+        cleaned_string = cleaned_string[7:].strip()
+    if cleaned_string.endswith("```"):
+        cleaned_string = cleaned_string[:-3].strip()
+
+    # 2. FIX: Aggressive Pre-parsing Cleaning to handle delimiters and bad characters
+    
+    # Remove all unescaped newlines and tabs, which frequently break JSON parsing
+    cleaned_string = cleaned_string.replace('\n', ' ').replace('\t', ' ')
+    
+    # Remove non-standard control characters (common junk from web/LLM)
+    cleaned_string = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned_string)
+
+    # FIX: Attempt to escape internal, unescaped double quotes. 
+    # This is a common cause of 'Expecting ,' errors.
+    # Pattern: Look for a sequence of non-quote characters followed by a quote, 
+    # then more non-quote characters, and escape that internal quote. (Best effort fix)
+    # The safest fix here is often a simpler substitution:
+    cleaned_string = cleaned_string.replace('\\"', '<<TEMP_QUOTE>>') # Protect already escaped quotes
+    cleaned_string = cleaned_string.replace('"', '\\"')               # Escape all quotes
+    cleaned_string = cleaned_string.replace('\"\\"', '"')           # Un-escape quotes that delimit keys/values
+    cleaned_string = cleaned_string.replace('<<TEMP_QUOTE>>', '\"')  # Restore protected quotes
+
     try:
-        # Clean up common LLM JSON errors (e.g., surrounding text, extra backticks)
-        cleaned_string = json_string.strip()
-        if cleaned_string.startswith("```json"):
-            cleaned_string = cleaned_string[7:].strip()
-        if cleaned_string.endswith("```"):
-            cleaned_string = cleaned_string[:-3].strip()
-            
+        # 3. Final attempt to load the aggressively cleaned string
         return json.loads(cleaned_string)
+        
     except json.JSONDecodeError as e:
-        st.error(f"Error parsing {context} response. The LLM provided malformed JSON.")
-        st.caption(f"Decoding Error: {e}")
+        # If parsing still fails, provide detailed error information
+        st.error(f"JSON parse failed after cleaning: {e}")
+        st.caption(f"Error Context: {context}")
+        
+        # Display the cleaned string for debugging
+        # You can see the problematic area near char 2045 here
+        if len(cleaned_string) > 2000:
+             st.code(cleaned_string[2000:2100], language="text") 
+        
         return {"parse_error": str(e)}
-
-
-import pandas as pd
-import plotly.express as px
-import streamlit as st
-import numpy as np
-from datetime import datetime # Ensure this is imported if used elsewhere
 
 # Note: The 'parse_json_robustly' function must be defined above this function in your file.
 
