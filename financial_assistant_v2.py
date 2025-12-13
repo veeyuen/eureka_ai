@@ -817,7 +817,7 @@ def render_dashboard(
     veracity_scores=None,
     show_secondary_view=False # 🟢 2A. ADD THIS PARAMETER
 ):
-# ... (rest of the function)    """
+    """
     Renders the main analysis dashboard using data from the primary response.
     Includes robust fallbacks for charts and tables to address missing keys.
     """
