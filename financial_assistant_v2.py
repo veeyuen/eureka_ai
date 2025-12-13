@@ -700,8 +700,8 @@ def parse_trends_to_chart(trends):
 
 def parse_json_robustly(json_string: str, context: str = "") -> dict:
     """
-    Production-grade JSON parser for LLM outputs. Handles:
-    - Markdown wrappers (``````)
+    Production-grade JSON parser for LLM outputs. Handles ALL common malformations:
+    - Markdown wrappers (``````) using SAFE string methods
     - Unterminated strings (most common LLM failure)
     - Trailing commas
     - Control characters in strings
@@ -716,14 +716,29 @@ def parse_json_robustly(json_string: str, context: str = "") -> dict:
         st.error(f"JSON parse failed ({context}): {msg}")
         return {"parseerror": msg}
 
-    # Phase 1: Aggressive preprocessing
+    # ========================================
+    # PHASE 1: BULLETPROOF PREPROCESSING
+    # ========================================
     content = json_string.strip()
-    
-    # Remove markdown code blocks
-    content = re.sub(r'^```
-    content = re.sub(r'^```\s*\n?', '', content, flags=re.MULTILINE)
-    content = re.sub(r'\n?```
-    
+
+    # SAFE markdown removal using string methods (NO regex backticks)
+    lines = content.split('\n')
+    clean_lines = []
+    in_code_block = False
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith('``````'):
+            in_code_block = True
+            continue
+        if in_code_block and line.strip() == '```
+            in_code_block = False
+            continue
+        if not in_code_block:
+            clean_lines.append(line)
+
+    content = '\n'.join(clean_lines).strip()
+
     # Remove citation markers,, etc.[1][2]
     content = re.sub(r'\[web:\d+\]', '', content)
     content = re.sub(r'\[\d+\]', '', content)
@@ -733,7 +748,7 @@ def parse_json_robustly(json_string: str, context: str = "") -> dict:
     
     # Normalize booleans and null
     content = content.replace('True', 'true').replace('False', 'false').replace('Null', 'null')
-    
+
     def safe_parse(payload: str) -> tuple[dict | list | None, str | None]:
         """Single safe parse attempt with full error message"""
         try:
@@ -742,12 +757,16 @@ def parse_json_robustly(json_string: str, context: str = "") -> dict:
         except json.JSONDecodeError as e:
             return None, str(e)
 
-    # Phase 2: Try clean parse first
+    # ========================================
+    # PHASE 2: CLEAN PARSE FIRST
+    # ========================================
     parsed, error = safe_parse(content)
     if parsed is not None:
         return parsed if isinstance(parsed, dict) else {"data": parsed}
 
-    # Phase 3: Truncate at last complete object (removes trailing garbage)
+    # ========================================
+    # PHASE 3: TRUNCATE TRAILING GARBAGE
+    # ========================================
     last_brace = content.rfind('}')
     last_bracket = content.rfind(']')
     cut_pos = max(last_brace, last_bracket)
@@ -758,7 +777,9 @@ def parse_json_robustly(json_string: str, context: str = "") -> dict:
         if parsed is not None:
             return parsed if isinstance(parsed, dict) else {"data": parsed}
 
-    # Phase 4: Iterative repair (max 8 attempts)
+    # ========================================
+    # PHASE 4: ITERATIVE REPAIR (8 attempts max)
+    # ========================================
     current = content
     max_repairs = 8
     
@@ -767,32 +788,36 @@ def parse_json_robustly(json_string: str, context: str = "") -> dict:
         if parsed is not None:
             return parsed if isinstance(parsed, dict) else {"data": parsed}
         
-        # Repair #1: Unterminated string (most common LLM error)
+        # REPAIR #1: Unterminated string (MOST COMMON LLM ERROR)
         if "Unterminated string" in error:
-            pos = getattr(error, 'pos', None) or current.find('"', len(current)//2)
-            if pos and pos > 0:
-                # Find opening quote and close the string
+            # Find error position or approximate
+            pos_match = re.search(r'char (\d+)', error)
+            pos = int(pos_match.group(1)) if pos_match else len(current)//2
+            
+            if pos > 0:
+                # Find opening quote before error position
                 start_quote = current.rfind('"', 0, pos)
                 if start_quote > -1:
                     current = current[:pos] + '"' + current[pos:]
                     continue
         
-        # Repair #2: Trailing commas before } or ]
+        # REPAIR #2: Trailing commas before } or ]
         if "Expecting property name" in error or "trailing comma" in error:
             current = re.sub(r',\s*([}\]])', r'\1', current)
             continue
         
-        # Repair #3: Invalid control character in string
+        # REPAIR #3: Invalid control character in string
         if "Invalid control character" in error:
             current = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', current)
             continue
         
-        # Repair #4: Unquoted keys (fix common: key: value -> "key": value)
+        # REPAIR #4: Unquoted keys (key: value → "key": value)
         if "Expecting property name enclosed in double quotes" in error:
-            current = re.sub(r'([^{}\[\],: ]+?)\s*:', r'"\1":', current)
+            # Fix common patterns: key: value, key : value
+            current = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', current)
             continue
         
-        # Repair #5: Extra data after parsed object
+        # REPAIR #5: Extra data after parsed object
         if "Extra data" in error:
             last_brace = current.rfind('}')
             last_bracket = current.rfind(']')
@@ -801,32 +826,48 @@ def parse_json_robustly(json_string: str, context: str = "") -> dict:
                 current = current[:cut_pos + 1].strip()
                 continue
         
-        # Repair #6: Missing comma between objects
+        # REPAIR #6: Missing comma between objects
         if "Expecting ',' delimiter" in error:
             current = re.sub(r'\}\s*\{', '},{', current)
             continue
         
-        # No more specific repairs match - break
+        # REPAIR #7: Single quotes instead of double
+        if "Invalid control character" in error or "'" in error:
+            current = current.replace("'", '"')
+            continue
+        
+        # No more specific repairs - break
         break
 
-    # Phase 5: Final fallback - extract largest valid JSON fragment
-    # Look for any valid JSON object in the content
+    # ========================================
+    # PHASE 5: EXTRACT LARGEST VALID FRAGMENT
+    # ========================================
+    # Look for any complete JSON object in the content
     json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', current, re.DOTALL)
     if json_match:
-        parsed, error = safe_parse(json_match.group(0))
+        fragment = json_match.group(0)
+        parsed, error = safe_parse(fragment)
         if parsed is not None:
             return parsed if isinstance(parsed, dict) else {"data": parsed}
 
-    # Phase 6: Total failure with diagnostics
+    # ========================================
+    # PHASE 6: TOTAL FAILURE WITH DIAGNOSTICS
+    # ========================================
     preview = content[:300] + "..." if len(content) > 300 else content
-    error_msg = f"Failed after {max_repairs} repair attempts. Last error: {error}. Preview: {repr(preview)}"
+    error_msg = (
+        f"Failed after {max_repairs} repair attempts. "
+        f"Last error: {error}. "
+        f"Preview: {repr(preview)}"
+    )
     
     st.warning(f"JSON parse failed ({context}): {error_msg}")
     return {
         "parseerror": error_msg,
         "context": context,
         "preview": preview[:200],
-        "attempts": max_repairs
+        "attempts": max_repairs,
+        "original_length": len(json_string),
+        "cleaned_length": len(content)
     }
 
 
