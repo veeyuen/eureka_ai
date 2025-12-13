@@ -698,25 +698,24 @@ def parse_trends_to_chart(trends):
         values.extend([float(n.strip('%$BMT')) for n in nums[:3]])
     return labels[:5], values[:5]  # Limit for chart
 
-
 def parse_json_robustly(json_string, context):
     """
     Parses a JSON string safely.
     1. Isolates the main JSON object.
-    2. Uses an iterative repair loop to fix unescaped quotes based on parser errors.
+    2. Performs final string value cleanup (e.g., fixing true/false capitalization).
+    3. Uses an iterative repair loop to fix unescaped quotes based on parser errors.
     """
     if not json_string:
         return {}
     
     cleaned_string = json_string.strip()
     
-    # 1. Clean up wrappers
+    # 1. Clean up wrappers and control characters
     if cleaned_string.startswith("```json"):
         cleaned_string = cleaned_string[7:].strip()
     if cleaned_string.endswith("```"):
         cleaned_string = cleaned_string[:-3].strip()
 
-    # Remove unescaped newlines/tabs
     cleaned_string = cleaned_string.replace('\n', ' ').replace('\t', ' ')
     cleaned_string = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned_string)
 
@@ -727,11 +726,22 @@ def parse_json_robustly(json_string, context):
     else:
         st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
-
-    # 3. Iterative Repair Loop
-    # We attempt to parse up to 10 times. If parsing fails on an unescaped quote,
-    # the parser tells us the position. We go back, escape that quote, and try again.
     
+    # 3. Final String Content Cleanup (Non-iterative)
+    # Fix: Capitalization of boolean/null values (e.g., 'True' -> 'true')
+    repaired_content = json_content
+    repaired_content = repaired_content.replace(': True', ': true')
+    repaired_content = repaired_content.replace(': False', ': false')
+    repaired_content = repaired_content.replace(': Null', ': null')
+    
+    # Fix: Attempt to fix missing commas between key-value pairs
+    # Pattern: Finds a closing double-quote followed immediately by a non-space, non-comma, non-bracket, non-brace opening double-quote
+    # Example: "value1""key2" -> "value1","key2"
+    repaired_content = re.sub(r'"(\s*)([^,\}\]]{1})', r'",\1\2', repaired_content)
+
+    json_content = repaired_content
+
+    # 4. Iterative Quote Repair Loop
     max_retries = 10
     current_attempt = 0
     
@@ -739,36 +749,33 @@ def parse_json_robustly(json_string, context):
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            # Check if the error is likely due to an unescaped quote, which can manifest as multiple error types
+            # Check if the error is likely due to an unescaped quote or missing structural element
             if (
                 "Expecting ',' delimiter" in e.msg or
                 "Extra data" in e.msg or
-                "Unterminated string" in e.msg or  # <-- ADDED
-                "Expecting value" in e.msg        # <-- ADDED
+                "Unterminated string" in e.msg or
+                "Expecting value" in e.msg or
+                "Invalid control character" in e.msg
             ):
-                # The error position (e.pos) is usually right AFTER the unexpected character.
-                # We look backwards from the error position to find the nearest double quote.
-                
                 error_pos = e.pos
-                # Search backwards from error_pos for the first '"'
-                # We limit the search to avoid going back too far (e.g., 100 chars)
                 found_quote = -1
+                
+                # Search backwards from error_pos to find the nearest quote to escape
                 for i in range(error_pos - 1, max(0, error_pos - 100), -1):
-                    if json_content[i] == '"':
+                    if i < len(json_content) and json_content[i] == '"':
                         # Check if it's already escaped (preceded by \)
                         if i > 0 and json_content[i-1] == '\\':
-                            continue # Skip already escaped quotes
+                            continue 
                         found_quote = i
                         break
                 
                 if found_quote != -1:
                     # Escape the quote: Insert a backslash before it
-                    # We are modifying the string, so we construct a new one
                     json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
                     current_attempt += 1
-                    continue # Retry the loop with the fixed string
+                    continue # Retry
             
-            # If we couldn't handle the error or it's a different type, fail gracefully
+            # If we couldn't handle the error or ran out of fixes, fail gracefully
             st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
             st.caption(f"Error Context: {context}")
             
