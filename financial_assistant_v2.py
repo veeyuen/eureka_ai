@@ -719,212 +719,274 @@ def parse_trends_to_chart(trends):
     return labels[:5], values[:5]  # Limit for chart
 
 
-def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
-                     base_conf=None, src_conf=None, versions_history=None,
-                     user_question="", secondary_resp=None, veracity_scores=None):
-
-    if not response or not response.strip():
-        st.error("Received empty response from model")
-        return
-
+def parse_json_robustly(json_string, context):
+    """Parses a JSON string safely, handling decoding errors."""
+    if not json_string:
+        return {}
     try:
-        # Parse JSON string into dict
-        data = json.loads(response)
-    except Exception as e:
-        st.error(f"Invalid JSON: {e}")
-        st.code(response[:800])
+        # Clean up common LLM JSON errors (e.g., surrounding text, extra backticks)
+        cleaned_string = json_string.strip()
+        if cleaned_string.startswith("```json"):
+            cleaned_string = cleaned_string[7:].strip()
+        if cleaned_string.endswith("```"):
+            cleaned_string = cleaned_string[:-3].strip()
+            
+        return json.loads(cleaned_string)
+    except json.JSONDecodeError as e:
+        st.error(f"Error parsing {context} response. Check Debug Information for raw output.")
+        st.caption(f"Decoding Error: {e}")
+        return {"parse_error": str(e)}
+
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+import numpy as np # Ensure this is imported for any complex array/data handling
+
+def render_dashboard(
+    chosen_primary,
+    final_conf,
+    sem_conf,
+    num_conf,
+    web_context,
+    base_conf,
+    src_conf,
+    versions_history,
+    user_question,
+    secondary_resp=None,
+    veracity_scores=None
+):
+    """
+    Renders the main analysis dashboard using data from the primary response.
+    Includes robust fallbacks for charts and tables to address missing keys.
+    """
+    # Use the robust parser here
+    data = parse_json_robustly(chosen_primary, "Primary")
+
+    # Handle parsing failure before proceeding
+    if "parse_error" in data:
+        st.error("Cannot render dashboard due to severe parsing error in the LLM response.")
         return
 
-    # FLEXIBLE SCHEMA HANDLING - supports both old and new formats
-    col1, col2 = st.columns(2)
-    col1.metric("Overall Confidence (%)", f"{final_conf:.1f}")
-    freshness = (
-        data.get("data_freshness") or 
-        data.get("freshness") or 
-        "Unknown"
-    )
-    col2.metric("Data Freshness", freshness)
+    st.markdown("## 📊 Analysis Dashboard")
 
-    # 📊 Summary Analysis - flexible field mapping
-    st.header("📊 Summary Analysis")
-    summary_text = (
-        data.get("summary") or           # Old schema
-        data.get("executive_summary") or # New schema
-        "No summary available."
-    )
-    st.write(summary_text)
+    # =========================================================
+    # 1. METRICS (SUMMARY & KEY FINDINGS)
+    # =========================================================
+    st.subheader("Executive Summary")
+    st.info(data.get("executive_summary", "Summary not available."))
     
-    # Key Insights
-    st.subheader("Key Insights")
-    insights = (
-        data.get("key_insights") or       # Old schema
-        data.get("key_findings") or       # New schema
-        []
-    )
-    if insights:
-        for insight in insights:
-            st.markdown(f"- {insight}")
-    else:
-        st.info("No key insights provided.")
+    col1, col2, col3, col4 = st.columns(4)
 
-    # Metrics - flexible handling
-    st.subheader("Metrics")
-    metrics = (
-        data.get("metrics") or                   # Old schema
-        data.get("primary_metrics") or {}        # New schema
-    )
-    render_dynamic_metrics(user_question, metrics)
+    # --- Primary Metrics ---
+    primary_metrics = data.get("primary_metrics", [])
+    if isinstance(primary_metrics, list):
+        for i, metric in enumerate(primary_metrics):
+            if ':' in metric:
+                key, value = metric.split(':', 1)
+            else:
+                key, value = f"Metric {i+1}", metric
+                
+            if i == 0:
+                col = col1
+            elif i == 1:
+                col = col2
+            elif i == 2:
+                col = col3
+            elif i == 3:
+                col = col4
+            else:
+                break # Only display first 4
+                
+            col.metric(key.strip(), value.strip())
 
-    # Trend Visualization
+    # --- Key Findings ---
+    key_findings = data.get("key_findings", [])
+    if isinstance(key_findings, list):
+        st.subheader("Key Findings & Insights")
+        for finding in key_findings:
+            st.markdown(f"- {finding}")
+
+    # =========================================================
+    # 2. TREND VISUALIZATION (Fixes for missing keys & list data)
+    # =========================================================
     st.subheader("Trend Visualization")
-    vis = data.get('visualdata') or data.get('visualizationdata') or {}
+    
+    # 1. Try to find the explicit visualization data
+    vis = data.get('visual_data') or data.get('visualization_data') or {} 
+    vis['rendered'] = False
+    
+    if vis.get('type') == 'bar' and vis.get('data'):
+        # Existing logic for explicit chart data
+        try:
+            df_chart = pd.DataFrame(vis['data'])
+            fig = px.bar(
+                df_chart, 
+                x=vis.get('x_axis', df_chart.columns[0]), 
+                y=vis.get('y_axis', df_chart.columns[1]), 
+                title=vis.get('title', 'Generated Trend Chart')
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            vis['rendered'] = True
+        except Exception:
+            vis['rendered'] = False
 
-# FORCE TREND CHART from trendsforecast text
-    if 'trendsforecast' in data:
-        trends_text = data['trendsforecast']
-        if isinstance(trends_text, str):
-        # Extract ANY numbers and years for demo chart
-            years = re.findall(r'20\d{2}', trends_text)
-            numbers = re.findall(r'[\d.]+', trends_text)
-            if years or numbers:
-                labels = years[:5] or [f'Q{i+1}' for i in range(min(5, len(numbers)))]
-                values = [float(n) for n in numbers[:5]]
-                df = pd.DataFrame({'Period': labels, 'Value': values})
-                fig = px.line(df, x='Period', y='Value', title='Extracted Trends')
+    # 2. FIX: Fallback to use 'top_entities' list data to create a simple bar chart
+    if not vis.get('rendered', False) and 'top_entities' in data and isinstance(data['top_entities'], list) and data['top_entities']:
+        try:
+            df_bar = pd.DataFrame(data['top_entities'])
+            # Clean the 'share' column for charting (removes non-numeric chars like %, $, B and handles commas)
+            if 'share' in df_bar.columns and 'name' in df_bar.columns:
+                df_bar['share_val'] = (
+                    df_bar['share']
+                    .astype(str)
+                    .str.replace('[%B$]', '', regex=True)
+                    .str.replace(',', '', regex=False)
+                    .astype(float)
+                )
+                
+                # Sort and take top 5 for cleaner visualization
+                df_bar = df_bar.sort_values(by='share_val', ascending=False).head(5)
+                
+                fig = px.bar(
+                    df_bar, 
+                    x='name', 
+                    y='share_val', 
+                    title='Top Entities Market Share (Fallback)', 
+                    labels={'share_val': 'Market Share (%)'}
+                )
                 st.plotly_chart(fig, use_container_width=True)
-                vis = {'rendered': True}  # Skip other checks
+                vis['rendered'] = True
+        except Exception:
+            # Silently fail if fallback chart creation fails
+            pass
 
     if not vis.get('rendered', False):
-        st.info("No visual data available.")
+        st.info("No structured visual data available.")
 
-                         
-    # Data Table
 
+    # =========================================================
+    # 3. DATA TABLE (Fixes for missing keys & list data)
+    # =========================================================
     st.subheader("Data Table")
-    table = data.get('table') or data.get('benchmarktable') or []
+    
+    # 1. Try to find the explicit table data
+    table_data = data.get('benchmark_table') or data.get('table') or [] 
 
-# FALLBACK 1: Parse primarymetrics strings
-    if 'primarymetrics' in data and not table:
-        metrics_text = data['primarymetrics']
-        if isinstance(metrics_text, str):
-            rows = []
-            for line in metrics_text.split(', '):
-                if ':' in line:
-                    category, value = line.split(':', 1)
-                    rows.append({'Metric': category.strip(), 'Value': value.strip()})
-            if rows:
-                table = rows
+    # 2. FIX: Fallback to use 'top_entities' list data if no explicit table is found
+    if not table_data and 'top_entities' in data and isinstance(data['top_entities'], list):
+        table_data = data['top_entities']
+        st.caption("Displaying Top Entities data (fallback for missing primary table).")
 
-# FALLBACK 2: Parse keyfindings as simple table
-    if 'keyfindings' in data and not table:
-        findings = data['keyfindings']
-        if isinstance(findings, str):
-            table = [{'Finding': f.strip()} for f in findings.split(', ') if f.strip()]
+    # 3. FIX: Fallback to primary_metrics (which is a list of strings)
+    if not table_data and 'primary_metrics' in data and isinstance(data['primary_metrics'], list):
+        metrics_list = data['primary_metrics']
+        rows = []
+        for item in metrics_list:
+            # Parse "Key: Value" strings into a two-column table
+            if ':' in item:
+                category, value = item.split(':', 1)
+                rows.append({'Metric': category.strip(), 'Value': value.strip()})
+            else:
+                rows.append({'Metric/Finding': item})
+        if rows:
+            table_data = rows
+            st.caption("Displaying Primary Metrics data (fallback for missing table).")
 
-    if table:
+    # 4. FIX: Fallback to key_findings (which is a list of strings)
+    if not table_data and 'key_findings' in data and isinstance(data['key_findings'], list):
+        findings_list = data['key_findings']
+        # Convert list of strings into a list of dictionaries for a simple table
+        table_data = [{'Finding': f.strip()} for f in findings_list if f.strip()]
+        st.caption("Displaying Key Findings (fallback for missing table).")
+
+
+    if table_data:
         try:
-            st.dataframe(pd.DataFrame(table), use_container_width=True)
-        except:
-            st.info("Table data parsed but rendering failed")
+            # Ensure data is converted to DataFrame before rendering
+            df_table = pd.DataFrame(table_data)
+            # Use st.dataframe for table rendering
+            st.dataframe(df_table, use_container_width=True)
+        except Exception as e:
+            st.error(f"Failed to render table data: {e}")
     else:
         st.info("No tabular data available.")
 
-
-                         
-    # Sources & References
-    st.subheader("📚 Sources & References")
-    sources = data.get("sources", [])
-    if sources:
-        st.success(f"✅ {len(sources)} sources:")
-        for i, s in enumerate(sources, 1):
-            rank = classify_source_reliability(s) if s else "Unknown"
-            st.markdown(f"{i}. [{s}]({s}) — {rank}")
-    else:
-        st.info("No sources cited.")
-
-    # Web Search Details
-    if web_context and web_context.get("search_results"):
-        with st.expander("🔍 Web Search Details"):
-            st.write(f"**Sources Found:** {len(web_context['search_results'])}")
-            st.write(f"**Pages Scraped:** {len(web_context.get('scraped_content', {}))}")
-            for idx, result in enumerate(web_context["search_results"]):
-                rank_list = web_context.get('source_reliability', [])
-                reliab = rank_list[idx] if idx < len(rank_list) else classify_source_reliability(result['link'] + " " + result.get('source', ''))
-                st.markdown(f"- **{result['title']}** ({result.get('source', 'Unknown')}) [{reliab}]")
-
-    # Confidence Scores Breakdown (unchanged)
-    st.subheader("Confidence Scores Breakdown")
-    conf_data = {
-        "Confidence Aspect": [
-            "Base Model Confidence",
-            "Semantic Similarity Confidence",
-            "Numeric Alignment Confidence",
-            "Source Quality Confidence",
-            "Overall Confidence"
-        ],
-        "Score (%)": [
-            base_conf,
-            sem_conf,
-            num_conf if num_conf is not None else float('nan'),
-            src_conf,
-            final_conf
-        ]
-    }
-    conf_df = pd.DataFrame(conf_data)
-    conf_df["Score (%)"] = conf_df["Score (%)"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-    st.table(conf_df)
-
-    # Veracity Layer Scores Breakdown
-    st.subheader("Veracity Layer Scores Breakdown")
-    if veracity_scores is not None:
-        veracity_data = {
-            "Aspect": [
-                "Summary Similarity",
-                "Key Insights Similarity",
-                "Table Similarity",
-                "Graphical Data Similarity",
-                "Overall Veracity Score",
-            ],
-            "Score (%)": [
-                veracity_scores.get("summary_score", 0),
-                veracity_scores.get("insights_score", 0),
-                veracity_scores.get("table_score", 0),
-                veracity_scores.get("graph_score", 0),
-                veracity_scores.get("overall_score", 0),
-            ],
-        }
-        veracity_df = pd.DataFrame(veracity_data)
-        veracity_df["Score (%)"] = veracity_df["Score (%)"].map(lambda x: f"{x:.2f}")
-        st.table(veracity_df)
-    else:
-        st.info("Veracity scores not available.")
-
-    # Secondary Gemini Model Output
-    st.subheader("Secondary Gemini Model Output")
-    try:
-        gemini_json = json.loads(secondary_resp)
-        summary_text = gemini_json.get("summary", "No summary available.")
-        st.markdown(f"**Summary:** {summary_text}")
-        with st.expander("Show full Gemini model JSON response"):
-            st.json(gemini_json)
-    except Exception as e:
-        st.warning(f"Could not parse Gemini response: {e}")
-        st.text(secondary_resp)
-
-    st.metric("Semantic Similarity", f"{sem_conf:.2f}%")
-
-    # Validation Metrics
-    st.subheader("Validation Metrics")
-    c1, c2 = st.columns(2)
-    c1.metric("Semantic Similarity", f"{sem_conf:.2f}%")
+    # =========================================================
+    # 4. CONFIDENCE SCORE & VERACITY
+    # =========================================================
+    st.subheader("Confidence Score & Veracity")
+    colA, colB, colC = st.columns(3)
+    
+    if final_conf is not None:
+        colA.metric("Final Confidence", f"{final_conf:.2f}%")
+    
+    # Semantics (Secondary Model)
+    if sem_conf is not None:
+        colB.metric("Semantic Veracity", f"{sem_conf:.2f}%")
+        
+    # Numerical (Self-Correction)
     if num_conf is not None:
-        c2.metric("Numeric Alignment", f"{num_conf:.2f}%")
+        colC.metric("Numerical Consistency", f"{num_conf:.2f}%")
+    
+    # --- Veracity Breakdown (New addition in v5.6) ---
+    if veracity_scores:
+        st.markdown("**Detailed Veracity Breakdown:**")
+        
+        # Display scores as a bar chart for comparison
+        veracity_df = pd.DataFrame(
+            veracity_scores.items(), 
+            columns=['Category', 'Score']
+        ).set_index('Category').T
+        
+        st.dataframe(veracity_df, use_container_width=True)
+
+    # =========================================================
+    # 5. EVOLUTION LAYER & HISTORY
+    # =========================================================
+    st.subheader("Analysis History")
+    
+    if isinstance(versions_history, list) and versions_history:
+        # Sort history by timestamp (assuming latest is at index 0)
+        history_df = pd.DataFrame(versions_history)
+        history_df = history_df.sort_values(by='timestamp', ascending=False)
+        
+        # Format the timestamp
+        history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+        
+        st.dataframe(history_df[['version', 'timestamp', 'confidence', 'sources_freshness', 'change_reason']].head(5), use_container_width=True)
     else:
-        c2.info("No numeric data to compare")
+        st.info("No historical analysis available.")
 
-    if versions_history:
-        st.caption("See the 'Evolution Layer' page for full version and drift analysis.")
-
+    # =========================================================
+    # 6. RAW SOURCES AND CONTEXT
+    # =========================================================
+    st.subheader("Sources and Context")
+    
+    colS1, colS2 = st.columns(2)
+    
+    # Primary Source Confidence
+    if base_conf is not None:
+        colS1.metric("Base Model Confidence", f"{base_conf:.2f}%")
+        
+    # Source Freshness (Simulated/Calculated)
+    if src_conf is not None:
+        colS2.metric("Source Freshness (Days Ago)", f"{src_conf}")
+        
+    # Web Context Display
+    if web_context:
+        st.markdown("**Web Search Context:**")
+        # Ensure context is a list before iteration
+        if isinstance(web_context, list):
+            for i, snippet in enumerate(web_context):
+                url = snippet.get("url", "N/A")
+                title = snippet.get("title", "No Title")
+                snippet_text = snippet.get("snippet", "No snippet available.")
+                
+                # Only display the first 5 sources neatly
+                if i < 5:
+                    with st.expander(f"Source {i+1}: {title} (From: {url})"):
+                        st.write(snippet_text)
 
 # ----------------------------
 # MAIN WORKFLOW
