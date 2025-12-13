@@ -1351,7 +1351,7 @@ def main():
         json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
         b64 = base64.b64encode(json_str.encode()).decode()
         filename = f"yureeka_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        href = f'<a href="data:application/json;base64,{b64}" download="{filename}">üíæ Download Analysis JSON</a> (Right-click ‚Üí Save As)'
+        href = f'<a href="data:application/json;base64,{b64}" download="{filename}"--> Download Analysis JSON</a> (Right-click ‚ Save As)'
 
         st.markdown(href, unsafe_allow_html=True)
         st.success("‚úÖ Analysis ready for download!")
