@@ -1245,7 +1245,7 @@ def multi_modal_compare(json1, json2):
 
 def main():
     st.set_page_config(page_title="Yureeka Market Research Assistant", layout="wide")
-    st.title("üíπ Yureeka AI Market Analyst")
+    st.title("Yureeka Research Assistant")
 #    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search + Dynamic Metrics + Evolution Layer")
 
     c1, c2 = st.columns([3, 1])
