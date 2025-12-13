@@ -614,7 +614,7 @@ def filter_relevant_metrics(question, metrics):
     return relevant_metrics
 
 
-def renderdynamicmetrics(question, metrics):
+def render_dynamic_metrics(question, metrics):
     if not metrics:
         st.info("No metrics available.")
         return
