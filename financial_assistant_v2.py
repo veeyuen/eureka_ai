@@ -1249,7 +1249,7 @@ def main():
             st.error("Could not determine the primary response.")
             return
             
-        st.info("Cross-validating with Gemini 2.0 Flash...")
+        st.info("Performing validation...")
         secondary_resp = query_gemini(q)
 
         sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
