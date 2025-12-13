@@ -360,67 +360,6 @@ def fetch_web_context(query: str, num_sources: int = 3):
         "source_reliability": reliabilities,
     }
 
-# ----------------------------
-# AI QUERY FUNCTIONS
-# ----------------------------
-#def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
-#    if web_context.get("summary"):
-#        context_section = f"""
-#LATEST WEB RESEARCH (Current as of today):
-#{web_context['summary']}
-
-#        if web_context.get('scraped_content'):
-#            context_section += "\nDETAILED CONTENT FROM TOP SOURCES:\n"
-#            for url, content in list(web_context['scraped_content'].items())[:2]:
-#                context_section += f"\nFrom {url}:\n{content[:800]}...\n"
-#        enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
-#    else:
-#        enhanced_query = f"{SYSTEM_PROMPT}\n\nUser Question: {query}"
-#    headers = {
-#        "Authorization": f"Bearer {PERPLEXITY_KEY}",
-#        "Content-Type": "application/json",
-#    }
-#    payload = {
-#        "model": "sonar",
-#        "temperature": temperature,
-#        "max_tokens": 2000,
-#        "top_p": 0.8,              # even safer, try 0.7 or lower
-#        "messages": [{"role": "user", "content": enhanced_query}],
-#    }
-#    try:
-#        resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=45)
-#        resp.raise_for_status()
-#        response_data = resp.json()
-#        if "choices" not in response_data:
-#            raise Exception("No 'choices' in response")
-#        content = response_data["choices"][0]["message"]["content"]
-#        if not content.strip():
-#            raise Exception("Perplexity returned empty response")
-#        try:
-#            parsed = json.loads(content)
-#            if web_context.get("sources"):
-#                existing_sources = parsed.get("sources", [])
-#                all_sources = existing_sources + web_context["sources"]
-#                parsed["sources"] = list(set(all_sources))[:10]  # unique max 10
-#                parsed["data_freshness"] = "Current (real-time search)"
-#            content = json.dumps(parsed)
-#        except json.JSONDecodeError:
-#        #    st.warning("Reformatting Perplexity response to JSON...")
-#            content = json.dumps({
-#                "summary": content[:500],
-#                "key_insights": [content[:200]],
-#                "metrics": {},
-#                "visual_data": {},
-#                "table": [],
-#                "sources": web_context.get("sources", []),
-#                "confidence_score": 50,
-#                "data_freshness": "Current (web-scraped)"
-#            })
-#        return content
-#    except Exception as e:
-#        st.error(f"Perplexity query error: {e}")
-#        raise
-
 def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
     # FALLBACK: Check web context quality
     search_results_count = len(web_context.get("search_results", []))
@@ -478,14 +417,6 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
 
         # ENHANCED JSON CLEANING - strip markdown wrappers and references
         content = content.strip()
-        
-        # Remove common markdown wrappers
-     #   if content.startswith("```
-     #       content = content.split("```json", 1).split("```
-     #   elif content.startswith("```"):
-     #       content = content.split("``````", 1)[0].strip()
-
-        # Remove common markdown wrappers
         # ENHANCED JSON CLEANING - strip markdown wrappers and references
         content = content.strip()
 
@@ -548,44 +479,6 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1
         st.error(f"Perplexity query error: {e}")
         raise
 
-#def query_gemini(query: str):
-#    prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
-#    try:
-#        response = gemini_model.generate_content(
-#            prompt,
-#            generation_config=genai.types.GenerationConfig(
-#                temperature=0.1,
-#                max_output_tokens=1000,
-#            ),
-#        )
-#        content = response.text
-#        if not content.strip():
-#            raise Exception("Gemini returned empty response")
-#        try:
-#            json.loads(content)
-#        except json.JSONDecodeError:
-#            st.warning("Gemini returned non-JSON response, reformatting...")
-#            content = json.dumps({
-#                "summary": content[:500],
-#                "key_insights": [content[:200]],
-#                "metrics": {},
-#                "visual_data": {},
-#                "table": [],
-#                "sources": [],
-#                "confidence_score": 50,
-#            })
-#        return content
-#    except Exception as e:
-#        st.warning(f"Gemini API error: {e}")
-#        return json.dumps({
-#            "summary": "Gemini validation unavailable due to API error.",
-#            "key_insights": ["Cross-validation could not be performed"],
-#            "metrics": {},
-#            "visual_data": {},
-#            "table": [],
-#           "sources": [],
-#            "confidence_score": 0,
-#        })
 
 def query_gemini(query: str):
     prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
@@ -720,40 +613,6 @@ def filter_relevant_metrics(question, metrics):
             relevant_metrics[metric_name] = metrics[metric_name]
     return relevant_metrics
 
-#def render_dynamic_metrics(question, metrics):
-#    if not metrics:
-#        st.info("No metrics available.")
-#        return
-#    relevant_metrics = filter_relevant_metrics(question, metrics)
-#    to_display = relevant_metrics if relevant_metrics else metrics
-#    cols = st.columns(len(to_display))
-#    for i, (k, v) in enumerate(to_display.items()):
-#        try:
-#            val = f"{float(v):.2f}"
-#        except Exception:
-#            val = str(v)
-#        cols[i].metric(k, val)
-
-#def render_dynamic_metrics(question, metrics):
-#    if not metrics:
-#        st.info("No metrics available.")
-#        return
-
-#    relevant_metrics = filter_relevant_metrics(question, metrics)
-#    to_display = relevant_metrics if relevant_metrics else metrics
-#    cols = st.columns(len(to_display))
-
-#    for i, (k, v) in enumerate(to_display.items()):
-#        if isinstance(v, list):
-#            # Render list as markdown bullet points inside the column
-#            md_list = "\n".join(f"- {item}" for item in v)
-#            cols[i].markdown(f"**{k}**\n\n{md_list}")
-#        else:
-#            try:
-#                val = f"{float(v):.2f}"
-#            except Exception:
-#                val = str(v)
-#            cols[i].metric(k, val)
 
 def render_dynamic_metrics(question, metrics):
     if not metrics:
@@ -938,10 +797,19 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
 
     # Data Table
     st.subheader("Data Table")
-    table = (
-        data.get("table") or              # Old schema
-        data.get("benchmark_table") or [] # New schema
-    )
+    table = data.get('table') or data.get('benchmarktable')
+    if not table:
+    # NEW: Parse from primarymetrics/topentities if structured-ish
+        if 'primarymetrics' in data:
+            table = []
+            for metric in data['primarymetrics']:
+                if isinstance(metric, dict) and 'name' in metric:
+                    table.append({'category': metric['name'], 'value': metric.get('value', '')})
+                elif isinstance(metric, str):
+                    table.append({'category': metric.split(':')[0].strip(), 'value': metric})
+        if 'topentities' in data and table:  # Enrich with entities
+            for entity in data['topentities'][:5]:
+                table.append({'category': entity.get('name', ''), 'share': entity.get('share', '')})
     if table:
         try:
             st.dataframe(pd.DataFrame(table), use_container_width=True)
@@ -950,6 +818,8 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
     else:
         st.info("No tabular data available.")
 
+
+                         
     # Sources & References
     st.subheader("📚 Sources & References")
     sources = data.get("sources", [])
@@ -1241,14 +1111,6 @@ def main():
         veracity_scores = multi_modal_compare(j1, j2)
 
 
-   #     num_conf = numeric_alignment_score(j1, j2)
-   #     base_conf = max_score
-   #     src_conf = source_quality_confidence(j1.get("sources", [])) * 100
-
-   #     confidence_components = [base_conf, sem_conf]
-   #     if num_conf is not None:
-   #         confidence_components.append(num_conf)
-   #     confidence_components.append(src_conf)
     
         # Incorporate veracity_scores["overall_score"] into final confidence if desired:
    #     final_conf = np.mean([base_conf, sem_conf, num_conf if num_conf is not None else 0, src_conf, veracity_scores["overall_score"]])
@@ -1256,18 +1118,7 @@ def main():
         base_conf = max_score
         src_conf = source_quality_confidence(j1.get("sources", [])) * 100
 
-        # Build components dynamically; omit num_conf if None
-    #    confidence_components = [
-    #        base_conf,
-    #        sem_conf,
-    #        src_conf,
-    #        veracity_scores["overall_score"],
-    #    ]
-    #    if num_conf is not None:
-    #        confidence_components.append(num_conf)
-
-    #    final_conf = np.mean(confidence_components)
-
+   
         # Use consistent weighting
         weights = {
         'base': 0.25,
