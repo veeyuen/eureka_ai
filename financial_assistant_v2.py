@@ -1393,14 +1393,30 @@ def main():
         "timestamp": datetime.now().isoformat()
         }
 
+   #     json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
+   #     b64 = base64.b64encode(json_str.encode()).decode()
+   #     filename = f"yureeka_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+   #     href = f'<a href="data:application/json;base64,{b64}" download="{filename}"--> Download Analysis JSON</a> (Right-click ‚ Save As)'
+
+   #     st.markdown(href, unsafe_allow_html=True)
+   #     st.success("‚úÖ Analysis ready for download!")
+
+        # FIX: The original code used st.markdown(href, unsafe_allow_html=True)
+        # We need to ensure the HTML is clean and isolated.
+        
         json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
         b64 = base64.b64encode(json_str.encode()).decode()
         filename = f"yureeka_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        href = f'<a href="data:application/json;base64,{b64}" download="{filename}"--> Download Analysis JSON</a> (Right-click ‚ Save As)'
-
+        
+        # 1. FIX THE HTML STRING TO ENSURE IT'S VALID AND ISOLATED
+        href = f'<a href="data:application/json;base64,{b64}" download="{filename}">💾 Download Analysis JSON</a>'
+        
+        # 2. RENDER THE LINK (This part is correct, but ensure no extra text is around it)
         st.markdown(href, unsafe_allow_html=True)
-        st.success("‚úÖ Analysis ready for download!")
 
+        # 3. Add the clarifying text separately
+        st.caption("(Right-click → Save As)") 
+        st.success("✅ Analysis ready for download!")
 
         
         versions_history = [
