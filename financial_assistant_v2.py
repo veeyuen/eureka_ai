@@ -750,12 +750,13 @@ def parse_trends_to_chart(trends):
     return labels[:5], values[:5]  # Limit for chart
 
 
+
 def parse_json_robustly(json_string, context):
     """
     Parses a JSON string safely.
     1. Isolates the main JSON object.
-    2. Performs aggressive structural repairs (unquoted keys, boolean fixes).
-    3. Uses an iterative repair loop to fix unescaped quotes.
+    2. Performs structural repairs (unquoted keys, boolean fixes).
+    3. Uses a highly robust iterative repair loop to fix unescaped quotes (the cause of 'Unterminated string').
     """
     if not json_string:
         return {}
@@ -779,16 +780,11 @@ def parse_json_robustly(json_string, context):
         st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
     
-    # 3. AGGRESSIVE STRUCTURAL REPAIR: FIX UNQUOTED KEYS (The source of your current error)
+    # 3. STRUCTURAL REPAIR: FIX UNQUOTED KEYS AND BOOLEANS (This helps stabilize the structure before the quote repair)
     repaired_content = json_content
     
     try:
-        # **NEW, AGGRESSIVE REGEX:** Quotes any word followed by a colon, but not if it's already quoted.
-        # This is a dangerous but necessary fix for very malformed LLM output.
-        # Finds: [any char that is not a quote or brace] [word] :
-        # Replaces with: [same char] "word" :
-        
-        # This pattern targets keys that are not quoted and don't contain spaces/special chars
+        # Pattern 1: {key: -> {"key": (For keys at the start of an object or after a comma)
         repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
 
         # Fix: Capitalization of boolean/null values (e.g., 'True' -> 'true')
@@ -798,54 +794,53 @@ def parse_json_robustly(json_string, context):
         
     except Exception as e:
         st.warning(f"Structural key repair regex failed: {e}")
-        # Continue with original content if regex fails
 
     json_content = repaired_content # Update content for the iterative loop
 
-    # 4. Iterative Quote Repair Loop (Handles internal unescaped quotes)
-    max_retries = 10
+    # 4. ITERATIVE QUOTE REPAIR LOOP (Targeting 'Unterminated string' error)
+    max_retries = 15 # Increased retries just in case
     current_attempt = 0
     
     while current_attempt < max_retries:
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            # Check if the error is due to an unescaped quote within a value
-            if (
-                "Expecting ',' delimiter" in e.msg or
-                "Extra data" in e.msg or
-                "Unterminated string" in e.msg or
-                "Expecting value" in e.msg or
-                "Invalid control character" in e.msg
-            ):
-                error_pos = e.pos
-                found_quote = -1
-                
-                # Search backwards from error_pos to find the nearest quote to escape
-                for i in range(error_pos - 1, max(0, error_pos - 100), -1):
-                    if i < len(json_content) and json_content[i] == '"':
-                        # Check if it's already escaped
-                        if i > 0 and json_content[i-1] == '\\':
-                            continue 
+            # Check for error types caused by unescaped quotes
+            if not ("Unterminated string" in e.msg or "Expecting ',' delimiter" in e.msg or "Expecting value" in e.msg):
+                # If it's a different, unfixable error, fail gracefully
+                st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
+                st.caption(f"Error Context: {context}")
+                error_pos = e.pos if hasattr(e, 'pos') else 0
+                start = max(0, error_pos - 50)
+                end = min(len(json_content), error_pos + 50)
+                st.markdown(f"**Error near:** `{json_content[start:end]}`")
+                return {"parse_error": str(e)}
+
+            error_pos = e.pos
+            found_quote = -1
+            
+            # Search backwards from error_pos to find the nearest quote to escape
+            # We explicitly check that the quote is *not* already escaped.
+            for i in range(error_pos - 1, max(0, error_pos - 150), -1): # search back further
+                if i < len(json_content) and json_content[i] == '"':
+                    # Crucial check: if the preceding character is NOT a backslash, this is our unescaped quote.
+                    if i == 0 or json_content[i-1] != '\\':
                         found_quote = i
                         break
-                
-                if found_quote != -1:
-                    # Escape the quote: Insert a backslash before it
-                    json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
-                    current_attempt += 1
-                    continue # Retry
             
-            # If we couldn't handle the error or it's a different type, fail gracefully
-            st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
+            if found_quote != -1:
+                # Escape the quote: Insert a backslash before it
+                json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
+                current_attempt += 1
+                continue # Retry the loop with the fixed string
+            
+            # If the repair loop couldn't find a quote to fix after max attempts, fail
+            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
             st.caption(f"Error Context: {context}")
-            
-            # Show the crash location
-            error_pos = e.pos if hasattr(e, 'pos') else 21
+            error_pos = e.pos if hasattr(e, 'pos') else 0
             start = max(0, error_pos - 50)
             end = min(len(json_content), error_pos + 50)
             st.markdown(f"**Error near:** `{json_content[start:end]}`")
-            
             return {"parse_error": str(e)}
 
     # If we run out of retries
