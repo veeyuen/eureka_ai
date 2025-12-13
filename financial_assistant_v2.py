@@ -1260,8 +1260,19 @@ def main():
         st.metric("Web Search", web_status)
 
     q = st.text_input("Enter your question about markets, finance, or economics:")
-    use_web_search = st.checkbox("Enable live web search (recommended)", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY)
+#    use_web_search = st.checkbox("Enable live web search (recommended)", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY)
 
+    # In main() function, after q = st.text_input("..."):
+
+    col_opt1, col_opt2 = st.columns(2) # <--- NEW: Create two columns
+    
+    with col_opt1:
+        use_web_search = st.checkbox("Enable live web search (recommended)", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY)
+    
+    with col_opt2:
+        # 🟢 1A. INSERT THE SECONDARY TOGGLE
+        show_validation = st.checkbox("Show Secondary (Validation) Response", value=False)
+        
     if st.button("Analyze") and q:
         web_context = {}
         if use_web_search:
