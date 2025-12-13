@@ -718,29 +718,31 @@ def parse_trends_to_chart(trends):
         values.extend([float(n.strip('%$BMT')) for n in nums[:3]])
     return labels[:5], values[:5]  # Limit for chart
 
+import json
+import streamlit as st
+import re 
+# Note: Ensure 'import re' is at the top of your financial_assistant_v2 (2).py file.
 
 def parse_json_robustly(json_string, context):
-    """Parses a JSON string safely by aggressively isolating the main JSON object."""
+    """Parses a JSON string safely by aggressively isolating the main JSON object and repairing common internal quote issues."""
     if not json_string:
         return {}
     
     cleaned_string = json_string.strip()
     
-    # 1. Clean up common LLM JSON wrappers (backticks, surrounding text)
+    # 1. Clean up wrappers and bad characters
     if cleaned_string.startswith("```json"):
         cleaned_string = cleaned_string[7:].strip()
     if cleaned_string.endswith("```"):
         cleaned_string = cleaned_string[:-3].strip()
 
-    # Remove all unescaped newlines and tabs, which frequently break JSON parsing
+    # Remove all unescaped newlines and tabs
     cleaned_string = cleaned_string.replace('\n', ' ').replace('\t', ' ')
     
-    # Remove non-standard control characters (common junk from web/LLM)
+    # Remove non-standard control characters
     cleaned_string = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned_string)
 
-    # 2. FIX: Aggressively search for and extract the main JSON object {...}
-    # This regex is non-greedy and looks for the first '{' and the last '}'
-    # The 'flags=re.DOTALL' allows '.' to match newlines (though we stripped them, it's safer)
+    # 2. Aggressively search for and extract the main JSON object {...}
     match = re.search(r'\{.*\}', cleaned_string, flags=re.DOTALL)
     
     if match:
@@ -749,19 +751,50 @@ def parse_json_robustly(json_string, context):
         st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
 
-    # 3. Final attempt to load the isolated JSON string
+    # 3. FIX: Targeted internal quote repair on the isolated content.
+    # We use a lambda function with re.sub to find quoted strings and ensure internal quotes are escaped.
+    def repair_quotes_in_values(m):
+        # m.group(0) is the entire matched quoted string (e.g., "value with \"internal\" quotes")
+        # m.group(1) is the content *inside* the quotes.
+        content = m.group(1)
+        # 1. Protect already escaped quotes (e.g., in a regex pattern)
+        content = content.replace('\\"', '__TEMP_ESCAPED__')
+        # 2. Escape all remaining internal quotes (the illegal ones)
+        content = content.replace('"', '\\"')
+        # 3. Restore protected escaped quotes
+        content = content.replace('__TEMP_ESCAPED__', '\\"')
+        # Return the repaired string value, wrapped in quotes
+        return '"' + content + '"'
+
+    # Apply the repair only to strings that are values (not keys) to minimize disruption.
+    # Pattern: finds any quoted string, ensuring the quote is not preceded by a backslash, 
+    # but the simplest pattern that handles the common issue is to target all quoted segments.
+    # The pattern below targets any quoted string and assumes it's a value that might need fixing.
     try:
-        return json.loads(json_content)
+        repaired_content = re.sub(r'"([^"]*)"', repair_quotes_in_values, json_content)
+    except Exception as e:
+        st.warning(f"Quote repair regex failed: {e}")
+        repaired_content = json_content # Fallback to original content
+
+    # 4. Final attempt to load the isolated and repaired JSON string
+    try:
+        return json.loads(repaired_content)
         
     except json.JSONDecodeError as e:
         # If parsing still fails, provide detailed error information
-        st.error(f"JSON parse failed after aggressive cleaning: {e}")
+        st.error(f"JSON parse failed after final cleaning: {e}")
         st.caption(f"Error Context: {context}")
         
-        # Display the cleaned string for debugging
-        st.code(json_content, language="json") 
+        # Display the problematic area around the error character (2121)
+        start_char = max(0, 2121 - 50)
+        end_char = min(len(repaired_content), 2121 + 50)
+        st.markdown("**Problematic Content Snippet:**")
+        st.code(repaired_content[start_char:end_char], language="text")
         
         return {"parse_error": str(e)}
+
+
+
 def render_dashboard(
     chosen_primary,
     final_conf,
