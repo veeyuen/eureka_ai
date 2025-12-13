@@ -812,7 +812,8 @@ def render_dashboard(
     versions_history,
     user_question,
     secondary_resp=None,
-    veracity_scores=None
+    veracity_scores=None,
+    show_secondary_view=False # <--- NEW PARAMETER
 ):
     """
     Renders the main analysis dashboard using data from the primary response.
@@ -840,30 +841,18 @@ def render_dashboard(
     primary_metrics = data.get("primary_metrics", [])
     if isinstance(primary_metrics, list):
         for i, metric in enumerate(primary_metrics):
-            
-            # FIX: Ensure the item is a string before attempting to split or strip
             if not isinstance(metric, str):
-                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}.")
-                continue # Skip this entry and move to the next
-            
-            # Original parsing logic follows:
+                continue 
             if ':' in metric:
                 key, value = metric.split(':', 1)
             else:
                 key, value = f"Metric {i+1}", metric
                 
-            if i == 0:
-                col = col1
-            elif i == 1:
-                col = col2
-            elif i == 2:
-                col = col3
-            elif i == 3:
-                col = col4
-            else:
-                break # Only display first 4
-                
-            # Now, key and value are guaranteed to be strings or derived from strings
+            if i == 0: col = col1
+            elif i == 1: col = col2
+            elif i == 2: col = col3
+            elif i == 3: col = col4
+            else: break
             col.metric(key.strip(), value.strip())
 
     # --- Key Findings ---
@@ -871,91 +860,55 @@ def render_dashboard(
     if isinstance(key_findings, list):
         st.subheader("Key Findings & Insights")
         for finding in key_findings:
-            # Ensure finding is a string before printing
             if isinstance(finding, str):
                 st.markdown(f"- {finding}")
 
     # =========================================================
-    # 2. TREND VISUALIZATION (Fixes for missing keys & list data)
+    # 2. TREND VISUALIZATION 
     # =========================================================
     st.subheader("Trend Visualization")
-    
-    # 1. Try to find the explicit visualization data
     vis = data.get('visual_data') or data.get('visualization_data') or {} 
     vis['rendered'] = False
     
     if vis.get('type') == 'bar' and vis.get('data'):
-        # Existing logic for explicit chart data
         try:
             df_chart = pd.DataFrame(vis['data'])
-            fig = px.bar(
-                df_chart, 
-                x=vis.get('x_axis', df_chart.columns[0]), 
-                y=vis.get('y_axis', df_chart.columns[1]), 
-                title=vis.get('title', 'Generated Trend Chart')
-            )
+            fig = px.bar(df_chart, x=vis.get('x_axis', df_chart.columns[0]), y=vis.get('y_axis', df_chart.columns[1]), title=vis.get('title', 'Generated Trend Chart'))
             st.plotly_chart(fig, use_container_width=True)
             vis['rendered'] = True
         except Exception:
             vis['rendered'] = False
 
-    # 2. FIX: Fallback to use 'top_entities' list data to create a simple bar chart
     if not vis.get('rendered', False) and 'top_entities' in data and isinstance(data['top_entities'], list) and data['top_entities']:
         try:
             df_bar = pd.DataFrame(data['top_entities'])
-            # Clean the 'share' column for charting (removes non-numeric chars like %, $, B and handles commas)
             if 'share' in df_bar.columns and 'name' in df_bar.columns:
-                df_bar['share_val'] = (
-                    df_bar['share']
-                    .astype(str)
-                    .str.replace('[%B$]', '', regex=True)
-                    .str.replace(',', '', regex=False)
-                    .astype(float)
-                )
-                
-                # Sort and take top 5 for cleaner visualization
+                df_bar['share_val'] = df_bar['share'].astype(str).str.replace('[%B$]', '', regex=True).str.replace(',', '', regex=False).astype(float)
                 df_bar = df_bar.sort_values(by='share_val', ascending=False).head(5)
-                
-                fig = px.bar(
-                    df_bar, 
-                    x='name', 
-                    y='share_val', 
-                    title='Top Entities Market Share (Fallback)', 
-                    labels={'share_val': 'Market Share (%)'}
-                )
+                fig = px.bar(df_bar, x='name', y='share_val', title='Top Entities Market Share (Fallback)', labels={'share_val': 'Market Share (%)'})
                 st.plotly_chart(fig, use_container_width=True)
                 vis['rendered'] = True
         except Exception:
-            # Silently fail if fallback chart creation fails
             pass
 
     if not vis.get('rendered', False):
         st.info("No structured visual data available.")
 
-
     # =========================================================
-    # 3. DATA TABLE (Fixes for missing keys & list data)
+    # 3. DATA TABLE
     # =========================================================
     st.subheader("Data Table")
-    
-    # 1. Try to find the explicit table data
     table_data = data.get('benchmark_table') or data.get('table') or [] 
 
-    # 2. FIX: Fallback to use 'top_entities' list data if no explicit table is found
     if not table_data and 'top_entities' in data and isinstance(data['top_entities'], list):
         table_data = data['top_entities']
         st.caption("Displaying Top Entities data (fallback for missing primary table).")
 
-    # 3. FIX: Fallback to primary_metrics (which is a list of strings)
     if not table_data and 'primary_metrics' in data and isinstance(data['primary_metrics'], list):
         metrics_list = data['primary_metrics']
         rows = []
         for item in metrics_list:
-            # Ensure it is a string before parsing
-            if not isinstance(item, str):
-                continue
-            
-            # Parse "Key: Value" strings into a two-column table
+            if not isinstance(item, str): continue
             if ':' in item:
                 category, value = item.split(':', 1)
                 rows.append({'Metric': category.strip(), 'Value': value.strip()})
@@ -965,19 +918,14 @@ def render_dashboard(
             table_data = rows
             st.caption("Displaying Primary Metrics data (fallback for missing table).")
 
-    # 4. FIX: Fallback to key_findings (which is a list of strings)
     if not table_data and 'key_findings' in data and isinstance(data['key_findings'], list):
         findings_list = data['key_findings']
-        # Convert list of strings into a list of dictionaries for a simple table
         table_data = [{'Finding': f.strip()} for f in findings_list if isinstance(f, str) and f.strip()]
         st.caption("Displaying Key Findings (fallback for missing table).")
 
-
     if table_data:
         try:
-            # Ensure data is converted to DataFrame before rendering
             df_table = pd.DataFrame(table_data)
-            # Use st.dataframe for table rendering
             st.dataframe(df_table, use_container_width=True)
         except Exception as e:
             st.error(f"Failed to render table data: {e}")
@@ -992,49 +940,42 @@ def render_dashboard(
     
     if final_conf is not None:
         colA.metric("Final Confidence", f"{final_conf:.2f}%")
-    
-    # Semantics (Secondary Model)
     if sem_conf is not None:
         colB.metric("Semantic Veracity", f"{sem_conf:.2f}%")
-        
-    # Numerical (Self-Correction)
     if num_conf is not None:
         colC.metric("Numerical Consistency", f"{num_conf:.2f}%")
     
-    # --- Veracity Breakdown (New addition in v5.6) ---
     if veracity_scores:
         st.markdown("**Detailed Veracity Breakdown:**")
-        
-        # Display scores as a bar chart for comparison
-        veracity_df = pd.DataFrame(
-            veracity_scores.items(), 
-            columns=['Category', 'Score']
-        ).set_index('Category').T
-        
+        veracity_df = pd.DataFrame(veracity_scores.items(), columns=['Category', 'Score']).set_index('Category').T
         st.dataframe(veracity_df, use_container_width=True)
 
     # =========================================================
-    # 5. EVOLUTION LAYER & HISTORY (Fixes for timestamp parsing)
+    # NEW: SECONDARY RESPONSE DISPLAY (Controlled by Toggle)
+    # =========================================================
+    if show_secondary_view and secondary_resp:
+        st.markdown("---")
+        st.subheader("🤖 Secondary Model Output (Validation)")
+        st.caption("This data comes from the secondary model (Gemini) used for cross-validation.")
+        
+        # Try to parse it for pretty printing, fall back to raw if needed
+        try:
+            parsed_sec = json.loads(secondary_resp)
+            st.json(parsed_sec, expanded=False)
+        except:
+            st.code(secondary_resp, language="json")
+    # =========================================================
+
+    # =========================================================
+    # 5. EVOLUTION LAYER & HISTORY
     # =========================================================
     st.subheader("Analysis History")
     
     if isinstance(versions_history, list) and versions_history:
-        
         history_df = pd.DataFrame(versions_history)
-        
-        # FIX: Robustly convert the timestamp column using ISO8601 format
-        history_df['timestamp'] = pd.to_datetime(
-            history_df['timestamp'], 
-            format='ISO8601', 
-            errors='coerce' # Set errors='coerce' to turn bad data into NaT instead of raising an error
-        )
-
-        # Sort history by timestamp
+        history_df['timestamp'] = pd.to_datetime(history_df['timestamp'], format='ISO8601', errors='coerce')
         history_df = history_df.sort_values(by='timestamp', ascending=False)
-        
-        # Format the datetime object for display
         history_df['timestamp'] = history_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-        
         st.dataframe(history_df[['version', 'timestamp', 'confidence', 'sources_freshness', 'change_reason']].head(5), use_container_width=True)
     else:
         st.info("No historical analysis available.")
@@ -1045,30 +986,21 @@ def render_dashboard(
     st.subheader("Sources and Context")
     
     colS1, colS2 = st.columns(2)
-    
-    # Primary Source Confidence
     if base_conf is not None:
         colS1.metric("Base Model Confidence", f"{base_conf:.2f}%")
-        
-    # Source Freshness (Simulated/Calculated)
     if src_conf is not None:
         colS2.metric("Source Freshness (Days Ago)", f"{src_conf}")
         
-    # Web Context Display
     if web_context:
         st.markdown("**Web Search Context:**")
-        # Ensure context is a list before iteration
         if isinstance(web_context, list):
             for i, snippet in enumerate(web_context):
-                url = snippet.get("url", "N/A")
-                title = snippet.get("title", "No Title")
-                snippet_text = snippet.get("snippet", "No snippet available.")
-                
-                # Only display the first 5 sources neatly
                 if i < 5:
+                    url = snippet.get("url", "N/A")
+                    title = snippet.get("title", "No Title")
+                    snippet_text = snippet.get("snippet", "No snippet available.")
                     with st.expander(f"Source {i+1}: {title} (From: {url})"):
                         st.write(snippet_text)
-
 
 
 # ----------------------------
@@ -1198,11 +1130,9 @@ def multi_modal_compare(json1, json2):
         "overall_score": overall_score,
     }
 
-
 def main():
     st.set_page_config(page_title="Yureeka Market Research Assistant", layout="wide")
     st.title("💹 Yureeka AI Market Analyst")
-#    st.caption("Self-Consistency + Cross-Model Verification + Live Web Search + Dynamic Metrics + Evolution Layer")
 
     c1, c2 = st.columns([3, 1])
     with c1:
@@ -1216,7 +1146,13 @@ def main():
         st.metric("Web Search", web_status)
 
     q = st.text_input("Enter your question about markets, finance, or economics:")
-    use_web_search = st.checkbox("Enable live web search (recommended)", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY)
+    
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        use_web_search = st.checkbox("Enable live web search (recommended)", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY)
+    with col_opt2:
+        # NEW: Toggle to show/hide the secondary response for diagnostics
+        show_validation = st.checkbox("Show Secondary (Validation) Response", value=False)
 
     if st.button("Analyze") and q:
         web_context = {}
@@ -1249,59 +1185,51 @@ def main():
             st.error("Could not determine the primary response.")
             return
             
-        st.info("Performing validation...")
+        st.info("Cross-validating with Gemini 2.0 Flash...")
         secondary_resp = query_gemini(q)
 
         sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
 
-        try:
-            j1 = json.loads(chosen_primary)
-        except Exception:
-            j1 = {}
-
-        try:
-            j2 = json.loads(secondary_resp)
-        except Exception:
-            j2 = {}
+        # FIX: Use the robust parser for logic variables (j1, j2) too, not just rendering
+        # This ensures veracity scores are calculated even if JSON has minor errors
+        j1 = parse_json_robustly(chosen_primary, "Primary Logic")
+        if "parse_error" in j1: j1 = {} # Fallback if even robust parsing fails
+            
+        j2 = parse_json_robustly(secondary_resp, "Secondary Logic")
+        if "parse_error" in j2: j2 = {}
 
         veracity_scores = multi_modal_compare(j1, j2)
-
-
     
         # Incorporate veracity_scores["overall_score"] into final confidence if desired:
-   #     final_conf = np.mean([base_conf, sem_conf, num_conf if num_conf is not None else 0, src_conf, veracity_scores["overall_score"]])
         num_conf = numeric_alignment_score(j1, j2)
         base_conf = max_score
         src_conf = source_quality_confidence(j1.get("sources", [])) * 100
 
-   
         # Use consistent weighting
         weights = {
-        'base': 0.25,
-        'semantic': 0.20,
-        'source': 0.20,
-        'veracity': 0.20,
-        'numeric': 0.15
+            'base': 0.25,
+            'semantic': 0.20,
+            'source': 0.20,
+            'veracity': 0.20,
+            'numeric': 0.15
         }
 
         final_conf = (
-        base_conf * weights['base'] +
-        sem_conf * weights['semantic'] +
-        src_conf * weights['source'] +
-        veracity_scores["overall_score"] * weights['veracity'] +
-        (num_conf * weights['numeric'] if num_conf is not None else 0)
+            base_conf * weights['base'] +
+            sem_conf * weights['semantic'] +
+            src_conf * weights['source'] +
+            veracity_scores["overall_score"] * weights['veracity'] +
+            (num_conf * weights['numeric'] if num_conf is not None else 0)
         )
-
-        # Save JSON output
 
         # ---- DOWNLOAD JSON INSTEAD OF SAVING ----
         output_payload = {
-        "primary_response": j1,
-        "secondary_response": j2,
-        "final_confidence": final_conf,
-        "veracity_scores": veracity_scores,
-        "question": q,
-        "timestamp": datetime.now().isoformat()
+            "primary_response": j1,
+            "secondary_response": j2,
+            "final_confidence": final_conf,
+            "veracity_scores": veracity_scores,
+            "question": q,
+            "timestamp": datetime.now().isoformat()
         }
 
         json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
@@ -1311,69 +1239,61 @@ def main():
 
         st.markdown(href, unsafe_allow_html=True)
         st.success("✅ Analysis ready for download!")
-
-
         
         versions_history = [
-        {
-        "version": "V1 (Jul 10)",
-        "timestamp": "2025-07-10T12:00:00",
-        "metrics": j1.get("metrics", {}),
-        "confidence": base_conf,
-        "sources_freshness": 80,
-        "change_reason": "Initial version",
-        },
-        {
-        "version": "V2 (Aug 28)",
-        "timestamp": "2025-08-28T15:30:00",
-        "metrics": j1.get("metrics", {}),
-        "confidence": base_conf * 0.98,
-        "sources_freshness": 75,
-        "change_reason": "Quarterly update",
-        },
-        {
-        "version": "V3 (Nov 3)",
-        "timestamp": datetime.now().isoformat(timespec="minutes"),
-        "metrics": j1.get("metrics", {}),
-        "confidence": final_conf,
-        "sources_freshness": 78,
-        "change_reason": "Latest analysis",
-        }
+            {
+                "version": "V1 (Jul 10)",
+                "timestamp": "2025-07-10T12:00:00",
+                "metrics": j1.get("metrics", {}),
+                "confidence": base_conf,
+                "sources_freshness": 80,
+                "change_reason": "Initial version",
+            },
+            {
+                "version": "V2 (Aug 28)",
+                "timestamp": "2025-08-28T15:30:00",
+                "metrics": j1.get("metrics", {}),
+                "confidence": base_conf * 0.98,
+                "sources_freshness": 75,
+                "change_reason": "Quarterly update",
+            },
+            {
+                "version": "V3 (Nov 3)",
+                "timestamp": datetime.now().isoformat(timespec="minutes"),
+                "metrics": j1.get("metrics", {}),
+                "confidence": final_conf,
+                "sources_freshness": 78,
+                "change_reason": "Latest analysis",
+            }
         ]
-
-        # Save for other pages
-       # st.session_state["versions_history"] = versions_history
 
         # Store ALL versions for individual pages (NEW)
         st.session_state["all_versions"] = versions_history
         st.session_state["current_analysis"] = {
-        "summary": j1.get("summary", ""),
-        "metrics": j1.get("metrics", {}),
-        "confidence": final_conf
+            "summary": j1.get("summary", ""),
+            "metrics": j1.get("metrics", {}),
+            "confidence": final_conf
         }
+
+        # CALL RENDER_DASHBOARD WITH NEW TOGGLE PARAMETER
         render_dashboard(
-        chosen_primary,
-        final_conf,
-        sem_conf,
-        num_conf,
-        web_context,
-        base_conf,
-        src_conf,
-        versions_history,
-        user_question=q,
-        secondary_resp=secondary_resp,
-        veracity_scores=veracity_scores  # ← ADD THIS LINE
+            chosen_primary,
+            final_conf,
+            sem_conf,
+            num_conf,
+            web_context,
+            base_conf,
+            src_conf,
+            versions_history,
+            user_question=q,
+            secondary_resp=secondary_resp,
+            veracity_scores=veracity_scores,
+            show_secondary_view=show_validation  # <--- PASS THE TOGGLE HERE
         )
-
-
-
-        
 
         with st.expander("Debug Information"):
             st.write("Primary Response:")
             st.code(chosen_primary, language="json")
-            st.write("Validation Response:")
-            st.code(secondary_resp, language="json")
             st.write(f"All Confidence Scores: {scores}")
             st.write(f"Selected Best Score: {base_conf}")
             if web_context:
