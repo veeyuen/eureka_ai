@@ -794,208 +794,212 @@ def parse_json_robustly(json_string: str, context: str = ""):
     return {"parseerror": msg}
 
 
-
 def render_dashboard(
-    chosen_primary,
-    final_conf,
-    sem_conf,
-    num_conf,
-    web_context,
-    base_conf,
-    src_conf,
-    versions_history,
-    user_question,
-    secondary_resp=None,
-    veracity_scores=None,
-    show_secondary_view=False # <--- NEW PARAMETER
+    chosen_primary: str,
+    final_conf: float,
+    sem_conf: float,
+    num_conf: float,
+    web_context: dict,
+    base_conf: float,
+    src_conf: float,
+    versions_history: list,
+    user_question: str,
+    secondary_resp: str = None,
+    veracity_scores: dict = None,
+    show_secondary_view: bool = False,
 ):
     """
     Renders the main analysis dashboard using data from the primary response.
-    Includes robust fallbacks for charts and tables to address missing keys.
+    Supports both:
+      - New schema: { "primary_response": { ... } }
+      - Legacy schema: { "summary": ..., "metrics": ... }
     """
-    # Use the robust parser here
-    data = parse_json_robustly(chosen_primary, "Primary")
 
-    # Handle parsing failure before proceeding
-    if "parse_error" in data:
+    # Robust parse of the raw primary JSON
+    raw_data = parse_json_robustly(chosen_primary, context="Primary (render_dashboard)")
+
+    # Unwrap if outer envelope is present
+    if isinstance(raw_data, dict) and "primary_response" in raw_data:
+        data = raw_data["primary_response"]
+    else:
+        data = raw_data
+
+    if isinstance(data, dict) and "parseerror" in data:
         st.error("Cannot render dashboard due to severe parsing error in the LLM response.")
         return
 
-    st.markdown("## 📊 Analysis Dashboard")
+    if not isinstance(data, dict):
+        st.error("Primary response is not a valid JSON object.")
+        return
 
-    # =========================================================
-    # 1. METRICS (SUMMARY & KEY FINDINGS)
-    # =========================================================
-    st.subheader("Executive Summary")
-    st.info(data.get("executive_summary", "Summary not available."))
-    
+    # Schema‑aware aliases
+    executive_summary = data.get("executive_summary") or data.get("summary", "")
+    drivers = data.get("drivers", [])
+    challenges = data.get("challenges", [])
+    entities = data.get("entities", [])
+    implications_block = data.get("implications_opportunities_risks", {})
+    primary_metrics = data.get("primary_metrics", {})
+    legacy_metrics = data.get("metrics", {})
+    sources = data.get("sources", [])
+    data_freshness = data.get("data_freshness") or data.get("freshness", "")
+
+    # ======================
+    # HEADER & META
+    # ======================
+    st.header("Analysis Dashboard")
+
+    if user_question:
+        st.markdown(f"**User Question:** {user_question}")
+
     col1, col2, col3, col4 = st.columns(4)
-
-    # --- Primary Metrics ---
-    primary_metrics = data.get("primary_metrics", [])
-    if isinstance(primary_metrics, list):
-        for i, metric in enumerate(primary_metrics):
-            if not isinstance(metric, str):
-                continue 
-            if ':' in metric:
-                key, value = metric.split(':', 1)
-            else:
-                key, value = f"Metric {i+1}", metric
-                
-            if i == 0: col = col1
-            elif i == 1: col = col2
-            elif i == 2: col = col3
-            elif i == 3: col = col4
-            else: break
-            col.metric(key.strip(), value.strip())
-
-    # --- Key Findings ---
-    key_findings = data.get("key_findings", [])
-    if isinstance(key_findings, list):
-        st.subheader("Key Findings & Insights")
-        for finding in key_findings:
-            if isinstance(finding, str):
-                st.markdown(f"- {finding}")
-
-    # =========================================================
-    # 2. TREND VISUALIZATION 
-    # =========================================================
-    st.subheader("Trend Visualization")
-    vis = data.get('visual_data') or data.get('visualization_data') or {} 
-    vis['rendered'] = False
-    
-    if vis.get('type') == 'bar' and vis.get('data'):
-        try:
-            df_chart = pd.DataFrame(vis['data'])
-            fig = px.bar(df_chart, x=vis.get('x_axis', df_chart.columns[0]), y=vis.get('y_axis', df_chart.columns[1]), title=vis.get('title', 'Generated Trend Chart'))
-            st.plotly_chart(fig, use_container_width=True)
-            vis['rendered'] = True
-        except Exception:
-            vis['rendered'] = False
-
-    if not vis.get('rendered', False) and 'top_entities' in data and isinstance(data['top_entities'], list) and data['top_entities']:
-        try:
-            df_bar = pd.DataFrame(data['top_entities'])
-            if 'share' in df_bar.columns and 'name' in df_bar.columns:
-                df_bar['share_val'] = df_bar['share'].astype(str).str.replace('[%B$]', '', regex=True).str.replace(',', '', regex=False).astype(float)
-                df_bar = df_bar.sort_values(by='share_val', ascending=False).head(5)
-                fig = px.bar(df_bar, x='name', y='share_val', title='Top Entities Market Share (Fallback)', labels={'share_val': 'Market Share (%)'})
-                st.plotly_chart(fig, use_container_width=True)
-                vis['rendered'] = True
-        except Exception:
-            pass
-
-    if not vis.get('rendered', False):
-        st.info("No structured visual data available.")
-
-    # =========================================================
-    # 3. DATA TABLE
-    # =========================================================
-    st.subheader("Data Table")
-    table_data = data.get('benchmark_table') or data.get('table') or [] 
-
-    if not table_data and 'top_entities' in data and isinstance(data['top_entities'], list):
-        table_data = data['top_entities']
-        st.caption("Displaying Top Entities data (fallback for missing primary table).")
-
-    if not table_data and 'primary_metrics' in data and isinstance(data['primary_metrics'], list):
-        metrics_list = data['primary_metrics']
-        rows = []
-        for item in metrics_list:
-            if not isinstance(item, str): continue
-            if ':' in item:
-                category, value = item.split(':', 1)
-                rows.append({'Metric': category.strip(), 'Value': value.strip()})
-            else:
-                rows.append({'Metric/Finding': item})
-        if rows:
-            table_data = rows
-            st.caption("Displaying Primary Metrics data (fallback for missing table).")
-
-    if not table_data and 'key_findings' in data and isinstance(data['key_findings'], list):
-        findings_list = data['key_findings']
-        table_data = [{'Finding': f.strip()} for f in findings_list if isinstance(f, str) and f.strip()]
-        st.caption("Displaying Key Findings (fallback for missing table).")
-
-    if table_data:
-        try:
-            df_table = pd.DataFrame(table_data)
-            st.dataframe(df_table, use_container_width=True)
-        except Exception as e:
-            st.error(f"Failed to render table data: {e}")
-    else:
-        st.info("No tabular data available.")
-
-    # =========================================================
-    # 4. CONFIDENCE SCORE & VERACITY
-    # =========================================================
-    st.subheader("Confidence Score & Veracity")
-    colA, colB, colC = st.columns(3)
-    
     if final_conf is not None:
-        colA.metric("Final Confidence", f"{final_conf:.2f}%")
+        col1.metric("Final Confidence", f"{final_conf:.1f}")
+    if base_conf is not None:
+        col2.metric("Base Model Confidence", f"{base_conf:.1f}")
     if sem_conf is not None:
-        colB.metric("Semantic Veracity", f"{sem_conf:.2f}%")
+        col3.metric("Semantic Alignment", f"{sem_conf:.1f}")
     if num_conf is not None:
-        colC.metric("Numerical Consistency", f"{num_conf:.2f}%")
-    
-    if veracity_scores:
-        st.markdown("**Detailed Veracity Breakdown:**")
-        veracity_df = pd.DataFrame(veracity_scores.items(), columns=['Category', 'Score']).set_index('Category').T
-        st.dataframe(veracity_df, use_container_width=True)
+        col4.metric("Numeric Alignment", f"{num_conf:.1f}" if isinstance(num_conf, (int, float)) else "N/A")
 
-    # =========================================================
-    # NEW: SECONDARY RESPONSE DISPLAY (Controlled by Toggle)
-    # =========================================================
+    if data_freshness:
+        st.caption(f"🕒 Data freshness: {data_freshness}")
+
+    st.markdown("---")
+
+    # ======================
+    # EXECUTIVE SUMMARY
+    # ======================
+    if executive_summary:
+        st.subheader("Executive Summary")
+        st.write(executive_summary)
+
+    # ======================
+    # DRIVERS & CHALLENGES
+    # ======================
+    if isinstance(drivers, list) and drivers:
+        st.subheader("Market Drivers")
+        for d in drivers:
+            st.markdown(f"- {d}")
+
+    if isinstance(challenges, list) and challenges:
+        st.subheader("Market Challenges")
+        for c in challenges:
+            st.markdown(f"- {c}")
+
+    # ======================
+    # ENTITIES
+    # ======================
+    if isinstance(entities, list) and entities:
+        st.subheader("Key Entities and Players")
+        for e in entities:
+            st.markdown(f"- {e}")
+
+    # ======================
+    # IMPLICATIONS / OPPORTUNITIES / RISKS
+    # ======================
+    if isinstance(implications_block, dict) and any(implications_block.values()):
+        st.subheader("Implications, Opportunities, and Risks")
+
+        if implications_block.get("opportunities"):
+            st.markdown("**Opportunities**")
+            st.write(implications_block["opportunities"])
+
+        if implications_block.get("risks"):
+            st.markdown("**Risks**")
+            st.write(implications_block["risks"])
+
+        if implications_block.get("strategic_implications"):
+            st.markdown("**Strategic Implications**")
+            st.write(implications_block["strategic_implications"])
+
+    st.markdown("---")
+
+    # ======================
+    # METRICS
+    # ======================
+    st.subheader("Key Metrics")
+
+    if isinstance(primary_metrics, dict) and primary_metrics:
+        cols = st.columns(4)
+        idx = 0
+        for key, metric in primary_metrics.items():
+            col = cols[idx % len(cols)]
+            name = metric.get("name", key)
+            value = metric.get("value", "")
+            unit = metric.get("unit", "")
+            if unit:
+                display_val = f"{value} {unit}"
+            else:
+                display_val = str(value)
+            col.metric(label=name, value=display_val)
+            idx += 1
+
+    elif isinstance(legacy_metrics, dict) and legacy_metrics:
+        cols = st.columns(4)
+        idx = 0
+        for name, val in legacy_metrics.items():
+            col = cols[idx % len(cols)]
+            col.metric(label=name, value=str(val))
+            idx += 1
+    else:
+        st.info("No structured metrics available in the analysis.")
+
+    st.markdown("---")
+
+    # ======================
+    # SOURCES
+    # ======================
+    if isinstance(sources, list) and sources:
+        st.subheader("Sources")
+        for s in sources:
+            if isinstance(s, str):
+                st.markdown(f"- [{s}]({s})")
+            else:
+                st.markdown(f"- {s}")
+
+    # ======================
+    # WEB CONTEXT
+    # ======================
+    if isinstance(web_context, dict) and web_context.get("search_results"):
+        st.subheader("Web Search Context")
+        search_results = web_context.get("search_results", [])
+        for i, snippet in enumerate(search_results[:5]):
+            url = snippet.get("link", "N/A")
+            title = snippet.get("title", "No Title")
+            snippet_text = snippet.get("snippet", "No snippet available.")
+            with st.expander(f"Source {i+1}: {title}"):
+                st.write(f"URL: {url}")
+                st.write(snippet_text)
+
+    # ======================
+    # SECONDARY VALIDATION VIEW
+    # ======================
     if show_secondary_view and secondary_resp:
         st.markdown("---")
-        st.subheader("🤖 Secondary Model Output (Validation)")
-        st.caption("This data comes from the secondary model (Gemini) used for cross-validation.")
-        
-        # Try to parse it for pretty printing, fall back to raw if needed
-        try:
-            parsed_sec = json.loads(secondary_resp)
-            st.json(parsed_sec, expanded=False)
-        except:
-            st.code(secondary_resp, language="json")
-    # =========================================================
+        st.subheader("Secondary Validation Response (Diagnostics)")
+        sec_parsed = parse_json_robustly(secondary_resp, context="Secondary (render_dashboard)")
+        st.json(sec_parsed)
 
-    # =========================================================
-    # 5. EVOLUTION LAYER & HISTORY
-    # =========================================================
-    st.subheader("Analysis History")
-    
-    if isinstance(versions_history, list) and versions_history:
-        history_df = pd.DataFrame(versions_history)
-        history_df['timestamp'] = pd.to_datetime(history_df['timestamp'], format='ISO8601', errors='coerce')
-        history_df = history_df.sort_values(by='timestamp', ascending=False)
-        history_df['timestamp'] = history_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-        st.dataframe(history_df[['version', 'timestamp', 'confidence', 'sources_freshness', 'change_reason']].head(5), use_container_width=True)
-    else:
-        st.info("No historical analysis available.")
+    # ======================
+    # VERACITY SCORES
+    # ======================
+    if isinstance(veracity_scores, dict) and veracity_scores:
+        st.markdown("---")
+        st.subheader("Veracity & Validation Scores")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Summary", f"{veracity_scores.get('summary_score', 0):.1f}")
+        c2.metric("Insights", f"{veracity_scores.get('insights_score', 0):.1f}")
+        c3.metric("Table", f"{veracity_scores.get('table_score', 0):.1f}")
+        c4.metric("Graphs", f"{veracity_scores.get('graph_score', 0):.1f}")
+        c5.metric("Overall", f"{veracity_scores.get('overall_score', 0):.1f}")
 
-    # =========================================================
-    # 6. RAW SOURCES AND CONTEXT
-    # =========================================================
-    st.subheader("Sources and Context")
-    
-    colS1, colS2 = st.columns(2)
-    if base_conf is not None:
-        colS1.metric("Base Model Confidence", f"{base_conf:.2f}%")
-    if src_conf is not None:
-        colS2.metric("Source Freshness (Days Ago)", f"{src_conf}")
-        
-    if web_context:
-        st.markdown("**Web Search Context:**")
-        if isinstance(web_context, list):
-            for i, snippet in enumerate(web_context):
-                if i < 5:
-                    url = snippet.get("url", "N/A")
-                    title = snippet.get("title", "No Title")
-                    snippet_text = snippet.get("snippet", "No snippet available.")
-                    with st.expander(f"Source {i+1}: {title} (From: {url})"):
-                        st.write(snippet_text)
-
+    # ======================
+    # EVOLUTION / VERSION CONTROL
+    # ======================
+    if versions_history:
+        st.markdown("---")
+        st.subheader("Evolution Layer - Version Control & Drift")
+        render_evolution_layer(versions_history)
 
 # ----------------------------
 # MAIN WORKFLOW
@@ -1124,42 +1128,44 @@ def multi_modal_compare(json1, json2):
         "overall_score": overall_score,
     }
 
+
+# assume these exist elsewhere in your file
+# from your_module import (
+#     fetch_web_context,
+#     generate_self_consistent_responses_with_web,
+#     parse_json_robustly,
+#     semantic_similarity_score,
+#     numeric_alignment_score,
+#     render_dashboard,
+# )
+
 def main():
-    st.set_page_config(page_title="Yureeka Market Research Assistant", layout="wide")
-    st.title("💹 Yureeka AI Market Analyst")
+    st.set_page_config(page_title="Yureeka Market Intelligence", layout="wide")
+    st.title("Yureeka Market Intelligence")
 
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        st.markdown("""
-        Yureeka is a research assistant that assists in providing succinct and accurate answers to your market related questions.  You may ask any 
-        question that is related to finance, economics or the markets. 
-        This product is currently in prototype stage.
-        """)
-    with c2:
-        web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Not configured"
-        st.metric("Web Search", web_status)
+    # 1. User input
+    q = st.text_input("Enter your market / macro question", value="", placeholder="e.g., Global electric vehicle market outlook to 2030")
 
-    q = st.text_input("Enter your question about markets, finance, or economics:")
-    
-    col_opt1, col_opt2 = st.columns(2)
-    with col_opt1:
-        use_web_search = st.checkbox("Enable live web search (recommended)", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY)
-    with col_opt2:
-        # NEW: Toggle to show/hide the secondary response for diagnostics
-        show_validation = st.checkbox("Show Secondary (Validation) Response", value=False)
+    use_websearch = st.checkbox("Use web search for latest context", value=True)
+    show_validation = st.checkbox("Show secondary validation response", value=False)
 
     if st.button("Analyze") and q:
-        web_context = {}
-        if use_web_search:
+        # 2. Build web context
+        if use_websearch:
             with st.spinner("Searching the web for latest info..."):
                 web_context = fetch_web_context(q, num_sources=3)
-
-        if web_context and web_context.get("search_results"):
-            responses, scores = generate_self_consistent_responses_with_web(q, web_context, n=3)
         else:
-            st.info("Using internal model knowledge only...")
-            empty_ctx = {"search_results": [], "scraped_content": {}, "summary": "", "sources": []}
-            responses, scores = generate_self_consistent_responses_with_web(q, empty_ctx, n=3)
+            web_context = {
+                "search_results": [],
+                "scraped_content": {},
+                "summary": "",
+                "sources": [],
+                "source_reliability": [],
+            }
+
+        # 3. Generate primary responses (Perplexity) + scores
+        with st.spinner("Generating analysis..."):
+            responses, scores = generate_self_consistent_responses_with_web(q, web_context, n=1)
 
         if not responses or not scores:
             st.error("Primary model failed to generate valid responses.")
@@ -1169,129 +1175,121 @@ def main():
             st.error("Mismatch in responses and scores.")
             return
 
-        voted_response = majority_vote(responses)
-        max_score = max(scores)
-        best_idx = scores.index(max_score)
-        best_response = responses[best_idx]
+        # For now, single response; keep majority_vote logic if you use n>1
+        chosen_primary = responses[0]
+        base_conf = scores[0]
 
-        chosen_primary = best_response or voted_response
-        if not chosen_primary:
-            st.error("Could not determine the primary response.")
-            return
-            
-        st.info("Cross-validating with Gemini 2.0 Flash...")
+        # 4. Secondary validation (Gemini)
+        st.info("Cross-validating with Gemini 2.5 Flash...")
+        from your_module import query_gemini  # or keep at top
         secondary_resp = query_gemini(q)
 
-        sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
+        # 5. Parse raw JSONs with robust parser
+        raw_primary = parse_json_robustly(chosen_primary, context="Primary (main)")
+        raw_secondary = parse_json_robustly(secondary_resp, context="Secondary (main)") if secondary_resp else {}
 
-        # FIX: Use the robust parser for logic variables (j1, j2) too, not just rendering
-        # This ensures veracity scores are calculated even if JSON has minor errors
-        j1 = parse_json_robustly(chosen_primary, "Primary Logic")
-        if "parse_error" in j1: j1 = {} # Fallback if even robust parsing fails
-            
-        j2 = parse_json_robustly(secondary_resp, "Secondary Logic")
-        if "parse_error" in j2: j2 = {}
+        # 6. Unwrap new schema if present
+        if isinstance(raw_primary, dict) and "primary_response" in raw_primary:
+            j1 = raw_primary["primary_response"]
+            final_conf = float(raw_primary.get("final_confidence", base_conf))
+            veracity_scores = raw_primary.get("veracity_scores", {})
+            user_question = raw_primary.get("question", q)
+        else:
+            j1 = raw_primary if isinstance(raw_primary, dict) else {}
+            final_conf = float(j1.get("confidence_score", base_conf)) if isinstance(j1, dict) else base_conf
+            veracity_scores = {}
+            user_question = q
 
-        veracity_scores = multi_modal_compare(j1, j2)
-    
-        # Incorporate veracity_scores["overall_score"] into final confidence if desired:
-        num_conf = numeric_alignment_score(j1, j2)
-        base_conf = max_score
-        src_conf = source_quality_confidence(j1.get("sources", [])) * 100
+        if isinstance(raw_secondary, dict) and "primary_response" in raw_secondary:
+            j2 = raw_secondary["primary_response"]
+        else:
+            j2 = raw_secondary if isinstance(raw_secondary, dict) else {}
 
-        # Use consistent weighting
-        weights = {
-            'base': 0.25,
-            'semantic': 0.20,
-            'source': 0.20,
-            'veracity': 0.20,
-            'numeric': 0.15
-        }
+        # 7. Compute semantic and numeric alignment
+        sem_conf = semantic_similarity_score(chosen_primary, secondary_resp) if secondary_resp else 0.0
+        num_conf = numeric_alignment_score(j1, j2) if isinstance(j1, dict) and isinstance(j2, dict) else None
 
-        final_conf = (
-            base_conf * weights['base'] +
-            sem_conf * weights['semantic'] +
-            src_conf * weights['source'] +
-            veracity_scores["overall_score"] * weights['veracity'] +
-            (num_conf * weights['numeric'] if num_conf is not None else 0)
-        )
-
-        # ---- DOWNLOAD JSON INSTEAD OF SAVING ----
-        output_payload = {
-            "primary_response": j1,
-            "secondary_response": j2,
-            "final_confidence": final_conf,
-            "veracity_scores": veracity_scores,
-            "question": q,
-            "timestamp": datetime.now().isoformat()
-        }
-
-        json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
-        b64 = base64.b64encode(json_str.encode()).decode()
-        filename = f"yureeka_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        href = f'<a href="data:application/json;base64,{b64}" download="{filename}">💾 Download Analysis JSON</a> (Right-click → Save As)'
-
-        st.markdown(href, unsafe_allow_html=True)
-        st.success("✅ Analysis ready for download!")
-        
+        # 8. Build versions history using whatever metrics are available
+        metrics_for_versions = j1.get("metrics", {}) if isinstance(j1, dict) else {}
         versions_history = [
             {
                 "version": "V1 (Jul 10)",
                 "timestamp": "2025-07-10T12:00:00",
-                "metrics": j1.get("metrics", {}),
-                "confidence": base_conf,
+                "metrics": metrics_for_versions,
+                "confidence": final_conf,
                 "sources_freshness": 80,
                 "change_reason": "Initial version",
             },
             {
                 "version": "V2 (Aug 28)",
                 "timestamp": "2025-08-28T15:30:00",
-                "metrics": j1.get("metrics", {}),
-                "confidence": base_conf * 0.98,
+                "metrics": metrics_for_versions,
+                "confidence": final_conf * 0.98 if final_conf is not None else None,
                 "sources_freshness": 75,
                 "change_reason": "Quarterly update",
             },
             {
                 "version": "V3 (Nov 3)",
                 "timestamp": datetime.now().isoformat(timespec="minutes"),
-                "metrics": j1.get("metrics", {}),
+                "metrics": metrics_for_versions,
                 "confidence": final_conf,
                 "sources_freshness": 78,
                 "change_reason": "Latest analysis",
-            }
+            },
         ]
 
-        # Store ALL versions for individual pages (NEW)
         st.session_state["all_versions"] = versions_history
         st.session_state["current_analysis"] = {
-            "summary": j1.get("summary", ""),
-            "metrics": j1.get("metrics", {}),
-            "confidence": final_conf
+            "summary": j1.get("executive_summary", j1.get("summary", "")) if isinstance(j1, dict) else "",
+            "metrics": metrics_for_versions,
+            "confidence": final_conf,
         }
 
-        # CALL RENDER_DASHBOARD WITH NEW TOGGLE PARAMETER
+        # 9. Offer JSON download of the full outer structure
+        output_payload = {
+            "primary_response": j1,
+            "secondary_response": j2,
+            "final_confidence": final_conf,
+            "veracity_scores": veracity_scores,
+            "question": user_question,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
+        b64 = base64.b64encode(json_str.encode()).decode()
+        filename = f"yureeka_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        href = (
+            f'<a href="data:application/json;base64,{b64}" '
+            f'download="{filename}">💾 Download Analysis JSON</a> '
+            f'(Right-click → Save As)'
+        )
+        st.markdown(href, unsafe_allow_html=True)
+        st.success("✅ Analysis ready for download!")
+
+        # 10. Render dashboard with full context
         render_dashboard(
-            chosen_primary,
-            final_conf,
-            sem_conf,
-            num_conf,
-            web_context,
-            base_conf,
-            src_conf,
-            versions_history,
-            user_question=q,
+            chosen_primary=chosen_primary,
+            final_conf=final_conf,
+            sem_conf=sem_conf,
+            num_conf=num_conf,
+            web_context=web_context,
+            base_conf=base_conf,
+            src_conf=None,  # or your existing source freshness metric
+            versions_history=versions_history,
+            user_question=user_question,
             secondary_resp=secondary_resp,
             veracity_scores=veracity_scores,
-            show_secondary_view=show_validation  # <--- PASS THE TOGGLE HERE
+            show_secondary_view=show_validation,
         )
 
+        # Optional debug section
         with st.expander("Debug Information"):
-            st.write("Primary Response:")
+            st.write("Primary Response (raw string):")
             st.code(chosen_primary, language="json")
             st.write(f"All Confidence Scores: {scores}")
-            st.write(f"Selected Best Score: {base_conf}")
-            if web_context:
-                st.write(f"Web Sources Found: {len(web_context.get('search_results', []))}")
+            st.write(f"Selected Base Score: {base_conf}")
+          #  if web_context:
+          #      st.write(f"Web Sources Found: {len(web_context.get('search_results', []))}")
 
 if __name__ == "__main__":
     main()
