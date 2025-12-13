@@ -81,148 +81,117 @@ def source_quality_confidence(sources):
 # ----------------------------
 # PROMPTS AND MODELS
 # ----------------------------
-
 #RESPONSE_TEMPLATE = """
-#Return ONLY valid JSON in this flexible structure. Populate ALL fields with relevant data:
-
+#You are a research assistant. Return ONLY valid JSON formatted as:
 #{
-#  "executive_summary": "1-2 sentence high-level answer to the core question",
-#  "primary_metrics": {
-#    "metric_1": {"name": "Key Metric 1", "value": 25.5, "unit": "%"},
-#    "metric_2": {"name": "Key Metric 2", "value": 623, "unit": "$B"},
-#    "metric_3": {"name": "Key Metric 3", "value": 12.5, "unit": "x"}
-#  },
-#  "key_findings": [
-#    "Finding 1 with quantified impact",
-#    "Finding 2 explaining drivers",
-#    "Finding 3 highlighting opportunities/risks"
-#  ],
-#  "top_entities": [
-#    {"name": "Entity 1", "share": "25%", "growth": "15%"},
-#    {"name": "Entity 2", "share": "18%", "growth": "22%"},
-#    {"name": "Entity 3", "share": "12%", "growth": "-3%"}
-#  ],
-#  "trends_forecast": [
-#    {"trend": "Trend description", "direction": "‚Üë/‚Üì/‚Üî", "timeline": "2025-2027"},
-#    {"trend": "Another trend", "direction": "‚Üë", "timeline": "2026"}
-#  ],
-#  "visualization_data": {
-#    "trend_line": {"labels": ["2023","2024","2025"], "values": [18,22,25]},
-#    "comparison_bars": {"categories": ["A","B","C"], "values": [25,18,12]}
-#  },
-#  "benchmark_table": [
-#    {"category": "Company A", "value_1": 25.5, "value_2": 623},
-#    {"category": "Company B", "value_1": 18.2, "value_2": 450}
-#  ],
-#  "sources": ["source1.com", "source2.com"],
-#  "confidence": 87,
-#  "freshness": "Dec 2025",
-#  "action": {
-#    "recommendation": "Buy/Hold/Neutral/Sell",
-#    "confidence": "High/Medium/Low",
-#    "rationale": "1-sentence reason"
-#  }
+#  "summary": "Brief summary of findings.",
+#  "key_insights": ["Insight 1", "Insight 2"],
+#  "metrics": {"GDP Growth (%)": number, "Inflation (%)": number, "Unemployment (%)": number},
+#  "visual_data": {"labels": ["Q1","Q2"], "values": [2.3,2.5]},
+#  "table": [{"Country": "US", "GDP": 25.5, "Inflation": 3.4}],
+#  "sources": ["https://imf.org", "https://reuters.com"],
+#  "confidence_score": 85,
+#  "data_freshness": "As of [date]"
 #}
 #"""
 
-# ----------------------------
-# 1. EXPANDED JSON TEMPLATE
-# ----------------------------
 RESPONSE_TEMPLATE = """
-Return ONLY valid JSON in this flexible structure. Populate ALL fields with deep, relevant data:
+Return ONLY valid JSON in this flexible structure. Populate ALL fields with relevant data:
 
 {
-  "executive_summary": "A comprehensive, high-level summary. **Must be 5-8 sentences long** and clearly state the main market status, key driver, and strategic implication for the client.",
+  "executive_summary": "1-2 sentence high-level answer to the core question",
   "primary_metrics": {
-    "metric_1": {"name": "Key Metric 1", "value": "e.g. 600", "unit": "e.g. $B"},
-    "metric_2": {"name": "Key Metric 2", "value": "e.g. 12.5", "unit": "%"},
-    "metric_3": {"name": "Key Metric 3", "value": "e.g. 150", "unit": "M Units"},
-    "metric_4": {"name": "Key Metric 4", "value": "e.g. 45", "unit": "% Share"}
+    "metric_1": {"name": "Key Metric 1", "value": 25.5, "unit": "%"},
+    "metric_2": {"name": "Key Metric 2", "value": 623, "unit": "$B"},
+    "metric_3": {"name": "Key Metric 3", "value": 12.5, "unit": "x"}
   },
   "key_findings": [
-    "Finding 1: Detailed insight with quantified impact (e.g., 'Market grew 20% due to X')",
-    "Finding 2: Strategic driver explanation",
-    "Finding 3: Emerging risk or opportunity",
-    "Finding 4: Regulatory or technological shift",
-    "Finding 5: Competitive dynamic"
-  ],
-  "market_drivers": [
-    "Driver 1: Detailed description of a factor propelling growth",
-    "Driver 2: Technological or consumer behavior catalyst"
-  ],
-  "market_challenges": [
-    "Challenge 1: Primary headwind (e.g., supply chain, regulation)",
-    "Challenge 2: Economic or competitive hurdle"
+    "Finding 1 with quantified impact",
+    "Finding 2 explaining drivers",
+    "Finding 3 highlighting opportunities/risks"
   ],
   "top_entities": [
-    {"name": "Entity 1", "share": "25%", "details": "Market leader, strong in [Region]"},
-    {"name": "Entity 2", "share": "15%", "details": "Challenger brand, growing 20% YoY"},
-    {"name": "Entity 3", "share": "10%", "details": "Niche player focusing on premium segment"}
+    {"name": "Entity 1", "share": "25%", "growth": "15%"},
+    {"name": "Entity 2", "share": "18%", "growth": "22%"},
+    {"name": "Entity 3", "share": "12%", "growth": "-3%"}
   ],
   "trends_forecast": [
-    {"trend": "Trend Name", "impact": "High/Med/Low", "timeline": "2025-2027", "details": "Brief explanation"},
-    {"trend": "Trend Name", "impact": "High", "timeline": "2026", "details": "Brief explanation"}
+    {"trend": "Trend description", "direction": "‚Üë/‚Üì/‚Üî", "timeline": "2025-2027"},
+    {"trend": "Another trend", "direction": "‚Üë", "timeline": "2026"}
   ],
   "visualization_data": {
     "trend_line": {"labels": ["2023","2024","2025"], "values": [18,22,25]},
     "comparison_bars": {"categories": ["A","B","C"], "values": [25,18,12]}
   },
   "benchmark_table": [
-    {"category": "Metric A", "value_1": 25.5, "value_2": 623},
-    {"category": "Metric B", "value_1": 18.2, "value_2": 450}
+    {"category": "Company A", "value_1": 25.5, "value_2": 623},
+    {"category": "Company B", "value_1": 18.2, "value_2": 450}
   ],
   "sources": ["source1.com", "source2.com"],
   "confidence": 87,
-  "freshness": "Dec 2025"
+  "freshness": "Dec 2025",
+  "action": {
+    "recommendation": "Buy/Hold/Neutral/Sell",
+    "confidence": "High/Medium/Low",
+    "rationale": "1-sentence reason"
+  }
 }
 """
 
+#SYSTEM_PROMPT = (
+#    "You are a research analyst focused on topics related to industry analysis, business sectors, finance, economics, and markets.\n"
+#    "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
+#    "that are specifically relevant to the exact question the user asks.\n"
+#    "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
+#    "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
+#    "For example, if the user asks about the size of the sneaker market in Asia, include metrics like market size in USD, projected growth rates,"
+#    "and exclude unrelated metrics such as inflation or unemployment. Also include information on the major brands of sneakers involved and the trends in the marketplace.\n"
+#    "If the question is related to macroeconomics or the underlying drivers are macroeconomic, you may include macroeconomic indicators such as GDP growth, inflation, population size etc.\n"
+#    "If the question is not related to business, finance, economics or the markets politely decline to answer the question.\n"
+#    "Strictly follow this JSON structure:\n"
+#    f"{RESPONSE_TEMPLATE}"
+#)
 
-#SYSTEM_PROMPT = """You are a professional market research analyst. 
+#SYSTEM_PROMPT = (
+#    "You are an AI research analyst covering:\n"
+#    "- Macroeconomics (GDP, inflation, rates, unemployment)\n"
+#    "- **Industry analysis** (market size, growth, major players, trends)\n"
+#    "- Business sectors (EV, tech, consumer goods, energy, biotech, etc.)\n\n"
+#    "For industry queries, include:\n"
+#    "- Market size/revenue\n"
+#    "- Growth rates/CAGR\n"
+#    "- Top 3-5 companies + market share\n"
+#    "- Key trends/drivers\n"
+#    "- Relevant financial metrics\n\n"
+#    "ALWAYS provide analysis even if web results are sparse - use your knowledge.\n"
+#    "Output strictly valid JSON:\n"
+#    f"{RESPONSE_TEMPLATE}"
+#)
 
-#CRITICAL: ALWAYS provide a COMPLETE response with:
-#- executive_summary (2 sentences minimum)
-#- 3+ primary_metrics with numbers
-#- 3+ key_findings  
-#- top_entities (3+ companies/countries)
-#- trends_forecast (2+ trends)
+SYSTEM_PROMPT = """You are a professional market research analyst. 
 
-#FOLLOW EXACTLY:
+CRITICAL: ALWAYS provide a COMPLETE response with:
+- executive_summary (2 sentences minimum)
+- 3+ primary_metrics with numbers
+- 3+ key_findings  
+- top_entities (3+ companies/countries)
+- trends_forecast (2+ trends)
 
-#1. Return ONLY a single JSON object. NO markdown, NO code blocks, NO explanations.
-#2. NO references like [1][2] inside JSON strings.
-#3. NO text before or after the JSON { ... }
-#4. Use ONLY these fields from the template below.
+FOLLOW EXACTLY:
 
-#EVEN IF WEB DATA IS SPARSE, use your knowledge to provide substantive analysis.
+1. Return ONLY a single JSON object. NO markdown, NO code blocks, NO explanations.
+2. NO references like [1][2] inside JSON strings.
+3. NO text before or after the JSON { ... }
+4. Use ONLY these fields from the template below.
 
-#For "electric vehicle market":
-#- Market size ~$600B+, growing 25% CAGR
-#- Leaders: Tesla (18%), BYD (15%), VW (9%)
-#- Trends: battery costs ‚Üì60%, China 60% global sales
+EVEN IF WEB DATA IS SPARSE, use your knowledge to provide substantive analysis.
 
-#NEVER return empty fields. Output ONLY valid JSON:\n"
-#f"{RESPONSE_TEMPLATE}"
-#""" 
+For "electric vehicle market":
+- Market size ~$600B+, growing 25% CAGR
+- Leaders: Tesla (18%), BYD (15%), VW (9%)
+- Trends: battery costs ‚Üì60%, China 60% global sales
 
-SYSTEM_PROMPT = """You are a **Senior Principal Market Strategy Consultant** at a top-tier consulting firm (e.g., McKinsey, Goldman Sachs). Your analysis is for a C-suite executive who needs high-impact, actionable intelligence.
-
-YOUR GOAL: Provide a comprehensive, deep, and quantified analysis. Do not be superficial or generic.
-
-CRITICAL INSTRUCTIONS:
-1. **Depth over Breadth:** Elaborate on *why* trends are happening, not just *what* they are. Every point should provide a quantified impact or strategic insight.
-2. **Quantify Everything:** Use numbers, percentages, and $ values wherever possible from the provided context. If context is missing, use internal knowledge to provide realistic estimates.
-3. **Strategic Lens:** The **Executive Summary** must synthesize all key information into a dense, standalone paragraph (5-8 sentences). Focus on clear, high-impact implications, opportunities, and risks.
-4. **Structure:**
-   - **Metrics:** Use the structure for `primary_metrics` correctly (Dictionary of objects).
-   - **Drivers & Challenges:** Explicitly list what pushes and pulls the market, providing detail for each point.
-
-RESPONSE FORMAT:
-1. Return ONLY a single JSON object.
-2. NO markdown, NO code blocks (i.e., NO ```json or ```).
-3. Use the exact JSON structure provided in the template below.
-4. NEVER return empty fields. Use your internal knowledge if web data is sparse.
-5. Output ONLY valid JSON:\n"
+NEVER return empty fields. Output ONLY valid JSON:\n"
 f"{RESPONSE_TEMPLATE}"
 """ 
 
@@ -749,26 +718,26 @@ def parse_trends_to_chart(trends):
         values.extend([float(n.strip('%$BMT')) for n in nums[:3]])
     return labels[:5], values[:5]  # Limit for chart
 
-
+# Note: Ensure 'import re' is at the top of your financial_assistant_v2 (2).py file.
 
 def parse_json_robustly(json_string, context):
     """
     Parses a JSON string safely.
     1. Isolates the main JSON object.
-    2. Performs structural repairs (unquoted keys, boolean fixes).
-    3. Uses a highly robust iterative repair loop to fix unescaped quotes (the cause of 'Unterminated string').
+    2. Uses an iterative repair loop to fix unescaped quotes based on parser errors.
     """
     if not json_string:
         return {}
     
     cleaned_string = json_string.strip()
     
-    # 1. Clean up wrappers and control characters
+    # 1. Clean up wrappers
     if cleaned_string.startswith("```json"):
         cleaned_string = cleaned_string[7:].strip()
     if cleaned_string.endswith("```"):
         cleaned_string = cleaned_string[:-3].strip()
 
+    # Remove unescaped newlines/tabs
     cleaned_string = cleaned_string.replace('\n', ' ').replace('\t', ' ')
     cleaned_string = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned_string)
 
@@ -779,73 +748,60 @@ def parse_json_robustly(json_string, context):
     else:
         st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
+
+    # 3. Iterative Repair Loop
+    # We attempt to parse up to 5 times. If parsing fails on an unescaped quote,
+    # the parser tells us the position. We go back, escape that quote, and try again.
     
-    # 3. STRUCTURAL REPAIR: FIX UNQUOTED KEYS AND BOOLEANS (This helps stabilize the structure before the quote repair)
-    repaired_content = json_content
-    
-    try:
-        # Pattern 1: {key: -> {"key": (For keys at the start of an object or after a comma)
-        repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
-
-        # Fix: Capitalization of boolean/null values (e.g., 'True' -> 'true')
-        repaired_content = repaired_content.replace(': True', ': true')
-        repaired_content = repaired_content.replace(': False', ': false')
-        repaired_content = repaired_content.replace(': Null', ': null')
-        
-    except Exception as e:
-        st.warning(f"Structural key repair regex failed: {e}")
-
-    json_content = repaired_content # Update content for the iterative loop
-
-    # 4. ITERATIVE QUOTE REPAIR LOOP (Targeting 'Unterminated string' error)
-    max_retries = 15 # Increased retries just in case
+    max_retries = 10
     current_attempt = 0
     
     while current_attempt < max_retries:
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            # Check for error types caused by unescaped quotes
-            if not ("Unterminated string" in e.msg or "Expecting ',' delimiter" in e.msg or "Expecting value" in e.msg):
-                # If it's a different, unfixable error, fail gracefully
-                st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
-                st.caption(f"Error Context: {context}")
-                error_pos = e.pos if hasattr(e, 'pos') else 0
-                start = max(0, error_pos - 50)
-                end = min(len(json_content), error_pos + 50)
-                st.markdown(f"**Error near:** `{json_content[start:end]}`")
-                return {"parse_error": str(e)}
-
-            error_pos = e.pos
-            found_quote = -1
-            
-            # Search backwards from error_pos to find the nearest quote to escape
-            # We explicitly check that the quote is *not* already escaped.
-            for i in range(error_pos - 1, max(0, error_pos - 150), -1): # search back further
-                if i < len(json_content) and json_content[i] == '"':
-                    # Crucial check: if the preceding character is NOT a backslash, this is our unescaped quote.
-                    if i == 0 or json_content[i-1] != '\\':
+            # Check if the error is likely due to an unescaped quote
+            # "Expecting ',' delimiter" is the classic sign.
+            if "Expecting ',' delimiter" in e.msg or "Extra data" in e.msg:
+                # The error position (e.pos) is usually right AFTER the unexpected character.
+                # We need to find the quote that *caused* the string to end prematurely.
+                # We look backwards from the error position to find the nearest double quote.
+                
+                error_pos = e.pos
+                # Search backwards from error_pos for the first '"'
+                # We limit the search to avoid going back too far (e.g., 50 chars)
+                found_quote = -1
+                for i in range(error_pos - 1, max(0, error_pos - 100), -1):
+                    if json_content[i] == '"':
+                        # Check if it's already escaped (preceded by \)
+                        if i > 0 and json_content[i-1] == '\\':
+                            continue # Skip already escaped quotes
                         found_quote = i
                         break
+                
+                if found_quote != -1:
+                    # Escape the quote: Insert a backslash before it
+                    # We are modifying the string, so we construct a new one
+                    json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
+                    current_attempt += 1
+                    continue # Retry the loop with the fixed string
             
-            if found_quote != -1:
-                # Escape the quote: Insert a backslash before it
-                json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
-                current_attempt += 1
-                continue # Retry the loop with the fixed string
-            
-            # If the repair loop couldn't find a quote to fix after max attempts, fail
-            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
+            # If we couldn't handle the error or it's a different type, fail gracefully
+            st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
             st.caption(f"Error Context: {context}")
-            error_pos = e.pos if hasattr(e, 'pos') else 0
-            start = max(0, error_pos - 50)
-            end = min(len(json_content), error_pos + 50)
+            
+            # Show the crash location
+            start = max(0, e.pos - 50)
+            end = min(len(json_content), e.pos + 50)
             st.markdown(f"**Error near:** `{json_content[start:end]}`")
+            
             return {"parse_error": str(e)}
 
     # If we run out of retries
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
+
+# Around line 970, update the function definition:
 
 def render_dashboard(
     chosen_primary,
