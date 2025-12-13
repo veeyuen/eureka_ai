@@ -698,12 +698,13 @@ def parse_trends_to_chart(trends):
         values.extend([float(n.strip('%$BMT')) for n in nums[:3]])
     return labels[:5], values[:5]  # Limit for chart
 
+
 def parse_json_robustly(json_string, context):
     """
     Parses a JSON string safely.
     1. Isolates the main JSON object.
-    2. Performs final string value cleanup (e.g., fixing true/false capitalization).
-    3. Uses an iterative repair loop to fix unescaped quotes based on parser errors.
+    2. Performs aggressive structural repair (colons, unquoted keys).
+    3. Uses an iterative repair loop to fix unescaped quotes.
     """
     if not json_string:
         return {}
@@ -727,21 +728,38 @@ def parse_json_robustly(json_string, context):
         st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
     
-    # 3. Final String Content Cleanup (Non-iterative)
-    # Fix: Capitalization of boolean/null values (e.g., 'True' -> 'true')
+    # 3. Aggressive Structural Repair
     repaired_content = json_content
+    
+    # FIX A: Repair Unquoted Keys (Pattern 1 & 2 from previous successful step)
+    # The AI fails to quote the keys for sub-objects like primary_metrics.
+    try:
+        # Pattern 1: {key: -> {"key":
+        repaired_content = re.sub(r'\{(\s*)(\w+)(\s*):', r'{\1"\2"\3:', repaired_content)
+        # Pattern 2: , key: -> , "key":
+        repaired_content = re.sub(r',(\s*)(\w+)(\s*):', r',\1"\2"\3:', repaired_content)
+    except Exception as e:
+        st.warning(f"Unquoted key repair failed: {e}")
+        pass
+
+    # FIX B: Repair Missing Colons (Likely cause of current error)
+    # Pattern: Finds a closing double quote (end of key) followed by an opening double quote (start of value), 
+    # but without a colon in between: "} {"value"
+    # This also catches {"key" "value"}
+    try:
+        repaired_content = re.sub(r'"(\s*)"', r'":\1"', repaired_content) # Insert a colon after a quote followed by another quote (with optional space)
+    except Exception as e:
+        st.warning(f"Missing colon repair failed: {e}")
+        pass
+
+    # Fix C: Capitalization of boolean/null values (e.g., 'True' -> 'true')
     repaired_content = repaired_content.replace(': True', ': true')
     repaired_content = repaired_content.replace(': False', ': false')
     repaired_content = repaired_content.replace(': Null', ': null')
     
-    # Fix: Attempt to fix missing commas between key-value pairs
-    # Pattern: Finds a closing double-quote followed immediately by a non-space, non-comma, non-bracket, non-brace opening double-quote
-    # Example: "value1""key2" -> "value1","key2"
-    repaired_content = re.sub(r'"(\s*)([^,\}\]]{1})', r'",\1\2', repaired_content)
-
     json_content = repaired_content
 
-    # 4. Iterative Quote Repair Loop
+    # 4. Iterative Quote Repair Loop (Handles "Expecting ',' delimiter")
     max_retries = 10
     current_attempt = 0
     
@@ -749,7 +767,7 @@ def parse_json_robustly(json_string, context):
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            # Check if the error is likely due to an unescaped quote or missing structural element
+            # Check if the error is due to an unescaped quote or missing structural element
             if (
                 "Expecting ',' delimiter" in e.msg or
                 "Extra data" in e.msg or
@@ -780,8 +798,9 @@ def parse_json_robustly(json_string, context):
             st.caption(f"Error Context: {context}")
             
             # Show the crash location
-            start = max(0, e.pos - 50)
-            end = min(len(json_content), e.pos + 50)
+            error_pos = e.pos if hasattr(e, 'pos') else 21
+            start = max(0, error_pos - 50)
+            end = min(len(json_content), error_pos + 50)
             st.markdown(f"**Error near:** `{json_content[start:end]}`")
             
             return {"parse_error": str(e)}
