@@ -726,7 +726,7 @@ def parse_json_robustly(json_string: str, context: str = "") -> dict:
         if stripped_line.startswith('``````'):
             in_code_block = True
             continue
-        if in_code_block and stripped_line == '```
+        if in_code_block and stripped_line == '```':
             in_code_block = False
             continue
         if not in_code_block:
