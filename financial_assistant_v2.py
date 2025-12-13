@@ -1216,8 +1216,7 @@ def main():
         base_conf = scores[0]
 
         # 4. Secondary validation (Gemini)
-        st.info("Cross-validating with Gemini 2.5 Flash...")
-        from your_module import query_gemini  # or keep at top
+        st.info("Running validation...")
         secondary_resp = query_gemini(q)
 
         # 5. Parse raw JSONs with robust parser
