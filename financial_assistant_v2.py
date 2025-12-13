@@ -717,6 +717,21 @@ def render_evolution_layer(versions_history):
 # RENDER DASHBOARD
 # ----------------------------
 
+def parse_trends_to_chart(trends):
+    """Extract years/numbers from trend text for visualization"""
+    import re
+    labels, values = [], []
+    for trend in trends:
+        text = str(trend)
+        # Match years like 2023, 2024-2027
+        years = re.findall(r'20\d{2}', text)
+        # Match numbers like 25%, 20M, 11.2CAGR
+        nums = re.findall(r'[\d.]+[%B$TM]?', text)
+        labels.extend(years[:3])
+        values.extend([float(n.strip('%$BMT')) for n in nums[:3]])
+    return labels[:5], values[:5]  # Limit for chart
+
+
 def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
                      base_conf=None, src_conf=None, versions_history=None,
                      user_question="", secondary_resp=None, veracity_scores=None):
@@ -775,26 +790,34 @@ def render_dashboard(response, final_conf, sem_conf, num_conf, web_context=None,
 
     # Trend Visualization
     st.subheader("Trend Visualization")
-    vis = (
-        data.get("visual_data") or                    # Old schema
-        data.get("visualization_data", {}) or {}      # New schema
-    )
-    if "labels" in vis and "values" in vis:
+    vis = data.get('visualdata') or data.get('visualizationdata') or {}
+    if not (vis.get('labels') or ('trendline' in vis and vis['trendline'].get('labels'))):
+    # NEW: Infer simple trendline from trendsforecast or primarymetrics
+        if 'trendsforecast' in data and isinstance(data['trendsforecast'], list):
+            labels, values = parse_trends_to_chart(data['trendsforecast'])
+            if labels and values:
+                df = pd.DataFrame({'Period': labels, 'Value': values})
+                fig = px.line(df, x='Period', y='Value', title='Inferred Trends', markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+                vis = {}  # Mark as handled
+    if 'labels' in vis and 'values' in vis:
         try:
-            df = pd.DataFrame({"Period": vis["labels"], "Value": vis["values"]})
-            fig = px.line(df, x="Period", y="Value", title="Trends", markers=True)
+            df = pd.DataFrame({'Period': vis['labels'], 'Value': vis['values']})
+            fig = px.line(df, x='Period', y='Value', title='Trends', markers=True)
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
             st.warning(f"Visualization error: {e}")
-    elif "trend_line" in vis:
-        trend_line = vis.get("trend_line", {})
-        if "labels" in trend_line and "values" in trend_line:
-            df = pd.DataFrame({"Period": trend_line["labels"], "Value": trend_line["values"]})
-            fig = px.line(df, x="Period", y="Value", title="Trend Line", markers=True)
+    elif 'trendline' in vis:
+        trendline = vis.get('trendline')
+        if 'labels' in trendline and 'values' in trendline:
+            df = pd.DataFrame({'Period': trendline['labels'], 'Value': trendline['values']})
+            fig = px.line(df, x='Period', y='Value', title='Trend Line', markers=True)
             st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No visual data available.")
 
+
+                         
     # Data Table
     st.subheader("Data Table")
     table = data.get('table') or data.get('benchmarktable')
