@@ -749,18 +749,12 @@ def parse_trends_to_chart(trends):
         values.extend([float(n.strip('%$BMT')) for n in nums[:3]])
     return labels[:5], values[:5]  # Limit for chart
 
-# Note: Ensure 'import re' is at the top of your financial_assistant_v2 (2).py file.
-
-import json
-import streamlit as st
-import re 
-# Note: Ensure 'import re' is at the top of your financial_assistant_v2 (3).py file.
 
 def parse_json_robustly(json_string, context):
     """
     Parses a JSON string safely.
     1. Isolates the main JSON object.
-    2. Performs structural repairs (unquoted keys, boolean fixes).
+    2. Performs aggressive structural repairs (unquoted keys, boolean fixes).
     3. Uses an iterative repair loop to fix unescaped quotes.
     """
     if not json_string:
@@ -789,23 +783,23 @@ def parse_json_robustly(json_string, context):
     repaired_content = json_content
     
     try:
-        # Pattern 1: Find unquoted keys at the start of an object {key:
-        # Replace {key: with {"key":
-        repaired_content = re.sub(r'\{(\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*):', r'{\1"\2"\3:', repaired_content)
+        # **NEW, AGGRESSIVE REGEX:** Quotes any word followed by a colon, but not if it's already quoted.
+        # This is a dangerous but necessary fix for very malformed LLM output.
+        # Finds: [any char that is not a quote or brace] [word] :
+        # Replaces with: [same char] "word" :
+        
+        # This pattern targets keys that are not quoted and don't contain spaces/special chars
+        repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
 
-        # Pattern 2: Find unquoted keys after a comma , key:
-        # Replace , key: with , "key":
-        repaired_content = re.sub(r',(\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*):', r',\1"\2"\3:', repaired_content)
+        # Fix: Capitalization of boolean/null values (e.g., 'True' -> 'true')
+        repaired_content = repaired_content.replace(': True', ': true')
+        repaired_content = repaired_content.replace(': False', ': false')
+        repaired_content = repaired_content.replace(': Null', ': null')
         
     except Exception as e:
-        st.warning(f"Unquoted key repair regex failed: {e}")
+        st.warning(f"Structural key repair regex failed: {e}")
         # Continue with original content if regex fails
 
-    # Fix: Capitalization of boolean/null values (e.g., 'True' -> 'true')
-    repaired_content = repaired_content.replace(': True', ': true')
-    repaired_content = repaired_content.replace(': False', ': false')
-    repaired_content = repaired_content.replace(': Null', ': null')
-    
     json_content = repaired_content # Update content for the iterative loop
 
     # 4. Iterative Quote Repair Loop (Handles internal unescaped quotes)
@@ -857,7 +851,6 @@ def parse_json_robustly(json_string, context):
     # If we run out of retries
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
-
 
 def render_dashboard(
     chosen_primary,
