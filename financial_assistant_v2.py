@@ -120,10 +120,17 @@ Return ONLY valid JSON in this flexible structure. Populate ALL fields with rele
     {"trend": "Another trend", "direction": "‚Üë", "timeline": "2026"}
   ],
   "visualization_data": {
-    "trend_line": {"labels": ["2023","2024","2025"], "values": [18,22,25]},
-    "comparison_bars": {"categories": ["A","B","C"], "values": [25,18,12]}
-  },
-  "benchmark_table": [
+    "trend_line": {
+      "title": "YoY Growth Projection (Sample)",
+      "labels": ["Year 1","Year 2","Year 3","Year 4"],
+      "values": [15, 20, 25, 30] // Must be four numerical values
+    },
+    "comparison_bars": {
+      "title": "Market Share by Segment (Sample)",
+      "categories": ["Segment A", "Segment B", "Segment C"],
+      "values": [45, 30, 25] // Must be three numerical values that sum to 100
+    },
+   "benchmark_table": [
     {"category": "Company A", "value_1": 25.5, "value_2": 623},
     {"category": "Company B", "value_1": 18.2, "value_2": 450}
   ],
@@ -176,6 +183,7 @@ CRITICAL: ALWAYS provide a COMPLETE response with:
 - 3+ key_findings  
 - top_entities (3+ companies/countries)
 - trends_forecast (2+ trends)
+- Data Visualization Mandate: ** The `visualization_data` field **MUST be populated**. If you cannot find explicit time-series or comparative data in the provided context, you **MUST generate realistic, synthetic data** that visually represents the trends and findings described in the text (e.g., market growth or market share distribution). NEVER leave this field empty.
 
 FOLLOW EXACTLY:
 
@@ -887,62 +895,80 @@ def render_dashboard(
                 st.markdown(f"- {finding}")
 
     # =========================================================
-    # 2. TREND VISUALIZATION (Fixes for missing keys & list data)
+    # 2. TREND VISUALIZATION
     # =========================================================
-    st.subheader("Trend Visualization")
+    st.subheader("📈 Trend Visualization")
     
-    # 1. Try to find the explicit visualization data
-    vis = data.get('visual_data') or data.get('visualization_data') or {} 
-    vis['rendered'] = False
-    
-    if vis.get('type') == 'bar' and vis.get('data'):
-        # Existing logic for explicit chart data
-        try:
-            df_chart = pd.DataFrame(vis['data'])
-            fig = px.bar(
-                df_chart, 
-                x=vis.get('x_axis', df_chart.columns[0]), 
-                y=vis.get('y_axis', df_chart.columns[1]), 
-                title=vis.get('title', 'Generated Trend Chart')
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            vis['rendered'] = True
-        except Exception:
-            vis['rendered'] = False
+    viz_data = data.get("visualization_data", {})
 
-    # 2. FIX: Fallback to use 'top_entities' list data to create a simple bar chart
-    if not vis.get('rendered', False) and 'top_entities' in data and isinstance(data['top_entities'], list) and data['top_entities']:
-        try:
-            df_bar = pd.DataFrame(data['top_entities'])
-            # Clean the 'share' column for charting (removes non-numeric chars like %, $, B and handles commas)
-            if 'share' in df_bar.columns and 'name' in df_bar.columns:
-                df_bar['share_val'] = (
-                    df_bar['share']
-                    .astype(str)
-                    .str.replace('[%B$]', '', regex=True)
-                    .str.replace(',', '', regex=False)
-                    .astype(float)
+    col_line, col_bar = st.columns(2)
+
+    # --- Trend Line Chart ---
+    with col_line:
+        trend_line = viz_data.get("trend_line", {})
+        
+        # Check if the required data structure is present
+        if trend_line and trend_line.get("labels") and trend_line.get("values"):
+            try:
+                # 1. Ensure values are numeric (Plotly needs numbers, not strings)
+                numeric_values = [float(v) for v in trend_line["values"]]
+                
+                df_line = pd.DataFrame({
+                    'Category': trend_line["labels"],
+                    'Value': numeric_values
+                })
+                
+                # Use the new 'title' field from the JSON
+                title_line = trend_line.get("title", "Market Trend Line Analysis")
+                
+                fig_line = px.line(
+                    df_line, 
+                    x='Category', 
+                    y='Value', 
+                    title=title_line,
+                    markers=True
                 )
+                fig_line.update_layout(yaxis_title="Value (%)") # Default to percentage or general "Value"
+                st.plotly_chart(fig_line, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Failed to render Trend Line Chart. Check 'values' format: {e}")
+        else:
+            st.info("Trend Line Visualization data is currently unavailable.")
+
+    # --- Comparison Bar Chart ---
+    with col_bar:
+        comparison_bars = viz_data.get("comparison_bars", {})
+        
+        # Check if the required data structure is present
+        if comparison_bars and comparison_bars.get("categories") and comparison_bars.get("values"):
+            try:
+                # 1. Ensure values are numeric
+                numeric_values = [float(v) for v in comparison_bars["values"]]
+
+                df_bar = pd.DataFrame({
+                    'Category': comparison_bars["categories"],
+                    'Value': numeric_values
+                })
                 
-                # Sort and take top 5 for cleaner visualization
-                df_bar = df_bar.sort_values(by='share_val', ascending=False).head(5)
-                
-                fig = px.bar(
+                # Use the new 'title' field from the JSON
+                title_bar = comparison_bars.get("title", "Comparison Bar Analysis")
+
+                fig_bar = px.bar(
                     df_bar, 
-                    x='name', 
-                    y='share_val', 
-                    title='Top Entities Market Share (Fallback)', 
-                    labels={'share_val': 'Market Share (%)'}
+                    x='Category', 
+                    y='Value', 
+                    title=title_bar,
+                    text='Value' # Show values on the bars
                 )
-                st.plotly_chart(fig, use_container_width=True)
-                vis['rendered'] = True
-        except Exception:
-            # Silently fail if fallback chart creation fails
-            pass
-
-    if not vis.get('rendered', False):
-        st.info("No structured visual data available.")
-
+                fig_bar.update_traces(texttemplate='%{text}', textposition='outside')
+                fig_bar.update_layout(uniformtext_minsize=8, uniformtext_mode='hide', yaxis_title="Value (%)")
+                
+                st.plotly_chart(fig_bar, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Failed to render Comparison Bar Chart. Check 'values' format: {e}")
+        else:
+            st.info("Comparison Bar Visualization data is currently unavailable.")
+    
 
     # =========================================================
     # 3. DATA TABLE (Fixes for missing keys & list data)
