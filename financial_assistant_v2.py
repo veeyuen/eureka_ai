@@ -952,7 +952,14 @@ def render_dashboard(
         history_df = history_df.sort_values(by='timestamp', ascending=False)
         
         # Format the timestamp
-        history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+      #  history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+        history_df['timestamp'] = pd.to_datetime(
+        history_df['timestamp'], 
+        format='ISO8601', 
+        errors='coerce' # Handle any remaining bad entries by turning them into NaT
+        )
+        # Then, format the datetime object for display
+        history_df['timestamp'] = history_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
         
         st.dataframe(history_df[['version', 'timestamp', 'confidence', 'sources_freshness', 'change_reason']].head(5), use_container_width=True)
     else:
