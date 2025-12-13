@@ -172,8 +172,9 @@ RESPONSE FORMAT:
 3. Use the exact JSON structure provided below.
 4. NEVER return empty fields. Use your internal knowledge if web data is sparse.
 
-JSON TEMPLATE:
-""" + RESPONSE_TEMPLATE
+"Strictly follow this JSON structure:\n"
+f"{RESPONSE_TEMPLATE}"
+""" 
 
 
 @st.cache_resource(show_spinner="Loading AI models...")
