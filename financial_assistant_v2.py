@@ -720,7 +720,7 @@ def parse_trends_to_chart(trends):
 
 
 def parse_json_robustly(json_string, context):
-    """Parses a JSON string safely, handling decoding errors."""
+    """Parses a JSON string safely, handling decoding errors and LLM formatting issues."""
     if not json_string:
         return {}
     try:
@@ -733,7 +733,7 @@ def parse_json_robustly(json_string, context):
             
         return json.loads(cleaned_string)
     except json.JSONDecodeError as e:
-        st.error(f"Error parsing {context} response. Check Debug Information for raw output.")
+        st.error(f"Error parsing {context} response. The LLM provided malformed JSON.")
         st.caption(f"Decoding Error: {e}")
         return {"parse_error": str(e)}
 
@@ -741,7 +741,10 @@ def parse_json_robustly(json_string, context):
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-import numpy as np # Ensure this is imported for any complex array/data handling
+import numpy as np
+from datetime import datetime # Ensure this is imported if used elsewhere
+
+# Note: The 'parse_json_robustly' function must be defined above this function in your file.
 
 def render_dashboard(
     chosen_primary,
@@ -782,6 +785,13 @@ def render_dashboard(
     primary_metrics = data.get("primary_metrics", [])
     if isinstance(primary_metrics, list):
         for i, metric in enumerate(primary_metrics):
+            
+            # FIX: Ensure the item is a string before attempting to split or strip
+            if not isinstance(metric, str):
+                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}.")
+                continue # Skip this entry and move to the next
+            
+            # Original parsing logic follows:
             if ':' in metric:
                 key, value = metric.split(':', 1)
             else:
@@ -798,6 +808,7 @@ def render_dashboard(
             else:
                 break # Only display first 4
                 
+            # Now, key and value are guaranteed to be strings or derived from strings
             col.metric(key.strip(), value.strip())
 
     # --- Key Findings ---
@@ -805,7 +816,9 @@ def render_dashboard(
     if isinstance(key_findings, list):
         st.subheader("Key Findings & Insights")
         for finding in key_findings:
-            st.markdown(f"- {finding}")
+            # Ensure finding is a string before printing
+            if isinstance(finding, str):
+                st.markdown(f"- {finding}")
 
     # =========================================================
     # 2. TREND VISUALIZATION (Fixes for missing keys & list data)
@@ -883,6 +896,10 @@ def render_dashboard(
         metrics_list = data['primary_metrics']
         rows = []
         for item in metrics_list:
+            # Ensure it is a string before parsing
+            if not isinstance(item, str):
+                continue
+            
             # Parse "Key: Value" strings into a two-column table
             if ':' in item:
                 category, value = item.split(':', 1)
@@ -897,7 +914,7 @@ def render_dashboard(
     if not table_data and 'key_findings' in data and isinstance(data['key_findings'], list):
         findings_list = data['key_findings']
         # Convert list of strings into a list of dictionaries for a simple table
-        table_data = [{'Finding': f.strip()} for f in findings_list if f.strip()]
+        table_data = [{'Finding': f.strip()} for f in findings_list if isinstance(f, str) and f.strip()]
         st.caption("Displaying Key Findings (fallback for missing table).")
 
 
@@ -942,23 +959,25 @@ def render_dashboard(
         st.dataframe(veracity_df, use_container_width=True)
 
     # =========================================================
-    # 5. EVOLUTION LAYER & HISTORY
+    # 5. EVOLUTION LAYER & HISTORY (Fixes for timestamp parsing)
     # =========================================================
     st.subheader("Analysis History")
     
     if isinstance(versions_history, list) and versions_history:
-        # Sort history by timestamp (assuming latest is at index 0)
+        
         history_df = pd.DataFrame(versions_history)
+        
+        # FIX: Robustly convert the timestamp column using ISO8601 format
+        history_df['timestamp'] = pd.to_datetime(
+            history_df['timestamp'], 
+            format='ISO8601', 
+            errors='coerce' # Set errors='coerce' to turn bad data into NaT instead of raising an error
+        )
+
+        # Sort history by timestamp
         history_df = history_df.sort_values(by='timestamp', ascending=False)
         
-        # Format the timestamp
-      #  history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
-        history_df['timestamp'] = pd.to_datetime(
-        history_df['timestamp'], 
-        format='ISO8601', 
-        errors='coerce' # Handle any remaining bad entries by turning them into NaT
-        )
-        # Then, format the datetime object for display
+        # Format the datetime object for display
         history_df['timestamp'] = history_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
         
         st.dataframe(history_df[['version', 'timestamp', 'confidence', 'sources_freshness', 'change_reason']].head(5), use_container_width=True)
@@ -994,6 +1013,8 @@ def render_dashboard(
                 if i < 5:
                     with st.expander(f"Source {i+1}: {title} (From: {url})"):
                         st.write(snippet_text)
+
+
 
 # ----------------------------
 # MAIN WORKFLOW
