@@ -700,115 +700,101 @@ def parse_trends_to_chart(trends):
     return labels[:5], values[:5]  # Limit for chart
 
 
-def parse_json_robustly(json_string, context):
+def parse_json_robustly(json_string: str, context: str = ""):
     """
-    Parses a JSON string safely.
-    1. Isolates the main JSON object.
-    2. Performs aggressive structural repair (colons, unquoted keys).
-    3. Uses an iterative repair loop to fix unescaped quotes.
+    Safely parse a JSON string with light, conservative repairs.
+
+    - Trims leading/trailing whitespace and control characters.
+    - Tries normal json.loads first.
+    - If that fails, truncates at the last '}' or ']' and retries.
+    - If there is an 'Unterminated string' error, attempts to close the string.
+    - Returns a Python object on success, or {"parseerror": "..."} on failure.
     """
+
     if not json_string:
-        return {}
-    
-    cleaned_string = json_string.strip()
-    
-    # 1. Clean up wrappers and control characters
-    if cleaned_string.startswith("```json"):
-        cleaned_string = cleaned_string[7:].strip()
-    if cleaned_string.endswith("```"):
-        cleaned_string = cleaned_string[:-3].strip()
+        msg = "Empty JSON string."
+        st.error(f"JSON parse failed: {msg} (context: {context})")
+        return {"parseerror": msg}
 
-    cleaned_string = cleaned_string.replace('\n', ' ').replace('\t', ' ')
-    cleaned_string = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned_string)
+    # 1. Basic cleanup
+    cleaned = json_string.strip()
+    # Remove obvious control characters that often sneak in
+    cleaned = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", cleaned)
 
-    # 2. Isolate the main JSON object
-    match = re.search(r'\{.*\}', cleaned_string, flags=re.DOTALL)
-    if match:
-        json_content = match.group(0)
-    else:
-        st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
-        return {"parse_error": "No JSON object found."}
-    
-    # 3. Aggressive Structural Repair
-    repaired_content = json_content
-    
-    # FIX A: Repair Unquoted Keys (Pattern 1 & 2 from previous successful step)
-    # The AI fails to quote the keys for sub-objects like primary_metrics.
-    try:
-        # Pattern 1: {key: -> {"key":
-        repaired_content = re.sub(r'\{(\s*)(\w+)(\s*):', r'{\1"\2"\3:', repaired_content)
-        # Pattern 2: , key: -> , "key":
-        repaired_content = re.sub(r',(\s*)(\w+)(\s*):', r',\1"\2"\3:', repaired_content)
-    except Exception as e:
-        st.warning(f"Unquoted key repair failed: {e}")
-        pass
-
-    # FIX B: Repair Missing Colons (Likely cause of current error)
-    # Pattern: Finds a closing double quote (end of key) followed by an opening double quote (start of value), 
-    # but without a colon in between: "} {"value"
-    # This also catches {"key" "value"}
-    try:
-        repaired_content = re.sub(r'"(\s*)"', r'":\1"', repaired_content) # Insert a colon after a quote followed by another quote (with optional space)
-    except Exception as e:
-        st.warning(f"Missing colon repair failed: {e}")
-        pass
-
-    # Fix C: Capitalization of boolean/null values (e.g., 'True' -> 'true')
-    repaired_content = repaired_content.replace(': True', ': true')
-    repaired_content = repaired_content.replace(': False', ': false')
-    repaired_content = repaired_content.replace(': Null', ': null')
-    
-    json_content = repaired_content
-
-    # 4. Iterative Quote Repair Loop (Handles "Expecting ',' delimiter")
-    max_retries = 10
-    current_attempt = 0
-    
-    while current_attempt < max_retries:
+    # Helper: single safe parse attempt
+    def try_parse(payload: str):
         try:
-            return json.loads(json_content)
+            return json.loads(payload), None
         except json.JSONDecodeError as e:
-            # Check if the error is due to an unescaped quote or missing structural element
-            if (
-                "Expecting ',' delimiter" in e.msg or
-                "Extra data" in e.msg or
-                "Unterminated string" in e.msg or
-                "Expecting value" in e.msg or
-                "Invalid control character" in e.msg
-            ):
-                error_pos = e.pos
-                found_quote = -1
-                
-                # Search backwards from error_pos to find the nearest quote to escape
-                for i in range(error_pos - 1, max(0, error_pos - 100), -1):
-                    if i < len(json_content) and json_content[i] == '"':
-                        # Check if it's already escaped (preceded by \)
-                        if i > 0 and json_content[i-1] == '\\':
-                            continue 
-                        found_quote = i
-                        break
-                
-                if found_quote != -1:
-                    # Escape the quote: Insert a backslash before it
-                    json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
-                    current_attempt += 1
-                    continue # Retry
-            
-            # If we couldn't handle the error or ran out of fixes, fail gracefully
-            st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
-            st.caption(f"Error Context: {context}")
-            
-            # Show the crash location
-            error_pos = e.pos if hasattr(e, 'pos') else 21
-            start = max(0, error_pos - 50)
-            end = min(len(json_content), error_pos + 50)
-            st.markdown(f"**Error near:** `{json_content[start:end]}`")
-            
-            return {"parse_error": str(e)}
+            return None, e
 
-    # If we run out of retries
-    st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
-    return {"parse_error": "Max retries exceeded"}
+    # 2. First attempt
+    parsed, err = try_parse(cleaned)
+    if parsed is not None:
+        return parsed
+
+    # 3. Truncate at last closing brace/bracket (removes trailing junk)
+    last_brace = cleaned.rfind("}")
+    last_bracket = cleaned.rfind("]")
+    cut_pos = max(last_brace, last_bracket)
+
+    if cut_pos != -1:
+        truncated = cleaned[: cut_pos + 1].strip()
+        parsed, err = try_parse(truncated)
+        if parsed is not None:
+            return parsed
+        cleaned = truncated  # keep for further repair
+    else:
+        # If there is no closing brace/bracket at all, give up early
+        msg = f"JSON appears structurally incomplete (no closing '}}' or ']'). Context: {context}"
+        st.error(f"JSON parse failed: {msg}")
+        return {"parseerror": msg}
+
+    # 4. Handle unterminated strings and simple quote issues
+    #    We do a few small repair attempts, then stop.
+    max_retries = 5
+    current = cleaned
+
+    for _ in range(max_retries):
+        parsed, err = try_parse(current)
+        if parsed is not None:
+            return parsed
+
+        if not isinstance(err, json.JSONDecodeError):
+            break
+
+        msg = err.msg or ""
+        pos = getattr(err, "pos", None)
+
+        # Case: unterminated string literal
+        if "Unterminated string" in msg and pos is not None:
+            # Try to close the string at error position
+            start_quote = current.rfind('"', 0, pos)
+            if start_quote != -1:
+                # Insert a closing quote at error position
+                current = current[:pos] + '"' + current[pos:]
+                continue
+
+        # Case: invalid control character inside string → strip around pos
+        if "Invalid control character" in msg and pos is not None:
+            current = current[:pos] + current[pos + 1 :]
+            continue
+
+        # Case: trailing comma before '}' or ']'
+        if "Expecting property name enclosed in double quotes" in msg:
+            # Remove trailing commas before } or ]
+            current = re.sub(r",\s*([}\]])", r"\1", current)
+            continue
+
+        # If we reach here, no specific repair rule matched → break
+        break
+
+    # 5. Final failure: return structured error instead of raising
+    snippet = current[:500]
+    msg = f"JSON parse failed after conservative repairs. Error: {err}. Context: {context}. Snippet: {snippet!r}"
+    st.error(msg)
+    return {"parseerror": msg}
+
 
 
 def render_dashboard(
