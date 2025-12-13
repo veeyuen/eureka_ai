@@ -1256,7 +1256,7 @@ def main():
         This product is currently in prototype stage.
         """)
     with c2:
-        web_status = "‚úÖ Enabled" if SERPAPI_KEY else "‚ö†Ô∏è Not configured"
+        web_status = "✅ Enabled" if SERPAPI_KEY else "‚ö†Ô∏è Not configured"
         st.metric("Web Search", web_status)
 
     q = st.text_input("Enter your question about markets, finance, or economics:")
