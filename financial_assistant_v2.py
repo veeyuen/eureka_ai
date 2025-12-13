@@ -95,105 +95,85 @@ def source_quality_confidence(sources):
 #}
 #"""
 
+# ----------------------------
+# 1. EXPANDED JSON TEMPLATE
+# ----------------------------
 RESPONSE_TEMPLATE = """
-Return ONLY valid JSON in this flexible structure. Populate ALL fields with relevant data:
+Return ONLY valid JSON in this flexible structure. Populate ALL fields with deep, relevant data:
 
 {
-  "executive_summary": "1-2 sentence high-level answer to the core question",
+  "executive_summary": "Detailed 3-5 sentence strategic summary answering the core question, highlighting the 'so what?', and providing a forward-looking conclusion.",
   "primary_metrics": {
-    "metric_1": {"name": "Key Metric 1", "value": 25.5, "unit": "%"},
-    "metric_2": {"name": "Key Metric 2", "value": 623, "unit": "$B"},
-    "metric_3": {"name": "Key Metric 3", "value": 12.5, "unit": "x"}
+    "metric_1": {"name": "Key Metric 1", "value": "e.g. 600", "unit": "e.g. $B"},
+    "metric_2": {"name": "Key Metric 2", "value": "e.g. 12.5", "unit": "%"},
+    "metric_3": {"name": "Key Metric 3", "value": "e.g. 150", "unit": "M Units"},
+    "metric_4": {"name": "Key Metric 4", "value": "e.g. 45", "unit": "% Share"}
   },
   "key_findings": [
-    "Finding 1 with quantified impact",
-    "Finding 2 explaining drivers",
-    "Finding 3 highlighting opportunities/risks"
+    "Finding 1: Detailed insight with quantified impact (e.g., 'Market grew 20% due to X')",
+    "Finding 2: Strategic driver explanation",
+    "Finding 3: Emerging risk or opportunity",
+    "Finding 4: Regulatory or technological shift",
+    "Finding 5: Competitive dynamic"
+  ],
+  "market_drivers": [
+    "Driver 1: Detailed description of a factor propelling growth",
+    "Driver 2: Technological or consumer behavior catalyst"
+  ],
+  "market_challenges": [
+    "Challenge 1: Primary headwind (e.g., supply chain, regulation)",
+    "Challenge 2: Economic or competitive hurdle"
   ],
   "top_entities": [
-    {"name": "Entity 1", "share": "25%", "growth": "15%"},
-    {"name": "Entity 2", "share": "18%", "growth": "22%"},
-    {"name": "Entity 3", "share": "12%", "growth": "-3%"}
+    {"name": "Entity 1", "share": "25%", "details": "Market leader, strong in [Region]"},
+    {"name": "Entity 2", "share": "15%", "details": "Challenger brand, growing 20% YoY"},
+    {"name": "Entity 3", "share": "10%", "details": "Niche player focusing on premium segment"}
   ],
   "trends_forecast": [
-    {"trend": "Trend description", "direction": "↑/↓/↔", "timeline": "2025-2027"},
-    {"trend": "Another trend", "direction": "↑", "timeline": "2026"}
+    {"trend": "Trend Name", "impact": "High/Med/Low", "timeline": "2025-2027", "details": "Brief explanation"},
+    {"trend": "Trend Name", "impact": "High", "timeline": "2026", "details": "Brief explanation"}
   ],
   "visualization_data": {
     "trend_line": {"labels": ["2023","2024","2025"], "values": [18,22,25]},
     "comparison_bars": {"categories": ["A","B","C"], "values": [25,18,12]}
   },
   "benchmark_table": [
-    {"category": "Company A", "value_1": 25.5, "value_2": 623},
-    {"category": "Company B", "value_1": 18.2, "value_2": 450}
+    {"category": "Metric A", "value_1": 25.5, "value_2": 623},
+    {"category": "Metric B", "value_1": 18.2, "value_2": 450}
   ],
   "sources": ["source1.com", "source2.com"],
   "confidence": 87,
-  "freshness": "Dec 2025",
-  "action": {
-    "recommendation": "Buy/Hold/Neutral/Sell",
-    "confidence": "High/Medium/Low",
-    "rationale": "1-sentence reason"
-  }
+  "freshness": "Dec 2025"
 }
 """
 
-#SYSTEM_PROMPT = (
-#    "You are a research analyst focused on topics related to industry analysis, business sectors, finance, economics, and markets.\n"
-#    "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
-#    "that are specifically relevant to the exact question the user asks.\n"
-#    "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
-#    "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
-#    "For example, if the user asks about the size of the sneaker market in Asia, include metrics like market size in USD, projected growth rates,"
-#    "and exclude unrelated metrics such as inflation or unemployment. Also include information on the major brands of sneakers involved and the trends in the marketplace.\n"
-#    "If the question is related to macroeconomics or the underlying drivers are macroeconomic, you may include macroeconomic indicators such as GDP growth, inflation, population size etc.\n"
-#    "If the question is not related to business, finance, economics or the markets politely decline to answer the question.\n"
-#    "Strictly follow this JSON structure:\n"
-#    f"{RESPONSE_TEMPLATE}"
-#)
+# ----------------------------
+# 1. EXPANDED JSON TEMPLATE
+# ----------------------------
+# ----------------------------
+# 2. SENIOR ANALYST SYSTEM PROMPT
+# ----------------------------
+SYSTEM_PROMPT = """You are a Senior Market Research Analyst at a top-tier consulting firm (e.g., McKinsey, Goldman Sachs).
 
-#SYSTEM_PROMPT = (
-#    "You are an AI research analyst covering:\n"
-#    "- Macroeconomics (GDP, inflation, rates, unemployment)\n"
-#    "- **Industry analysis** (market size, growth, major players, trends)\n"
-#    "- Business sectors (EV, tech, consumer goods, energy, biotech, etc.)\n\n"
-#    "For industry queries, include:\n"
-#    "- Market size/revenue\n"
-#    "- Growth rates/CAGR\n"
-#    "- Top 3-5 companies + market share\n"
-#    "- Key trends/drivers\n"
-#    "- Relevant financial metrics\n\n"
-#    "ALWAYS provide analysis even if web results are sparse - use your knowledge.\n"
-#    "Output strictly valid JSON:\n"
-#    f"{RESPONSE_TEMPLATE}"
-#)
+YOUR GOAL: Provide a comprehensive, deep, and quantified analysis. Do not be superficial.
 
-SYSTEM_PROMPT = """You are a professional market research analyst. 
+CRITICAL INSTRUCTIONS:
+1. **Depth over Breadth:** Elaborate on *why* trends are happening, not just *what* they are.
+2. **Quantify Everything:** Use numbers, percentages, and $ values wherever possible.
+3. **Strategic Lens:** Focus on implications, opportunities, and risks.
+4. **Structure:**
+   - **Executive Summary:** A dense paragraph synthesizing the current state and future outlook.
+   - **Drivers & Challenges:** Explicitly list what pushes and pulls the market.
+   - **Entities:** Provide context on *why* they are leaders.
 
-CRITICAL: ALWAYS provide a COMPLETE response with:
-- executive_summary (2 sentences minimum)
-- 3+ primary_metrics with numbers
-- 3+ key_findings  
-- top_entities (3+ companies/countries)
-- trends_forecast (2+ trends)
+RESPONSE FORMAT:
+1. Return ONLY a single JSON object.
+2. NO markdown, NO code blocks.
+3. Use the exact JSON structure provided below.
+4. NEVER return empty fields. Use your internal knowledge if web data is sparse.
 
-FOLLOW EXACTLY:
-
-1. Return ONLY a single JSON object. NO markdown, NO code blocks, NO explanations.
-2. NO references like [1][2] inside JSON strings.
-3. NO text before or after the JSON { ... }
-4. Use ONLY these fields from the template below.
-
-EVEN IF WEB DATA IS SPARSE, use your knowledge to provide substantive analysis.
-
-For "electric vehicle market":
-- Market size ~$600B+, growing 25% CAGR
-- Leaders: Tesla (18%), BYD (15%), VW (9%)
-- Trends: battery costs ↓60%, China 60% global sales
-
-NEVER return empty fields. Output ONLY valid JSON:\n"
-f"{RESPONSE_TEMPLATE}"
-""" 
+JSON TEMPLATE:
+""" + RESPONSE_TEMPLATE
 
 
 @st.cache_resource(show_spinner="Loading AI models...")
