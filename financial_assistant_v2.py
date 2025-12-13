@@ -719,12 +719,8 @@ def parse_trends_to_chart(trends):
     return labels[:5], values[:5]  # Limit for chart
 
 
-import json
-import streamlit as st
-import re # Ensure 'import re' is at the top of your financial_assistant_v2.py file
-
 def parse_json_robustly(json_string, context):
-    """Parses a JSON string safely, handling decoding errors and common LLM formatting issues."""
+    """Parses a JSON string safely by aggressively isolating the main JSON object."""
     if not json_string:
         return {}
     
@@ -736,42 +732,36 @@ def parse_json_robustly(json_string, context):
     if cleaned_string.endswith("```"):
         cleaned_string = cleaned_string[:-3].strip()
 
-    # 2. FIX: Aggressive Pre-parsing Cleaning to handle delimiters and bad characters
-    
     # Remove all unescaped newlines and tabs, which frequently break JSON parsing
     cleaned_string = cleaned_string.replace('\n', ' ').replace('\t', ' ')
     
     # Remove non-standard control characters (common junk from web/LLM)
     cleaned_string = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned_string)
 
-    # FIX: Attempt to escape internal, unescaped double quotes. 
-    # This is a common cause of 'Expecting ,' errors.
-    # Pattern: Look for a sequence of non-quote characters followed by a quote, 
-    # then more non-quote characters, and escape that internal quote. (Best effort fix)
-    # The safest fix here is often a simpler substitution:
-    cleaned_string = cleaned_string.replace('\\"', '<<TEMP_QUOTE>>') # Protect already escaped quotes
-    cleaned_string = cleaned_string.replace('"', '\\"')               # Escape all quotes
-    cleaned_string = cleaned_string.replace('\"\\"', '"')           # Un-escape quotes that delimit keys/values
-    cleaned_string = cleaned_string.replace('<<TEMP_QUOTE>>', '\"')  # Restore protected quotes
+    # 2. FIX: Aggressively search for and extract the main JSON object {...}
+    # This regex is non-greedy and looks for the first '{' and the last '}'
+    # The 'flags=re.DOTALL' allows '.' to match newlines (though we stripped them, it's safer)
+    match = re.search(r'\{.*\}', cleaned_string, flags=re.DOTALL)
+    
+    if match:
+        json_content = match.group(0)
+    else:
+        st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
+        return {"parse_error": "No JSON object found."}
 
+    # 3. Final attempt to load the isolated JSON string
     try:
-        # 3. Final attempt to load the aggressively cleaned string
-        return json.loads(cleaned_string)
+        return json.loads(json_content)
         
     except json.JSONDecodeError as e:
         # If parsing still fails, provide detailed error information
-        st.error(f"JSON parse failed after cleaning: {e}")
+        st.error(f"JSON parse failed after aggressive cleaning: {e}")
         st.caption(f"Error Context: {context}")
         
         # Display the cleaned string for debugging
-        # You can see the problematic area near char 2045 here
-        if len(cleaned_string) > 2000:
-             st.code(cleaned_string[2000:2100], language="text") 
+        st.code(json_content, language="json") 
         
         return {"parse_error": str(e)}
-
-# Note: The 'parse_json_robustly' function must be defined above this function in your file.
-
 def render_dashboard(
     chosen_primary,
     final_conf,
