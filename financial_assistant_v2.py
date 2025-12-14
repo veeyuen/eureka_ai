@@ -59,17 +59,17 @@ def classify_source_reliability(source):
 
     for high in high_sources:
         if high in source:
-            return "‚úÖ High"
+            return "✅ High"
     for medium in medium_sources:
         if medium in source:
-            return "‚ö†Ô∏è Medium"
+            return "⚠️ Medium"
     for low in low_sources:
         if low in source:
-            return "‚ùå Low"
-    return "‚ö†Ô∏è Medium"  # default fallback
+            return "❌ Low"
+    return "⚠️ Medium"  # default fallback
 
 def source_quality_confidence(sources):
-    weights = {"‚úÖ High": 1.0, "‚ö†Ô∏è Medium": 0.6, "‚ùå Low": 0.3}
+    weights = {"✅ High": 1.0, "⚠️ Medium": 0.6, "❌ Low": 0.3}
     total_score = 0
     count = 0
     for source in sources:
@@ -230,7 +230,7 @@ domain_classifier, embedder = load_models()
 @st.cache_data(ttl=3600)
 def search_serpapi(query: str, num_results: int = 5):
     if not SERPAPI_KEY:
-        st.info("üí° SerpAPI key not configured.")
+        st.info("💡 SerpAPI key not configured.")
         return []
     
     # SMART QUERY CLASSIFICATION
@@ -298,10 +298,10 @@ def search_serpapi(query: str, num_results: int = 5):
         return results[:num_results]
      #   return results
     except requests.exceptions.RequestException as e:
-        st.warning(f"‚ö†Ô∏è SerpAPI search error: {e}")
+        st.warning(f"⚠️ SerpAPI search error: {e}")
         return []
     except Exception as e:
-        st.warning(f"‚ö†Ô∏è Error processing SerpAPI results: {e}")
+        st.warning(f"⚠️ Error processing SerpAPI results: {e}")
         return []
 
 def scrape_url_scrapingdog(url: str):
@@ -325,7 +325,7 @@ def scrape_url_scrapingdog(url: str):
         text = '\n'.join(chunk for chunk in chunks if chunk)
         return text[:3000]
     except Exception as e:
-        st.warning(f"‚ö†Ô∏è ScrapingDog error for {url[:50]}: {e}")
+        st.warning(f"⚠️ ScrapingDog error for {url[:50]}: {e}")
         return None
 
 def fetch_web_context(query: str, num_sources: int = 3): 
@@ -338,13 +338,13 @@ def fetch_web_context(query: str, num_sources: int = 3):
     
     scraped_content = {}
     if SCRAPINGDOG_KEY:
-        st.info(f"üîç Scraping top {min(num_sources, len(search_results_sorted))} sources...")
+        st.info(f"🔍 Scraping top {min(num_sources, len(search_results_sorted))} sources...")
         for i, result in enumerate(search_results_sorted[:num_sources]):
             url = result["link"]
             content = scrape_url_scrapingdog(url)
             if content:
                 scraped_content[url] = content
-                st.success(f"‚úì Scraped {i+1}/{num_sources}: {result['source']}")
+                st.success(f"✓ Scraped {i+1}/{num_sources}: {result['source']}")
     context_parts = []
     reliabilities = []
 
@@ -368,7 +368,7 @@ def fetch_web_context(query: str, num_sources: int = 3):
         "source_reliability": reliabilities,
     }
 
-def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
+def query_perplexity_with_context(query: str, web_context: dict, temperature=0):
     # FALLBACK: Check web context quality
     search_results_count = len(web_context.get("search_results", []))
     
@@ -494,7 +494,7 @@ def query_gemini(query: str):
         response = gemini_model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
+                temperature=0,
                 max_output_tokens=2000,
             ),
         )
