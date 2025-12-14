@@ -99,8 +99,8 @@ RESPONSE_TEMPLATE = """
 Return ONLY valid JSON in this flexible structure. Populate ALL fields with relevant data:
 
 {
-  "executive_summary": "1-2 sentence high-level answer to the core question",
-  "primary_metrics": {
+    "executive_summary": "1-2 sentence high-level answer to the core question",
+    "primary_metrics": {
     "metric_1": {"name": "Key Metric 1", "value": 25.5, "unit": "%"},
     "metric_2": {"name": "Key Metric 2", "value": 623, "unit": "$B"},
     "metric_3": {"name": "Key Metric 3", "value": 12.5, "unit": "x"}
@@ -120,10 +120,10 @@ Return ONLY valid JSON in this flexible structure. Populate ALL fields with rele
     {"trend": "Another trend", "direction": "‚Üë", "timeline": "2026"}
   ],
   "visualization_data": {
-    "trend_line": {
-      "title": "YoY Growth Projection (Sample)",
-      "labels": ["Year 1","Year 2","Year 3","Year 4"],
-      "values": [15, 20, 25, 30] // Must be four numerical values
+  "title": "YoY Growth",
+  "chart_labels": ["Year 1", "Year 2"],
+  "data_series_label": "Market Size ($B)",
+  "data_series_values": [100, 120]
     },
     "comparison_bars": {
       "title": "Market Share by Segment (Sample)",
@@ -190,14 +190,14 @@ FOLLOW EXACTLY:
 1. Return ONLY a single JSON object. NO markdown, NO code blocks, NO explanations.
 2. NO references like [1][2] inside JSON strings.
 3. NO text before or after the JSON { ... }
-4. Use ONLY these fields from the template below.
+4. Use ONLY the fields from the response template below.
+5. **Formatting Zero-Tolerance:**
+   - **MUST** enclose all property names (keys) in double quotes.
+   - **MUST NOT** include any trailing commas within objects or arrays (e.g., `[1, 2,]` is forbidden).
+   - **MUST** use a comma delimiter between all list elements and object properties.
+   - **MUST** escape any internal double quotes within string values using a backslash (e.g., `\"`).
 
 EVEN IF WEB DATA IS SPARSE, use your knowledge to provide substantive analysis.
-
-For "electric vehicle market":
-- Market size ~$600B+, growing 25% CAGR
-- Leaders: Tesla (18%), BYD (15%), VW (9%)
-- Trends: battery costs ‚Üì60%, China 60% global sales
 
 NEVER return empty fields. Output ONLY valid JSON:\n"
 f"{RESPONSE_TEMPLATE}"
