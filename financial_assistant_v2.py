@@ -729,7 +729,8 @@ def parse_trends_to_chart(trends):
 
 def parse_json_robustly(json_string, context):
     """
-    Parses a JSON string safely, addressing key quoting, trailing commas, and missing delimiters.
+    Parses a JSON string safely, addressing key quoting, trailing commas, 
+    missing delimiters, and unescaped double quotes (Unterminated string error).
     """
     if not json_string:
         return {}
@@ -757,18 +758,16 @@ def parse_json_robustly(json_string, context):
     repaired_content = json_content
     
     try:
-        # Fix 1: Insert missing commas between closing brace/bracket and a new key
-        # Looks for "}" or "]" followed immediately by a quoted key or an unquoted key
-        # This fixes: "item"}[ "next_key":...
+        # Fix 1: Insert missing commas between closing brace/bracket and a new key (Fixes 'Expecting ',' delimiter')
         repaired_content = re.sub(r'([\]\}])\s*["\'(a-zA-Z_]', r'\1,', repaired_content)
 
-        # Fix 2: {key: -> {"key": (For keys at the start of an object or after a comma)
+        # Fix 2: {key: -> {"key": (Fixes 'Expecting property name enclosed in double quotes')
         repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
 
         # Fix 3: Remove illegal trailing commas (Fixes 'Expecting value' failure)
         repaired_content = re.sub(r',\s*([\]\}])', r'\1', repaired_content)
         
-        # Fix 4: Capitalization of boolean/null values (e.g., 'True' -> 'true')
+        # Fix 4: Capitalization of boolean/null values
         repaired_content = repaired_content.replace(': True', ': true')
         repaired_content = repaired_content.replace(': False', ': false')
         repaired_content = repaired_content.replace(': Null', ': null')
@@ -778,19 +777,17 @@ def parse_json_robustly(json_string, context):
 
     json_content = repaired_content # Update content for the iterative loop
 
-    # 4. ITERATIVE QUOTE REPAIR LOOP (Targeting 'Unterminated string' errors)
-    max_retries = 15
+    # 4. ITERATIVE QUOTE REPAIR LOOP (TARGETING 'UNTERMINATED STRING' ERROR)
+    max_retries = 20 # Increased retries
     current_attempt = 0
     
     while current_attempt < max_retries:
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            # Check for error types caused by unescaped quotes
+            # Check for error types caused by unescaped quotes or delimiter issues
             if not ("Unterminated string" in e.msg or "Expecting ',' delimiter" in e.msg or "Expecting value" in e.msg):
-                # If it's a different, unfixable error, fail gracefully
                 st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
-                st.caption(f"Error Context: {context}")
                 error_pos = e.pos if hasattr(e, 'pos') else 0
                 start = max(0, error_pos - 50)
                 end = min(len(json_content), error_pos + 50)
@@ -801,25 +798,24 @@ def parse_json_robustly(json_string, context):
             found_quote = -1
             
             # Search backwards from error_pos to find the nearest quote to escape
-            for i in range(error_pos - 1, max(0, error_pos - 150), -1): 
+            for i in range(error_pos - 1, max(0, error_pos - 200), -1): # Increased search range
                 if i < len(json_content) and json_content[i] == '"':
+                    # Crucial check: if the preceding character is NOT a backslash, this is our unescaped quote.
                     if i == 0 or json_content[i-1] != '\\':
                         found_quote = i
                         break
             
             if found_quote != -1:
+                # 🌟 THIS IS THE LINE THAT FIXES YOUR CURRENT ERROR
                 json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
                 current_attempt += 1
-                continue 
+                continue # Retry the loop with the fixed string
             
-            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not fix error near position {error_pos}.")
+            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
             return {"parse_error": str(e)}
 
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
-
-
-
 
 def render_dashboard(
     chosen_primary,
