@@ -727,13 +727,9 @@ def parse_trends_to_chart(trends):
     return labels[:5], values[:5]  # Limit for chart
 
 
-
 def parse_json_robustly(json_string, context):
     """
-    Parses a JSON string safely.
-    1. Isolates the main JSON object.
-    2. Performs structural repairs (unquoted keys, boolean fixes, and trailing comma removal).
-    3. Uses a highly robust iterative repair loop to fix unescaped quotes (the cause of 'Unterminated string').
+    Parses a JSON string safely, addressing key quoting, trailing commas, and missing delimiters.
     """
     if not json_string:
         return {}
@@ -757,28 +753,32 @@ def parse_json_robustly(json_string, context):
         st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
     
-    # 3. STRUCTURAL REPAIR: FIX UNQUOTED KEYS, BOOLEANS, AND TRAILING COMMAS
+    # 3. AGGRESSIVE STRUCTURAL REPAIR: FIX KEYS, COMMAS, AND BOOLEANS
     repaired_content = json_content
     
     try:
-        # Pattern 1: {key: -> {"key": (For keys at the start of an object or after a comma)
+        # Fix 1: Insert missing commas between closing brace/bracket and a new key
+        # Looks for "}" or "]" followed immediately by a quoted key or an unquoted key
+        # This fixes: "item"}[ "next_key":...
+        repaired_content = re.sub(r'([\]\}])\s*["\'(a-zA-Z_]', r'\1,', repaired_content)
+
+        # Fix 2: {key: -> {"key": (For keys at the start of an object or after a comma)
         repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
 
-        # Fix: Capitalization of boolean/null values (e.g., 'True' -> 'true')
+        # Fix 3: Remove illegal trailing commas (Fixes 'Expecting value' failure)
+        repaired_content = re.sub(r',\s*([\]\}])', r'\1', repaired_content)
+        
+        # Fix 4: Capitalization of boolean/null values (e.g., 'True' -> 'true')
         repaired_content = repaired_content.replace(': True', ': true')
         repaired_content = repaired_content.replace(': False', ': false')
         repaired_content = repaired_content.replace(': Null', ': null')
         
-        # 🟢 NEW FIX: Remove trailing commas before a closing brace/bracket
-        # This fixes the 'Expecting value' error caused by illegal trailing commas.
-        repaired_content = re.sub(r',\s*([\]\}])', r'\1', repaired_content) 
-        
     except Exception as e:
-        st.warning(f"Structural key repair regex failed: {e}")
+        st.warning(f"Structural repair regex failed: {e}")
 
     json_content = repaired_content # Update content for the iterative loop
 
-    # 4. ITERATIVE QUOTE REPAIR LOOP (Targeting 'Unterminated string' error)
+    # 4. ITERATIVE QUOTE REPAIR LOOP (Targeting 'Unterminated string' errors)
     max_retries = 15
     current_attempt = 0
     
@@ -803,29 +803,24 @@ def parse_json_robustly(json_string, context):
             # Search backwards from error_pos to find the nearest quote to escape
             for i in range(error_pos - 1, max(0, error_pos - 150), -1): 
                 if i < len(json_content) and json_content[i] == '"':
-                    # Crucial check: if the preceding character is NOT a backslash, this is our unescaped quote.
                     if i == 0 or json_content[i-1] != '\\':
                         found_quote = i
                         break
             
             if found_quote != -1:
-                # Escape the quote: Insert a backslash before it
                 json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
                 current_attempt += 1
-                continue # Retry the loop with the fixed string
+                continue 
             
-            # If the repair loop couldn't find a quote to fix after max attempts, fail
-            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
-            st.caption(f"Error Context: {context}")
-            error_pos = e.pos if hasattr(e, 'pos') else 0
-            start = max(0, error_pos - 50)
-            end = min(len(json_content), error_pos + 50)
-            st.markdown(f"**Error near:** `{json_content[start:end]}`")
+            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not fix error near position {error_pos}.")
             return {"parse_error": str(e)}
 
-    # If we run out of retries
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
+
+
+
+
 def render_dashboard(
     chosen_primary,
     final_conf,
