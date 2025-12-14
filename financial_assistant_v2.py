@@ -847,7 +847,7 @@ def render_dashboard(
         st.error("Cannot render dashboard due to severe parsing error in the LLM response.")
         return
 
-    st.header("Analysis Summary")
+    st.header("Summary Analysis")
 
     # =========================================================
     # 1. METRICS (SUMMARY & KEY FINDINGS) (OLD code displayed in row format)
