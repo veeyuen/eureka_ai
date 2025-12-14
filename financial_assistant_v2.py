@@ -898,6 +898,16 @@ def render_dashboard(
 # =========================================================
     # 2. METRICS (KEY PERFORMANCE INDICATORS) - NOW DISPLAYED AS A TABLE
     # =========================================================
+    st.header(f"💰 Market Strategy Analysis: {user_question}")
+    
+    executive_summary = data.get("executive_summary", "Executive Summary not available.")
+    
+    # Ensure the title matches your C-suite target audience
+    st.subheader("Executive Summary")
+    
+    # Display the summary text
+    st.markdown(f"**{executive_summary}**")
+     
     st.subheader("📊 Key Performance Indicators (KPIs)")
     
     primary_metrics = data.get("primary_metrics", [])
@@ -1515,7 +1525,7 @@ def main():
         # Store ALL versions for individual pages (NEW)
         st.session_state["all_versions"] = versions_history
         st.session_state["current_analysis"] = {
-        "summary": j1.get("summary", ""),
+        "summary": j1.get("executive_summary", ""),
         "metrics": j1.get("metrics", {}),
         "confidence": final_conf
         }
