@@ -1018,20 +1018,22 @@ def render_dashboard(
     st.markdown("---")
     
     # Sources - ENHANCED WITH RELIABILITY
-    st.subheader("🔗 Sources & Reliability")
-    sources = data.get('sources', [])
-    reliabilities = source_reliability or []  # Use passed reliability data
 
-    if sources:
-        for i, (src, reliability) in enumerate(zip(sources[:10], reliabilities[:10]), 1):
-            if src:
-                if src.startswith("http"):
-                    st.markdown(f"**{i}.** [{src}]({src}) **{reliability}**")
-            else:
-                st.markdown(f"**{i}.** {src} **{reliability}**")
+    st.subheader("🔗 Sources & Reliability")
+    all_sources = data.get('sources', []) or web_context.get('sources', [])
+
+    if not all_sources:
+        st.info("No sources found in response")
     else:
-        st.info("No sources available")
-    
+        st.success(f"Found {len(all_sources)} sources")
+        for i, src in enumerate(all_sources[:10], 1):
+        reliability = classify_source_reliability(str(src))
+        if src.startswith("http"):
+            st.markdown(f"**{i}.** [{src}]({src})  **{reliability}**")
+        else:
+            st.markdown(f"**{i}.** `{src}`  **{reliability}**")
+
+        
     # Metadata
     col_fresh, col_action = st.columns(2)
     with col_fresh:
