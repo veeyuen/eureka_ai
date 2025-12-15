@@ -758,10 +758,9 @@ def parse_json_robustly(json_string, context):
     repaired_content = json_content
     
     try:
-        # Fix 1: Insert missing commas between closing quote/brace/bracket and a new quote/brace/bracket/key
-        # This is the most crucial fix for 'Expecting ',' delimiter'
-        # It looks for structure like "value"{"key": or "value"next_key: or "value"
-        repaired_content = re.sub(r'([\"\]\}])\s*(?=[^,\]\}])', r'\1,', repaired_content)
+        # Fix 1: Insert missing commas between elements (Crucial for 'Expecting ',' delimiter')
+        # Looks for " or ] or } followed by whitespace and then any character that is not a comma, closing brace, or closing bracket. 
+        repaired_content = re.sub(r'([\"\]\}])\s*(\s*)(?=[^,\]\}])', r'\1,\2', repaired_content)
 
         # Fix 2: {key: -> {"key": (Fixes 'Expecting property name enclosed in double quotes')
         repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
@@ -776,7 +775,6 @@ def parse_json_robustly(json_string, context):
         
     except Exception as e:
         st.warning(f"Structural repair regex failed: {e}")
-        # If structural regex fails, we fall back to the iterative repair, but we want the regex to succeed.
 
     json_content = repaired_content # Update content for the iterative loop
 
