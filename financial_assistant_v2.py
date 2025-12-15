@@ -729,8 +729,8 @@ def parse_trends_to_chart(trends):
 
 def parse_json_robustly(json_string, context):
     """
-    Parses a JSON string safely, addressing all common LLM errors: key quoting, 
-    trailing commas, missing delimiters, and unescaped double quotes.
+    Parses a JSON string safely, addressing key quoting, trailing commas, 
+    missing delimiters, and unescaped double quotes (Unterminated string error).
     """
     if not json_string:
         return {}
@@ -758,9 +758,8 @@ def parse_json_robustly(json_string, context):
     repaired_content = json_content
     
     try:
-        # Fix 1: Insert missing commas between elements (Crucial for 'Expecting ',' delimiter')
-        # Looks for " or ] or } followed by whitespace and then any character that is not a comma, closing brace, or closing bracket. 
-        repaired_content = re.sub(r'([\"\]\}])\s*(\s*)(?=[^,\]\}])', r'\1,\2', repaired_content)
+        # Fix 1: Insert missing commas between closing brace/bracket and a new key (Fixes 'Expecting ',' delimiter')
+        repaired_content = re.sub(r'([\]\}])\s*["\'(a-zA-Z_]', r'\1,', repaired_content)
 
         # Fix 2: {key: -> {"key": (Fixes 'Expecting property name enclosed in double quotes')
         repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
@@ -779,14 +778,14 @@ def parse_json_robustly(json_string, context):
     json_content = repaired_content # Update content for the iterative loop
 
     # 4. ITERATIVE QUOTE REPAIR LOOP (TARGETING 'UNTERMINATED STRING' ERROR)
-    max_retries = 20
+    max_retries = 20 # Increased retries
     current_attempt = 0
     
     while current_attempt < max_retries:
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            # Check for error types
+            # Check for error types caused by unescaped quotes or delimiter issues
             if not ("Unterminated string" in e.msg or "Expecting ',' delimiter" in e.msg or "Expecting value" in e.msg):
                 st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
                 error_pos = e.pos if hasattr(e, 'pos') else 0
@@ -799,187 +798,143 @@ def parse_json_robustly(json_string, context):
             found_quote = -1
             
             # Search backwards from error_pos to find the nearest quote to escape
-            for i in range(error_pos - 1, max(0, error_pos - 200), -1): 
+            for i in range(error_pos - 1, max(0, error_pos - 200), -1): # Increased search range
                 if i < len(json_content) and json_content[i] == '"':
+                    # Crucial check: if the preceding character is NOT a backslash, this is our unescaped quote.
                     if i == 0 or json_content[i-1] != '\\':
                         found_quote = i
                         break
             
             if found_quote != -1:
+                # 🌟 THIS IS THE LINE THAT FIXES YOUR CURRENT ERROR
                 json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
                 current_attempt += 1
-                continue 
+                continue # Retry the loop with the fixed string
             
-            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not fix error near position {error_pos}.")
+            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
             return {"parse_error": str(e)}
 
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
 
-
-
-def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_conf, src_conf, versions_history, user_question, secondary_resp, veracity_scores, show_secondary_view):
+def render_dashboard(
+    chosen_primary,
+    final_conf,
+    sem_conf,
+    num_conf,
+    web_context,
+    base_conf,
+    src_conf,
+    versions_history,
+    user_question,
+    secondary_resp=None,
+    veracity_scores=None,
+    show_secondary_view=False # 🟢 2A. ADD THIS PARAMETER
+):
     """
-    Renders the financial analysis dashboard using Streamlit.
-    'data' must be the PARSED JSON dictionary (e.g., j1).
+    Renders the main analysis dashboard using data from the primary response.
+    Includes robust fallbacks for charts and tables to address missing keys.
     """
+    # Use the robust parser here
+    data = parse_json_robustly(chosen_primary, "Primary")
 
-    SECTION_MAPPING = {
-        "executive_summary": "Executive Summary",
-        "primary_metrics": "📊 Key Performance Indicators (KPIs)",
-        "key_findings": "🔍 Core Insights & Key Findings",
-        "market_drivers": "🚀 Market Drivers",
-        "market_challenges": "🚧 Market Challenges",
-        "top_entities": "👑 Top Entities / Competitive Landscape",
-        "trends_forecast": "🔮 Trends & Future Forecast",
-        "visualization_data": "📈 Trend Visualization",
-        "benchmark_table": "⚖️ Competitive Benchmarks",
-        "sources": "📄 Data Sources & Confidence Breakdown",
-        "confidence": "Confidence Breakdown",
-        "freshness": "Data Freshness"
-    }
+    # Handle parsing failure before proceeding
+    if "parse_error" in data:
+        st.error("Cannot render dashboard due to severe parsing error in the LLM response.")
+        return
 
+    st.header("Summary Analysis")
 
+    # =========================================================
+    # 1. METRICS (SUMMARY & KEY FINDINGS) (OLD code displayed in row format)
+    # =========================================================
+#    st.subheader("Executive Summary")
+#    st.info(data.get("executive_summary", "Summary not available."))
     
-    # --- 1. EXECUTIVE SUMMARY & CONFIDENCE SCORE ---
-    summary_key = "executive_summary"
+#    st.subheader("Key Performance Indicators (KPIs)")
+#    col1, col2, col3, col4 = st.columns(4)
+
+#    primary_metrics = data.get("primary_metrics", [])
+    
+    # --- Primary Metrics: Handling the current LIST-OF-STRINGS structure ---
+#    if isinstance(primary_metrics, list):
+#        for i, metric in enumerate(primary_metrics):
+#            if not isinstance(metric, str):
+#                # 🟢 This is the line that generates your current error! 
+#                # The metric is a dict, but we are in the LIST block. We will skip it.
+#                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}. Check if your primary_metrics template is mixed.")
+#                continue 
+            
+            # This logic handles the old format like "Metric Name: Value"
+ #           if ':' in metric:
+ #               key, value = metric.split(':', 1)
+ #           else:
+                # If no colon, use a generic key
+ #               key, value = f"Metric {i+1}", metric
+                
+ #           col = [col1, col2, col3, col4][i % 4]
+ #           col.metric(key.strip(), value.strip())
+
+    # --- Primary Metrics: Fallback for the future DICT-OF-DICTS structure ---
+ #   elif isinstance(primary_metrics, dict):
+ #       for i, (key, metric_dict) in enumerate(primary_metrics.items()):
+ #           if not isinstance(metric_dict, dict):
+ #               st.warning(f"Skipping malformed metric entry ({key}): Expected dict, found {type(metric_dict).__name__}.")
+ #               continue 
+
+ #           name = metric_dict.get("name", key.replace('_', ' ').title())
+ #           value = metric_dict.get("value", "N/A")
+ #           unit = metric_dict.get("unit", "")
+            
+  #          display_value = f"{value} {unit}".strip()
+
+  #          col = [col1, col2, col3, col4][i % 4]
+  #          col.metric(name, display_value)
+            
+  #  else:
+  #      st.info("Primary metrics data is unavailable or in an unrecognized format.")
+
+
+# =========================================================
+    # 2. METRICS (KEY PERFORMANCE INDICATORS) - NOW DISPLAYED AS A TABLE
+    # =========================================================
     st.header(f"💰 Market Strategy Analysis: {user_question}")
     
-    # FIX: data is now confirmed to be a dictionary, allowing .get()
-    executive_summary = data.get(summary_key, "Executive Summary not available.")
+    executive_summary = data.get("executive_summary", "Executive Summary not available.")
     
-    st.subheader(SECTION_MAPPING.get(summary_key, summary_key.replace('_', ' ').title()))
+    # Ensure the title matches your C-suite target audience
+    st.subheader("Executive Summary")
+    
+    # Display the summary text
     st.markdown(f"**{executive_summary}**")
-
-    # Display Confidence Score (Simplified)
-    st.markdown(f"**Overall Confidence Score:** **{final_conf}** (Based on Consensus & Validation)")
+     
+    st.subheader("📊 Key Performance Indicators (KPIs)")
     
-    st.markdown("---")
-
-    # --- 2. LAYOUT: TWO COLUMNS FOR ENTITIES AND FINDINGS ---
-    col_entities, col_findings = st.columns(2)
-
-    # =========================================================
-    # 2a. TOP ENTITIES & COMPETITORS (FIXED FOR MIXED TYPES)
-    # =========================================================
-    with col_entities:
-        entities_key = "top_entities"
-        st.subheader(SECTION_MAPPING.get(entities_key, entities_key.replace('_', ' ').title()))
-        top_entities = data.get(entities_key, [])
-        
-        if top_entities:
-            entity_data = []
-            
-            for entity in top_entities:
-                if isinstance(entity, dict):
-                    # Case 1: The item is a valid dictionary (as expected)
-                    entity_data.append({
-                        "Entity": entity.get("name", "N/A"),
-                        "Share": entity.get("share", "N/A"),
-                        "Details": entity.get("details", "N/A")
-                    })
-                elif isinstance(entity, str):
-                    # Case 2: The item is a string (FIX: ENHANCED Parsing for 'Name (Details)')
-                    
-                    # Regex looks for: (Name) space (open parenthesis) (details) (close parenthesis)
-                    match = re.search(r'^\s*([^\(]+?)\s*\((.*)\)\s*$', entity)
-                    
-                    if match:
-                        # Case 2a: Successfully parsed using (Name) (Detail) format
-                        entity_name = match.group(1).strip()
-                        entity_details = match.group(2).strip()
-                        
-                        entity_data.append({
-                            "Entity": entity_name,
-                            "Share": "N/A", 
-                            "Details": entity_details
-                        })
-                    elif ":" in entity:
-                        # Case 2b: Fallback to the previous simple split (Name: Detail)
-                        name, detail = entity.split(":", 1)
-                        entity_data.append({
-                            "Entity": name.strip(),
-                            "Share": "N/A",
-                            "Details": detail.strip()
-                        })
-                    else:
-                        # Case 2c: If it's just a name, use it as the entity
-                        entity_data.append({
-                            "Entity": entity.strip(),
-                            "Share": "N/A",
-                            "Details": "N/A"
-                        })
-                else:
-                    # Case 3: Unexpected type
-                    st.warning(f"Skipping malformed entity entry: Expected dict or string, found {type(entity).__name__}.")
-                    continue 
-
-            if entity_data:
-                try:
-                    df_entities = pd.DataFrame(entity_data)
-                    st.dataframe(df_entities, hide_index=True, use_container_width=True)
-                except Exception as e:
-                    st.warning(f"Could not render Top Entities table: {e}")
-            else:
-                st.info("No valid top entities data available.")
-        else:
-            st.info("No top entities data available.")
-            
-    # --- 2b. KEY FINDINGS ---
-    with col_findings:
-        findings_key = "key_findings"
-        st.subheader(SECTION_MAPPING.get(findings_key, findings_key.replace('_', ' ').title()))
-        key_findings = data.get(findings_key, [])
-        
-        if isinstance(key_findings, list) and key_findings:
-            markdown_list = "\n".join([f"- {item}" for item in key_findings])
-            st.markdown(markdown_list)
-        else:
-            st.info("Key findings not available.")
-
-    st.markdown("---")
-
-    # =========================================================
-    # 3. METRICS (KEY PERFORMANCE INDICATORS) - FIXED FOR MIXED TYPES
-    # =========================================================
-    metrics_key = "primary_metrics"
-    st.subheader(SECTION_MAPPING.get(metrics_key, metrics_key.replace('_', ' ').title()))
+    primary_metrics = data.get("primary_metrics", [])
     
-    primary_metrics = data.get(metrics_key, [])
+    # List to hold dictionaries for the DataFrame
     metrics_list = []
     
-    # Logic to handle the metrics array, which might be a mix of string and dict formats
     if isinstance(primary_metrics, list):
-        for i, metric_item in enumerate(primary_metrics):
-            if isinstance(metric_item, str):
-                # Handles Format 1: String "Metric Name: Value"
-                if ':' in metric_item:
-                    key, value = metric_item.split(':', 1)
-                    metrics_list.append({
-                        "Metric": key.strip(),
-                        "Value": value.strip()
-                    })
-                else:
-                    # Fallback for a plain string entry
-                    metrics_list.append({
-                        "Metric": f"Metric {i+1}",
-                        "Value": metric_item.strip()
-                    })
-            elif isinstance(metric_item, dict):
-                # Handles Format 2: Dictionary {"metric": ..., "value": ...}
-                name = metric_item.get("metric", metric_item.get("name", f"Metric {i+1}"))
-                value = metric_item.get("value", "N/A")
-                unit = metric_item.get("unit", "")
-                
+        for i, metric in enumerate(primary_metrics):
+            if not isinstance(metric, str):
+                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}.")
+                continue 
+            
+            # This logic handles the current format like "Metric Name: Value"
+            if ':' in metric:
+                key, value = metric.split(':', 1)
                 metrics_list.append({
-                    "Metric": name,
-                    "Value": f"{value} {unit}".strip()
+                    "Metric": key.strip(),
+                    "Value": value.strip()
                 })
             else:
-                # Fallback for any other unexpected type
-                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string or dict, found {type(metric_item).__name__}.")
+                metrics_list.append({
+                    "Metric": f"Metric {i+1}",
+                    "Value": metric.strip()
+                })
 
-    # Logic to handle the dict-of-dicts format (if the AI returns it)
+    # --- Fallback for the future DICT-OF-DICTS structure (if you change the template) ---
     elif isinstance(primary_metrics, dict):
         for key, metric_dict in primary_metrics.items():
             if isinstance(metric_dict, dict):
@@ -992,29 +947,280 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
                     "Value": f"{value} {unit}".strip()
                 })
 
-    # Final Table Rendering
+    # --- Final Table Rendering ---
     if metrics_list:
-        try:
-            df_metrics = pd.DataFrame(metrics_list)
-            st.table(df_metrics)
-        except Exception as e:
-             st.warning(f"Failed to render metrics table: {e}")
+        df_metrics = pd.DataFrame(metrics_list)
+        # Display the DataFrame as a static table (st.table) or interactive (st.dataframe)
+        st.table(df_metrics)
     else:
         st.info("Primary metrics data is unavailable.")
+    # =========================================================
+    # 2. TREND VISUALIZATION
+    # =========================================================
+    st.subheader("📈 Trend Visualization")
+    
+    viz_data = data.get("visualization_data", {})
+    
+    # Check if we have the Chart.js style data structure (data, labels, datasets)
+    if viz_data and viz_data.get("data") and viz_data["data"].get("labels") and viz_data["data"].get("datasets"):
         
-    # --- 4. PLACEHOLDERS FOR OTHER SECTIONS ---
-    # Placeholder for the secondary view logic
-    if show_secondary_view:
-        st.subheader("Secondary Validation View (Placeholder)")
-        st.write(f"Confidence (Semantic: {sem_conf}, Numeric: {num_conf})")
-        st.write(f"Secondary Response Data: {secondary_resp}")
-        st.write(f"Veracity Scores: {veracity_scores}")
+        # We process the first dataset found, assuming it's the main time-series line chart
+        datasets = viz_data["data"]["datasets"]
+        labels = viz_data["data"]["labels"]
         
-    # Placeholder for web context (as seen in traceback)
-    if web_context:
+        if datasets:
+            try:
+                # 1. Extract the data from the first dataset
+                chart_data = datasets[0]["data"]
+                chart_label = datasets[0].get("label", "Value")
+                
+                # 2. Ensure values are numeric (Plotly needs numbers)
+                numeric_values = [float(v) for v in chart_data]
+                
+                # 3. Create the Plotly DataFrame
+                df_line = pd.DataFrame({
+                    'Category': labels,
+                    chart_label: numeric_values # Use the actual label from the JSON
+                })
+                
+                # 4. Get the title
+                title_line = viz_data.get("title", "Market Trend Analysis")
+                
+                # 5. Render using Plotly
+                fig_line = px.line(
+                    df_line, 
+                    x='Category', 
+                    y=chart_label, 
+                    title=title_line,
+                    markers=True
+                )
+                
+                # Adjust Y-axis label dynamically (optional, but helpful)
+                y_title = f"{chart_label} (USD Billion)" if 'billion' in title_line.lower() else chart_label
+                fig_line.update_layout(yaxis_title=y_title)
+                
+                st.plotly_chart(fig_line, use_container_width=True)
+                
+                # 6. Display the description text below the chart
+                description = viz_data.get("description", "")
+                if description:
+                    st.caption(f"**Analysis:** {description}")
+                    
+            except Exception as e:
+                st.warning(f"Failed to render visualization data due to formatting error: {e}")
+                # Optional: Show the raw data for debug if rendering fails
+                # st.json(viz_data) 
+        else:
+            st.info("Trend Visualization data is missing a dataset.")
+
+    else:
+        st.info("Trend Visualization data is currently unavailable or in an unrecognized format.")
+        
+
+    # =========================================================
+    # 3. DATA TABLE (Fixes for missing keys & list data)
+    # =========================================================
+    st.subheader("Data Table")
+    
+    # 1. Try to find the explicit table data
+    table_data = data.get('benchmark_table') or data.get('table') or [] 
+
+    # 2. FIX: Fallback to use 'top_entities' list data if no explicit table is found
+    if not table_data and 'top_entities' in data and isinstance(data['top_entities'], list):
+        table_data = data['top_entities']
+        st.caption("Displaying Top Entities data (fallback for missing primary table).")
+
+    # 3. FIX: Fallback to primary_metrics (which is a list of strings)
+    if not table_data and 'primary_metrics' in data and isinstance(data['primary_metrics'], list):
+        metrics_list = data['primary_metrics']
+        rows = []
+        for item in metrics_list:
+            # Ensure it is a string before parsing
+            if not isinstance(item, str):
+                continue
+            
+            # Parse "Key: Value" strings into a two-column table
+            if ':' in item:
+                category, value = item.split(':', 1)
+                rows.append({'Metric': category.strip(), 'Value': value.strip()})
+            else:
+                rows.append({'Metric/Finding': item})
+        if rows:
+            table_data = rows
+            st.caption("Displaying Primary Metrics data (fallback for missing table).")
+
+    # 4. FIX: Fallback to key_findings (which is a list of strings)
+    if not table_data and 'key_findings' in data and isinstance(data['key_findings'], list):
+        findings_list = data['key_findings']
+        # Convert list of strings into a list of dictionaries for a simple table
+        table_data = [{'Finding': f.strip()} for f in findings_list if isinstance(f, str) and f.strip()]
+        st.caption("Displaying Key Findings (fallback for missing table).")
+
+
+    if table_data:
+        try:
+            # Ensure data is converted to DataFrame before rendering
+            df_table = pd.DataFrame(table_data)
+            # Use st.dataframe for table rendering
+            st.dataframe(df_table, use_container_width=True)
+        except Exception as e:
+            st.error(f"Failed to render table data: {e}")
+    else:
+        st.info("No tabular data available.")
+
+    # ... (Key Findings section ends here) ...
+    # ... (Market Dynamics: Drivers & Challenges section is likely here) ...
+
+    # =========================================================
+    # 4: TRENDS & FORECAST
+    # =========================================================
+    st.subheader("🔮 Future Trends & Forecast")
+    
+    trends = data.get("trends_forecast", [])
+    
+    if isinstance(trends, list) and trends:
+        for trend in trends:
+            # Check for the list-of-strings format (as seen in your JSON output)
+            if isinstance(trend, str):
+                st.markdown(f"- **{trend}**")
+            # Check for the list-of-dictionaries format (from the rich template)
+            elif isinstance(trend, dict):
+                trend_name = trend.get("trend", "Untitled Trend")
+                impact = trend.get("impact", "N/A")
+                timeline = trend.get("timeline", "N/A")
+                details = trend.get("details", "")
+                
+                # Render dictionary data in a richer format
+                st.markdown(f"- **{trend_name}** (Impact: {impact}, Timeline: {timeline})")
+                if details:
+                    st.markdown(f"  *{details}*")
+        
+        # Add a subtle separator after the list
         st.markdown("---")
-        st.subheader("Web Sources")
-        st.write(f"Web Sources Found: {len(web_context.get('search_results', []))} (Details hidden)")
+    else:
+        st.info("No detailed trend forecast available in the response.")
+    
+    # =========================================================
+
+    # ... (The rest of the function, like Trend Visualization, continues here) ...
+
+    # Insert this block inside the render_dashboard function:
+
+    # ... (Section for Confidence Score & Veracity ends here) ...
+
+    # =========================================================
+    # 5. NEW: SECONDARY RESPONSE DISPLAY (Controlled by Toggle)
+    # =========================================================
+    if show_secondary_view and secondary_resp:
+        st.markdown("---")
+        st.subheader("🤖 Secondary Model Output (Validation)")
+        st.caption("This data comes from the secondary model (Gemini) used for cross-validation.")
+        
+        # Try to parse it for pretty printing using st.json, fall back to raw code block if needed
+        try:
+            # Use the robust parser for safe display
+            parsed_sec = parse_json_robustly(secondary_resp, "Secondary Display")
+            
+            # If parsing succeeds and doesn't return an error dict, display it
+            if "parse_error" not in parsed_sec:
+                st.json(parsed_sec, expanded=False)
+            else:
+                st.warning("Secondary response parsing failed for display. Showing raw content.")
+                st.code(secondary_resp, language="json")
+                
+        except Exception as e:
+            st.error(f"Error displaying secondary response: {e}. Showing raw content.")
+            st.code(secondary_resp, language="json")
+    # =========================================================
+
+    # ... (The rest of the dashboard, like Analysis History, continues here) ...
+
+    # =========================================================
+    # 6. CONFIDENCE SCORE & VERACITY
+    # =========================================================
+    st.subheader("Confidence Score & Veracity")
+    colA, colB, colC = st.columns(3)
+    
+    if final_conf is not None:
+        colA.metric("Final Confidence", f"{final_conf:.2f}%")
+    
+    # Semantics (Secondary Model)
+    if sem_conf is not None:
+        colB.metric("Semantic Veracity", f"{sem_conf:.2f}%")
+        
+    # Numerical (Self-Correction)
+    if num_conf is not None:
+        colC.metric("Numerical Consistency", f"{num_conf:.2f}%")
+    
+    # --- Veracity Breakdown (New addition in v5.6) ---
+    if veracity_scores:
+        st.markdown("**Detailed Veracity Breakdown:**")
+        
+        # Display scores as a bar chart for comparison
+        veracity_df = pd.DataFrame(
+            veracity_scores.items(), 
+            columns=['Category', 'Score']
+        ).set_index('Category').T
+        
+        st.dataframe(veracity_df, use_container_width=True)
+
+    # =========================================================
+    # 7. EVOLUTION LAYER & HISTORY (Fixes for timestamp parsing)
+    # =========================================================
+    st.subheader("Analysis History")
+    
+    if isinstance(versions_history, list) and versions_history:
+        
+        history_df = pd.DataFrame(versions_history)
+        
+        # FIX: Robustly convert the timestamp column using ISO8601 format
+        history_df['timestamp'] = pd.to_datetime(
+            history_df['timestamp'], 
+            format='ISO8601', 
+            errors='coerce' # Set errors='coerce' to turn bad data into NaT instead of raising an error
+        )
+
+        # Sort history by timestamp
+        history_df = history_df.sort_values(by='timestamp', ascending=False)
+        
+        # Format the datetime object for display
+        history_df['timestamp'] = history_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+        
+        st.dataframe(history_df[['version', 'timestamp', 'confidence', 'sources_freshness', 'change_reason']].head(5), use_container_width=True)
+    else:
+        st.info("No historical analysis available.")
+
+    # =========================================================
+    # 8. RAW SOURCES AND CONTEXT
+    # =========================================================
+    st.subheader("Sources and Context")
+    
+    colS1, colS2 = st.columns(2)
+    
+    # Primary Source Confidence
+    if base_conf is not None:
+        colS1.metric("Base Model Confidence", f"{base_conf:.2f}%")
+        
+    # Source Freshness (Simulated/Calculated)
+    if src_conf is not None:
+        colS2.metric("Source Freshness (Days Ago)", f"{src_conf}")
+        
+    # Web Context Display
+    if web_context:
+        st.markdown("**Web Search Context:**")
+        # Ensure context is a list before iteration
+        if isinstance(web_context, list):
+            for i, snippet in enumerate(web_context):
+                url = snippet.get("url", "N/A")
+                title = snippet.get("title", "No Title")
+                snippet_text = snippet.get("snippet", "No snippet available.")
+                
+                # Only display the first 5 sources neatly
+                if i < 5:
+                    with st.expander(f"Source {i+1}: {title} (From: {url})"):
+                        st.write(snippet_text)
+
+
 
 # ----------------------------
 # MAIN WORKFLOW
@@ -1327,22 +1533,21 @@ def main():
         # In main() function, inside if st.button("Analyze") and q: block, around line 570:
 
         # CALL RENDER_DASHBOARD WITH NEW TOGGLE PARAMETER
-        # ... (inside main() function)
-
         render_dashboard(
-        j1, # 🟢 FIX: Pass the parsed dictionary, not the raw string
-        final_conf,
-        sem_conf,
-        num_conf,
-        web_context,
-        base_conf,
-        src_conf,
-        versions_history,
-        user_question=q,
-        secondary_resp=secondary_resp,
-        veracity_scores=veracity_scores,
-        show_secondary_view=show_validation
+            chosen_primary,
+            final_conf,
+            sem_conf,
+            num_conf,
+            web_context,
+            base_conf,
+            src_conf,
+            versions_history,
+            user_question=q,
+            secondary_resp=secondary_resp,
+            veracity_scores=veracity_scores,
+            show_secondary_view=show_validation  # 🟢 1B. PASS THE TOGGLE HERE
         )
+
 
         
 
