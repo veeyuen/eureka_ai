@@ -22,51 +22,70 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Dict, Optional, Any, Union
 
-class Metric(BaseModel):
-    name: str
-    value: float
-    unit: Optional[str] = ""
+# ----------------------------
+# 1. UPDATED PYDANTIC MODELS TO MATCH COMPLEX RESPONSE_TEMPLATE
+# ----------------------------
 
-class Finding(BaseModel):
-    id: int
-    finding: str
+class MetricDetail(BaseModel):
+    """Corresponds to the inner object in primary_metrics."""
+    name: str = Field(..., description="Key Metric Name")
+    value: Union[float, int, str] = Field(..., description="Key Metric Value (can be number or string with unit)")
+    unit: str = Field(..., description="Unit of measurement")
 
-class TopEntity(BaseModel):
-    type: str  # 'companies', 'countries', etc.
-    items: List[str]
+class TopEntityDetail(BaseModel):
+    """Corresponds to an item in top_entities."""
+    name: str = Field(..., description="Entity Name")
+    share: str = Field(..., description="Market Share/Position")
+    growth: str = Field(..., description="Growth Rate/Trend")
 
-class TimeSeriesData(BaseModel):
-    time_series_market_size_usd_billion: List[float]
+class TrendForecastDetail(BaseModel):
+    """Corresponds to an item in trends_forecast."""
+    trend: str = Field(..., description="Trend description")
+    direction: str = Field(..., description="Direction symbol (e.g., up arrow)")
+    timeline: str = Field(..., description="Timeline (e.g., 2025-2027)")
 
-class FlexibleVisualization(BaseModel):
-    time_series_market_size_usd_billion: List[float]
+class ComparisonBar(BaseModel):
+    """Corresponds to comparison_bars."""
+    title: str
+    categories: List[str]
+    values: List[Union[float, int]]
+
+class BenchmarkTable(BaseModel):
+    """Corresponds to an item in benchmark_table."""
+    category: str
+    value_1: Union[float, int]
+    value_2: Union[float, int]
+
+class Action(BaseModel):
+    """Corresponds to action field."""
+    recommendation: str
+    confidence: str
+    rationale: str
 
 class LLMResponse(BaseModel):
-    executive_summary: str
+    """The main response schema, matching the complex RESPONSE_TEMPLATE."""
+    executive_summary: str = Field(..., description="1-2 sentence high-level answer to the core question")
     
-    # LLM returns LIST OF STRINGS like ["Global semiconductor sales...", "Semiconductor manufacturing..."]
-    primary_metrics: List[str] = Field(default_factory=list)
+    # FIXED: primary_metrics is a DICT of MetricDetail objects
+    primary_metrics: Dict[str, MetricDetail] = Field(..., description="Dictionary of key metrics")
     
-    # LLM returns LIST OF STRINGS like ["Explosive demand...", "Regional growth..."]
-    key_findings: List[str] = Field(default_factory=list)
+    key_findings: List[str] = Field(..., description="List of key findings")
     
-    # LLM returns LIST OF STRINGS like ["Taiwan (leading...)", "China (key market...)"]
-    top_entities: List[str] = Field(default_factory=list)
+    # FIXED: top_entities is a LIST of TopEntityDetail objects
+    top_entities: List[TopEntityDetail] = Field(..., description="List of top entities")
     
-    trends_forecast: List[str] = Field(default_factory=list)
+    # FIXED: trends_forecast is a LIST of TrendForecastDetail objects
+    trends_forecast: List[TrendForecastDetail] = Field(..., description="List of trends and forecasts")
     
-    # Make viz flexible - accept any dict
-    visualization_data: Dict[str, Any] = Field(default_factory=dict)
+    # FIXED: visualization_data can be flexible for now
+    visualization_data: Dict[str, Any] = Field(..., description="Data for chart generation")
     
-    # Everything else optional
-    comparison_bars: Optional[Dict[str, Any]] = None
-    benchmark_table: Optional[List[Dict[str, Any]]] = None
-    sources: Optional[List[str]] = None
-    confidence: Optional[float] = None
+    comparison_bars: Optional[ComparisonBar] = None
+    benchmark_table: Optional[List[BenchmarkTable]] = None
+    sources: Optional[List[str]] = Field(default_factory=list)
+    confidence: Optional[Union[float, int]] = 0
     freshness: Optional[str] = None
-    action: Optional[Dict[str, Any]] = None
-
-
+    action: Optional[Action] = None
 
 # ----------------------------
 # CONFIGURATION
@@ -479,23 +498,31 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
         # 4. Validate against Pydantic schema
         try:
             llm_obj = LLMResponse.model_validate_json(cleaned)  # Pydantic v2
+            
+            # 5. FIXED: Manually update confidence from LLM response (can be an int or float string)
+            raw_confidence = llm_obj.confidence
+            if isinstance(raw_confidence, (str, int, float)):
+                 llm_obj.confidence = float(raw_confidence)
+            else:
+                 llm_obj.confidence = 0.0 # Default if field is missing or malformed
+
         except ValidationError as e:
             st.warning(
                 "LLM response failed schema validation; using fallback schema instead. "
                 f"Details: {e}"
             )
             
-            # 5. FIXED FALLBACK - matches SIMPLE string-list schema
+            # 6. FIXED FALLBACK - matches the *NEW COMPLEX* schema structure
             fallback = {
                 "executive_summary": (
                     f"Comprehensive analysis of '{query}' with {search_results_count} web sources, "
-                    "but the primary model output did not match the expected schema."
+                    "but the primary model output did not match the expected schema. Showing simple data."
                 ),
-                "primary_metrics": [
-                    f"Web Results: {search_results_count} sources found",
-                    "Source Quality: High confidence from reliable domains", 
-                    "Model Confidence: 80% alignment with market trends"
-                ],
+                # Fallback metrics must match Dict[str, MetricDetail]
+                "primary_metrics": {
+                    "source_count": {"name": "Sources Found", "value": search_results_count, "unit": "count"},
+                    "confidence_align": {"name": "Model Alignment", "value": 75.0, "unit": "%"}
+                },
                 "key_findings": [
                     f"Web search found {search_results_count} relevant sources.",
                     "Model generated detailed market analysis.",
@@ -504,16 +531,13 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
                 "top_entities": [],
                 "trends_forecast": [],
                 "visualization_data": {},
-                "comparison_bars": None,
-                "benchmark_table": None,
                 "sources": web_context.get("sources", []),
                 "confidence": 75.0,
                 "freshness": "Current (web-enhanced)",
-                "action": None,
             }
             llm_obj = LLMResponse(**fallback)
 
-        # 6. FIXED: Optionally merge web sources - SAFE None handling
+        # 7. Optionally merge web sources - SAFE None handling
         if web_context.get("sources"):
             # SAFE: Handle None values with empty list fallback
             existing_sources = llm_obj.sources or []
@@ -524,7 +548,7 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
             llm_obj.sources = merged_sources
             llm_obj.freshness = "Current (web-scraped + real-time search)"
 
-        # 7. Return as JSON string for storage / downstream rendering
+        # 8. Return as JSON string for storage / downstream rendering
         return llm_obj.model_dump_json()
 
     except requests.exceptions.RequestException as e:
@@ -553,30 +577,28 @@ def query_gemini(query: str):
             finish_reason = getattr(response, "finish_reason", None)
             st.warning(f"Gemini returned empty response. finish_reason={finish_reason}")
             raise Exception("Gemini returned empty response")
+        
+        # 🟢 FIXED: Pre-clean and validate Gemini output against the LLMResponse schema
+        cleaned = preclean_llm_json(content)
+        
         try:
-            json.loads(content)
-        except json.JSONDecodeError:
-         #   st.warning("Gemini returned non-JSON response, reformatting...")
-            content = json.dumps({
-                "summary": content[:500],
-                "key_insights": [content[:200]],
-                "metrics": {},
-                "visual_data": {},
-                "table": [],
-                "sources": [],
-                "confidence_score": 50,
-            })
-        return content
+             llm_obj = LLMResponse.model_validate_json(cleaned)
+             return llm_obj.model_dump_json() # Return valid JSON string
+        except ValidationError:
+            # Fallback to the raw cleaned string if validation fails (will be handled by main)
+            return cleaned 
+            
     except Exception as e:
         st.warning(f"Gemini API error: {e}")
+        # Return a JSON string that will minimally load and fail comparison softly
         return json.dumps({
-            "summary": "Gemini validation unavailable due to API error.",
-            "key_insights": ["Cross-validation could not be performed"],
-            "metrics": {},
-            "visual_data": {},
-            "table": [],
-            "sources": [],
-            "confidence_score": 0,
+            "executive_summary": "Gemini validation unavailable due to API error.",
+            "primary_metrics": {},
+            "key_findings": ["Cross-validation could not be performed"],
+            "top_entities": [],
+            "trends_forecast": [],
+            "visualization_data": {},
+            "confidence": 0,
         })
 
 # ----------------------------
@@ -592,7 +614,8 @@ def generate_self_consistent_responses_with_web(query, web_context, n=1):  # gen
         try:
             r = query_perplexity_with_context(query, web_context, temperature=0.1)
             responses.append(r)
-            scores.append(parse_confidence(r))
+            # 🟢 FIXED: Parse confidence from the JSON string
+            scores.append(parse_confidence(r)) 
             success_count += 1
         except Exception as e:
             st.warning(f"Attempt {i+1}/{n} failed: {e}")
@@ -615,8 +638,9 @@ def majority_vote(responses):
 
 def parse_confidence(text):
     try:
+        # 🟢 FIXED: Confidence is now within the top-level LLMResponse schema
         js = json.loads(text)
-        return float(js.get("confidence_score", 0))
+        return float(js.get("confidence", 0.0))
     except (json.JSONDecodeError, ValueError, TypeError):
         return 0.0
 
@@ -631,16 +655,22 @@ def semantic_similarity_score(a, b):
         return 0.0
 
 def numeric_alignment_score(j1, j2):
-    m1 = j1.get("metrics", {})
-    m2 = j2.get("metrics", {})
-    if not m1 or not m2:
-        return None
+    # 🟢 FIXED: Metrics are now a DICT of DICTS in the new schema
+    m1 = j1.get("primary_metrics", {})
+    m2 = j2.get("primary_metrics", {})
+    
+    # Extract values from the inner MetricDetail objects
+    v1_map = {k: v.get("value") for k, v in m1.items()}
+    v2_map = {k: v.get("value") for k, v in m2.items()}
+    
     total_diff = 0
     count = 0
-    for key in m1:
-        if key in m2:
+    
+    for key in v1_map:
+        if key in v2_map:
             try:
-                v1, v2 = float(m1[key]), float(m2[key])
+                # Attempt to convert values to float for comparison
+                v1, v2 = float(v1_map[key]), float(v2_map[key])
                 if v1 == 0 and v2 == 0:
                     diff = 0
                 elif max(abs(v1), abs(v2)) == 0:
@@ -675,31 +705,22 @@ def render_dynamic_metrics(question, metrics):
         st.info("No metrics available.")
         return
     
-    cols = st.columns(min(4, len(str(metrics)) // 50 + 1))  # Dynamic columns
-    
-    # HANDLE ALL CASES: strings, lists, dicts
-    if isinstance(metrics, str):
-        # Single string metric - display as key highlights
-        st.info(f"**Key Metrics:** {metrics}")
-        return
-    
-    elif isinstance(metrics, list):
-        for i, metric in enumerate(metrics[:4]):
-            col = cols[i % len(cols)]
-            if isinstance(metric, str):
-                col.metric("Metric", metric[:60] + "..." if len(metric) > 60 else metric)
-            elif isinstance(metric, dict):
-                name = metric.get('name', 'Metric')
-                value = str(metric.get('value', ''))
-                col.metric(name[:30], value)
-    
-    elif isinstance(metrics, dict):
+    cols = st.columns(min(4, len(metrics)))  # Dynamic columns
+
+    # 🟢 FIXED: Metrics is now expected to be Dict[str, MetricDetail]
+    if isinstance(metrics, dict):
         items = list(metrics.items())[:4]
-        for i, (key, value) in enumerate(items):
+        for i, (metric_key, metric_detail) in enumerate(items):
             col = cols[i % len(cols)]
-            display_val = str(value)[:40]
-            col.metric(key[:30], display_val)
-    
+            if isinstance(metric_detail, dict):
+                 name = metric_detail.get("name", metric_key)
+                 value = metric_detail.get("value", "N/A")
+                 unit = metric_detail.get("unit", "")
+                 display_val = f"{value} {unit}".strip()
+                 col.metric(name[:30], display_val)
+            else:
+                 col.info(f"{metric_key}: {str(metric_detail)[:30]}")
+
     else:
         st.info("Metrics format not recognized.")
 
@@ -720,6 +741,8 @@ def time_ago(ts_str):
         return "Just now"
 
 def display_metric_with_delta(label, current, previous):
+    # This is for the old metric structure. Needs updating if metrics is a dict of dicts.
+    # For now, keeping original logic, but be aware this may break if metrics change format.
     if current is None or previous is None:
         display_val = str(current) if current is not None else "N/A"
         st.metric(label=label, value=display_val)
@@ -730,8 +753,12 @@ def display_metric_with_delta(label, current, previous):
 def render_evolution_layer(versions_history):
     st.subheader("Evolution Layer - Version Control & Drift")
 
+    if not versions_history or len(versions_history) < 2:
+        st.info("No history available for evolution layer.")
+        return
+
     version_labels = [v["version"] for v in versions_history]
-    selected_ver = st.radio("Select version", version_labels, horizontal=True)
+    selected_ver = st.radio("Select version", version_labels, horizontal=True, index=len(version_labels)-1)
     selected_index = version_labels.index(selected_ver)
 
     updated_ts = versions_history[selected_index]["timestamp"]
@@ -740,10 +767,35 @@ def render_evolution_layer(versions_history):
     current_metrics = versions_history[selected_index]["metrics"]
     previous_metrics = (versions_history[selected_index - 1]["metrics"]
                         if selected_index > 0 else current_metrics)
-
-    for m, curr_val in current_metrics.items():
-        prev_val = previous_metrics.get(m, curr_val)
-        display_metric_with_delta(m, curr_val, prev_val)
+    
+    # 🟢 FIXED: Handle metrics as Dict of Dicts (the new structure)
+    metric_cols = st.columns(min(4, len(current_metrics)))
+    for i, (m_key, current_detail) in enumerate(current_metrics.items()):
+        if isinstance(current_detail, dict):
+            m = current_detail.get("name", m_key)
+            curr_val = current_detail.get("value")
+            curr_unit = current_detail.get("unit", "")
+            
+            # Find previous value by key and extract its value
+            prev_detail = previous_metrics.get(m_key, {})
+            prev_val = prev_detail.get("value")
+            
+            # Simple numeric delta calculation for display
+            try:
+                curr_num = float(curr_val)
+                prev_num = float(prev_val)
+                delta = curr_num - prev_num
+                metric_cols[i % len(metric_cols)].metric(
+                    label=m, 
+                    value=f"{curr_val} {curr_unit}".strip(), 
+                    delta=f"{delta:+.2f}"
+                )
+            except (TypeError, ValueError):
+                # Fallback if value is not numeric
+                metric_cols[i % len(metric_cols)].metric(
+                    label=m, 
+                    value=f"{curr_val} {curr_unit}".strip()
+                )
 
     st.markdown(f"*Reason for change:* {versions_history[selected_index]['change_reason']}")
 
@@ -755,6 +807,7 @@ def render_evolution_layer(versions_history):
     freshness = versions_history[selected_index]["sources_freshness"]
     st.progress(int(freshness))
     st.caption(f"{freshness}% of ‚úÖ sources updated recently")
+
 
 # ----------------------------
 # RENDER DASHBOARD
@@ -771,7 +824,7 @@ def parse_trends_to_chart(trends):
         # Match numbers like 25%, 20M, 11.2CAGR
         nums = re.findall(r'[\d.]+[%B$TM]?', text)
         labels.extend(years[:3])
-        values.extend([float(n.strip('%$BMT')) for n in nums[:3]])
+        values.extend([float(re.sub(r'[^\d.]', '', n)) for n in nums[:3] if re.sub(r'[^\d.]', '', n)])
     return labels[:5], values[:5]  # Limit for chart
 
 
@@ -779,6 +832,9 @@ def parse_json_robustly(json_string, context):
     """
     Parses a JSON string safely, addressing key quoting, trailing commas, 
     missing delimiters, and unescaped double quotes (Unterminated string error).
+    
+    NOTE: This is now a legacy function, as Pydantic's model_validate_json is preferred.
+    It is kept for robustness in case model_validate_json fails.
     """
     if not json_string:
         return {}
@@ -910,13 +966,13 @@ def render_dashboard(
     show_secondary_view: bool = False,
     ) -> None:
     """
-    Renders the main analysis dashboard using the SIMPLE LLMResponse schema.
-    Handles lists of strings for metrics, findings, and entities.
+    Renders the main analysis dashboard using the COMPLEX LLMResponse schema (Dicts/Lists of Dicts).
     """
     
-    # Parse primary response with Pydantic (using the simple string-list schema)
+    # Parse primary response with Pydantic (using the structured schema)
     try:
         llm_obj = LLMResponse.model_validate_json(preclean_llm_json(chosen_primary))
+        data = llm_obj.model_dump(by_alias=True) # Use the dictionary for rendering
     except ValidationError as e:
         st.error(f"Cannot render dashboard: primary response failed schema validation. {e}")
         st.json({"raw": chosen_primary[:1000]})
@@ -943,86 +999,132 @@ def render_dashboard(
 
     # Executive Summary
     st.subheader("📋 Executive Summary")
-    st.markdown(f"**{llm_obj.executive_summary}**")
+    st.markdown(f"**{data.get('executive_summary', 'Summary not available.')}**")
 
     st.markdown("---")
 
-    # Key Metrics - SIMPLE STRING LIST
+    # Key Metrics - DICT OF DICTS
     st.subheader("💰 Key Metrics")
-    cols = st.columns(3)
-    for i, metric_str in enumerate(llm_obj.primary_metrics[:6]):
-        if metric_str:  # Skip empty strings
-            col = cols[i % len(cols)]
-            col.metric(f"Metric {i+1}", metric_str[:60] + "..." if len(metric_str) > 60 else metric_str)
+    primary_metrics = data.get('primary_metrics', {})
+    
+    metrics_list = []
+    if isinstance(primary_metrics, dict):
+        for metric_key, metric_detail in primary_metrics.items():
+            if isinstance(metric_detail, dict):
+                name = metric_detail.get('name', metric_key)
+                value = metric_detail.get('value', 'N/A')
+                unit = metric_detail.get('unit', '')
+                metrics_list.append({
+                    "Metric": name,
+                    "Value": f"{value} {unit}".strip()
+                })
 
+    if metrics_list:
+        try:
+            df_metrics = pd.DataFrame(metrics_list)
+            st.table(df_metrics)
+        except Exception as e:
+            st.warning(f"Failed to render metrics table: {e}")
+            
     st.markdown("---")
 
-    # Key Findings - SIMPLE STRING LIST
+    # Key Findings - LIST OF STRINGS
     st.subheader("🔍 Key Findings")
-    for i, finding in enumerate(llm_obj.key_findings[:8], 1):
+    key_findings = data.get('key_findings', [])
+    for i, finding in enumerate(key_findings[:8], 1):
         if finding:
             st.markdown(f"**{i}.** {finding}")
 
     st.markdown("---")
 
-    # Top Entities - SIMPLE STRING LIST
-    if llm_obj.top_entities:
+    # Top Entities - LIST OF DICTS
+    top_entities = data.get('top_entities', [])
+    if top_entities:
         st.subheader("🏢 Top Entities")
-        for i, entity in enumerate(llm_obj.top_entities[:6], 1):
-            if entity:
-                st.markdown(f"**{i}.** {entity}")
+        
+        entity_data = []
+        for entity in top_entities:
+            if isinstance(entity, dict):
+                entity_data.append({
+                    "Entity": entity.get("name", "N/A"),
+                    "Share": entity.get("share", "N/A"),
+                    "Growth": entity.get("growth", "N/A"),
+                })
 
-    # Trends Forecast - SIMPLE STRING LIST
-    if llm_obj.trends_forecast:
+        if entity_data:
+            try:
+                df_entities = pd.DataFrame(entity_data)
+                st.dataframe(df_entities, hide_index=True, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Could not render Top Entities table: {e}")
+
+
+    # Trends Forecast - LIST OF DICTS
+    trends_forecast = data.get('trends_forecast', [])
+    if trends_forecast:
         st.subheader("📈 Trends Forecast")
-        for i, trend in enumerate(llm_obj.trends_forecast[:5], 1):
-            if trend:
-                st.markdown(f"**{i}.** {trend}")
+        trend_data = []
+        for trend in trends_forecast:
+            if isinstance(trend, dict):
+                trend_data.append({
+                    "Trend": trend.get("trend", "N/A"),
+                    "Direction": trend.get("direction", "N/A"),
+                    "Timeline": trend.get("timeline", "N/A"),
+                })
+        
+        if trend_data:
+            try:
+                df_trends = pd.DataFrame(trend_data)
+                st.table(df_trends)
+            except Exception as e:
+                st.warning(f"Could not render Trends table: {e}")
 
     st.markdown("---")
 
-    # Visualization Data - Flexible handling
+    # Visualization Data - Flexible handling (Line/Bar)
     st.subheader("📊 Visualization")
-    viz = llm_obj.visualization_data
+    viz = data.get('visualization_data', {})
     
-    # Try to render line chart from common patterns
-    if isinstance(viz, dict):
-        # Handle common time series patterns
-        labels = viz.get("chart_labels") or viz.get("labels", [])
-        values = viz.get("data_series_values") or viz.get("values", [])
-        title = viz.get("title", "Market Trends")
-        
-        if labels and values and len(labels) == len(values):
-            try:
-                df_viz = pd.DataFrame({
-                    "Category": labels[:10],
-                    "Value": [float(v) for v in values[:10]]
-                })
-                fig = px.line(df_viz, x="Category", y="Value", title=title, markers=True)
-                st.plotly_chart(fig, use_container_width=True)
-            except:
-                st.info("Chart data available but formatting issue.")
-        elif "time_series_market_size_usd_billion" in viz:
-            # Handle the specific nested structure
-            time_series = viz.get("time_series_market_size_usd_billion", [])
-            if time_series:
-                df_ts = pd.DataFrame({
-                    "Year": [f"Year {i+1}" for i in range(len(time_series))],
-                    "Market Size ($B)": time_series[:10]
-                })
-                fig = px.line(df_ts, x="Year", y="Market Size ($B)", 
-                            title="Market Size Trend", markers=True)
-                st.plotly_chart(fig, use_container_width=True)
+    # Handle common time series patterns
+    labels = viz.get("chart_labels") or viz.get("labels", [])
+    values = viz.get("data_series_values") or viz.get("values", [])
+    title = viz.get("title", "Market Trends")
+    
+    if labels and values and len(labels) == len(values):
+        try:
+            df_viz = pd.DataFrame({
+                "Category": labels[:10],
+                "Value": [float(v) for v in values[:10]]
+            })
+            fig = px.line(df_viz, x="Category", y="Value", title=title, markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            st.info("Chart data available but formatting issue.")
+    
+    # Comparison Bars
+    comp_bars = data.get('comparison_bars', {})
+    if comp_bars and isinstance(comp_bars, dict) and comp_bars.get("categories") and comp_bars.get("values"):
+        try:
+            df_bars = pd.DataFrame({
+                "Category": comp_bars["categories"],
+                "Value": comp_bars["values"]
+            })
+            fig_bar = px.bar(df_bars, x="Category", y="Value", 
+                             title=comp_bars.get("title", "Comparison"), text_auto=True)
+            st.plotly_chart(fig_bar, use_container_width=True)
+        except Exception:
+            st.info("Comparison Bar data available but formatting issue.")
 
-    if not viz or not any([labels and values for labels, values in [(viz.get("chart_labels"), viz.get("data_series_values")), (viz.get("labels"), viz.get("values"))]]):
+    if not viz and not comp_bars:
         st.info("🧪 Visualization data structure detected but no renderable chart series found.")
 
     st.markdown("---")
-
+    
     # Sources
-    if llm_obj.sources:
+    sources = data.get('sources', [])
+    if sources:
         st.subheader("🔗 Sources")
-        for i, source in enumerate(llm_obj.sources[:10], 1):
+        for i, source in enumerate(sources[:10], 1):
             if source and source.startswith("http"):
                 st.markdown(f"**{i}.** [{source}]({source})")
             elif source:
@@ -1031,14 +1133,15 @@ def render_dashboard(
     # Data freshness and action
     col_fresh, col_action = st.columns(2)
     with col_fresh:
-        freshness = llm_obj.freshness or "Current"
+        freshness = data.get('freshness') or "Current"
         st.metric("Data Freshness", freshness)
     
     with col_action:
-        if llm_obj.action and isinstance(llm_obj.action, dict):
-            rec = llm_obj.action.get("recommendation", "Neutral")
-            conf = llm_obj.action.get("confidence", "Medium")
-            rationale = llm_obj.action.get("rationale", "")
+        action = data.get('action')
+        if action and isinstance(action, dict):
+            rec = action.get("recommendation", "Neutral")
+            conf = action.get("confidence", "Medium")
+            rationale = action.get("rationale", "")
             st.metric("Recommendation", f"{rec} ({conf})", delta=rationale[:50])
         else:
             st.metric("Recommendation", "Analyze", delta="Review key findings above")
@@ -1057,19 +1160,23 @@ def render_dashboard(
     if show_secondary_view and secondary_resp:
         st.subheader("🔍 Secondary Validation")
         try:
+            # 🟢 FIXED: Validate secondary response against Pydantic model
             sec_obj = LLMResponse.model_validate_json(preclean_llm_json(secondary_resp))
             st.json(sec_obj.model_dump())
         except ValidationError:
+            # Fallback if Pydantic fails
+            st.warning("Secondary response failed Pydantic validation. Displaying raw output.")
             st.code(secondary_resp[:2000], language="json")
 
     if veracity_scores:
         st.subheader("✅ Veracity Scores")
         cols_v = st.columns(5)
+        # 🟢 FIXED: Updated metrics to match new keys
         metrics = [
-            ("Summary", "summary_score"),
-            ("Insights", "insights_score"), 
-            ("Table", "table_score"),
-            ("Graphs", "graph_score"),
+            ("Summary", "executive_summary_score"), 
+            ("Findings", "key_findings_score"), 
+            ("Metrics", "primary_metrics_score"), # Placeholder for better numeric comparison
+            ("Graph", "graphical_data_score"),
             ("Overall", "overall_score"),
         ]
         for i, (label, key) in enumerate(metrics):
@@ -1103,10 +1210,16 @@ def compare_key_insights(list1, list2):
             sim = compare_texts(t1, t2)
             if sim > best_sim:
                 best_sim = sim
+            # Optimization: if high match, stop early
+            if best_sim > 99.9:
+                 break
         sims.append(best_sim)
     return np.mean(sims) if sims else 0.0
 
+# 🟢 FIXED: Renamed for the new structure, kept logic flexible for now
 def compare_tables(table1, table2):
+    # This function is currently comparing the 'benchmark_table' key,
+    # which is a list of dicts.
     if not table1 or not table2:
         return 0.0
     
@@ -1149,23 +1262,41 @@ def compare_tables(table1, table2):
             scores.append(score)
     return np.mean(scores) if scores else 0.0
 
+# 🟢 FIXED: Renamed for the new structure
 def compare_graphical_data(vis1, vis2):
     if not vis1 or not vis2:
         return 0.0
-    labels1 = vis1.get("labels", [])
-    labels2 = vis2.get("labels", [])
+        
+    # The new structure uses 'chart_labels' and 'data_series_values'
+    labels1 = vis1.get("chart_labels", [])
+    labels2 = vis2.get("chart_labels", [])
 
-    values1 = vis1.get("values", [])
-    values2 = vis2.get("values", [])
+    values1 = vis1.get("data_series_values", [])
+    values2 = vis2.get("data_series_values", [])
+    
+    # Try the old keys as fallback
+    if not labels1:
+        labels1 = vis1.get("labels", [])
+    if not labels2:
+        labels2 = vis2.get("labels", [])
+    if not values1:
+        values1 = vis1.get("values", [])
+    if not values2:
+        values2 = vis2.get("values", [])
 
+    # Simple label comparison (strict for now)
     if labels1 != labels2:
-        return 0.0  # Or partial credit with fuzzy matching labels
+        return 0.0 
 
     if not values1 or not values2 or len(values1) != len(values2):
         return 0.0
 
-    vals1 = np.array(values1)
-    vals2 = np.array(values2)
+    # Ensure all values are numeric for comparison
+    try:
+        vals1 = np.array([float(v) for v in values1])
+        vals2 = np.array([float(v) for v in values2])
+    except (ValueError, TypeError):
+        return 0.0 # Cannot compare non-numeric data
 
     # Percent similarity using normalized difference
     diff = np.abs(vals1 - vals2)
@@ -1176,23 +1307,29 @@ def compare_graphical_data(vis1, vis2):
     return max(0, min(100, score))
 
 def multi_modal_compare(json1, json2):
+    # 🟢 FIXED: Key names updated to match LLMResponse schema
+    
     # Textual comparisons
-    summary_score = compare_texts(json1.get("summary", ""), json2.get("summary", ""))
-    insights_score = compare_key_insights(json1.get("key_insights", []), json2.get("key_insights", []))
-
-    # Tabular comparison
-    table_score = compare_tables(json1.get("table", []), json2.get("table", []))
+    summary_score = compare_texts(json1.get("executive_summary", ""), json2.get("executive_summary", ""))
+    insights_score = compare_key_insights(json1.get("key_findings", []), json2.get("key_findings", []))
+    
+    # Tabular comparison (using benchmark_table for now, since 'table' is gone)
+    table_score = compare_tables(json1.get("benchmark_table", []), json2.get("benchmark_table", []))
 
     # Graphical data comparison
-    graph_score = compare_graphical_data(json1.get("visual_data", {}), json2.get("visual_data", {}))
+    graph_score = compare_graphical_data(json1.get("visualization_data", {}), json2.get("visualization_data", {}))
+    
+    # Placeholder for numeric comparison (use numeric_alignment_score separately)
+    numeric_metrics_score = numeric_alignment_score(json1, json2)
 
     # Aggregate overall (weights can be tuned)
     weights = {
         "summary": 0.3,
         "insights": 0.2,
-        "table": 0.3,
+        "table": 0.3, # Using benchmark_table alignment
         "graph": 0.2,
     }
+    # Using weighted average for the structural integrity score
     overall_score = (
         summary_score * weights["summary"] +
         insights_score * weights["insights"] +
@@ -1201,10 +1338,11 @@ def multi_modal_compare(json1, json2):
     )
 
     return {
-        "summary_score": summary_score,
-        "insights_score": insights_score,
-        "table_score": table_score,
-        "graph_score": graph_score,
+        "executive_summary_score": summary_score,
+        "key_findings_score": insights_score,
+        "benchmark_table_score": table_score,
+        "graphical_data_score": graph_score,
+        "primary_metrics_score": numeric_metrics_score if numeric_metrics_score is not None else 0.0, # Adding the numeric comparison here
         "overall_score": overall_score,
     }
 
@@ -1273,17 +1411,22 @@ def main():
         st.info("Performing validation...")
         secondary_resp = query_gemini(q)
 
-        sem_conf = semantic_similarity_score(chosen_primary, secondary_resp)
-
+        # 🟢 FIXED: Parse chosen_primary and secondary_resp immediately for use as dictionaries
         try:
-            j1 = json.loads(chosen_primary)
-        except Exception:
-            j1 = {}
-
+            llm_obj1 = LLMResponse.model_validate_json(preclean_llm_json(chosen_primary))
+            j1 = llm_obj1.model_dump(by_alias=True)
+        except ValidationError:
+            # Fallback to robust parsing/empty dict if Pydantic fails
+            j1 = parse_json_robustly(chosen_primary, "Primary Model")
+        
         try:
-            j2 = json.loads(secondary_resp)
-        except Exception:
-            j2 = {}
+            llm_obj2 = LLMResponse.model_validate_json(preclean_llm_json(secondary_resp))
+            j2 = llm_obj2.model_dump(by_alias=True)
+        except ValidationError:
+            j2 = parse_json_robustly(secondary_resp, "Secondary Model")
+            
+        # The summary text is used for semantic comparison
+        sem_conf = semantic_similarity_score(j1.get('executive_summary', ''), j2.get('executive_summary', ''))
 
         veracity_scores = multi_modal_compare(j1, j2)
 
@@ -1291,6 +1434,8 @@ def main():
     
         # Incorporate veracity_scores["overall_score"] into final confidence if desired:
    #     final_conf = np.mean([base_conf, sem_conf, num_conf if num_conf is not None else 0, src_conf, veracity_scores["overall_score"]])
+        
+        # 🟢 FIXED: Calculation needs the dictionary 'j1' for numeric_alignment_score
         num_conf = numeric_alignment_score(j1, j2)
         base_conf = max_score
         src_conf = source_quality_confidence(j1.get("sources", [])) * 100
@@ -1355,7 +1500,8 @@ def main():
         {
         "version": "V1 (Jul 10)",
         "timestamp": "2025-07-10T12:00:00",
-        "metrics": j1.get("metrics", {}),
+        # 🟢 FIXED: Pass the metric structure j1.get("primary_metrics", {})
+        "metrics": j1.get("primary_metrics", {}),
         "confidence": base_conf,
         "sources_freshness": 80,
         "change_reason": "Initial version",
@@ -1363,7 +1509,7 @@ def main():
         {
         "version": "V2 (Aug 28)",
         "timestamp": "2025-08-28T15:30:00",
-        "metrics": j1.get("metrics", {}),
+        "metrics": j1.get("primary_metrics", {}),
         "confidence": base_conf * 0.98,
         "sources_freshness": 75,
         "change_reason": "Quarterly update",
@@ -1371,7 +1517,7 @@ def main():
         {
         "version": "V3 (Nov 3)",
         "timestamp": datetime.now().isoformat(timespec="minutes"),
-        "metrics": j1.get("metrics", {}),
+        "metrics": j1.get("primary_metrics", {}),
         "confidence": final_conf,
         "sources_freshness": 78,
         "change_reason": "Latest analysis",
@@ -1385,7 +1531,7 @@ def main():
         st.session_state["all_versions"] = versions_history
         st.session_state["current_analysis"] = {
         "summary": j1.get("executive_summary", ""),
-        "metrics": j1.get("metrics", {}),
+        "metrics": j1.get("primary_metrics", {}),
         "confidence": final_conf
         }
 
@@ -1422,7 +1568,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 
 
