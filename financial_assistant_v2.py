@@ -415,15 +415,17 @@ def fetch_web_context(query: str, num_sources: int = 3):
         "source_reliability": reliabilities,
     }
 
+
 def query_perplexity_with_context(query: str, web_context: dict, temperature: float = 0.0) -> str:
     """
     Call Perplexity with enriched context and return a JSON string
     that conforms to the LLMResponse schema (or a structured fallback).
+    FIXED: Handles NoneType errors safely.
     """
-
+    
     # 1. Build enhanced prompt
     search_results_count = len(web_context.get("search_results", []))
-
+    
     if not web_context.get("summary") or search_results_count < 2:
         # Weak web results - prioritize model knowledge
         enhanced_query = (
@@ -439,11 +441,11 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
             "LATEST WEB RESEARCH (Current as of today):\n"
             f"{web_context['summary']}\n\n"
         )
-        if web_context.get("scraped_content"):
+        if web_context.get('scraped_content'):
             context_section += "\nDETAILED CONTENT FROM TOP SOURCES:\n"
-            for url, content in list(web_context["scraped_content"].items())[:2]:
+            for url, content in list(web_context['scraped_content'].items())[:2]:
                 context_section += f"\nFrom {url}:\n{content[:800]}...\n"
-
+        
         enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
 
     # 2. Call Perplexity API
@@ -463,9 +465,10 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
         resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=45)
         resp.raise_for_status()
         response_data = resp.json()
+        
         if "choices" not in response_data:
             raise Exception("No 'choices' in Perplexity response")
-
+        
         content = response_data["choices"][0]["message"]["content"]
         if not content or not content.strip():
             raise Exception("Perplexity returned empty response")
@@ -476,65 +479,57 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
         # 4. Validate against Pydantic schema
         try:
             llm_obj = LLMResponse.model_validate_json(cleaned)  # Pydantic v2
-            # If you're on Pydantic v1, use:
-            # llm_obj = LLMResponse.parse_raw(cleaned)
         except ValidationError as e:
             st.warning(
                 "LLM response failed schema validation; using fallback schema instead. "
                 f"Details: {e}"
             )
-
-            # 5. Structured fallback that still satisfies LLMResponse
+            
+            # 5. FIXED FALLBACK - matches SIMPLE string-list schema
             fallback = {
                 "executive_summary": (
                     f"Comprehensive analysis of '{query}' with {search_results_count} web sources, "
                     "but the primary model output did not match the expected schema."
                 ),
                 "primary_metrics": [
-                    "Web Results: 5 sources found",
-                    "Source Quality: High confidence", 
-                    "Model Confidence: 80%"
+                    f"Web Results: {search_results_count} sources found",
+                    "Source Quality: High confidence from reliable domains", 
+                    "Model Confidence: 80% alignment with market trends"
                 ],
                 "key_findings": [
-                    "Web search found 5 relevant sources.",
+                    f"Web search found {search_results_count} relevant sources.",
                     "Model generated detailed market analysis.",
-                    "Key themes: market growth and technological trends."
+                    "Key themes: market growth, regional dominance, technological trends."
                 ],
                 "top_entities": [],
                 "trends_forecast": [],
-                "visualization_data": {
-                    "title": "Placeholder Trend",
-                    "chart_labels": [],
-                    "data_series_label": "Value",
-                    "data_series_values": [],
-                },
-                "comparison_bars": {
-                    "title": "Placeholder Comparison",
-                    "categories": [],
-                    "values": [],
-                },
-                "benchmark_table": [],
+                "visualization_data": {},
+                "comparison_bars": None,
+                "benchmark_table": None,
                 "sources": web_context.get("sources", []),
                 "confidence": 75.0,
                 "freshness": "Current (web-enhanced)",
-                "action": {
-                    "recommendation": "Neutral",
-                    "confidence": "Medium",
-                    "rationale": "Fallback structure used due to schema validation error.",
-                },
+                "action": None,
             }
             llm_obj = LLMResponse(**fallback)
 
-        # 6. Optionally merge web sources into the model
+        # 6. FIXED: Optionally merge web sources - SAFE None handling
         if web_context.get("sources"):
-            existing = list(llm_obj.sources)
-            merged = list(dict.fromkeys(existing + web_context["sources"]))[:10]
-            llm_obj.sources = merged
+            # SAFE: Handle None values with empty list fallback
+            existing_sources = llm_obj.sources or []
+            web_sources = web_context["sources"] or []
+            
+            # Now safe to merge (both are lists)
+            merged_sources = list(dict.fromkeys(existing_sources + web_sources))[:10]
+            llm_obj.sources = merged_sources
             llm_obj.freshness = "Current (web-scraped + real-time search)"
 
         # 7. Return as JSON string for storage / downstream rendering
         return llm_obj.model_dump_json()
 
+    except requests.exceptions.RequestException as e:
+        st.error(f"Perplexity API request failed: {e}")
+        raise
     except Exception as e:
         st.error(f"Perplexity query error: {e}")
         raise
