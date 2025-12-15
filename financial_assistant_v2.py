@@ -962,35 +962,40 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
             entity_data = []
             
             for entity in top_entities:
-                if isinstance(entity, dict):
-                    # Case 1: The item is a valid dictionary (as expected)
-                    entity_data.append({
-                        "Entity": entity.get("name", "N/A"),
-                        "Share": entity.get("share", "N/A"),
-                        "Details": entity.get("details", "N/A")
-                    })
                 elif isinstance(entity, str):
-                    # Case 2: The item is a string (e.g., "TSMC (54% Foundry Market)")
-                    # Attempt a simple parse or just skip
-                    if ":" in entity:
+                    # 🟢 ENHANCED FIX: Try to extract Name and Details using regex on parentheses
+                    
+                    # Regex looks for: (Name) space (open parenthesis) (details) (close parenthesis)
+                    match = re.search(r'^\s*([^\(]+?)\s*\((.*)\)\s*$', entity)
+                    
+                    if match:
+                        # Case 2a: Successfully parsed using (Name) (Detail) format
+                        entity_name = match.group(1).strip()
+                        entity_details = match.group(2).strip()
+                        
+                        entity_data.append({
+                            "Entity": entity_name,
+                            "Share": "N/A", 
+                            "Details": entity_details
+                        })
+                    elif ":" in entity:
+                        # Case 2b: Fallback to the previous simple split (Name: Detail)
                         name, detail = entity.split(":", 1)
                         entity_data.append({
                             "Entity": name.strip(),
-                            "Share": "N/A", # Cannot reliably extract share from unstructured string
+                            "Share": "N/A",
                             "Details": detail.strip()
                         })
                     else:
-                        # If it's just a name, use it as the entity
+                        # Case 2c: If it's just a name, use it as the entity
                         entity_data.append({
                             "Entity": entity.strip(),
                             "Share": "N/A",
                             "Details": "N/A"
                         })
-                    st.warning(f"Note: Entity data was generated as an unstructured string: '{entity}'.")
-                else:
-                    # Case 3: Unexpected type
-                    st.warning(f"Skipping malformed entity entry: Expected dict or string, found {type(entity).__name__}.")
-                    continue 
+                        
+                    # Remove the warning now that we're handling the format better
+                    # st.warning(f"Note: Entity data was generated as an unstructured string: '{entity}'.")
 
             if entity_data:
                 try:
