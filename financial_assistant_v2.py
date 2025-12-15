@@ -1,5 +1,5 @@
 # =========================================================
-# AI FINANCIAL RESEARCH ASSISTANT ‚ AI HYBRID VERIFICATION v5.6
+# AI FINANCIAL RESEARCH ASSISTANT – AI HYBRID VERIFICATION v5.6 (FIXED)
 # WITH WEB SEARCH, DYNAMIC METRICS, CONFIDENCE BREAKDOWN & EVOLUTION LAYER
 # =========================================================
 
@@ -19,11 +19,11 @@ import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from pathlib import Path
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, ConfigDict # ADDED ConfigDict
 from typing import List, Dict, Optional, Any, Union
 
 # ----------------------------
-# 1. UPDATED PYDANTIC MODELS TO MATCH COMPLEX RESPONSE_TEMPLATE
+# 1. UPDATED PYDANTIC MODELS TO MATCH COMPLEX RESPONSE_TEMPLATE & BE ROBUST
 # ----------------------------
 
 class MetricDetail(BaseModel):
@@ -31,53 +31,61 @@ class MetricDetail(BaseModel):
     name: str = Field(..., description="Key Metric Name")
     value: Union[float, int, str] = Field(..., description="Key Metric Value (can be number or string with unit)")
     unit: str = Field(..., description="Unit of measurement")
+    model_config = ConfigDict(extra='ignore') # Ignore unexpected fields
 
 class TopEntityDetail(BaseModel):
     """Corresponds to an item in top_entities."""
     name: str = Field(..., description="Entity Name")
-    share: str = Field(..., description="Market Share/Position")
-    growth: str = Field(..., description="Growth Rate/Trend")
+    # FIX: Made these fields Optional with default "N/A" to prevent "Field required" errors
+    share: str = Field("N/A", description="Market Share/Position") 
+    growth: str = Field("N/A", description="Growth Rate/Trend")
+    model_config = ConfigDict(extra='ignore') # Ignore unexpected fields like 'type' or 'description'
 
 class TrendForecastDetail(BaseModel):
     """Corresponds to an item in trends_forecast."""
     trend: str = Field(..., description="Trend description")
-    direction: str = Field(..., description="Direction symbol (e.g., up arrow)")
-    timeline: str = Field(..., description="Timeline (e.g., 2025-2027)")
+    # FIX: Made these fields Optional with default "N/A" to prevent "Field required" errors
+    direction: str = Field("N/A", description="Direction symbol (e.g., up arrow)")
+    timeline: str = Field("N/A", description="Timeline (e.g., 2025-2027)")
+    model_config = ConfigDict(extra='ignore') # Ignore unexpected fields like 'description'
 
 class ComparisonBar(BaseModel):
     """Corresponds to comparison_bars."""
     title: str
     categories: List[str]
     values: List[Union[float, int]]
+    model_config = ConfigDict(extra='ignore')
 
 class BenchmarkTable(BaseModel):
     """Corresponds to an item in benchmark_table."""
     category: str
     value_1: Union[float, int]
     value_2: Union[float, int]
+    model_config = ConfigDict(extra='ignore')
 
 class Action(BaseModel):
     """Corresponds to action field."""
     recommendation: str
     confidence: str
     rationale: str
+    model_config = ConfigDict(extra='ignore')
 
 class LLMResponse(BaseModel):
     """The main response schema, matching the complex RESPONSE_TEMPLATE."""
     executive_summary: str = Field(..., description="1-2 sentence high-level answer to the core question")
     
-    # FIXED: primary_metrics is a DICT of MetricDetail objects
+    # primary_metrics is a DICT of MetricDetail objects
     primary_metrics: Dict[str, MetricDetail] = Field(..., description="Dictionary of key metrics")
     
     key_findings: List[str] = Field(..., description="List of key findings")
     
-    # FIXED: top_entities is a LIST of TopEntityDetail objects
+    # top_entities is a LIST of TopEntityDetail objects
     top_entities: List[TopEntityDetail] = Field(..., description="List of top entities")
     
-    # FIXED: trends_forecast is a LIST of TrendForecastDetail objects
+    # trends_forecast is a LIST of TrendForecastDetail objects
     trends_forecast: List[TrendForecastDetail] = Field(..., description="List of trends and forecasts")
     
-    # FIXED: visualization_data can be flexible for now
+    # visualization_data can be flexible for now
     visualization_data: Dict[str, Any] = Field(..., description="Data for chart generation")
     
     comparison_bars: Optional[ComparisonBar] = None
@@ -86,6 +94,7 @@ class LLMResponse(BaseModel):
     confidence: Optional[Union[float, int]] = 0
     freshness: Optional[str] = None
     action: Optional[Action] = None
+    model_config = ConfigDict(extra='ignore') # Ignore unexpected fields at the top level
 
 # ----------------------------
 # CONFIGURATION
@@ -252,6 +261,50 @@ def load_models():
 domain_classifier, embedder = load_models()
 
 # ----------------------------
+# JSON REPAIR FUNCTION (CRITICAL FIX FOR primary_metrics)
+# ----------------------------
+
+def repair_metric_list_to_dict(data: dict) -> dict:
+    """
+    FIX: If primary_metrics is a list (LLM failure), convert it to a dict (schema requirement).
+    Converts: [{"name": "Metric 1", "value": 10}, ...]
+    To:      {"metric_1": {"name": "Metric 1", "value": 10}, ...}
+    """
+    if "primary_metrics" in data and isinstance(data["primary_metrics"], list):
+        new_metrics = {}
+        for i, metric_item in enumerate(data["primary_metrics"]):
+            if isinstance(metric_item, dict):
+                # Use name to create a unique, standard key
+                raw_name = metric_item.get("name", f"metric_{i+1}")
+                key = re.sub(r'[^a-z0-9_]', '', raw_name.lower().replace(" ", "_"))
+                if not key: key = f"metric_{i+1}"
+
+                # Ensure key is unique
+                original_key = key
+                j = 1
+                while key in new_metrics:
+                    key = f"{original_key}_{j}"
+                    j += 1
+                    
+                # Ensure it has minimum required fields for MetricDetail (for softening)
+                if "value" not in metric_item:
+                    metric_item["value"] = "N/A"
+                if "unit" not in metric_item:
+                    metric_item["unit"] = ""
+                    
+                new_metrics[key] = metric_item
+            
+            # Fallback for old list-of-string format which might still occasionally occur
+            elif isinstance(metric_item, str):
+                key = f"metric_{i+1}"
+                name, value = metric_item.split(":", 1) if ":" in metric_item else (metric_item, "N/A")
+                new_metrics[key] = {"name": name.strip(), "value": value.strip(), "unit": ""}
+        
+        data["primary_metrics"] = new_metrics
+    return data
+
+
+# ----------------------------
 # WEB SEARCH FUNCTIONS
 # ----------------------------
 @st.cache_data(ttl=3600)
@@ -395,14 +448,12 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
     """
     Call Perplexity with enriched context and return a JSON string
     that conforms to the LLMResponse schema (or a structured fallback).
-    FIXED: Handles NoneType errors safely.
     """
     
-    # 1. Build enhanced prompt
+    # 1. Build enhanced prompt (as before)
     search_results_count = len(web_context.get("search_results", []))
     
     if not web_context.get("summary") or search_results_count < 2:
-        # Weak web results - prioritize model knowledge
         enhanced_query = (
             f"{SYSTEM_PROMPT}\n\n"
             f"User Question: {query}\n\n"
@@ -411,7 +462,6 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
             f"with metrics, key findings, and forward-looking trends."
         )
     else:
-        # Strong web results - build context section
         context_section = (
             "LATEST WEB RESEARCH (Current as of today):\n"
             f"{web_context['summary']}\n\n"
@@ -423,7 +473,7 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
         
         enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
 
-    # 2. Call Perplexity API
+    # 2. Call Perplexity API (as before)
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}",
         "Content-Type": "application/json",
@@ -448,14 +498,24 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
         if not content or not content.strip():
             raise Exception("Perplexity returned empty response")
 
-        # 3. Pre-clean only (no heavy repair)
+        # 3. Pre-clean only (strip markdown/citations)
         cleaned = preclean_llm_json(content)
 
-        # 4. Validate against Pydantic schema
+        # 4. Structured Repair before validation (CRITICAL FIX)
         try:
-            llm_obj = LLMResponse.model_validate_json(cleaned)  # Pydantic v2
+            parsed_json = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Fallback to robust parser if simple loads fails
+            parsed_json = parse_json_robustly(cleaned, "Perplexity Pre-Validation")
+
+        repaired_json = repair_metric_list_to_dict(parsed_json) # Apply the list-to-dict fix
+        
+        # 5. Validate against Pydantic schema
+        try:
+            # Use model_validate on the dictionary, not model_validate_json on the string
+            llm_obj = LLMResponse.model_validate(repaired_json)
             
-            # 5. FIXED: Manually update confidence from LLM response (can be an int or float string)
+            # 6. Manually update confidence from LLM response (can be an int or float string)
             raw_confidence = llm_obj.confidence
             if isinstance(raw_confidence, (str, int, float)):
                  llm_obj.confidence = float(raw_confidence)
@@ -468,13 +528,12 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
                 f"Details: {e}"
             )
             
-            # 6. FIXED FALLBACK - matches the *NEW COMPLEX* schema structure
+            # 7. FIXED FALLBACK - matches the *NEW COMPLEX* schema structure
             fallback = {
                 "executive_summary": (
                     f"Comprehensive analysis of '{query}' with {search_results_count} web sources, "
                     "but the primary model output did not match the expected schema. Showing simple data."
                 ),
-                # Fallback metrics must match Dict[str, MetricDetail]
                 "primary_metrics": {
                     "source_count": {"name": "Sources Found", "value": search_results_count, "unit": "count"},
                     "confidence_align": {"name": "Model Alignment", "value": 75.0, "unit": "%"}
@@ -493,18 +552,15 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
             }
             llm_obj = LLMResponse(**fallback)
 
-        # 7. Optionally merge web sources - SAFE None handling
+        # 8. Optionally merge web sources - SAFE None handling
         if web_context.get("sources"):
-            # SAFE: Handle None values with empty list fallback
             existing_sources = llm_obj.sources or []
             web_sources = web_context["sources"] or []
-            
-            # Now safe to merge (both are lists)
             merged_sources = list(dict.fromkeys(existing_sources + web_sources))[:10]
             llm_obj.sources = merged_sources
             llm_obj.freshness = "Current (web-scraped + real-time search)"
 
-        # 8. Return as JSON string for storage / downstream rendering
+        # 9. Return as JSON string for storage / downstream rendering
         return llm_obj.model_dump_json()
 
     except requests.exceptions.RequestException as e:
@@ -513,7 +569,6 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
     except Exception as e:
         st.error(f"Perplexity query error: {e}")
         raise
-
 
 
 def query_gemini(query: str):
@@ -526,19 +581,26 @@ def query_gemini(query: str):
                 max_output_tokens=2000,
             ),
         )
-        # Defensive: check if response contains any candidates or parts
         content = getattr(response, "text", None)
         if not content or not content.strip():
-            # Try to extract diagnostics if available
             finish_reason = getattr(response, "finish_reason", None)
             st.warning(f"Gemini returned empty response. finish_reason={finish_reason}")
             raise Exception("Gemini returned empty response")
         
-        # 🟢 FIXED: Pre-clean and validate Gemini output against the LLMResponse schema
+        # 1. Pre-clean
         cleaned = preclean_llm_json(content)
         
+        # 2. Structured Repair before validation (CRITICAL FIX)
         try:
-             llm_obj = LLMResponse.model_validate_json(cleaned)
+            parsed_json = json.loads(cleaned)
+        except json.JSONDecodeError:
+            parsed_json = parse_json_robustly(cleaned, "Gemini Pre-Validation")
+
+        repaired_json = repair_metric_list_to_dict(parsed_json) # Apply the list-to-dict fix
+        
+        # 3. Validate
+        try:
+             llm_obj = LLMResponse.model_validate(repaired_json) # Use model_validate on the dictionary
              return llm_obj.model_dump_json() # Return valid JSON string
         except ValidationError:
             # Fallback to the raw cleaned string if validation fails (will be handled by main)
@@ -559,7 +621,9 @@ def query_gemini(query: str):
 
 # ----------------------------
 # SELF-CONSISTENCY & VALIDATION
+# (The rest of the code remains the same as the last corrected version)
 # ----------------------------
+
 def generate_self_consistent_responses_with_web(query, web_context, n=1):  # generate one response
     st.info(f"Generating analysis...")
 
@@ -809,7 +873,7 @@ def parse_json_robustly(json_string, context):
     if match:
         json_content = match.group(0)
     else:
-        st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
+        #st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
     
     # 3. AGGRESSIVE STRUCTURAL REPAIR: FIX KEYS, COMMAS, AND BOOLEANS
@@ -845,11 +909,7 @@ def parse_json_robustly(json_string, context):
         except json.JSONDecodeError as e:
             # Check for error types caused by unescaped quotes or delimiter issues
             if not ("Unterminated string" in e.msg or "Expecting ',' delimiter" in e.msg or "Expecting value" in e.msg):
-                st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
-                error_pos = e.pos if hasattr(e, 'pos') else 0
-                start = max(0, error_pos - 50)
-                end = min(len(json_content), error_pos + 50)
-                st.markdown(f"**Error near:** `{json_content[start:end]}`")
+                #st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
                 return {"parse_error": str(e)}
 
             error_pos = e.pos
@@ -864,15 +924,14 @@ def parse_json_robustly(json_string, context):
                         break
             
             if found_quote != -1:
-                # 🌟 THIS IS THE LINE THAT FIXES YOUR CURRENT ERROR
                 json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
                 current_attempt += 1
                 continue # Retry the loop with the fixed string
             
-            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
+            #st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
             return {"parse_error": str(e)}
 
-    st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
+    #st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
 
 def preclean_llm_json(raw: str) -> str:
@@ -925,10 +984,17 @@ def render_dashboard(
     
     # Parse primary response with Pydantic (using the structured schema)
     try:
-        llm_obj = LLMResponse.model_validate_json(preclean_llm_json(chosen_primary))
+        # Use model_validate with the repair logic one last time in case the pre-parse failed but was fixed
+        parsed_dict = json.loads(preclean_llm_json(chosen_primary))
+        repaired_dict = repair_metric_list_to_dict(parsed_dict)
+        llm_obj = LLMResponse.model_validate(repaired_dict)
         data = llm_obj.model_dump(by_alias=True) # Use the dictionary for rendering
     except ValidationError as e:
         st.error(f"Cannot render dashboard: primary response failed schema validation. {e}")
+        st.json({"raw": chosen_primary[:1000]})
+        return
+    except Exception as e:
+        st.error(f"Cannot render dashboard: severe JSON parsing error. {e}")
         st.json({"raw": chosen_primary[:1000]})
         return
 
@@ -1115,11 +1181,17 @@ def render_dashboard(
         st.subheader("🔍 Secondary Validation")
         try:
             # 🟢 FIXED: Validate secondary response against Pydantic model
-            sec_obj = LLMResponse.model_validate_json(preclean_llm_json(secondary_resp))
+            # Need to perform the repair again since secondary_resp is a raw JSON string
+            parsed_sec_dict = json.loads(preclean_llm_json(secondary_resp))
+            repaired_sec_dict = repair_metric_list_to_dict(parsed_sec_dict)
+            sec_obj = LLMResponse.model_validate(repaired_sec_dict)
             st.json(sec_obj.model_dump())
         except ValidationError:
             # Fallback if Pydantic fails
             st.warning("Secondary response failed Pydantic validation. Displaying raw output.")
+            st.code(secondary_resp[:2000], language="json")
+        except Exception:
+            st.warning("Secondary response failed JSON parsing. Displaying raw output.")
             st.code(secondary_resp[:2000], language="json")
 
     if veracity_scores:
@@ -1222,11 +1294,11 @@ def compare_graphical_data(vis1, vis2):
         return 0.0
         
     # The new structure uses 'chart_labels' and 'data_series_values'
-    labels1 = vis1.get("chart_labels", [])
-    labels2 = vis2.get("chart_labels", [])
+    labels1 = vis1.get("chart_labels") or vis1.get("labels", [])
+    labels2 = vis2.get("chart_labels") or vis2.get("labels", [])
 
-    values1 = vis1.get("data_series_values", [])
-    values2 = vis2.get("data_series_values", [])
+    values1 = vis1.get("data_series_values") or vis1.get("values", [])
+    values2 = vis2.get("data_series_values") or vis2.get("values", [])
     
     # Try the old keys as fallback
     if not labels1:
@@ -1367,28 +1439,24 @@ def main():
 
         # 🟢 FIXED: Parse chosen_primary and secondary_resp immediately for use as dictionaries
         try:
-            llm_obj1 = LLMResponse.model_validate_json(preclean_llm_json(chosen_primary))
-            j1 = llm_obj1.model_dump(by_alias=True)
-        except ValidationError:
+            # Need to re-parse the final chosen response here (already repaired in LLM call, but need dict for comparison)
+            parsed_dict_1 = json.loads(preclean_llm_json(chosen_primary))
+            j1 = repair_metric_list_to_dict(parsed_dict_1)
+        except Exception:
             # Fallback to robust parsing/empty dict if Pydantic fails
             j1 = parse_json_robustly(chosen_primary, "Primary Model")
         
         try:
-            llm_obj2 = LLMResponse.model_validate_json(preclean_llm_json(secondary_resp))
-            j2 = llm_obj2.model_dump(by_alias=True)
-        except ValidationError:
+            parsed_dict_2 = json.loads(preclean_llm_json(secondary_resp))
+            j2 = repair_metric_list_to_dict(parsed_dict_2)
+        except Exception:
             j2 = parse_json_robustly(secondary_resp, "Secondary Model")
             
         # The summary text is used for semantic comparison
-        sem_conf = semantic_similarity_score(j1.get('executive_summary', ''), j2.get('executive_summary', ''))
+        sem_conf = compare_texts(j1.get('executive_summary', ''), j2.get('executive_summary', ''))
 
         veracity_scores = multi_modal_compare(j1, j2)
 
-
-    
-        # Incorporate veracity_scores["overall_score"] into final confidence if desired:
-   #     final_conf = np.mean([base_conf, sem_conf, num_conf if num_conf is not None else 0, src_conf, veracity_scores["overall_score"]])
-        
         # 🟢 FIXED: Calculation needs the dictionary 'j1' for numeric_alignment_score
         num_conf = numeric_alignment_score(j1, j2)
         base_conf = max_score
@@ -1473,8 +1541,8 @@ def main():
         st.session_state["all_versions"] = versions_history
         # 🟢 FIX 2: Correct keys for the current analysis session state
         st.session_state["current_analysis"] = {
-        "summary": j1.get("executive_summary", ""),
-        "metrics": j1.get("primary_metrics", {}),
+        "executive_summary": j1.get("executive_summary", ""), # Corrected to 'executive_summary'
+        "primary_metrics": j1.get("primary_metrics", {}), # Corrected to 'primary_metrics'
         "confidence": final_conf
         }
 
