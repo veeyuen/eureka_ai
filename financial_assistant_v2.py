@@ -977,7 +977,7 @@ def detect_x_label_dynamic(labels: list) -> str:
     
     # 4. GEOGRAPHIC (countries, regions)
     geo_words = ['usa', 'eu', 'china', 'japan', 'india', 'asia', 'europe', 'north', 'south', 'asia', 
-    'america', 'europe', 'africa']
+    'america', 'europe', 'africa', 'asia pacific', 'north america', 'south america']
     geo_count = sum(1 for label in label_texts if any(g in label for g in geo_words))
     if geo_count / len(labels) > 0.3:
         return "Regions"
