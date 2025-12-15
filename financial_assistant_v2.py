@@ -182,7 +182,13 @@ CRITICAL RULES:
 5. Escape internal quotes with backslash.
 
 REQUIRED FIELDS (provide substantive data):
-- executive_summary (2+ sentences)
+- executive_summary: Write 4-6 sentences covering:
+  * Direct answer to the question (1 sentence)
+  * Market size/scale with specific numbers (1 sentence)
+  * Key drivers or growth factors (1-2 sentences)
+  * Future outlook or trend direction (1-2 sentence)
+  Example: "The global EV battery market reached $58.3B in 2023. Strong growth is driven by falling lithium prices and government mandates. China dominates with 60% market share, followed by Europe at 25%. The market is projected to grow at 18.5% CAGR through 2030 as battery costs decline further."
+  
 - primary_metrics (3+ metrics with numbers)
 - key_findings (3+ findings)
 - top_entities (3+ companies/countries)
