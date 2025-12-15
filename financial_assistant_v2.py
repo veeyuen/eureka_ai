@@ -893,6 +893,13 @@ def preclean_llm_json(raw: str) -> str:
 
     return text.strip()
 
+
+from typing import Optional
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from pydantic import ValidationError
+
 def render_dashboard(
     chosen_primary: str,
     final_conf: Optional[float] = None,
@@ -968,8 +975,114 @@ def render_dashboard(
         st.subheader("🏢 Top Entities")
         for i, entity in enumerate(llm_obj.top_entities[:6], 1):
             if entity:
-                st.markdown(f"
+                st.markdown(f"**{i}.** {entity}")
 
+    # Trends Forecast - SIMPLE STRING LIST
+    if llm_obj.trends_forecast:
+        st.subheader("📈 Trends Forecast")
+        for i, trend in enumerate(llm_obj.trends_forecast[:5], 1):
+            if trend:
+                st.markdown(f"**{i}.** {trend}")
+
+    st.markdown("---")
+
+    # Visualization Data - Flexible handling
+    st.subheader("📊 Visualization")
+    viz = llm_obj.visualization_data
+    
+    # Try to render line chart from common patterns
+    if isinstance(viz, dict):
+        # Handle common time series patterns
+        labels = viz.get("chart_labels") or viz.get("labels", [])
+        values = viz.get("data_series_values") or viz.get("values", [])
+        title = viz.get("title", "Market Trends")
+        
+        if labels and values and len(labels) == len(values):
+            try:
+                df_viz = pd.DataFrame({
+                    "Category": labels[:10],
+                    "Value": [float(v) for v in values[:10]]
+                })
+                fig = px.line(df_viz, x="Category", y="Value", title=title, markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+            except:
+                st.info("Chart data available but formatting issue.")
+        elif "time_series_market_size_usd_billion" in viz:
+            # Handle the specific nested structure
+            time_series = viz.get("time_series_market_size_usd_billion", [])
+            if time_series:
+                df_ts = pd.DataFrame({
+                    "Year": [f"Year {i+1}" for i in range(len(time_series))],
+                    "Market Size ($B)": time_series[:10]
+                })
+                fig = px.line(df_ts, x="Year", y="Market Size ($B)", 
+                            title="Market Size Trend", markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+
+    if not viz or not any([labels and values for labels, values in [(viz.get("chart_labels"), viz.get("data_series_values")), (viz.get("labels"), viz.get("values"))]]):
+        st.info("🧪 Visualization data structure detected but no renderable chart series found.")
+
+    st.markdown("---")
+
+    # Sources
+    if llm_obj.sources:
+        st.subheader("🔗 Sources")
+        for i, source in enumerate(llm_obj.sources[:10], 1):
+            if source and source.startswith("http"):
+                st.markdown(f"**{i}.** [{source}]({source})")
+            elif source:
+                st.markdown(f"**{i}.** {source}")
+
+    # Data freshness and action
+    col_fresh, col_action = st.columns(2)
+    with col_fresh:
+        freshness = llm_obj.freshness or "Current"
+        st.metric("Data Freshness", freshness)
+    
+    with col_action:
+        if llm_obj.action and isinstance(llm_obj.action, dict):
+            rec = llm_obj.action.get("recommendation", "Neutral")
+            conf = llm_obj.action.get("confidence", "Medium")
+            rationale = llm_obj.action.get("rationale", "")
+            st.metric("Recommendation", f"{rec} ({conf})", delta=rationale[:50])
+        else:
+            st.metric("Recommendation", "Analyze", delta="Review key findings above")
+
+    st.markdown("---")
+
+    # Secondary sections
+    if web_context and web_context.get("search_results"):
+        st.subheader("🌐 Web Context")
+        for i, result in enumerate(web_context["search_results"][:5]):
+            with st.expander(f"Source {i+1}: {result.get('title', 'No title')}"):
+                st.write(f"**{result.get('source', 'N/A')}**")
+                st.write(result.get('snippet', ''))
+                st.caption(f"[Link]({result.get('link', '')})")
+
+    if show_secondary_view and secondary_resp:
+        st.subheader("🔍 Secondary Validation")
+        try:
+            sec_obj = LLMResponse.model_validate_json(preclean_llm_json(secondary_resp))
+            st.json(sec_obj.model_dump())
+        except ValidationError:
+            st.code(secondary_resp[:2000], language="json")
+
+    if veracity_scores:
+        st.subheader("✅ Veracity Scores")
+        cols_v = st.columns(5)
+        metrics = [
+            ("Summary", "summary_score"),
+            ("Insights", "insights_score"), 
+            ("Table", "table_score"),
+            ("Graphs", "graph_score"),
+            ("Overall", "overall_score"),
+        ]
+        for i, (label, key) in enumerate(metrics):
+            cols_v[i].metric(label, f"{veracity_scores.get(key, 0):.1f}")
+
+    if versions_history:
+        st.subheader("📈 Evolution Layer")
+        render_evolution_layer(versions_history)
 
 
 
