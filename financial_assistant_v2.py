@@ -107,9 +107,17 @@ if not PERPLEXITY_KEY or not GEMINI_KEY:
 
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 genai.configure(api_key=GEMINI_KEY)
-#gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 gemini_model = genai.GenerativeModel('gemini-2.5-flash')
 
+# ----------------------------
+# FIX 1: ADD SECTION_MAPPING FOR RENDER_DASHBOARD
+# ----------------------------
+SECTION_MAPPING = {
+    "executive_summary": "Executive Summary",
+    "primary_metrics": "Key Performance Indicators (KPIs)",
+    "top_entities": "Top Market Entities & Competitors",
+    "key_findings": "Key Analysis Takeaways"
+}
 
 
 # ----------------------------
@@ -147,19 +155,6 @@ def source_quality_confidence(sources):
 # ----------------------------
 # PROMPTS AND MODELS
 # ----------------------------
-#RESPONSE_TEMPLATE = """
-#You are a research assistant. Return ONLY valid JSON formatted as:
-#{
-#  "summary": "Brief summary of findings.",
-#  "key_insights": ["Insight 1", "Insight 2"],
-#  "metrics": {"GDP Growth (%)": number, "Inflation (%)": number, "Unemployment (%)": number},
-#  "visual_data": {"labels": ["Q1","Q2"], "values": [2.3,2.5]},
-#  "table": [{"Country": "US", "GDP": 25.5, "Inflation": 3.4}],
-#  "sources": ["https://imf.org", "https://reuters.com"],
-#  "confidence_score": 85,
-#  "data_freshness": "As of [date]"
-#}
-#"""
 
 RESPONSE_TEMPLATE = """
 Return ONLY valid JSON in this flexible structure. Populate ALL fields with relevant data:
@@ -211,36 +206,6 @@ Return ONLY valid JSON in this flexible structure. Populate ALL fields with rele
 }
 """
 
-#SYSTEM_PROMPT = (
-#    "You are a research analyst focused on topics related to industry analysis, business sectors, finance, economics, and markets.\n"
-#    "Output strictly in the JSON format below, including ONLY those financial or economic metrics "
-#    "that are specifically relevant to the exact question the user asks.\n"
-#    "For example, if the user asks about oil or energy, include metrics like oil production, reserves, "
-#    "prices, and exclude unrelated metrics such as inflation or unemployment.\n"
-#    "For example, if the user asks about the size of the sneaker market in Asia, include metrics like market size in USD, projected growth rates,"
-#    "and exclude unrelated metrics such as inflation or unemployment. Also include information on the major brands of sneakers involved and the trends in the marketplace.\n"
-#    "If the question is related to macroeconomics or the underlying drivers are macroeconomic, you may include macroeconomic indicators such as GDP growth, inflation, population size etc.\n"
-#    "If the question is not related to business, finance, economics or the markets politely decline to answer the question.\n"
-#    "Strictly follow this JSON structure:\n"
-#    f"{RESPONSE_TEMPLATE}"
-#)
-
-#SYSTEM_PROMPT = (
-#    "You are an AI research analyst covering:\n"
-#    "- Macroeconomics (GDP, inflation, rates, unemployment)\n"
-#    "- **Industry analysis** (market size, growth, major players, trends)\n"
-#    "- Business sectors (EV, tech, consumer goods, energy, biotech, etc.)\n\n"
-#    "For industry queries, include:\n"
-#    "- Market size/revenue\n"
-#    "- Growth rates/CAGR\n"
-#    "- Top 3-5 companies + market share\n"
-#    "- Key trends/drivers\n"
-#    "- Relevant financial metrics\n\n"
-#    "ALWAYS provide analysis even if web results are sparse - use your knowledge.\n"
-#    "Output strictly valid JSON:\n"
-#    f"{RESPONSE_TEMPLATE}"
-#)
-
 SYSTEM_PROMPT = """You are a professional market research analyst. 
 
 CRITICAL: ALWAYS provide a COMPLETE response with:
@@ -271,10 +236,6 @@ f"{RESPONSE_TEMPLATE}"
 
 
 @st.cache_resource(show_spinner="Loading AI models...")
-#def load_models():
-#    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
-#    embed = SentenceTransformer("all-MiniLM-L6-v2")
-#    return classifier, embed
 def load_models():
     try:
         classifier = pipeline(
@@ -356,13 +317,8 @@ def search_serpapi(query: str, num_results: int = 5):
                     "source": source_name
                 })
         if results:
-             # sort results by source name for stable order
-   #         st.success(f"‚úÖ Found {len(results)} sources via SerpAPI")
-    #        results.sort(key=lambda x: x.get("source", "").lower())
-        # Add secondary sort key for stability
             results.sort(key=lambda x: (x.get("source", "").lower(), x.get("link", "")))
         return results[:num_results]
-     #   return results
     except requests.exceptions.RequestException as e:
         st.warning(f"⚠️ SerpAPI search error: {e}")
         return []
@@ -605,7 +561,6 @@ def query_gemini(query: str):
 # SELF-CONSISTENCY & VALIDATION
 # ----------------------------
 def generate_self_consistent_responses_with_web(query, web_context, n=1):  # generate one response
-    #st.info(f"Generating {n} independent analyst responses with web context...")
     st.info(f"Generating analysis...")
 
     responses, scores = [], []
@@ -623,9 +578,6 @@ def generate_self_consistent_responses_with_web(query, web_context, n=1):  # gen
     if success_count == 0:
         st.error("All Perplexity API calls failed.")
         return [], []
-   # st.success(f"Successfully generated {success_count}/{n} responses")
-#    st.success(f"Successfully generated analysis")
-
     return responses, scores
 
 def majority_vote(responses):
@@ -844,6 +796,8 @@ def parse_json_robustly(json_string, context):
     # 1. Clean up wrappers and control characters
     if cleaned_string.startswith("```json"):
         cleaned_string = cleaned_string[7:].strip()
+    if cleaned_string.startswith("```"):
+        cleaned_string = cleaned_string[3:].strip()
     if cleaned_string.endswith("```"):
         cleaned_string = cleaned_string[:-3].strip()
 
@@ -1470,16 +1424,6 @@ def main():
         "timestamp": datetime.now().isoformat()
         }
 
-   #     json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
-   #     b64 = base64.b64encode(json_str.encode()).decode()
-   #     filename = f"yureeka_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-   #     href = f'<a href="data:application/json;base64,{b64}" download="{filename}"--> Download Analysis JSON</a> (Right-click ‚ Save As)'
-
-   #     st.markdown(href, unsafe_allow_html=True)
-   #     st.success("‚úÖ Analysis ready for download!")
-
-        # FIX: The original code used st.markdown(href, unsafe_allow_html=True)
-        # We need to ensure the HTML is clean and isolated.
         
         json_str = json.dumps(output_payload, ensure_ascii=False, indent=2)
         b64 = base64.b64encode(json_str.encode()).decode()
@@ -1517,6 +1461,7 @@ def main():
         {
         "version": "V3 (Nov 3)",
         "timestamp": datetime.now().isoformat(timespec="minutes"),
+        # 🟢 FIXED: Ensure the history uses the correct key 'primary_metrics'
         "metrics": j1.get("primary_metrics", {}),
         "confidence": final_conf,
         "sources_freshness": 78,
@@ -1524,11 +1469,9 @@ def main():
         }
         ]
 
-        # Save for other pages
-       # st.session_state["versions_history"] = versions_history
-
         # Store ALL versions for individual pages (NEW)
         st.session_state["all_versions"] = versions_history
+        # 🟢 FIX 2: Correct keys for the current analysis session state
         st.session_state["current_analysis"] = {
         "summary": j1.get("executive_summary", ""),
         "metrics": j1.get("primary_metrics", {}),
@@ -1550,7 +1493,7 @@ def main():
             user_question=q,
             secondary_resp=secondary_resp,
             veracity_scores=veracity_scores,
-            show_secondary_view=show_validation  # 🟢 1B. PASS THE TOGGLE HERE
+            show_secondary_view=show_validation  # 🟢 PASS THE TOGGLE HERE
         )
 
 
@@ -1568,5 +1511,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
