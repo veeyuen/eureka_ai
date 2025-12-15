@@ -1092,7 +1092,7 @@ def render_dashboard(
 
 def main():
     st.set_page_config(
-        page_title="Yureeka Research Assistant",
+        page_title="Yureeka Market Intelligence",
         page_icon="💹",
         layout="wide"
     )
