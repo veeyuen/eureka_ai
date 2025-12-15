@@ -1027,7 +1027,7 @@ def render_dashboard(
     else:
         st.success(f"Found {len(all_sources)} sources")
         for i, src in enumerate(all_sources[:10], 1):
-        reliability = classify_source_reliability(str(src))
+            reliability = classify_source_reliability(str(src))
         if src.startswith("http"):
             st.markdown(f"**{i}.** [{src}]({src})  **{reliability}**")
         else:
