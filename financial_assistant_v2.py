@@ -957,43 +957,51 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
         entities_key = "top_entities"
         st.subheader(SECTION_MAPPING.get(entities_key, entities_key.replace('_', ' ').title()))
         top_entities = data.get(entities_key, [])
+        
         if top_entities:
             entity_data = []
+            
             for entity in top_entities:
-                entity_data.append({
-                    "Entity": entity.get("name", "N/A"),
-                    "Share": entity.get("share", "N/A"),
-                    "Details": entity.get("details", "N/A")
-                })
-            try:
-                df_entities = pd.DataFrame(entity_data)
-                st.dataframe(df_entities, hide_index=True, use_container_width=True)
-            except Exception as e:
-                st.warning(f"Could not render Top Entities table: {e}")
+                if isinstance(entity, dict):
+                    # Case 1: The item is a valid dictionary (as expected)
+                    entity_data.append({
+                        "Entity": entity.get("name", "N/A"),
+                        "Share": entity.get("share", "N/A"),
+                        "Details": entity.get("details", "N/A")
+                    })
+                elif isinstance(entity, str):
+                    # Case 2: The item is a string (e.g., "TSMC (54% Foundry Market)")
+                    # Attempt a simple parse or just skip
+                    if ":" in entity:
+                        name, detail = entity.split(":", 1)
+                        entity_data.append({
+                            "Entity": name.strip(),
+                            "Share": "N/A", # Cannot reliably extract share from unstructured string
+                            "Details": detail.strip()
+                        })
+                    else:
+                        # If it's just a name, use it as the entity
+                        entity_data.append({
+                            "Entity": entity.strip(),
+                            "Share": "N/A",
+                            "Details": "N/A"
+                        })
+                    st.warning(f"Note: Entity data was generated as an unstructured string: '{entity}'.")
+                else:
+                    # Case 3: Unexpected type
+                    st.warning(f"Skipping malformed entity entry: Expected dict or string, found {type(entity).__name__}.")
+                    continue 
+
+            if entity_data:
+                try:
+                    df_entities = pd.DataFrame(entity_data)
+                    st.dataframe(df_entities, hide_index=True, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Could not render Top Entities table: {e}")
+            else:
+                st.info("No valid top entities data available.")
         else:
             st.info("No top entities data available.")
-
-    with col_trends:
-        trends_key = "trends_forecast"
-        st.subheader(SECTION_MAPPING.get(trends_key, trends_key.replace('_', ' ').title()))
-        trends_forecast = data.get(trends_key, [])
-        if trends_forecast:
-            trends_data = []
-            for trend in trends_forecast:
-                trends_data.append({
-                    "Trend": trend.get("trend", "N/A"),
-                    "Impact": trend.get("impact", "N/A"),
-                    "Timeline": trend.get("timeline", "N/A"),
-                    "Details": trend.get("details", "N/A")
-                })
-            try:
-                df_trends = pd.DataFrame(trends_data)
-                st.dataframe(df_trends, hide_index=True, use_container_width=True)
-            except Exception as e:
-                 st.warning(f"Could not render Trends & Forecast table: {e}")
-        else:
-            st.info("No trends and forecast data available.")
-
     # =========================================================
     # 6. TREND VISUALIZATION (Fixes for Chart.js structure and X-axis title)
     # =========================================================
