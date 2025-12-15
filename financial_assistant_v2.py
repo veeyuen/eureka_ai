@@ -892,7 +892,7 @@ def render_dashboard(
         return
     
     # Header
-    st.header("📊 Yureeka Market Intelligence")
+    st.header("📊 Yureeka Market Report")
     st.markdown(f"**Question:** {user_question}")
     
     # Confidence metrics
