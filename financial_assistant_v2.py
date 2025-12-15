@@ -671,7 +671,8 @@ def query_gemini(query: str) -> str:
             return create_fallback_response(query, 0, {})
     
     except Exception as e:
-        st.warning(f"⚠️ Gemini API error: {e}")
+       # st.warning(f"⚠️ Gemini API error: {e}")  # FULL WARNING MESSAGE
+        st.info("Secondary model response unavailable")
         return create_fallback_response(query, 0, {})
 
 def create_fallback_response(query: str, search_count: int, web_context: Dict) -> str:
