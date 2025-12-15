@@ -952,43 +952,55 @@ def calculate_final_confidence(
 # 9. DASHBOARD RENDERING (FIXED)
 # =========================================================
 
+
 def detect_x_label_dynamic(labels: list) -> str:
-    """Fully dynamic X-axis label detection"""
+    """Fully dynamic X-axis label detection - FIXED for regions"""
     if not labels:
         return "Category"
     
     label_texts = [str(l).lower() for l in labels]
+    all_text = ' '.join(label_texts)
     
-    # 1. YEAR DETECTION (most precise)
+    # 1. GEOGRAPHIC REGIONS (NEW & PRIORITIZED)
+    region_keywords = [
+        'north america', 'south america', 'asia', 'europe', 'africa', 'middle east',
+        'asia-pacific', 'european', 'latam', 'apac', 'emea', 'nafta',
+        'usa', 'us', 'china', 'japan', 'india', 'germany', 'france', 'uk',
+        'rest of world', 'row', 'global', 'international'
+    ]
+    
+    region_count = sum(1 for kw in region_keywords if kw in all_text)
+    if region_count >= 2 or any(kw in all_text for kw in ['north america', 'asia-pacific', 'europe', 'rest of world']):
+        return "Regions"
+    
+    # 2. YEAR DETECTION
     year_count = sum(1 for label in label_texts if re.search(r'\b(20\d{2}|19\d{2})\b', label))
     if year_count / len(labels) > 0.5:
         return "Years"
     
-    # 2. QUARTER DETECTION
+    # 3. QUARTER DETECTION
     quarter_count = sum(1 for label in label_texts if re.search(r'\bq[1-4]\b', label))
     if quarter_count > 1:
         return "Quarters"
     
-    # 3. MONTH DETECTION
+    # 4. MONTH DETECTION
     months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
     month_count = sum(1 for label in label_texts if any(m in label for m in months))
     if month_count / len(labels) > 0.4:
         return "Months"
     
-    # 4. GEOGRAPHIC (countries, regions)
-    geo_words = ['usa', 'eu', 'china', 'japan', 'india', 'asia', 'europe', 'north', 'south', 'asia', 
-    'america', 'europe', 'africa', 'asia pacific', 'north america', 'south america']
-    geo_count = sum(1 for label in label_texts if any(g in label for g in geo_words))
-    if geo_count / len(labels) > 0.3:
-        return "Regions"
-    
-    # 5. COMPANIES/SEGMENTS (keywords)
-    company_words = ['inc', 'ltd', 'corp', 'llc', 'tsmc', 'samsung', 'intel', 'llc', 'pte ltd']
-    if any(word in ' '.join(label_texts) for word in company_words):
+    # 5. COMPANIES
+    company_words = ['inc', 'ltd', 'corp', 'llc', 'tsmc', 'samsung', 'intel', 'nvidia']
+    if any(word in all_text for word in company_words):
         return "Companies"
     
-    # 6. CATEGORIES (default for segments/products)
+    # 6. SEGMENTS/CATEGORIES
+    segment_words = ['consumer', 'enterprise', 'logic', 'memory', 'foundry']
+    if any(word in all_text for word in segment_words):
+        return "Segments"
+    
     return "Categories"
+
 
 def detect_y_label_dynamic(values: list) -> str:
     """Fully dynamic Y-axis label based on magnitude + context"""
