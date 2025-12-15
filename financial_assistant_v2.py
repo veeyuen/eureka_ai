@@ -99,8 +99,8 @@ class ComparisonBar(BaseModel):
 class BenchmarkTable(BaseModel):
     """Benchmark table row"""
     category: str
-    value_1: Union[float, int]
-    value_2: Union[float, int]
+    value_1: Union[float, int, str] = Field(default=0, description="Numeric value or string")
+    value_2: Union[float, int, str] = Field(default=0, description="Numeric value or string")
     model_config = ConfigDict(extra='ignore')
 
 class Action(BaseModel):
@@ -181,21 +181,33 @@ CRITICAL RULES:
 4. NO trailing commas in arrays or objects.
 5. Escape internal quotes with backslash.
 
-REQUIRED FIELDS (provide substantive data):
-- executive_summary: Write 4-6 sentences covering:
-  * Direct answer to the question (1 sentence)
-  * Market size/scale with specific numbers (1 sentence)
-  * Key drivers or growth factors (1-2 sentences)
-  * Future outlook or trend direction (1-2 sentence)
-  Example: "The global EV battery market reached $58.3B in 2023. Strong growth is driven by falling lithium prices and government mandates. China dominates with 60% market share, followed by Europe at 25%. The market is projected to grow at 18.5% CAGR through 2030 as battery costs decline further."
-  
-- primary_metrics (3+ metrics with numbers)
-- key_findings (3+ findings)
-- top_entities (3+ companies/countries)
-- trends_forecast (2+ trends)
-- visualization_data (MUST have chart_labels and chart_values)
+NUMERIC FIELD RULES (IMPORTANT):
+- In benchmark_table: value_1 and value_2 MUST be numbers (never "N/A", "null", or text)
+- If data unavailable, use 0 for benchmark_table values
+- In primary_metrics: values can be numbers or strings with units (e.g., "25.5" or "25.5 billion")
+- In top_entities: share and growth can be strings (e.g., "25%")
 
-Even if web data is sparse, use your knowledge to provide complete analysis.
+REQUIRED FIELDS (provide substantive data):
+
+**executive_summary** - MUST be 4-6 complete sentences covering:
+  • Sentence 1: Direct answer with specific quantitative data (market size, revenue, units, etc.)
+  • Sentence 2: Major players or regional breakdown with percentages/numbers
+  • Sentence 3: Key growth drivers or market dynamics
+  • Sentence 4: Future outlook with projected CAGR, timeline, or target values
+  • Sentence 5 (optional): Challenge, risk, or competitive dynamic
+  
+  BAD (too short): "The EV market is growing rapidly due to government policies."
+  
+  GOOD: "The global electric vehicle market reached 14.2 million units sold in 2023, representing 18% of total auto sales. China dominates with 60% market share, followed by Europe (25%) and North America (10%). Growth is driven by battery cost reductions (down 89% since 2010), expanding charging infrastructure, and stricter emission regulations in over 20 countries. The market is projected to grow at 21% CAGR through 2030, reaching 40 million units annually. However, supply chain constraints for lithium and cobalt remain key challenges."
+
+- primary_metrics (3+ metrics with numbers)
+- key_findings (3+ findings with quantitative details)
+- top_entities (3+ companies/countries with market share %)
+- trends_forecast (2+ trends with timelines)
+- visualization_data (MUST have chart_labels and chart_values)
+- benchmark_table (if included, value_1 and value_2 must be NUMBERS, not "N/A")
+
+Even if web data is sparse, use your knowledge to provide complete, detailed analysis.
 
 Output ONLY this JSON structure:
 {RESPONSE_TEMPLATE}
@@ -231,6 +243,7 @@ def repair_llm_response(data: dict) -> dict:
     Repair common LLM JSON structure issues:
     - Convert primary_metrics from list to dict
     - Ensure top_entities and trends_forecast are lists
+    - Fix benchmark_table numeric values
     - Add missing required fields
     """
     
@@ -239,20 +252,17 @@ def repair_llm_response(data: dict) -> dict:
         new_metrics = {}
         for i, item in enumerate(data["primary_metrics"]):
             if isinstance(item, dict):
-                # Generate unique key from name
                 raw_name = item.get("name", f"metric_{i+1}")
                 key = re.sub(r'[^a-z0-9_]', '', raw_name.lower().replace(" ", "_"))
                 if not key:
                     key = f"metric_{i+1}"
                 
-                # Ensure uniqueness
                 original_key = key
                 j = 1
                 while key in new_metrics:
                     key = f"{original_key}_{j}"
                     j += 1
                 
-                # Ensure required fields
                 item.setdefault("name", raw_name)
                 item.setdefault("value", "N/A")
                 item.setdefault("unit", "")
@@ -282,6 +292,45 @@ def repair_llm_response(data: dict) -> dict:
             viz["chart_labels"] = viz.pop("labels")
         if "values" in viz and "chart_values" not in viz:
             viz["chart_values"] = viz.pop("values")
+    
+    # ✨ NEW: Fix benchmark_table numeric values
+    if "benchmark_table" in data and isinstance(data["benchmark_table"], list):
+        cleaned_table = []
+        for row in data["benchmark_table"]:
+            if isinstance(row, dict):
+                # Ensure category exists
+                if "category" not in row:
+                    row["category"] = "Unknown"
+                
+                # Fix numeric fields
+                for key in ["value_1", "value_2"]:
+                    if key not in row:
+                        row[key] = 0
+                        continue
+                    
+                    val = row[key]
+                    
+                    # Convert "N/A" and similar to 0
+                    if isinstance(val, str):
+                        val_upper = val.upper().strip()
+                        if val_upper in ["N/A", "NA", "NULL", "NONE", "", "-", "—"]:
+                            row[key] = 0
+                        else:
+                            # Try to parse numeric strings like "25.5", "$100", "1,234"
+                            try:
+                                cleaned = re.sub(r'[^\d.-]', '', val)
+                                if cleaned:
+                                    row[key] = float(cleaned) if '.' in cleaned else int(cleaned)
+                                else:
+                                    row[key] = 0
+                            except (ValueError, TypeError):
+                                row[key] = 0
+                    elif not isinstance(val, (int, float)):
+                        row[key] = 0
+                
+                cleaned_table.append(row)
+        
+        data["benchmark_table"] = cleaned_table
     
     return data
 
