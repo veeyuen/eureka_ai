@@ -879,8 +879,6 @@ def parse_json_robustly(json_string, context):
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
 
-import re
-
 def preclean_llm_json(raw: str) -> str:
     """Strip markdown fences and simple citations; do NOT try to repair JSON structure."""
     if not raw or not isinstance(raw, str):
@@ -889,11 +887,11 @@ def preclean_llm_json(raw: str) -> str:
     text = raw.strip()
 
     # Remove leading/trailing code fences
-    if text.startswith("```
+    if text.startswith("```json"):
         text = text[7:]
     if text.startswith("```"):
         text = text[3:]
-    if text.endswith("```
+    if text.endswith("```"):
         text = text[:-3]
     
     text = text.strip()
@@ -904,11 +902,7 @@ def preclean_llm_json(raw: str) -> str:
 
     return text.strip()
 
-from typing import Optional
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-from pydantic import ValidationError
+
 
 def render_dashboard(
     chosen_primary: str,
