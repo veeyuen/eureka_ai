@@ -1248,12 +1248,12 @@ def render_dashboard(
         freshness = data.get('freshness', 'Current')
         st.metric("Data Freshness", freshness)
     
-    with col_action:
-        action = data.get('action')
-        if action and isinstance(action, dict):
-            rec = action.get("recommendation", "Neutral")
-            conf = action.get("confidence", "Medium")
-            st.metric("Recommendation", f"{rec} ({conf})")
+  #  with col_action:  # RECOMMENDATION SECTION
+  #      action = data.get('action')
+  #      if action and isinstance(action, dict):
+  #          rec = action.get("recommendation", "Neutral")
+  #          conf = action.get("confidence", "Medium")
+  #          st.metric("Recommendation", f"{rec} ({conf})")
     
     st.markdown("---")
     
