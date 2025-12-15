@@ -457,7 +457,7 @@ def classify_source_reliability(source: str) -> str:
     
     high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", 
             "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte",
-           "kpmg", "semiconductors.org", "eu"]
+           "kpmg", "semiconductors.org", "eu", "iea", "world bank"]
     medium = ["wikipedia", "forbes", "cnbc", "yahoo", "statista", "ceic"]
     low = ["blog", "medium.com", "wordpress", "ad", "promo"]
     
