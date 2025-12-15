@@ -334,6 +334,21 @@ def repair_llm_response(data: dict) -> dict:
     
     return data
 
+def validate_numeric_fields(data: dict, context: str = "LLM Response") -> None:
+    """Log warnings for non-numeric values in expected numeric fields"""
+    
+    # Check benchmark_table
+    if "benchmark_table" in data and isinstance(data["benchmark_table"], list):
+        for i, row in enumerate(data["benchmark_table"]):
+            if isinstance(row, dict):
+                for key in ["value_1", "value_2"]:
+                    val = row.get(key)
+                    if isinstance(val, str):
+                        st.warning(
+                            f"⚠️ {context}: benchmark_table[{i}].{key} is string: '{val}' "
+                            f"(will be converted to 0)"
+                        )
+
 def preclean_json(raw: str) -> str:
     """Remove markdown fences and citations before parsing"""
     if not raw or not isinstance(raw, str):
@@ -668,6 +683,9 @@ def query_perplexity(query: str, web_context: Dict, temperature: float = 0.1) ->
         
         repaired = repair_llm_response(parsed)
         
+        # ✨ INSERT THE DEBUG HELPER HERE (before Pydantic validation):
+        validate_numeric_fields(repaired, "Perplexity")
+        
         # Validate with Pydantic
         try:
             llm_obj = LLMResponse.model_validate(repaired)
@@ -712,6 +730,8 @@ def query_gemini(query: str) -> str:
             return create_fallback_response(query, 0, {})
         
         repaired = repair_llm_response(parsed)
+
+        validate_numeric_fields(repaired, "Gemini")
         
         try:
             llm_obj = LLMResponse.model_validate(repaired)
