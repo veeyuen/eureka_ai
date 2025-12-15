@@ -59,17 +59,17 @@ def classify_source_reliability(source):
 
     for high in high_sources:
         if high in source:
-            return "✅ High"
+            return "‚úÖ High"
     for medium in medium_sources:
         if medium in source:
-            return "⚠️ Medium"
+            return "‚ö†Ô∏è Medium"
     for low in low_sources:
         if low in source:
-            return "❌ Low"
-    return "⚠️ Medium"  # default fallback
+            return "‚ùå Low"
+    return "‚ö†Ô∏è Medium"  # default fallback
 
 def source_quality_confidence(sources):
-    weights = {"✅ High": 1.0, "⚠️ Medium": 0.6, "❌ Low": 0.3}
+    weights = {"‚úÖ High": 1.0, "‚ö†Ô∏è Medium": 0.6, "‚ùå Low": 0.3}
     total_score = 0
     count = 0
     for source in sources:
@@ -99,8 +99,8 @@ RESPONSE_TEMPLATE = """
 Return ONLY valid JSON in this flexible structure. Populate ALL fields with relevant data:
 
 {
-    "executive_summary": "1-2 sentence high-level answer to the core question",
-    "primary_metrics": {
+  "executive_summary": "1-2 sentence high-level answer to the core question",
+  "primary_metrics": {
     "metric_1": {"name": "Key Metric 1", "value": 25.5, "unit": "%"},
     "metric_2": {"name": "Key Metric 2", "value": 623, "unit": "$B"},
     "metric_3": {"name": "Key Metric 3", "value": 12.5, "unit": "x"}
@@ -120,10 +120,10 @@ Return ONLY valid JSON in this flexible structure. Populate ALL fields with rele
     {"trend": "Another trend", "direction": "‚Üë", "timeline": "2026"}
   ],
   "visualization_data": {
-  "title": "YoY Growth",
-  "chart_labels": ["Year 1", "Year 2"],
-  "data_series_label": "Market Size ($B)",
-  "data_series_values": [100, 120]
+    "trend_line": {
+      "title": "YoY Growth Projection (Sample)",
+      "labels": ["Year 1","Year 2","Year 3","Year 4"],
+      "values": [15, 20, 25, 30] // Must be four numerical values
     },
     "comparison_bars": {
       "title": "Market Share by Segment (Sample)",
@@ -190,14 +190,14 @@ FOLLOW EXACTLY:
 1. Return ONLY a single JSON object. NO markdown, NO code blocks, NO explanations.
 2. NO references like [1][2] inside JSON strings.
 3. NO text before or after the JSON { ... }
-4. Use ONLY the fields from the response template below.
-5. **Formatting Zero-Tolerance:**
-   - **MUST** enclose all property names (keys) in double quotes.
-   - **MUST NOT** include any trailing commas within objects or arrays (e.g., `[1, 2,]` is forbidden).
-   - **MUST** use a comma delimiter between all list elements and object properties.
-   - **MUST** escape any internal double quotes within string values using a backslash (e.g., `\"`).
+4. Use ONLY these fields from the template below.
 
 EVEN IF WEB DATA IS SPARSE, use your knowledge to provide substantive analysis.
+
+For "electric vehicle market":
+- Market size ~$600B+, growing 25% CAGR
+- Leaders: Tesla (18%), BYD (15%), VW (9%)
+- Trends: battery costs ‚Üì60%, China 60% global sales
 
 NEVER return empty fields. Output ONLY valid JSON:\n"
 f"{RESPONSE_TEMPLATE}"
@@ -230,7 +230,7 @@ domain_classifier, embedder = load_models()
 @st.cache_data(ttl=3600)
 def search_serpapi(query: str, num_results: int = 5):
     if not SERPAPI_KEY:
-        st.info("💡 SerpAPI key not configured.")
+        st.info("üí° SerpAPI key not configured.")
         return []
     
     # SMART QUERY CLASSIFICATION
@@ -298,10 +298,10 @@ def search_serpapi(query: str, num_results: int = 5):
         return results[:num_results]
      #   return results
     except requests.exceptions.RequestException as e:
-        st.warning(f"⚠️ SerpAPI search error: {e}")
+        st.warning(f"‚ö†Ô∏è SerpAPI search error: {e}")
         return []
     except Exception as e:
-        st.warning(f"⚠️ Error processing SerpAPI results: {e}")
+        st.warning(f"‚ö†Ô∏è Error processing SerpAPI results: {e}")
         return []
 
 def scrape_url_scrapingdog(url: str):
@@ -325,7 +325,7 @@ def scrape_url_scrapingdog(url: str):
         text = '\n'.join(chunk for chunk in chunks if chunk)
         return text[:3000]
     except Exception as e:
-        st.warning(f"⚠️ ScrapingDog error for {url[:50]}: {e}")
+        st.warning(f"‚ö†Ô∏è ScrapingDog error for {url[:50]}: {e}")
         return None
 
 def fetch_web_context(query: str, num_sources: int = 3): 
@@ -338,13 +338,13 @@ def fetch_web_context(query: str, num_sources: int = 3):
     
     scraped_content = {}
     if SCRAPINGDOG_KEY:
-        st.info(f"🔍 Scraping top {min(num_sources, len(search_results_sorted))} sources...")
+        st.info(f"üîç Scraping top {min(num_sources, len(search_results_sorted))} sources...")
         for i, result in enumerate(search_results_sorted[:num_sources]):
             url = result["link"]
             content = scrape_url_scrapingdog(url)
             if content:
                 scraped_content[url] = content
-                st.success(f"✓ Scraped {i+1}/{num_sources}: {result['source']}")
+                st.success(f"‚úì Scraped {i+1}/{num_sources}: {result['source']}")
     context_parts = []
     reliabilities = []
 
@@ -368,7 +368,7 @@ def fetch_web_context(query: str, num_sources: int = 3):
         "source_reliability": reliabilities,
     }
 
-def query_perplexity_with_context(query: str, web_context: dict, temperature=0):
+def query_perplexity_with_context(query: str, web_context: dict, temperature=0.1):
     # FALLBACK: Check web context quality
     search_results_count = len(web_context.get("search_results", []))
     
@@ -494,7 +494,7 @@ def query_gemini(query: str):
         response = gemini_model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0,
+                temperature=0.1,
                 max_output_tokens=2000,
             ),
         )
@@ -727,10 +727,13 @@ def parse_trends_to_chart(trends):
     return labels[:5], values[:5]  # Limit for chart
 
 
+
 def parse_json_robustly(json_string, context):
     """
-    Parses a JSON string safely, addressing key quoting, trailing commas, 
-    missing delimiters, and unescaped double quotes (Unterminated string error).
+    Parses a JSON string safely.
+    1. Isolates the main JSON object.
+    2. Performs structural repairs (unquoted keys, boolean fixes, and trailing comma removal).
+    3. Uses a highly robust iterative repair loop to fix unescaped quotes (the cause of 'Unterminated string').
     """
     if not json_string:
         return {}
@@ -754,40 +757,40 @@ def parse_json_robustly(json_string, context):
         st.error(f"JSON parse failed: Could not find any valid JSON object '{{...}}' in {context} response.")
         return {"parse_error": "No JSON object found."}
     
-    # 3. AGGRESSIVE STRUCTURAL REPAIR: FIX KEYS, COMMAS, AND BOOLEANS
+    # 3. STRUCTURAL REPAIR: FIX UNQUOTED KEYS, BOOLEANS, AND TRAILING COMMAS
     repaired_content = json_content
     
     try:
-        # Fix 1: Insert missing commas between closing brace/bracket and a new key (Fixes 'Expecting ',' delimiter')
-        repaired_content = re.sub(r'([\]\}])\s*["\'(a-zA-Z_]', r'\1,', repaired_content)
-
-        # Fix 2: {key: -> {"key": (Fixes 'Expecting property name enclosed in double quotes')
+        # Pattern 1: {key: -> {"key": (For keys at the start of an object or after a comma)
         repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
 
-        # Fix 3: Remove illegal trailing commas (Fixes 'Expecting value' failure)
-        repaired_content = re.sub(r',\s*([\]\}])', r'\1', repaired_content)
-        
-        # Fix 4: Capitalization of boolean/null values
+        # Fix: Capitalization of boolean/null values (e.g., 'True' -> 'true')
         repaired_content = repaired_content.replace(': True', ': true')
         repaired_content = repaired_content.replace(': False', ': false')
         repaired_content = repaired_content.replace(': Null', ': null')
         
+        # 🟢 NEW FIX: Remove trailing commas before a closing brace/bracket
+        # This fixes the 'Expecting value' error caused by illegal trailing commas.
+        repaired_content = re.sub(r',\s*([\]\}])', r'\1', repaired_content) 
+        
     except Exception as e:
-        st.warning(f"Structural repair regex failed: {e}")
+        st.warning(f"Structural key repair regex failed: {e}")
 
     json_content = repaired_content # Update content for the iterative loop
 
-    # 4. ITERATIVE QUOTE REPAIR LOOP (TARGETING 'UNTERMINATED STRING' ERROR)
-    max_retries = 20 # Increased retries
+    # 4. ITERATIVE QUOTE REPAIR LOOP (Targeting 'Unterminated string' error)
+    max_retries = 15
     current_attempt = 0
     
     while current_attempt < max_retries:
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            # Check for error types caused by unescaped quotes or delimiter issues
+            # Check for error types caused by unescaped quotes
             if not ("Unterminated string" in e.msg or "Expecting ',' delimiter" in e.msg or "Expecting value" in e.msg):
+                # If it's a different, unfixable error, fail gracefully
                 st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
+                st.caption(f"Error Context: {context}")
                 error_pos = e.pos if hasattr(e, 'pos') else 0
                 start = max(0, error_pos - 50)
                 end = min(len(json_content), error_pos + 50)
@@ -798,7 +801,7 @@ def parse_json_robustly(json_string, context):
             found_quote = -1
             
             # Search backwards from error_pos to find the nearest quote to escape
-            for i in range(error_pos - 1, max(0, error_pos - 200), -1): # Increased search range
+            for i in range(error_pos - 1, max(0, error_pos - 150), -1): 
                 if i < len(json_content) and json_content[i] == '"':
                     # Crucial check: if the preceding character is NOT a backslash, this is our unescaped quote.
                     if i == 0 or json_content[i-1] != '\\':
@@ -806,17 +809,23 @@ def parse_json_robustly(json_string, context):
                         break
             
             if found_quote != -1:
-                # 🌟 THIS IS THE LINE THAT FIXES YOUR CURRENT ERROR
+                # Escape the quote: Insert a backslash before it
                 json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
                 current_attempt += 1
                 continue # Retry the loop with the fixed string
             
+            # If the repair loop couldn't find a quote to fix after max attempts, fail
             st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
+            st.caption(f"Error Context: {context}")
+            error_pos = e.pos if hasattr(e, 'pos') else 0
+            start = max(0, error_pos - 50)
+            end = min(len(json_content), error_pos + 50)
+            st.markdown(f"**Error near:** `{json_content[start:end]}`")
             return {"parse_error": str(e)}
 
+    # If we run out of retries
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
-
 def render_dashboard(
     chosen_primary,
     final_conf,
@@ -843,117 +852,56 @@ def render_dashboard(
         st.error("Cannot render dashboard due to severe parsing error in the LLM response.")
         return
 
-    st.header("Summary Analysis")
+    st.markdown("Analysis Dashboard")
 
     # =========================================================
-    # 1. METRICS (SUMMARY & KEY FINDINGS) (OLD code displayed in row format)
+    # 1. METRICS (SUMMARY & KEY FINDINGS)
     # =========================================================
-#    st.subheader("Executive Summary")
-#    st.info(data.get("executive_summary", "Summary not available."))
-    
-#    st.subheader("Key Performance Indicators (KPIs)")
-#    col1, col2, col3, col4 = st.columns(4)
-
-#    primary_metrics = data.get("primary_metrics", [])
-    
-    # --- Primary Metrics: Handling the current LIST-OF-STRINGS structure ---
-#    if isinstance(primary_metrics, list):
-#        for i, metric in enumerate(primary_metrics):
-#            if not isinstance(metric, str):
-#                # 🟢 This is the line that generates your current error! 
-#                # The metric is a dict, but we are in the LIST block. We will skip it.
-#                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}. Check if your primary_metrics template is mixed.")
-#                continue 
-            
-            # This logic handles the old format like "Metric Name: Value"
- #           if ':' in metric:
- #               key, value = metric.split(':', 1)
- #           else:
-                # If no colon, use a generic key
- #               key, value = f"Metric {i+1}", metric
-                
- #           col = [col1, col2, col3, col4][i % 4]
- #           col.metric(key.strip(), value.strip())
-
-    # --- Primary Metrics: Fallback for the future DICT-OF-DICTS structure ---
- #   elif isinstance(primary_metrics, dict):
- #       for i, (key, metric_dict) in enumerate(primary_metrics.items()):
- #           if not isinstance(metric_dict, dict):
- #               st.warning(f"Skipping malformed metric entry ({key}): Expected dict, found {type(metric_dict).__name__}.")
- #               continue 
-
- #           name = metric_dict.get("name", key.replace('_', ' ').title())
- #           value = metric_dict.get("value", "N/A")
- #           unit = metric_dict.get("unit", "")
-            
-  #          display_value = f"{value} {unit}".strip()
-
-  #          col = [col1, col2, col3, col4][i % 4]
-  #          col.metric(name, display_value)
-            
-  #  else:
-  #      st.info("Primary metrics data is unavailable or in an unrecognized format.")
-
-
-# =========================================================
-    # 2. METRICS (KEY PERFORMANCE INDICATORS) - NOW DISPLAYED AS A TABLE
-    # =========================================================
-    st.header(f"💰 Market Strategy Analysis: {user_question}")
-    
-    executive_summary = data.get("executive_summary", "Executive Summary not available.")
-    
-    # Ensure the title matches your C-suite target audience
     st.subheader("Executive Summary")
+    st.info(data.get("executive_summary", "Summary not available."))
     
-    # Display the summary text
-    st.markdown(f"**{executive_summary}**")
-     
-    st.subheader("📊 Key Performance Indicators (KPIs)")
-    
+    st.subheader("Key Performance Indicators (KPIs)")
+    col1, col2, col3, col4 = st.columns(4)
+
     primary_metrics = data.get("primary_metrics", [])
     
-    # List to hold dictionaries for the DataFrame
-    metrics_list = []
-    
+    # --- Primary Metrics: Handling the current LIST-OF-STRINGS structure ---
     if isinstance(primary_metrics, list):
         for i, metric in enumerate(primary_metrics):
             if not isinstance(metric, str):
-                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}.")
+                # 🟢 This is the line that generates your current error! 
+                # The metric is a dict, but we are in the LIST block. We will skip it.
+                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}. Check if your primary_metrics template is mixed.")
                 continue 
             
-            # This logic handles the current format like "Metric Name: Value"
+            # This logic handles the old format like "Metric Name: Value"
             if ':' in metric:
                 key, value = metric.split(':', 1)
-                metrics_list.append({
-                    "Metric": key.strip(),
-                    "Value": value.strip()
-                })
             else:
-                metrics_list.append({
-                    "Metric": f"Metric {i+1}",
-                    "Value": metric.strip()
-                })
-
-    # --- Fallback for the future DICT-OF-DICTS structure (if you change the template) ---
-    elif isinstance(primary_metrics, dict):
-        for key, metric_dict in primary_metrics.items():
-            if isinstance(metric_dict, dict):
-                name = metric_dict.get("name", key.replace('_', ' ').title())
-                value = metric_dict.get("value", "N/A")
-                unit = metric_dict.get("unit", "")
+                # If no colon, use a generic key
+                key, value = f"Metric {i+1}", metric
                 
-                metrics_list.append({
-                    "Metric": name,
-                    "Value": f"{value} {unit}".strip()
-                })
+            col = [col1, col2, col3, col4][i % 4]
+            col.metric(key.strip(), value.strip())
 
-    # --- Final Table Rendering ---
-    if metrics_list:
-        df_metrics = pd.DataFrame(metrics_list)
-        # Display the DataFrame as a static table (st.table) or interactive (st.dataframe)
-        st.table(df_metrics)
+    # --- Primary Metrics: Fallback for the future DICT-OF-DICTS structure ---
+    elif isinstance(primary_metrics, dict):
+        for i, (key, metric_dict) in enumerate(primary_metrics.items()):
+            if not isinstance(metric_dict, dict):
+                st.warning(f"Skipping malformed metric entry ({key}): Expected dict, found {type(metric_dict).__name__}.")
+                continue 
+
+            name = metric_dict.get("name", key.replace('_', ' ').title())
+            value = metric_dict.get("value", "N/A")
+            unit = metric_dict.get("unit", "")
+            
+            display_value = f"{value} {unit}".strip()
+
+            col = [col1, col2, col3, col4][i % 4]
+            col.metric(name, display_value)
+            
     else:
-        st.info("Primary metrics data is unavailable.")
+        st.info("Primary metrics data is unavailable or in an unrecognized format.")
     # =========================================================
     # 2. TREND VISUALIZATION
     # =========================================================
@@ -1525,7 +1473,7 @@ def main():
         # Store ALL versions for individual pages (NEW)
         st.session_state["all_versions"] = versions_history
         st.session_state["current_analysis"] = {
-        "summary": j1.get("executive_summary", ""),
+        "summary": j1.get("summary", ""),
         "metrics": j1.get("metrics", {}),
         "confidence": final_conf
         }
