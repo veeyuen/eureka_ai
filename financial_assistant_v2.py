@@ -849,7 +849,7 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
     st.markdown(f"**{executive_summary}**") 
 
     # =========================================================
-    # 2. METRICS (KEY PERFORMANCE INDICATORS) - DISPLAYED AS A TABLE
+    # 2. METRICS (KEY PERFORMANCE INDICATORS) - NOW DISPLAYED AS A TABLE
     # =========================================================
     st.markdown("---")
     metrics_key = "primary_metrics"
@@ -858,26 +858,38 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
     primary_metrics = data.get(metrics_key, [])
     metrics_list = []
     
-    # Logic to handle the list-of-strings format (Current LLM output)
+    # Logic to handle the metrics array, which might be a mix of string and dict formats
     if isinstance(primary_metrics, list):
-        for i, metric in enumerate(primary_metrics):
-            if not isinstance(metric, str):
-                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string, found {type(metric).__name__}.")
-                continue 
-            
-            if ':' in metric:
-                key, value = metric.split(':', 1)
+        for i, metric_item in enumerate(primary_metrics):
+            if isinstance(metric_item, str):
+                # Handles Format 1: String "Metric Name: Value"
+                if ':' in metric_item:
+                    key, value = metric_item.split(':', 1)
+                    metrics_list.append({
+                        "Metric": key.strip(),
+                        "Value": value.strip()
+                    })
+                else:
+                    # Fallback for a plain string entry
+                    metrics_list.append({
+                        "Metric": f"Metric {i+1}",
+                        "Value": metric_item.strip()
+                    })
+            elif isinstance(metric_item, dict):
+                # 🟢 FIX: Handles Format 2: Dictionary {"metric": ..., "value": ...}
+                name = metric_item.get("metric", metric_item.get("name", f"Metric {i+1}"))
+                value = metric_item.get("value", "N/A")
+                unit = metric_item.get("unit", "")
+                
                 metrics_list.append({
-                    "Metric": key.strip(),
-                    "Value": value.strip()
+                    "Metric": name,
+                    "Value": f"{value} {unit}".strip()
                 })
             else:
-                metrics_list.append({
-                    "Metric": f"Metric {i+1}",
-                    "Value": metric.strip()
-                })
+                # Fallback for any other unexpected type
+                st.warning(f"Skipping malformed metric entry (Index {i}): Expected string or dict, found {type(metric_item).__name__}.")
 
-    # Logic to handle the dict-of-dicts format (Original template structure)
+    # Logic to handle the dict-of-dicts format (if the AI returns it)
     elif isinstance(primary_metrics, dict):
         for key, metric_dict in primary_metrics.items():
             if isinstance(metric_dict, dict):
@@ -894,12 +906,11 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
     if metrics_list:
         try:
             df_metrics = pd.DataFrame(metrics_list)
-            st.table(df_metrics) # Render as a static table
+            st.table(df_metrics)
         except Exception as e:
              st.warning(f"Failed to render metrics table: {e}")
     else:
         st.info("Primary metrics data is unavailable.")
-
     # =========================================================
     # 3. CORE INSIGHTS & KEY FINDINGS
     # =========================================================
