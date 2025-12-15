@@ -874,18 +874,12 @@ def calculate_final_confidence(
 # =========================================================
 
 def render_dashboard(
-    primary_json: str,
-    final_conf: float,
-    sem_conf: float,
-    num_conf: Optional[float],
-    web_context: Dict,
-    base_conf: float,
-    src_conf: float,
-    user_question: str,
-    secondary_json: Optional[str] = None,
-    veracity_scores: Optional[Dict] = None,
-    show_secondary: bool = False
-):
+    primary_json: str, final_conf: float, sem_conf: float, num_conf: Optional[float],
+    web_context: Dict, base_conf: float, src_conf: float, user_question: str,
+    secondary_json: Optional[str] = None, veracity_scores: Optional[Dict] = None,
+    show_secondary: bool = False,
+    source_reliability: List[str] = None  # ADD THIS
+    ):
     """Render complete analysis dashboard"""
     
     # Parse primary response
@@ -1023,14 +1017,20 @@ def render_dashboard(
     
     st.markdown("---")
     
-    # Sources
+    # Sources - ENHANCED WITH RELIABILITY
+    st.subheader("🔗 Sources & Reliability")
     sources = data.get('sources', [])
+    reliabilities = source_reliability or []  # Use passed reliability data
+
     if sources:
-        st.subheader("🔗 Sources")
-        for i, src in enumerate(sources[:10], 1):
-            if src and src.startswith("http"):
-                reliability = classify_source_reliability(src)
-                st.markdown(f"**{i}.** [{src}]({src}) {reliability}")
+        for i, (src, reliability) in enumerate(zip(sources[:10], reliabilities[:10]), 1):
+            if src:
+                if src.startswith("http"):
+                    st.markdown(f"**{i}.** [{src}]({src}) **{reliability}**")
+            else:
+                st.markdown(f"**{i}.** {src} **{reliability}**")
+    else:
+        st.info("No sources available")
     
     # Metadata
     col_fresh, col_action = st.columns(2)
@@ -1221,17 +1221,18 @@ def main():
         
         # Render dashboard
         render_dashboard(
-            primary_response,
-            final_conf,
-            sem_conf,
-            num_conf,
-            web_context,
-            base_conf,
-            src_conf,
-            query,
-            secondary_response,
-            veracity_scores,
-            show_secondary
+        primary_response, 
+        final_conf, 
+        sem_conf, 
+        num_conf, 
+        web_context, 
+        base_conf, 
+        src_conf, 
+        query, 
+        secondary_response, 
+        veracity_scores, 
+        show_secondary,
+        web_context.get("source_reliability", [])  # ADD THIS
         )
         
         # Debug info
