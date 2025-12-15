@@ -170,17 +170,10 @@ def render_trends(trends_data):
     """Renders the Trends and Forecast section."""
     st.header("Trends & Forecast")
     for trend in trends_data:
-        # Check for direction marker and use appropriate icon/color
-        direction = trend['direction']
-        if "↑" in direction:
-            st.success(f"**{trend['trend']}**")
-            st.caption(f"Direction: {direction} | Timeline: {trend['timeline']}")
-        elif "↓" in direction:
-            st.error(f"**{trend['trend']}**")
-            st.caption(f"Direction: {direction} | Timeline: {trend['timeline']}")
-        else:
-            st.markdown(f"**{trend['trend']}**")
-            st.caption(f"Direction: {direction} | Timeline: {trend['timeline']}")
+        # Use simple markdown for requested display
+        st.markdown(
+            f"**{trend['trend']}** (`{trend['direction']}` for {trend['timeline']})"
+        )
 
 
 def render_dashboard(data):
@@ -199,5 +192,39 @@ def render_dashboard(data):
     
     st.markdown("---")
 
-    # --- Section 2: Key Findings (Recommendation section removed) ---
+    # --- Section 2: Key Findings (RECOMMENDATION COLUMN REMOVED) ---
     st.header("Key Findings")
+    # Display key findings across the full container width
+    for i, finding in enumerate(data['key_findings']):
+        st.markdown(f"**{i+1}.** {finding}")
+    
+    st.markdown("---")
+
+    # --- Section 3: Visualization ---
+    st.header("Market Forecast & Trends")
+    render_chart(data['visualization_data'])
+
+    st.markdown("---")
+    
+    # --- Section 4: Entities and Trends (STACKED LAYOUT) ---
+    # Top Entities (first section)
+    render_entity_table(data['top_entities'])
+
+    # Trends & Forecast (second section, MOVED BELOW Top Entities)
+    render_trends(data['trends_forecast'])
+
+
+    # --- Section 5: Sources ---
+    with st.expander("View Sources"):
+        st.markdown("**Sources Used:**")
+        for source in data['sources']:
+            st.markdown(f"- {source}")
+
+# ======================================================================
+# 3. RUN STREAMLIT APP
+# ======================================================================
+
+if __name__ == "__main__":
+    # Ensure wide layout for better dashboard look
+    st.set_page_config(layout="wide")
+    render_dashboard(V1_JULY_2025_JSON)
