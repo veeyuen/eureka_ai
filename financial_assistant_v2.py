@@ -1098,8 +1098,8 @@ def main():
     with col_info:
         st.markdown("""
         **Yureeka** provides AI-powered market research and analysis for finance, 
-        economics, and business questions. Powered by multi-model verification 
-        and real-time web search.
+        economics, and business questions. 
+        Powered by multi-model verification and real-time web search.
         
         *Currently in prototype stage.*
         """)
@@ -1110,7 +1110,7 @@ def main():
     
     # User input
     query = st.text_input(
-        "Enter your question about markets, finance, or economics:",
+        "Enter your question about markets, industries, finance, or economics:",
         placeholder="e.g., What is the size of the global EV battery market?"
     )
     
