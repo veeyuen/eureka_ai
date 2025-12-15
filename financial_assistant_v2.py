@@ -13,11 +13,11 @@ import streamlit as st
 import base64
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
-from collections import Counter
 import google.generativeai as genai
 import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime
+from collections import Counter
 from typing import List, Dict, Optional, Any, Union
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
@@ -81,13 +81,22 @@ class TrendForecastDetail(BaseModel):
     timeline: Optional[str] = Field(None, description="Timeline")
     model_config = ConfigDict(extra='ignore')
 
+#class VisualizationData(BaseModel):
+#    """Standardized visualization data"""
+#    chart_labels: List[str] = Field(default_factory=list, description="X-axis labels")
+#    chart_values: List[Union[float, int]] = Field(default_factory=list, description="Y-axis values")
+#    chart_title: Optional[str] = Field("Trend Analysis", description="Chart title")
+#    chart_type: Optional[str] = Field("line", description="Chart type")
+#    model_config = ConfigDict(extra='ignore')
+
 class VisualizationData(BaseModel):
-    """Standardized visualization data"""
-    chart_labels: List[str] = Field(default_factory=list, description="X-axis labels")
-    chart_values: List[Union[float, int]] = Field(default_factory=list, description="Y-axis values")
-    chart_title: Optional[str] = Field("Trend Analysis", description="Chart title")
-    chart_type: Optional[str] = Field("line", description="Chart type")
-    model_config = ConfigDict(extra='ignore')
+    chart_labels: List[str] = Field(default_factory=list)
+    chart_values: List[Union[float, int]] = Field(default_factory=list)
+    chart_title: Optional[str] = Field("Trend Analysis")
+    chart_type: Optional[str] = Field("line")
+    x_axis_label: Optional[str] = None  # LLM provides OR dynamic detection
+    y_axis_label: Optional[str] = None  # LLM provides OR dynamic detection
+
 
 class ComparisonBar(BaseModel):
     """Comparison bar chart data"""
@@ -943,6 +952,76 @@ def calculate_final_confidence(
 # 9. DASHBOARD RENDERING (FIXED)
 # =========================================================
 
+def detect_x_label_dynamic(labels: list) -> str:
+    """Fully dynamic X-axis label detection"""
+    if not labels:
+        return "Category"
+    
+    label_texts = [str(l).lower() for l in labels]
+    
+    # 1. YEAR DETECTION (most precise)
+    year_count = sum(1 for label in label_texts if re.search(r'\b(20\d{2}|19\d{2})\b', label))
+    if year_count / len(labels) > 0.5:
+        return "Years"
+    
+    # 2. QUARTER DETECTION
+    quarter_count = sum(1 for label in label_texts if re.search(r'\bq[1-4]\b', label))
+    if quarter_count > 1:
+        return "Quarters"
+    
+    # 3. MONTH DETECTION
+    months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    month_count = sum(1 for label in label_texts if any(m in label for m in months))
+    if month_count / len(labels) > 0.4:
+        return "Months"
+    
+    # 4. GEOGRAPHIC (countries, regions)
+    geo_words = ['usa', 'eu', 'china', 'japan', 'india', 'asia', 'europe', 'north', 'south']
+    geo_count = sum(1 for label in label_texts if any(g in label for g in geo_words))
+    if geo_count / len(labels) > 0.3:
+        return "Regions"
+    
+    # 5. COMPANIES/SEGMENTS (keywords)
+    company_words = ['inc', 'ltd', 'corp', 'llc', 'tsmc', 'samsung', 'intel']
+    if any(word in ' '.join(label_texts) for word in company_words):
+        return "Companies"
+    
+    # 6. CATEGORIES (default for segments/products)
+    return "Categories"
+
+def detect_y_label_dynamic(values: list) -> str:
+    """Fully dynamic Y-axis label based on magnitude + context"""
+    if not values:
+        return "Value"
+    
+    numeric_values = [abs(float(v)) for v in values if str(v).replace('.','').replace('-','').isdigit()]
+    if not numeric_values:
+        return "Value"
+    
+    avg_mag = np.mean(numeric_values)
+    max_mag = max(numeric_values)
+    
+    # 1. BILLIONS (market sizes > 50B)
+    if avg_mag > 50 or max_mag > 100:
+        return "USD B"
+    
+    # 2. MILLIONS (10M - 50B)
+    elif avg_mag > 5 or max_mag > 50:
+        return "USD M"
+    
+    # 3. PERCENTAGES (0.1% - 100%)
+    elif 0.1 <= avg_mag <= 50:
+        return "Percent %"
+    
+    # 4. THOUSANDS (1K - 10M)
+    elif avg_mag > 0.5:
+        return "USD K"
+    
+    # 5. COUNTS/INDEX (small numbers)
+    else:
+        return "Units"
+
+
 def render_dashboard(
     primary_json: str, final_conf: float, sem_conf: float, num_conf: Optional[float],
     web_context: Dict, base_conf: float, src_conf: float, user_question: str,
@@ -1045,33 +1124,74 @@ def render_dashboard(
     
     st.markdown("---")
     
-    # Visualization
-    st.subheader("📊 Data Visualization")
-    viz = data.get('visualization_data')
+    # Visualization #
+#    st.subheader("📊 Data Visualization")
+#    viz = data.get('visualization_data')
     
+#    if viz and isinstance(viz, dict):
+#        labels = viz.get("chart_labels", [])
+#        values = viz.get("chart_values", [])
+#        title = viz.get("chart_title", "Market Trend")
+#        chart_type = viz.get("chart_type", "line")
+        
+#        if labels and values and len(labels) == len(values):
+#            try:
+#                df_viz = pd.DataFrame({
+#                    "Category": labels[:10],
+#                    "Value": [float(v) for v in values[:10]]
+#                })
+                
+#                if chart_type == "bar":
+#                    fig = px.bar(df_viz, x="Category", y="Value", title=title)
+#                else:
+#                    fig = px.line(df_viz, x="Category", y="Value", title=title, markers=True)
+#                
+#                st.plotly_chart(fig, use_container_width=True)
+#            except Exception as e:
+#                st.info(f"Chart data available but rendering failed: {e}")
+
+    # Visualization - DYNAMIC LLM + SMART FALLBACK
+    viz = data.get('visualization_data')
     if viz and isinstance(viz, dict):
         labels = viz.get("chart_labels", [])
         values = viz.get("chart_values", [])
-        title = viz.get("chart_title", "Market Trend")
+        title = viz.get("chart_title", "Trend Analysis")
         chart_type = viz.get("chart_type", "line")
-        
-        if labels and values and len(labels) == len(values):
-            try:
-                df_viz = pd.DataFrame({
-                    "Category": labels[:10],
-                    "Value": [float(v) for v in values[:10]]
-                })
-                
-                if chart_type == "bar":
-                    fig = px.bar(df_viz, x="Category", y="Value", title=title)
-                else:
-                    fig = px.line(df_viz, x="Category", y="Value", title=title, markers=True)
-                
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.info(f"Chart data available but rendering failed: {e}")
     
-    # Comparison Bars
+    if labels and values and len(labels) == len(values):
+        try:
+            numeric_values = [float(v) for v in values[:10]]
+            
+            # PRIORITY 1: Use LLM-provided labels
+            x_label = viz.get("x_axis_label") or detect_x_label_dynamic(labels)
+            y_label = viz.get("y_axis_label") or detect_y_label_dynamic(numeric_values)
+            
+            df_viz = pd.DataFrame({
+                "Category": labels[:10],
+                "Value": numeric_values
+            })
+            
+            if chart_type == "bar":
+                fig = px.bar(df_viz, x="Category", y="Value", title=title,
+                           labels={'Category': x_label, 'Value': y_label})
+            else:
+                fig = px.line(df_viz, x="Category", y="Value", title=title, markers=True,
+                            labels={'Category': x_label, 'Value': y_label})
+            
+            fig.update_layout(
+                xaxis_title=x_label,
+                yaxis_title=y_label,
+                title_font_size=16,
+                font=dict(size=12)
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+        except Exception as e:
+            st.info(f"Chart rendering failed: {e}")
+
+        
+    # Comparison Bars #
     comp = data.get('comparison_bars')
     if comp and isinstance(comp, dict):
         cats = comp.get("categories", [])
