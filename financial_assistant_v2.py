@@ -1038,13 +1038,20 @@ def detect_y_label_dynamic(values: list) -> str:
         return "Units"
 
 
-def render_dashboard(
-    primary_json: str, final_conf: float, sem_conf: float, num_conf: Optional[float],
-    web_context: Dict, base_conf: float, src_conf: float, user_question: str,
-    secondary_json: Optional[str] = None, veracity_scores: Optional[Dict] = None,
-    show_secondary: bool = False,
-    source_reliability: List[str] = None  # ADD THIS
-    ):
+render_dashboard(
+    primary_response,
+    final_conf,
+    sem_conf,
+    num_conf,
+    web_context,
+    base_conf,
+    src_conf,
+    query,
+    None,                     # secondary_json is now None
+    veracity_scores,
+    False,                    # show_secondary is now False
+    web_context.get("source_reliability", [])
+    )
     """Render complete analysis dashboard"""
     
     # Parse primary response
@@ -1288,13 +1295,13 @@ def render_dashboard(
 
     
     # Secondary Model (Optional)
-    if show_secondary and secondary_json:
-        with st.expander("🔍 Secondary Model Output (Gemini)"):
-            try:
-                sec_data = json.loads(secondary_json)
-                st.json(sec_data)
-            except:
-                st.code(secondary_json[:2000])
+  #  if show_secondary and secondary_json:
+  #      with st.expander("🔍 Secondary Model Output (Gemini)"):
+  #          try:
+  #              sec_data = json.loads(secondary_json)
+  #              st.json(sec_data)
+  #          except:
+  #              st.code(secondary_json[:2000])
     
     # Web Context
     if web_context and web_context.get("search_results"):
@@ -1583,22 +1590,34 @@ def main():
         )
         
         # Debug info
+       # with st.expander("🔧 Debug Information"):
+       #     st.write("**Confidence Breakdown:**")
+       #     st.json({
+       #         "base_confidence": base_conf,
+       #         "semantic_similarity": sem_conf,
+       #         "numeric_alignment": num_conf,
+       #         "source_quality": src_conf,
+       #         "final_confidence": final_conf
+       #     })
+            
+       #     st.write("**Primary Model Response:**")
+       #     st.json(primary_data)
+            
+       #     if show_secondary:
+       #         st.write("**Secondary Model Response:**")
+       #         st.json(secondary_data)
+
         with st.expander("🔧 Debug Information"):
             st.write("**Confidence Breakdown:**")
             st.json({
-                "base_confidence": base_conf,
-                "semantic_similarity": sem_conf,
-                "numeric_alignment": num_conf,
-                "source_quality": src_conf,
-                "final_confidence": final_conf
+            "base_confidence": base_conf,
+            "semantic_similarity": sem_conf,
+            "numeric_alignment": num_conf,
+            "source_quality": src_conf,
+            "final_confidence": final_conf
             })
-            
             st.write("**Primary Model Response:**")
             st.json(primary_data)
-            
-            if show_secondary:
-                st.write("**Secondary Model Response:**")
-                st.json(secondary_data)
 
 if __name__ == "__main__":
     main()
