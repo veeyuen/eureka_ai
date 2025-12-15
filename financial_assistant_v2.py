@@ -454,7 +454,7 @@ def classify_source_reliability(source: str) -> str:
     """Classify source as High/Medium/Low quality"""
     source = source.lower() if isinstance(source, str) else ""
     
-    high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", 
+    high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", 
             "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte",
            "kpmg", "semiconductors.org", "eu"]
     medium = ["wikipedia", "forbes", "cnbc", "yahoo", "statista", "ceic"]
