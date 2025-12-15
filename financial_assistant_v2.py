@@ -1427,21 +1427,22 @@ def main():
         # In main() function, inside if st.button("Analyze") and q: block, around line 570:
 
         # CALL RENDER_DASHBOARD WITH NEW TOGGLE PARAMETER
-        render_dashboard(
-            chosen_primary,
-            final_conf,
-            sem_conf,
-            num_conf,
-            web_context,
-            base_conf,
-            src_conf,
-            versions_history,
-            user_question=q,
-            secondary_resp=secondary_resp,
-            veracity_scores=veracity_scores,
-            show_secondary_view=show_validation  # 🟢 1B. PASS THE TOGGLE HERE
-        )
+        # ... (inside main() function)
 
+        render_dashboard(
+        j1, # 🟢 FIX: Pass the parsed dictionary, not the raw string
+        final_conf,
+        sem_conf,
+        num_conf,
+        web_context,
+        base_conf,
+        src_conf,
+        versions_history,
+        user_question=q,
+        secondary_resp=secondary_resp,
+        veracity_scores=veracity_scores,
+        show_secondary_view=show_validation
+        )
 
         
 
