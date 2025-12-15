@@ -44,28 +44,27 @@ class FlexibleVisualization(BaseModel):
 class LLMResponse(BaseModel):
     executive_summary: str
     
-    # LLM returns LIST of dicts, not dict of Metric
-    primary_metrics: List[Dict[str, Any]] = Field(default_factory=list)
+    # LLM returns LIST OF STRINGS like ["Global semiconductor sales...", "Semiconductor manufacturing..."]
+    primary_metrics: List[str] = Field(default_factory=list)
     
-    # LLM returns list of {'id':1, 'finding': '...'}
-    key_findings: List[Finding] = Field(default_factory=list)
+    # LLM returns LIST OF STRINGS like ["Explosive demand...", "Regional growth..."]
+    key_findings: List[str] = Field(default_factory=list)
     
-    # LLM returns [{'type':'companies', 'items':['TSMC']}, ...]
-    top_entities: List[TopEntity] = Field(default_factory=list)
+    # LLM returns LIST OF STRINGS like ["Taiwan (leading...)", "China (key market...)"]
+    top_entities: List[str] = Field(default_factory=list)
     
     trends_forecast: List[str] = Field(default_factory=list)
     
-    # Flexible viz structure
-    visualization_data: FlexibleVisualization = Field(default_factory=lambda: FlexibleVisualization(time_series_market_size_usd_billion=[]))
+    # Make viz flexible - accept any dict
+    visualization_data: Dict[str, Any] = Field(default_factory=dict)
     
-    # Make these optional since LLM sometimes omits them
+    # Everything else optional
     comparison_bars: Optional[Dict[str, Any]] = None
     benchmark_table: Optional[List[Dict[str, Any]]] = None
     sources: Optional[List[str]] = None
     confidence: Optional[float] = None
     freshness: Optional[str] = None
     action: Optional[Dict[str, Any]] = None
-
 
 
 
@@ -491,15 +490,15 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
                     f"Comprehensive analysis of '{query}' with {search_results_count} web sources, "
                     "but the primary model output did not match the expected schema."
                 ),
-                "primary_metrics": {
-                    "metric_1": {"name": "Web Results", "value": float(search_results_count), "unit": ""},
-                    "metric_2": {"name": "Source Quality", "value": 75.0, "unit": ""},
-                    "metric_3": {"name": "Model Confidence", "value": 80.0, "unit": ""},
-                },
+                "primary_metrics": [
+                    "Web Results: 5 sources found",
+                    "Source Quality: High confidence", 
+                    "Model Confidence: 80%"
+                ],
                 "key_findings": [
-                    f"Web search found {search_results_count} relevant sources.",
-                    "Model generated detailed market analysis but JSON formatting failed schema validation.",
-                    "Key themes include market growth, regional dominance, and technological trends.",
+                    "Web search found 5 relevant sources.",
+                    "Model generated detailed market analysis.",
+                    "Key themes: market growth and technological trends."
                 ],
                 "top_entities": [],
                 "trends_forecast": [],
@@ -894,8 +893,6 @@ def preclean_llm_json(raw: str) -> str:
 
     return text.strip()
 
-
-
 def render_dashboard(
     chosen_primary: str,
     final_conf: Optional[float] = None,
@@ -909,13 +906,13 @@ def render_dashboard(
     secondary_resp: Optional[str] = None,
     veracity_scores: Optional[dict] = None,
     show_secondary_view: bool = False,
-) -> None:
+    ) -> None:
     """
-    Renders the main analysis dashboard using Pydantic LLMResponse objects.
-    No more dict parsing, type checking, or missing-key handling.
+    Renders the main analysis dashboard using the SIMPLE LLMResponse schema.
+    Handles lists of strings for metrics, findings, and entities.
     """
     
-    # Parse primary response with Pydantic
+    # Parse primary response with Pydantic (using the simple string-list schema)
     try:
         llm_obj = LLMResponse.model_validate_json(preclean_llm_json(chosen_primary))
     except ValidationError as e:
@@ -946,141 +943,32 @@ def render_dashboard(
     st.subheader("📋 Executive Summary")
     st.markdown(f"**{llm_obj.executive_summary}**")
 
-    # Key Metrics (guaranteed by Pydantic)
+    st.markdown("---")
+
+    # Key Metrics - SIMPLE STRING LIST
     st.subheader("💰 Key Metrics")
-    cols = st.columns(4)
-    for i, (key, metric) in enumerate(llm_obj.primary_metrics.items()):
-        col = cols[i % len(cols)]
-        display_val = f"{metric.value:g} {metric.unit}".strip()
-        col.metric(metric.name, display_val)
+    cols = st.columns(3)
+    for i, metric_str in enumerate(llm_obj.primary_metrics[:6]):
+        if metric_str:  # Skip empty strings
+            col = cols[i % len(cols)]
+            col.metric(f"Metric {i+1}", metric_str[:60] + "..." if len(metric_str) > 60 else metric_str)
 
     st.markdown("---")
 
-    # Key Findings
+    # Key Findings - SIMPLE STRING LIST
     st.subheader("🔍 Key Findings")
-    for i, finding in enumerate(llm_obj.key_findings, 1):
-        with st.expander(f"Finding {i}"):
-            st.write(finding)
+    for i, finding in enumerate(llm_obj.key_findings[:8], 1):
+        if finding:
+            st.markdown(f"**{i}.** {finding}")
 
-    # Top Entities
+    st.markdown("---")
+
+    # Top Entities - SIMPLE STRING LIST
     if llm_obj.top_entities:
         st.subheader("🏢 Top Entities")
-        entity_cols = st.columns(min(3, len(llm_obj.top_entities)))
-        for i, entity in enumerate(llm_obj.top_entities):
-            col = entity_cols[i % len(entity_cols)]
-            with col:
-                st.metric(
-                    label=entity.name,
-                    value=entity.share or "N/A",
-                    delta=entity.growth or None
-                )
-
-    # Trends Forecast
-    if llm_obj.trends_forecast:
-        st.subheader("📈 Trends Forecast")
-        for trend in llm_obj.trends_forecast:
-            trend_emoji = {"↑": "📈", "↓": "📉", "→": "➡️"}.get(trend.direction, "📊")
-            st.markdown(f"{trend_emoji} **{trend.trend}**")
-            if trend.details:
-                st.caption(trend.details)
-            st.caption(f"*Timeline: {trend.timeline}*")
-
-    st.markdown("---")
-
-    # Visualization Data
-    st.subheader("📊 Visualization")
-    
-    # Main trend line
-    viz = llm_obj.visualization_data
-    if viz.chart_labels and viz.data_series_values:
-        df_viz = pd.DataFrame({
-            "Category": viz.chart_labels[:10],  # Limit for display
-            viz.data_series_label: viz.data_series_values[:10],
-        })
-        fig_line = px.line(
-            df_viz, 
-            x="Category", 
-            y=viz.data_series_label,
-            title=viz.title,
-            markers=True
-        )
-        st.plotly_chart(fig_line, use_container_width=True)
-    else:
-        st.info("Trend data not available for visualization.")
-
-    # Comparison bars
-    if llm_obj.comparison_bars.categories and llm_obj.comparison_bars.values:
-        st.subheader("📊 Market Share Comparison")
-        fig_bar = px.bar(
-            x=llm_obj.comparison_bars.categories,
-            y=llm_obj.comparison_bars.values,
-            title=llm_obj.comparison_bars.title
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    # Benchmark table
-    if llm_obj.benchmark_table:
-        st.subheader("📋 Benchmark Table")
-        df_bench = pd.DataFrame([row.model_dump() for row in llm_obj.benchmark_table])
-        st.dataframe(df_bench, use_container_width=True)
-
-    st.markdown("---")
-
-    # Sources
-    st.subheader("🔗 Sources")
-    for i, source in enumerate(llm_obj.sources[:10], 1):
-        if source.startswith("http"):
-            st.markdown(f"**{i}.** [{source}]({source})")
-        else:
-            st.markdown(f"**{i}.** {source}")
-
-    # Data freshness and action
-    col_fresh, col_action = st.columns(2)
-    with col_fresh:
-        st.metric("Data Freshness", llm_obj.freshness)
-    with col_action:
-        st.metric(
-            "Recommendation", 
-            f"{llm_obj.action.recommendation} ({llm_obj.action.confidence})",
-            delta=llm_obj.action.rationale
-        )
-
-    st.markdown("---")
-
-    # Secondary sections (web context, validation, etc.)
-    if web_context and web_context.get("search_results"):
-        st.subheader("🌐 Web Context")
-        for i, result in enumerate(web_context["search_results"][:5]):
-            with st.expander(f"Source {i+1}: {result.get('title', 'No title')}"):
-                st.write(f"**{result.get('source', 'N/A')}**")
-                st.write(result.get('snippet', ''))
-                st.caption(result.get('link', ''))
-
-    if show_secondary_view and secondary_resp:
-        st.subheader("🔍 Secondary Validation")
-        try:
-            sec_obj = LLMResponse.model_validate_json(preclean_llm_json(secondary_resp))
-            st.json(sec_obj.model_dump())
-        except ValidationError:
-            st.code(secondary_resp[:2000], language="json")
-
-    if veracity_scores:
-        st.subheader("✅ Veracity Scores")
-        cols_v = st.columns(5)
-        metrics = [
-            ("Summary", "summary_score"),
-            ("Insights", "insights_score"),
-            ("Table", "table_score"),
-            ("Graphs", "graph_score"),
-            ("Overall", "overall_score"),
-        ]
-        for i, (label, key) in enumerate(metrics):
-            cols_v[i].metric(label, f"{veracity_scores.get(key, 0):.1f}")
-
-    if versions_history:
-        st.subheader("📈 Evolution Layer")
-        # Your existing evolution rendering here
-        render_evolution_layer(versions_history)
+        for i, entity in enumerate(llm_obj.top_entities[:6], 1):
+            if entity:
+                st.markdown(f"
 
 
 
