@@ -1092,12 +1092,12 @@ def render_dashboard(
 
 def main():
     st.set_page_config(
-        page_title="Yureeka Market Intelligence",
+        page_title="Yureeka Market Report",
         page_icon="💹",
         layout="wide"
     )
     
-    st.title("💹 Yureeka AI Research Assistant")
+    st.title("💹 Yureeka Market Intelligence")
     
     # Info section
     col_info, col_status = st.columns([3, 1])
