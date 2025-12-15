@@ -1572,20 +1572,17 @@ def main():
         
         # Render dashboard
         render_dashboard(
-        primary_response, 
-        final_conf, 
-        sem_conf, 
-        num_conf, 
-        web_context, 
-        base_conf, 
-        src_conf, 
-        query, 
-        secondary_response, 
-        veracity_scores, 
-        show_secondary,
-        web_context.get("source_reliability", [])  # ADD THIS
-        )
-        
+        primary_response,
+        final_conf,
+        sem_conf,
+        num_conf,
+        web_context,
+        base_conf,
+        src_conf,
+        query,
+        veracity_scores,
+        web_context.get("source_reliability", [])
+        )        
         # Debug info
        # with st.expander("🔧 Debug Information"):
        #     st.write("**Confidence Breakdown:**")
