@@ -1,13 +1,12 @@
 import streamlit as st
-import json
 import pandas as pd
 import plotly.express as px
-from collections import OrderedDict
+import json
 
 # ======================================================================
 # 1. JSON DATA FOR V1 (JULY 2025 ESTIMATE)
 # ======================================================================
-# This is the conservative, previous estimate data (V1)
+# This is the conservative estimate data (V1)
 V1_JULY_2025_JSON = {
     "version": "V1 (Previous Estimate - July 2025)",
     "timestamp": "2025-07-01T09:00:00.000000",
@@ -125,10 +124,12 @@ def render_metrics(metrics_data):
     # Use columns to display metrics horizontally
     cols = st.columns(len(metrics_list))
     for i, metric in enumerate(metrics_list):
+        formatted_value = f"{metric['value']:,.1f}" if isinstance(metric['value'], (int, float)) else metric['value']
+        
         with cols[i]:
             st.metric(
                 label=metric['name'],
-                value=f"{metric['value']:,.1f}",
+                value=formatted_value,
                 delta=metric['unit']
             )
 
@@ -165,9 +166,25 @@ def render_entity_table(entities_data):
     
     st.dataframe(df_entities, hide_index=True, use_container_width=True)
 
+def render_trends(trends_data):
+    """Renders the Trends and Forecast section."""
+    st.header("Trends & Forecast")
+    for trend in trends_data:
+        # Check for direction marker and use appropriate icon/color
+        direction = trend['direction']
+        if "↑" in direction:
+            st.success(f"**{trend['trend']}**")
+            st.caption(f"Direction: {direction} | Timeline: {trend['timeline']}")
+        elif "↓" in direction:
+            st.error(f"**{trend['trend']}**")
+            st.caption(f"Direction: {direction} | Timeline: {trend['timeline']}")
+        else:
+            st.markdown(f"**{trend['trend']}**")
+            st.caption(f"Direction: {direction} | Timeline: {trend['timeline']}")
+
 
 def render_dashboard(data):
-    """Main function to render the full dashboard."""
+    """Main function to render the full dashboard with adjusted layout."""
     st.title(f"Electric Vehicle Market Analysis: {data['version']}")
     
     st.markdown(f"**Date of Analysis:** {pd.to_datetime(data['timestamp']).strftime('%B %d, %Y')}")
@@ -182,54 +199,5 @@ def render_dashboard(data):
     
     st.markdown("---")
 
-    # --- Section 2: Key Findings & Action ---
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.header("Key Findings")
-        for i, finding in enumerate(data['key_findings']):
-            st.markdown(f"**{i+1}.** {finding}")
-
-    with col2:
-        st.header("Recommendation")
-        st.success(f"**Recommendation:** {data['action']['recommendation']}")
-        st.markdown(f"**Confidence:** {data['action']['confidence']}")
-        st.markdown(f"**Rationale:** {data['action']['rationale']}")
-
-    st.markdown("---")
-
-    # --- Section 3: Visualization ---
-    st.header("Market Forecast & Trends")
-    render_chart(data['visualization_data'])
-
-    # --- Section 4: Entities and Trends ---
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        render_entity_table(data['top_entities'])
-
-    with col4:
-        st.header("Trends & Forecast")
-        for trend in data['trends_forecast']:
-            st.markdown(
-                f"**{trend['trend']}** (`{trend['direction']}` for {trend['timeline']})"
-            )
-
-    # --- Section 5: Sources ---
-    with st.expander("View Sources"):
-        st.markdown("**Sources Used:**")
-        for source in data['sources']:
-            st.markdown(f"- {source}")
-
-# ======================================================================
-# 3. RUN STREAMLIT APP
-# ======================================================================
-
-if __name__ == "__main__":
-    st.set_page_config(layout="wide")
-    render_dashboard(V1_JULY_2025_JSON)
-
-# How to run this script:
-# 1. Save the code above as a Python file (e.g., render_v1_json.py).
-# 2. Open your terminal and navigate to the directory where you saved the file.
-# 3. Run the command: streamlit run render_v1_json.py
+    # --- Section 2: Key Findings (Recommendation section removed) ---
+    st.header("Key Findings")
