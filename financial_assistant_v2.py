@@ -1051,9 +1051,7 @@ render_dashboard(
     veracity_scores,
     False,                    # show_secondary is now False
     web_context.get("source_reliability", [])
-    )
-    """Render complete analysis dashboard"""
-    
+    ):    
     # Parse primary response
     try:
         data = json.loads(primary_json)
