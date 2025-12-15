@@ -1038,20 +1038,19 @@ def detect_y_label_dynamic(values: list) -> str:
         return "Units"
 
 
-render_dashboard(
-    primary_response,
-    final_conf,
-    sem_conf,
-    num_conf,
-    web_context,
-    base_conf,
-    src_conf,
-    query,
-    None,                     # secondary_json is now None
-    veracity_scores,
-    False,                    # show_secondary is now False
-    web_context.get("source_reliability", [])
-    ):    
+def render_dashboard(
+    primary_json: str,
+    final_conf: float,
+    sem_conf: float,
+    num_conf: Optional[float],
+    web_context: Dict,
+    base_conf: float,
+    src_conf: float,
+    user_question: str,
+    veracity_scores: Optional[Dict] = None,
+    source_reliability: Optional[List[str]] = None,
+    ):
+    
     # Parse primary response
     try:
         data = json.loads(primary_json)
