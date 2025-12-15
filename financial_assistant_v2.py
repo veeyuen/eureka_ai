@@ -1103,10 +1103,11 @@ def main():
         
         *Currently in prototype stage.*
         """)
-    
-    with col_status:
-        web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Disabled"
-        st.metric("Web Search", web_status)
+
+  # UNCOMMENT SECTION BELOW TO SHOW WEB SEARCH ENABLED
+  #  with col_status:
+  #      web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Disabled"
+  #      st.metric("Web Search", web_status)
     
     # User input
     query = st.text_input(
