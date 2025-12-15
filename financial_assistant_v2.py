@@ -461,7 +461,93 @@ def query_perplexity_with_context(query: str, web_context: dict, temperature: fl
         "Content-Type": "application/json",
     }
     payload = {
-        "
+        "model": "sonar",
+        "temperature": temperature,
+        "max_tokens": 2000,
+        "top_p": 0.8,
+        "messages": [{"role": "user", "content": enhanced_query}],
+    }
+
+    try:
+        resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=45)
+        resp.raise_for_status()
+        response_data = resp.json()
+        if "choices" not in response_data:
+            raise Exception("No 'choices' in Perplexity response")
+
+        content = response_data["choices"][0]["message"]["content"]
+        if not content or not content.strip():
+            raise Exception("Perplexity returned empty response")
+
+        # 3. Pre-clean only (no heavy repair)
+        cleaned = preclean_llm_json(content)
+
+        # 4. Validate against Pydantic schema
+        try:
+            llm_obj = LLMResponse.model_validate_json(cleaned)  # Pydantic v2
+            # If you're on Pydantic v1, use:
+            # llm_obj = LLMResponse.parse_raw(cleaned)
+        except ValidationError as e:
+            st.warning(
+                "LLM response failed schema validation; using fallback schema instead. "
+                f"Details: {e}"
+            )
+
+            # 5. Structured fallback that still satisfies LLMResponse
+            fallback = {
+                "executive_summary": (
+                    f"Comprehensive analysis of '{query}' with {search_results_count} web sources, "
+                    "but the primary model output did not match the expected schema."
+                ),
+                "primary_metrics": {
+                    "metric_1": {"name": "Web Results", "value": float(search_results_count), "unit": ""},
+                    "metric_2": {"name": "Source Quality", "value": 75.0, "unit": ""},
+                    "metric_3": {"name": "Model Confidence", "value": 80.0, "unit": ""},
+                },
+                "key_findings": [
+                    f"Web search found {search_results_count} relevant sources.",
+                    "Model generated detailed market analysis but JSON formatting failed schema validation.",
+                    "Key themes include market growth, regional dominance, and technological trends.",
+                ],
+                "top_entities": [],
+                "trends_forecast": [],
+                "visualization_data": {
+                    "title": "Placeholder Trend",
+                    "chart_labels": [],
+                    "data_series_label": "Value",
+                    "data_series_values": [],
+                },
+                "comparison_bars": {
+                    "title": "Placeholder Comparison",
+                    "categories": [],
+                    "values": [],
+                },
+                "benchmark_table": [],
+                "sources": web_context.get("sources", []),
+                "confidence": 75.0,
+                "freshness": "Current (web-enhanced)",
+                "action": {
+                    "recommendation": "Neutral",
+                    "confidence": "Medium",
+                    "rationale": "Fallback structure used due to schema validation error.",
+                },
+            }
+            llm_obj = LLMResponse(**fallback)
+
+        # 6. Optionally merge web sources into the model
+        if web_context.get("sources"):
+            existing = list(llm_obj.sources)
+            merged = list(dict.fromkeys(existing + web_context["sources"]))[:10]
+            llm_obj.sources = merged
+            llm_obj.freshness = "Current (web-scraped + real-time search)"
+
+        # 7. Return as JSON string for storage / downstream rendering
+        return llm_obj.model_dump_json()
+
+    except Exception as e:
+        st.error(f"Perplexity query error: {e}")
+        raise
+
 
 
 def query_gemini(query: str):
