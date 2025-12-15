@@ -19,61 +19,53 @@ import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Optional
 from pydantic import BaseModel, Field, ValidationError
-from typing import Optional
+from typing import List, Dict, Optional, Any, Union
 
 class Metric(BaseModel):
     name: str
     value: float
     unit: Optional[str] = ""
 
+class Finding(BaseModel):
+    id: int
+    finding: str
+
 class TopEntity(BaseModel):
-    name: str
-    share: Optional[str] = None
-    growth: Optional[str] = None
-    details: Optional[str] = None
+    type: str  # 'companies', 'countries', etc.
+    items: List[str]
 
-class TrendForecast(BaseModel):
-    trend: str
-    direction: Optional[str] = None  # e.g. "↑/↓/→"
-    timeline: Optional[str] = None
-    details: Optional[str] = None
+class TimeSeriesData(BaseModel):
+    time_series_market_size_usd_billion: List[float]
 
-class VisualizationData(BaseModel):
-    title: str
-    chart_labels: List[str]
-    data_series_label: str
-    data_series_values: List[float]
-
-class ComparisonBars(BaseModel):
-    title: str
-    categories: List[str]
-    values: List[float]
-
-class BenchmarkRow(BaseModel):
-    category: str
-    value_1: float
-    value_2: float
-
-class ActionBlock(BaseModel):
-    recommendation: str
-    confidence: str
-    rationale: str
+class FlexibleVisualization(BaseModel):
+    time_series_market_size_usd_billion: List[float]
 
 class LLMResponse(BaseModel):
     executive_summary: str
-    primary_metrics: Dict[str, Metric]
-    key_findings: List[str]
-    top_entities: List[TopEntity]
-    trends_forecast: List[TrendForecast]
-    visualization_data: VisualizationData
-    comparison_bars: ComparisonBars
-    benchmark_table: List[BenchmarkRow]
-    sources: List[str]
-    confidence: float
-    freshness: str
-    action: ActionBlock
+    
+    # LLM returns LIST of dicts, not dict of Metric
+    primary_metrics: List[Dict[str, Any]] = Field(default_factory=list)
+    
+    # LLM returns list of {'id':1, 'finding': '...'}
+    key_findings: List[Finding] = Field(default_factory=list)
+    
+    # LLM returns [{'type':'companies', 'items':['TSMC']}, ...]
+    top_entities: List[TopEntity] = Field(default_factory=list)
+    
+    trends_forecast: List[str] = Field(default_factory=list)
+    
+    # Flexible viz structure
+    visualization_data: FlexibleVisualization = Field(default_factory=lambda: FlexibleVisualization(time_series_market_size_usd_billion=[]))
+    
+    # Make these optional since LLM sometimes omits them
+    comparison_bars: Optional[Dict[str, Any]] = None
+    benchmark_table: Optional[List[Dict[str, Any]]] = None
+    sources: Optional[List[str]] = None
+    confidence: Optional[float] = None
+    freshness: Optional[str] = None
+    action: Optional[Dict[str, Any]] = None
+
 
 
 
