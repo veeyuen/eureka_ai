@@ -955,50 +955,51 @@ def calculate_final_confidence(
 
 
 def detect_x_label_dynamic(labels: list) -> str:
-    """Fully dynamic X-axis label detection - FIXED for regions"""
+    """Bulletproof X-axis detection - FIXED for regions"""
     if not labels:
         return "Category"
     
-    label_texts = [str(l).lower() for l in labels]
+    # Case-insensitive processing
+    label_texts = [str(l).lower().strip() for l in labels]
     all_text = ' '.join(label_texts)
     
-    # 1. GEOGRAPHIC REGIONS (NEW & PRIORITIZED)
-    region_keywords = [
-        'north america', 'south america', 'asia', 'europe', 'africa', 'middle east',
-        'asia-pacific', 'european', 'latam', 'apac', 'emea', 'nafta',
-        'usa', 'us', 'china', 'japan', 'india', 'germany', 'france', 'uk',
-        'rest of world', 'row', 'global', 'international'
+    # 1. GEOGRAPHIC REGIONS - FUZZY MATCHING (PRIORITY 1)
+    region_indicators = [
+        # Exact region names
+        'north america', 'asia pacific', 'asia-pacific', 'europe', 'rest of world', 'row',
+        # Country names
+        'united states', 'usa', 'us', 'china', 'japan', 'india', 'germany', 'france', 'uk',
+        # Regional abbreviations
+        'apac', 'emea', 'latam', 'nafta'
     ]
     
-    region_count = sum(1 for kw in region_keywords if kw in all_text)
-    if region_count >= 2 or any(kw in all_text for kw in ['north america', 'asia-pacific', 'europe', 'rest of world']):
+    # Count exact matches + fuzzy hits
+    region_hits = 0
+    for label in label_texts:
+        for indicator in region_indicators:
+            if indicator in label or any(word in label for word in indicator.split()):
+                region_hits += 1
+    
+    # If 2+ labels contain region indicators → "Regions"
+    if region_hits >= 2:
         return "Regions"
     
-    # 2. YEAR DETECTION
+    # 2. SPECIFIC CHECK: Your exact semiconductor case
+    if any(phrase in all_text for phrase in [
+        'north america', 'asia pacific', 'asia-pacific', 'europe', 'rest of world'
+    ]):
+        return "Regions"
+    
+    # 3. YEARS
+    import re
     year_count = sum(1 for label in label_texts if re.search(r'\b(20\d{2}|19\d{2})\b', label))
     if year_count / len(labels) > 0.5:
         return "Years"
     
-    # 3. QUARTER DETECTION
-    quarter_count = sum(1 for label in label_texts if re.search(r'\bq[1-4]\b', label))
+    # 4. QUARTERS
+    quarter_count = sum(1 for label in label_texts if re.search(r'\bq[1-4]\b', label, re.IGNORECASE))
     if quarter_count > 1:
         return "Quarters"
-    
-    # 4. MONTH DETECTION
-    months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-    month_count = sum(1 for label in label_texts if any(m in label for m in months))
-    if month_count / len(labels) > 0.4:
-        return "Months"
-    
-    # 5. COMPANIES
-    company_words = ['inc', 'ltd', 'corp', 'llc', 'tsmc', 'samsung', 'intel', 'nvidia']
-    if any(word in all_text for word in company_words):
-        return "Companies"
-    
-    # 6. SEGMENTS/CATEGORIES
-    segment_words = ['consumer', 'enterprise', 'logic', 'memory', 'foundry']
-    if any(word in all_text for word in segment_words):
-        return "Segments"
     
     return "Categories"
 
