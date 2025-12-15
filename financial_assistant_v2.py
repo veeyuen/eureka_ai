@@ -816,12 +816,14 @@ def parse_json_robustly(json_string, context):
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
 
+
+
 def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_conf, src_conf, versions_history, user_question, secondary_resp, veracity_scores, show_secondary_view):
     """
-    Renders the comprehensive financial analysis dashboard using Streamlit.
+    Renders the financial analysis dashboard using Streamlit.
+    'data' must be the PARSED JSON dictionary (e.g., j1).
     """
-    
-    # 🟢 MAPPING OF JSON KEYS TO DISPLAY HEADERS (Ensures dynamic section titles)
+
     SECTION_MAPPING = {
         "executive_summary": "Executive Summary",
         "primary_metrics": "📊 Key Performance Indicators (KPIs)",
@@ -837,21 +839,109 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
         "freshness": "Data Freshness"
     }
 
-    # ---------------------------------------------------------
-    # 1. EXECUTIVE SUMMARY (Uses dynamic header and correct key)
-    # ---------------------------------------------------------
+
+    
+    # --- 1. EXECUTIVE SUMMARY & CONFIDENCE SCORE ---
     summary_key = "executive_summary"
     st.header(f"💰 Market Strategy Analysis: {user_question}")
     
+    # FIX: data is now confirmed to be a dictionary, allowing .get()
     executive_summary = data.get(summary_key, "Executive Summary not available.")
     
     st.subheader(SECTION_MAPPING.get(summary_key, summary_key.replace('_', ' ').title()))
-    st.markdown(f"**{executive_summary}**") 
+    st.markdown(f"**{executive_summary}**")
+
+    # Display Confidence Score (Simplified)
+    st.markdown(f"**Overall Confidence Score:** **{final_conf}** (Based on Consensus & Validation)")
+    
+    st.markdown("---")
+
+    # --- 2. LAYOUT: TWO COLUMNS FOR ENTITIES AND FINDINGS ---
+    col_entities, col_findings = st.columns(2)
 
     # =========================================================
-    # 2. METRICS (KEY PERFORMANCE INDICATORS) - NOW DISPLAYED AS A TABLE
+    # 2a. TOP ENTITIES & COMPETITORS (FIXED FOR MIXED TYPES)
     # =========================================================
+    with col_entities:
+        entities_key = "top_entities"
+        st.subheader(SECTION_MAPPING.get(entities_key, entities_key.replace('_', ' ').title()))
+        top_entities = data.get(entities_key, [])
+        
+        if top_entities:
+            entity_data = []
+            
+            for entity in top_entities:
+                if isinstance(entity, dict):
+                    # Case 1: The item is a valid dictionary (as expected)
+                    entity_data.append({
+                        "Entity": entity.get("name", "N/A"),
+                        "Share": entity.get("share", "N/A"),
+                        "Details": entity.get("details", "N/A")
+                    })
+                elif isinstance(entity, str):
+                    # Case 2: The item is a string (FIX: ENHANCED Parsing for 'Name (Details)')
+                    
+                    # Regex looks for: (Name) space (open parenthesis) (details) (close parenthesis)
+                    match = re.search(r'^\s*([^\(]+?)\s*\((.*)\)\s*$', entity)
+                    
+                    if match:
+                        # Case 2a: Successfully parsed using (Name) (Detail) format
+                        entity_name = match.group(1).strip()
+                        entity_details = match.group(2).strip()
+                        
+                        entity_data.append({
+                            "Entity": entity_name,
+                            "Share": "N/A", 
+                            "Details": entity_details
+                        })
+                    elif ":" in entity:
+                        # Case 2b: Fallback to the previous simple split (Name: Detail)
+                        name, detail = entity.split(":", 1)
+                        entity_data.append({
+                            "Entity": name.strip(),
+                            "Share": "N/A",
+                            "Details": detail.strip()
+                        })
+                    else:
+                        # Case 2c: If it's just a name, use it as the entity
+                        entity_data.append({
+                            "Entity": entity.strip(),
+                            "Share": "N/A",
+                            "Details": "N/A"
+                        })
+                else:
+                    # Case 3: Unexpected type
+                    st.warning(f"Skipping malformed entity entry: Expected dict or string, found {type(entity).__name__}.")
+                    continue 
+
+            if entity_data:
+                try:
+                    df_entities = pd.DataFrame(entity_data)
+                    st.dataframe(df_entities, hide_index=True, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Could not render Top Entities table: {e}")
+            else:
+                st.info("No valid top entities data available.")
+        else:
+            st.info("No top entities data available.")
+            
+    # --- 2b. KEY FINDINGS ---
+    with col_findings:
+        findings_key = "key_findings"
+        st.subheader(SECTION_MAPPING.get(findings_key, findings_key.replace('_', ' ').title()))
+        key_findings = data.get(findings_key, [])
+        
+        if isinstance(key_findings, list) and key_findings:
+            markdown_list = "\n".join([f"- {item}" for item in key_findings])
+            st.markdown(markdown_list)
+        else:
+            st.info("Key findings not available.")
+
     st.markdown("---")
+
+    # =========================================================
+    # 3. METRICS (KEY PERFORMANCE INDICATORS) - FIXED FOR MIXED TYPES
+    # =========================================================
     metrics_key = "primary_metrics"
     st.subheader(SECTION_MAPPING.get(metrics_key, metrics_key.replace('_', ' ').title()))
     
@@ -876,7 +966,7 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
                         "Value": metric_item.strip()
                     })
             elif isinstance(metric_item, dict):
-                # 🟢 FIX: Handles Format 2: Dictionary {"metric": ..., "value": ...}
+                # Handles Format 2: Dictionary {"metric": ..., "value": ...}
                 name = metric_item.get("metric", metric_item.get("name", f"Metric {i+1}"))
                 value = metric_item.get("value", "N/A")
                 unit = metric_item.get("unit", "")
@@ -911,232 +1001,20 @@ def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_con
              st.warning(f"Failed to render metrics table: {e}")
     else:
         st.info("Primary metrics data is unavailable.")
-    # =========================================================
-    # 3. CORE INSIGHTS & KEY FINDINGS
-    # =========================================================
-    st.markdown("---")
-    findings_key = "key_findings"
-    st.subheader(SECTION_MAPPING.get(findings_key, findings_key.replace('_', ' ').title()))
-    key_findings = data.get(findings_key, [])
-    for finding in key_findings:
-        st.markdown(f"• {finding}")
-    if not key_findings:
-        st.info("No key findings available.")
-
-    # =========================================================
-    # 4. DRIVERS AND CHALLENGES
-    # =========================================================
-    st.markdown("---")
-    col_drivers, col_challenges = st.columns(2)
-
-    with col_drivers:
-        drivers_key = "market_drivers"
-        st.subheader(SECTION_MAPPING.get(drivers_key, drivers_key.replace('_', ' ').title()))
-        market_drivers = data.get(drivers_key, [])
-        for driver in market_drivers:
-            st.markdown(f"• {driver}")
-        if not market_drivers:
-            st.info("No market drivers available.")
-
-    with col_challenges:
-        challenges_key = "market_challenges"
-        st.subheader(SECTION_MAPPING.get(challenges_key, challenges_key.replace('_', ' ').title()))
-        market_challenges = data.get(challenges_key, [])
-        for challenge in market_challenges:
-            st.markdown(f"• {challenge}")
-        if not market_challenges:
-            st.info("No market challenges available.")
-
-    # =========================================================
-    # 5. COMPETITIVE LANDSCAPE & TRENDS
-    # =========================================================
-    st.markdown("---")
-    col_entities, col_trends = st.columns(2)
-
-    with col_entities:
-        entities_key = "top_entities"
-        st.subheader(SECTION_MAPPING.get(entities_key, entities_key.replace('_', ' ').title()))
-        top_entities = data.get(entities_key, [])
         
-        if top_entities:
-            entity_data = []
-            
-            for entity in top_entities:
-                elif isinstance(entity, str):
-                    # 🟢 ENHANCED FIX: Try to extract Name and Details using regex on parentheses
-                    
-                    # Regex looks for: (Name) space (open parenthesis) (details) (close parenthesis)
-                    match = re.search(r'^\s*([^\(]+?)\s*\((.*)\)\s*$', entity)
-                    
-                    if match:
-                        # Case 2a: Successfully parsed using (Name) (Detail) format
-                        entity_name = match.group(1).strip()
-                        entity_details = match.group(2).strip()
-                        
-                        entity_data.append({
-                            "Entity": entity_name,
-                            "Share": "N/A", 
-                            "Details": entity_details
-                        })
-                    elif ":" in entity:
-                        # Case 2b: Fallback to the previous simple split (Name: Detail)
-                        name, detail = entity.split(":", 1)
-                        entity_data.append({
-                            "Entity": name.strip(),
-                            "Share": "N/A",
-                            "Details": detail.strip()
-                        })
-                    else:
-                        # Case 2c: If it's just a name, use it as the entity
-                        entity_data.append({
-                            "Entity": entity.strip(),
-                            "Share": "N/A",
-                            "Details": "N/A"
-                        })
-                        
-                    # Remove the warning now that we're handling the format better
-                    # st.warning(f"Note: Entity data was generated as an unstructured string: '{entity}'.")
-
-            if entity_data:
-                try:
-                    df_entities = pd.DataFrame(entity_data)
-                    st.dataframe(df_entities, hide_index=True, use_container_width=True)
-                except Exception as e:
-                    st.warning(f"Could not render Top Entities table: {e}")
-            else:
-                st.info("No valid top entities data available.")
-        else:
-            st.info("No top entities data available.")
-    # =========================================================
-    # 6. TREND VISUALIZATION (Fixes for Chart.js structure and X-axis title)
-    # =========================================================
-    st.markdown("---")
-    viz_key = "visualization_data"
-    st.subheader(SECTION_MAPPING.get(viz_key, viz_key.replace('_', ' ').title()))
-    
-    viz_data = data.get(viz_key, {})
-    
-    # Check for the Chart.js style data structure (data, labels, datasets)
-    if viz_data and viz_data.get("data") and viz_data["data"].get("labels") and viz_data["data"].get("datasets"):
-        
-        datasets = viz_data["data"]["datasets"]
-        labels = viz_data["data"]["labels"]
-        
-        if datasets:
-            try:
-                # 1. Extract the data from the first dataset
-                chart_data = datasets[0]["data"]
-                chart_label = datasets[0].get("label", "Value")
-                
-                # 2. Ensure values are numeric
-                numeric_values = [float(v) for v in chart_data]
-                
-                # 3. Create the Plotly DataFrame
-                df_line = pd.DataFrame({
-                    'Category': labels,
-                    chart_label: numeric_values 
-                })
-                
-                # 4. Get the title
-                title_line = viz_data.get("title", "Market Trend Analysis")
-                
-                # 5. Render using Plotly
-                fig_line = px.line(
-                    df_line, 
-                    x='Category', 
-                    y=chart_label, 
-                    title=title_line,
-                    markers=True
-                )
-                
-                # 🟢 FIX: Explicitly set the X-axis title to Year
-                fig_line.update_layout(xaxis_title="Year")
-
-                # Adjust Y-axis label dynamically
-                y_title = f"{chart_label} (USD Billion)" if 'billion' in title_line.lower() else chart_label
-                fig_line.update_layout(yaxis_title=y_title)
-                
-                st.plotly_chart(fig_line, use_container_width=True)
-                
-                # 6. Display the description text below the chart
-                description = viz_data.get("description", "")
-                if description:
-                    st.caption(f"**Analysis:** {description}")
-                    
-            except Exception as e:
-                st.warning(f"Failed to render visualization data due to formatting error: {e}")
-        else:
-            st.info("Trend Visualization data is missing a dataset.")
-
-    else:
-        st.info("Trend Visualization data is currently unavailable or in an unrecognized format.")
-
-    # =========================================================
-    # 7. BENCHMARKS
-    # =========================================================
-    st.markdown("---")
-    benchmark_key = "benchmark_table"
-    st.subheader(SECTION_MAPPING.get(benchmark_key, benchmark_key.replace('_', ' ').title()))
-    benchmark_data = data.get(benchmark_key, [])
-    if benchmark_data:
-        try:
-            df_benchmark = pd.DataFrame(benchmark_data)
-            st.table(df_benchmark)
-        except Exception as e:
-            st.warning(f"Could not render benchmark table: {e}")
-    else:
-        st.info("No competitive benchmark data available.")
-
-    # =========================================================
-    # 8. CONFIDENCE AND SOURCES
-    # =========================================================
-    st.markdown("---")
-    
-    col_conf, col_src = st.columns([1, 2])
-
-    # Confidence Breakdown
-    with col_conf:
-        conf_key = "confidence"
-        st.subheader(SECTION_MAPPING.get(conf_key, conf_key.replace('_', ' ').title()))
-        
-        st.metric("Final Confidence Score", f"{final_conf:.1f}%")
-        st.caption(f"Base Score: {base_conf:.1f}%, Semantic Score: {sem_conf:.1f}%, Numeric Score: {num_conf:.1f}%, Source Score: {src_conf:.1f}%")
-        
-        # Display Veracity Scores (if available)
-        if veracity_scores:
-            st.markdown("##### Detailed Agreement Scores")
-            veracity_df = pd.DataFrame(list(veracity_scores.items()), columns=['Section', 'Score'])
-            veracity_df['Score'] = (veracity_df['Score'] * 100).round(1).astype(str) + '%'
-            veracity_df.columns = ["Section", "Agreement Score"]
-            st.table(veracity_df.set_index('Section'))
-
-
-    # Sources and Freshness
-    with col_src:
-        sources_key = "sources"
-        st.subheader(SECTION_MAPPING.get(sources_key, sources_key.replace('_', ' ').title()))
-        
-        sources = data.get(sources_key, [])
-        if sources:
-            st.markdown("##### **Web Search Sources**")
-            for src in sources:
-                try:
-                    # Tries to display a hyperlink
-                    st.markdown(f"• [{src.split('//')[-1].split('/')[0]}]({src})")
-                except:
-                    st.markdown(f"• {src}")
-        else:
-            st.info("No sources explicitly cited in the final response.")
-        
-        freshness = data.get("freshness", "N/A")
-        st.caption(f"**Data Freshness:** {freshness}")
-        
-    # =========================================================
-    # 9. VALIDATION VIEW TOGGLE (Placeholder for future feature)
-    # =========================================================
+    # --- 4. PLACEHOLDERS FOR OTHER SECTIONS ---
+    # Placeholder for the secondary view logic
     if show_secondary_view:
-        # Placeholder for toggling the secondary response view
-        pass
+        st.subheader("Secondary Validation View (Placeholder)")
+        st.write(f"Confidence (Semantic: {sem_conf}, Numeric: {num_conf})")
+        st.write(f"Secondary Response Data: {secondary_resp}")
+        st.write(f"Veracity Scores: {veracity_scores}")
+        
+    # Placeholder for web context (as seen in traceback)
+    if web_context:
+        st.markdown("---")
+        st.subheader("Web Sources")
+        st.write(f"Web Sources Found: {len(web_context.get('search_results', []))} (Details hidden)")
 
 # ----------------------------
 # MAIN WORKFLOW
