@@ -11,6 +11,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 import base64
+from typing import Dict, List
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
 import google.generativeai as genai
@@ -1305,16 +1306,14 @@ def render_dashboard(
                 st.caption(f"[{result.get('link')}]({result.get('link')})")
                 st.markdown("---")
 
-
 def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
-    """Evidence-driven veracity scoring (no secondary LLM needed)"""
-    
+    """Evidence-driven veracity scoring"""
     total_score = 0
     breakdown = {}
     
-    # 1. SOURCE QUALITY (40% weight) - Your existing function
+    # 1. SOURCE QUALITY (40% weight)
     sources = primary_data.get("sources", [])
-    src_score = source_quality_score(sources)
+    src_score = source_quality_score(sources)  # Your existing function
     breakdown["source_quality"] = src_score
     total_score += src_score * 0.4
     
@@ -1325,18 +1324,19 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     
     # 3. CITATION DENSITY (20% weight)
     findings_count = len(primary_data.get("key_findings", []))
-    citation_density = len(sources) / max(1, findings_count)
-    citation_score = min(citation_density * 50, 25)  # Max 25 points
+    sources_count = len(sources)
+    citation_density = sources_count / max(1, findings_count)
+    citation_score = min(citation_density * 50, 25)
     breakdown["citation_density"] = citation_score
     total_score += citation_score * 0.2
     
     # 4. DATA FRESHNESS (10% weight)
-    freshness = primary_data.get("freshness", "")
-    freshness_score = 10 if any(year in freshness for year in ["2025", "2024"]) else 5
+    freshness = str(primary_data.get("freshness", ""))
+    freshness_score = 10 if any(year in freshness for year in ["2025", "2024", "current"]) else 5
     breakdown["freshness"] = freshness_score
     total_score += freshness_score * 0.1
     
-    # 5. CONSENSUS ACROSS SOURCES
+    # 5. CONSENSUS (10% weight)
     consensus_score = source_consensus(web_context)
     breakdown["source_consensus"] = consensus_score
     total_score += consensus_score * 0.1
@@ -1347,70 +1347,71 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     return breakdown
 
 def numeric_consistency_with_sources(primary_data: dict, web_context: dict) -> float:
-    """Extract numbers from sources, compare to primary metrics"""
+    """Compare primary numbers vs source numbers"""
+    # Extract primary numbers
     primary_metrics = primary_data.get("primary_metrics", {})
     primary_numbers = []
     
-    # Extract numbers from primary metrics
     for metric in primary_metrics.values():
         if isinstance(metric, dict):
             val = metric.get("value")
             try:
-                primary_numbers.append(float(val))
-            except:
-                pass
+                primary_numbers.append(float(str(val).replace('$', '').replace('B', '').replace('M', '')))
+            except (ValueError, TypeError):
+                continue
     
     if not primary_numbers:
         return 60.0
     
-    # Extract numbers from web sources
+    # Extract source numbers
     source_numbers = []
-    for result in web_context.get("search_results", []):
-        snippet = result.get("snippet", "")
-        # Extract USD numbers: $123B, $456M, 789B, etc.
-        numbers = re.findall(r'\$?(\d+(?:\.\d+)?)\s*(B|M|bn|million|billion)', snippet.lower())
+    search_results = web_context.get("search_results", [])
+    
+    for result in search_results:
+        snippet = str(result.get("snippet", ""))
+        # Simple number extraction: $123B, 456M, 789, etc.
+        numbers = re.findall(r'[\$]?(\d+(?:\.\d+)?)([BKM]?)', snippet, re.IGNORECASE)
         for num, unit in numbers:
             try:
                 val = float(num)
-                if unit in ['b', 'bn', 'billion']:
+                if unit.upper() == 'B':
                     val *= 1000
-                elif unit == 'm':
+                elif unit.upper() == 'M':
                     val *= 1
+                elif unit.upper() == 'K':
+                    val *= 0.001
                 source_numbers.append(val)
             except:
-                pass
+                continue
     
     if not source_numbers:
         return 50.0
     
-    # Calculate agreement (numbers within 20% range)
+    # Check agreement (within 25% range)
     agreements = 0
-    total_primary = len(primary_numbers)
-    
     for p_num in primary_numbers:
-        nearby = [s for s in source_numbers if abs(s - p_num) / max(p_num, s) < 0.2]
-        if nearby:
-            agreements += 1
+        for s_num in source_numbers:
+            if abs(p_num - s_num) / max(p_num, s_num, 1) < 0.25:
+                agreements += 1
+                break
     
-    agreement_pct = (agreements / total_primary) * 100 if total_primary > 0 else 0
-    return min(agreement_pct, 90.0)
+    agreement_pct = min((agreements / len(primary_numbers)) * 100, 90.0)
+    return agreement_pct
 
 def source_consensus(web_context: dict) -> float:
-    """Check if sources agree on key themes"""
-    snippets = [r.get("snippet", "") for r in web_context.get("search_results", [])]
-    if not snippets:
-        return 70.0
-    
+    """Simple consensus from source reliability"""
     reliabilities = web_context.get("source_reliability", [])
-    high_quality = [s for s, r in zip(snippets, reliabilities) if "✅" in r]
+    high_quality_count = sum(1 for r in reliabilities if "✅" in str(r))
     
-    if len(high_quality) >= 2:
-        # Multiple high-quality sources = high consensus
+    if high_quality_count >= 3:
+        return 90.0
+    elif high_quality_count >= 2:
         return 85.0
-    elif len(high_quality) == 1:
+    elif high_quality_count == 1:
         return 75.0
     else:
         return 60.0
+
 
 
 # =========================================================
@@ -1507,6 +1508,12 @@ def main():
     #        secondary_response = query_gemini(query)
         with st.spinner("✅ Verifying evidence quality..."):
             veracity_scores = evidence_based_veracity(primary_data, web_context)
+
+        
+# Remove these lines entirely:
+# secondary_response = query_gemini(query)
+# secondary_data = json.loads(secondary_response)
+
         
         try:
             secondary_data = json.loads(secondary_response)
@@ -1514,7 +1521,7 @@ def main():
             secondary_data = {}
         
         # Calculate verification scores
-        veracity_scores = multi_modal_verification(primary_data, secondary_data)
+      #  veracity_scores = multi_modal_verification(primary_data, secondary_data)
         
         # Calculate confidence scores
         base_conf = float(primary_data.get("confidence", 75))
