@@ -729,8 +729,8 @@ def parse_trends_to_chart(trends):
 
 def parse_json_robustly(json_string, context):
     """
-    Parses a JSON string safely, addressing key quoting, trailing commas, 
-    missing delimiters, and unescaped double quotes (Unterminated string error).
+    Parses a JSON string safely, addressing all common LLM errors: key quoting, 
+    trailing commas, missing delimiters, and unescaped double quotes.
     """
     if not json_string:
         return {}
@@ -758,8 +758,10 @@ def parse_json_robustly(json_string, context):
     repaired_content = json_content
     
     try:
-        # Fix 1: Insert missing commas between closing brace/bracket and a new key (Fixes 'Expecting ',' delimiter')
-        repaired_content = re.sub(r'([\]\}])\s*["\'(a-zA-Z_]', r'\1,', repaired_content)
+        # Fix 1: Insert missing commas between closing quote/brace/bracket and a new quote/brace/bracket/key
+        # This is the most crucial fix for 'Expecting ',' delimiter'
+        # It looks for structure like "value"{"key": or "value"next_key: or "value"
+        repaired_content = re.sub(r'([\"\]\}])\s*(?=[^,\]\}])', r'\1,', repaired_content)
 
         # Fix 2: {key: -> {"key": (Fixes 'Expecting property name enclosed in double quotes')
         repaired_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', repaired_content)
@@ -774,18 +776,19 @@ def parse_json_robustly(json_string, context):
         
     except Exception as e:
         st.warning(f"Structural repair regex failed: {e}")
+        # If structural regex fails, we fall back to the iterative repair, but we want the regex to succeed.
 
     json_content = repaired_content # Update content for the iterative loop
 
     # 4. ITERATIVE QUOTE REPAIR LOOP (TARGETING 'UNTERMINATED STRING' ERROR)
-    max_retries = 20 # Increased retries
+    max_retries = 20
     current_attempt = 0
     
     while current_attempt < max_retries:
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            # Check for error types caused by unescaped quotes or delimiter issues
+            # Check for error types
             if not ("Unterminated string" in e.msg or "Expecting ',' delimiter" in e.msg or "Expecting value" in e.msg):
                 st.error(f"JSON parse failed (Attempt {current_attempt+1}): {e}")
                 error_pos = e.pos if hasattr(e, 'pos') else 0
@@ -798,25 +801,22 @@ def parse_json_robustly(json_string, context):
             found_quote = -1
             
             # Search backwards from error_pos to find the nearest quote to escape
-            for i in range(error_pos - 1, max(0, error_pos - 200), -1): # Increased search range
+            for i in range(error_pos - 1, max(0, error_pos - 200), -1): 
                 if i < len(json_content) and json_content[i] == '"':
-                    # Crucial check: if the preceding character is NOT a backslash, this is our unescaped quote.
                     if i == 0 or json_content[i-1] != '\\':
                         found_quote = i
                         break
             
             if found_quote != -1:
-                # 🌟 THIS IS THE LINE THAT FIXES YOUR CURRENT ERROR
                 json_content = json_content[:found_quote] + '\\"' + json_content[found_quote+1:]
                 current_attempt += 1
-                continue # Retry the loop with the fixed string
+                continue 
             
-            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not find unescaped quote near error position.")
+            st.error(f"JSON parse failed (Attempt {current_attempt+1}): Could not fix error near position {error_pos}.")
             return {"parse_error": str(e)}
 
     st.error(f"JSON parse failed after {max_retries} automatic repair attempts.")
     return {"parse_error": "Max retries exceeded"}
-
 
 def render_dashboard(data, final_conf, sem_conf, num_conf, web_context, base_conf, src_conf, versions_history, user_question, secondary_resp, veracity_scores, show_secondary_view):
     """
