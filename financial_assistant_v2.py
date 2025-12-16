@@ -1381,7 +1381,9 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     sources_count = len(sources)
     citation_density = sources_count / max(1, findings_count)
    # citation_score = min(citation_density * 50, 25) # less forgiving citation score calc
-    citations_score = min(100, (total_sources * 0.75 + high_quality_sources * 1.25) / max(1, num_findings) * 50)
+    citations_score = min(100, (sources_count * 0.75 + high_quality_sources * 1.25) / max(1, findings_count) * 50)
+
+    
     breakdown["citation_density"] = citation_score
     total_score += citation_score * 0.2
     
