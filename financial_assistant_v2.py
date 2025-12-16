@@ -1219,14 +1219,14 @@ def render_dashboard(
 #                st.info(f"Chart data available but rendering failed: {e}")
 
     # Visualization - FIXED X-AXIS LABELING
-st.subheader("📊 Data Visualization")
-viz = data.get('visualization_data')
+    st.subheader("📊 Data Visualization")
+    viz = data.get('visualization_data')
 
-if viz and isinstance(viz, dict):
-    labels = viz.get("chart_labels", [])
-    values = viz.get("chart_values", [])
-    title = viz.get("chart_title", "Trend Analysis")
-    chart_type = viz.get("chart_type", "line")
+    if viz and isinstance(viz, dict):
+        labels = viz.get("chart_labels", [])
+        values = viz.get("chart_values", [])
+        title = viz.get("chart_title", "Trend Analysis")
+        chart_type = viz.get("chart_type", "line")
     
     if labels and values and len(labels) == len(values):
         try:
