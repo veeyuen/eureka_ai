@@ -1630,11 +1630,14 @@ def main():
         with st.spinner("✅ Verifying evidence quality..."):
             veracity_scores = evidence_based_veracity(primary_data, web_context)
 
+        num_conf = None  # ✅ No cross-model validation
+        sem_conf = 0.0   # ✅ Not used in confidence calc
+
         # Final confidence (no sem_conf or num_conf needed)
         final_conf = calculate_final_confidence_enhanced(
-        base_conf,
-        veracity_scores["overall"],
-        None  # No cross-model alignment
+            base_conf,
+            veracity_scores["overall"],
+            num_conf
         )
         
             #  final_conf = calculate_final_confidence(
@@ -1651,11 +1654,10 @@ def main():
        
         
         # Download JSON
-        output = {
+       output = {
             "question": query,
             "timestamp": datetime.now().isoformat(),
             "primary_response": primary_data,
-            "secondary_response": secondary_data,
             "final_confidence": final_conf,
             "veracity_scores": veracity_scores,
             "web_sources": web_context.get("sources", [])
@@ -1673,17 +1675,16 @@ def main():
         
         # Render dashboard
         render_dashboard(
-        primary_response,
-        final_conf,
-        sem_conf,
-        num_conf,
-        web_context,
-        base_conf,
-    #    src_conf,
-        query,
-        veracity_scores,
-        web_context.get("source_reliability", [])
-        )        
+            primary_response,
+            final_conf,
+            sem_conf,  # Can remove this parameter entirely
+            num_conf,
+            web_context,
+            base_conf,
+            query,
+            veracity_scores,
+            web_context.get("source_reliability", [])
+        )
         # Debug info
        # with st.expander("🔧 Debug Information"):
        #     st.write("**Confidence Breakdown:**")
