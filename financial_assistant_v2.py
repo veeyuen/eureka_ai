@@ -925,60 +925,61 @@ def multi_modal_verification(json1: Dict, json2: Dict) -> Dict[str, float]:
         "overall_score": round(overall, 2)
     }
 
-#def calculate_final_confidence(
-#    base_conf: float,
-#    sem_conf: float,
-#    num_conf: Optional[float],
-#    src_conf: float,
-#    veracity_conf: float
-#) -> float:
-#    """
-#    Calculate weighted final confidence score.
-#    Note: Veracity is kept separate as it's a cross-model comparison metric.
-#    """
-    
-#    components = [
-#        ("base", base_conf, 0.30),
-#        ("semantic", sem_conf, 0.25),
-#        ("source", src_conf, 0.25),
-#        ("numeric", num_conf or 0, 0.20 if num_conf else 0)
-#    ]
-    
-#    total_weight = sum(w for _, _, w in components)
-#    weighted_sum = sum(score * weight for _, score, weight in components)
-    
-#    final = weighted_sum / total_weight if total_weight > 0 else 70.0
-#    return round(final, 2)
 
-def calculate_final_confidence_enhanced(
-    base_conf: float,           # LLM self-reported confidence (0-100)
-    evidence_score: float,      # Overall evidence quality (0-100)  
-    src_conf: float,           # Source quality (0-100)
-    sem_conf: float,           # Semantic consistency (0-100)
-    num_conf: Optional[float]  # Numeric alignment (0-100)
-    ) -> float:
-    """
-    Evidence-weighted confidence: Model + Evidence balance
-    Model confidence DOWNWEIGHTED when evidence is weak
-    """
+#def calculate_final_confidence_enhanced(
+#    base_conf: float,           # LLM self-reported confidence (0-100)
+#    evidence_score: float,      # Overall evidence quality (0-100)  
+#    src_conf: float,           # Source quality (0-100)
+#    sem_conf: float,           # Semantic consistency (0-100)
+#    num_conf: Optional[float]  # Numeric alignment (0-100)
+#    ) -> float:
+#    """
+#    Evidence-weighted confidence: Model + Evidence balance
+#    Model confidence DOWNWEIGHTED when evidence is weak
+#    """
     
-    # 1. EVIDENCE COMPONENT (60% weight) - Primary driver
-    evidence_weight = 0.60
-    evidence_component = evidence_score * evidence_weight
+#    # 1. EVIDENCE COMPONENT (60% weight) - Primary driver
+#    evidence_weight = 0.60
+#    evidence_component = evidence_score * evidence_weight
     
-    # 2. MODEL COMPONENT (20% weight) - Secondary, evidence-adjusted
-    model_adjustment = min(1.0, evidence_score / 100)  # Weak evidence → nerf model conf
-    model_component = base_conf * model_adjustment * 0.20
+#    # 2. MODEL COMPONENT (20% weight) - Secondary, evidence-adjusted
+#    model_adjustment = min(1.0, evidence_score / 100)  # Weak evidence → nerf model conf
+#    model_component = base_conf * model_adjustment * 0.20
     
-    # 3. TECHNICAL CONSISTENCY (15% weight)
-    tech_consistency = (sem_conf + (num_conf or 0)) / 2 * 0.15
+#    # 3. TECHNICAL CONSISTENCY (15% weight)
+#    tech_consistency = (sem_conf + (num_conf or 0)) / 2 * 0.15
     
-    # 4. SOURCE QUALITY (5% weight) 
-    source_bonus = src_conf * 0.05
+#    # 4. SOURCE QUALITY (5% weight) 
+#    source_bonus = src_conf * 0.05
     
     # FINAL BLEND
-    final_confidence = evidence_component + model_component + tech_consistency + source_bonus
-    return round(final_confidence, 1)
+#    final_confidence = evidence_component + model_component + tech_consistency + source_bonus
+#    return round(final_confidence, 1)
+
+def calculate_final_confidence_enhanced(
+    base_conf: float,           # LLM confidence (20% weight)
+    evidence_score: float,      # Evidence overall (60% weight)  
+    src_conf: float,           # Source quality (10% weight)
+    num_conf: Optional[float]  # Numeric alignment (10% weight)
+    ) -> float:
+    """Evidence-weighted, NO semantic confidence"""
+    
+    # EVIDENCE PRIMARY (60%)
+    evidence_component = evidence_score * 0.60
+    
+    # MODEL SECONDARY (20%)
+    model_adjustment = min(1.0, evidence_score / 100)
+    model_component = base_conf * model_adjustment * 0.20
+    
+    # TECHNICAL (10%)
+    tech_component = (num_conf or 0) * 0.10
+    
+    # SOURCES BONUS (10%)
+    source_component = src_conf * 0.10
+    
+    final = evidence_component + model_component + tech_component + source_component
+    return round(final, 1)
+
 
 
 # =========================================================
@@ -1095,14 +1096,26 @@ def render_dashboard(
     st.markdown(f"**Question:** {user_question}")
     
     # Confidence metrics
-    col1, col2, col3, col4 = st.columns(4)
+  #  col1, col2, col3, col4 = st.columns(4)
+  #  col1.metric("Final Confidence", f"{final_conf:.1f}%")
+  #  col2.metric("Base Model", f"{base_conf:.1f}%")
+  #  col3.metric("Semantic", f"{sem_conf:.1f}%")
+  #  if num_conf:
+  #      col4.metric("Numeric", f"{num_conf:.1f}%")
+  #  else:
+  #      col4.metric("Numeric", "N/A")
+
+    # Confidence row - NO SEMANTIC
+    col1, col2, col3 = st.columns(3)
     col1.metric("Final Confidence", f"{final_conf:.1f}%")
     col2.metric("Base Model", f"{base_conf:.1f}%")
-    col3.metric("Semantic", f"{sem_conf:.1f}%")
+    col3.metric("Evidence", f"{veracity_scores['overall']:.1f}%")
     if num_conf:
         col4.metric("Numeric", f"{num_conf:.1f}%")
     else:
         col4.metric("Numeric", "N/A")
+
+
     
     st.markdown("---")
     
@@ -1597,11 +1610,10 @@ def main():
 
         
         final_conf = calculate_final_confidence_enhanced(
-        base_conf,                           # Model confidence
-        veracity_scores["overall"],          # Evidence score ← NEW PRIMARY!
-        src_conf, 
-        sem_conf, 
-        num_conf
+        base_conf,                    # 88.0%
+        veracity_scores["overall"],   # 60.0%
+        src_conf,                     # 76.0%
+        num_conf                      # 50.0%
         )
 
         
