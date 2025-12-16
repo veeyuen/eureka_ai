@@ -960,12 +960,14 @@ def multi_modal_verification(json1: Dict, json2: Dict) -> Dict[str, float]:
 # FIXED VERSION
 def calculate_final_confidence_enhanced(
     base_conf: float,           
-    evidence_score: float,      # Already contains source quality
-    num_conf: Optional[float]   # Cross-model alignment only
+    evidence_score: float,      
+    cross_model_conf: Optional[float] = None  # Rename for clarity
     ) -> float:
     """
-    Evidence-weighted confidence - NO double-counting.
-    Source quality is already inside evidence_score.
+    Confidence calculation with clear separation:
+    - Evidence (70%): Web source quality, citations, consensus
+    - Model (20%): LLM self-confidence, adjusted by evidence
+    - Cross-validation (10%): Agreement between models (if available)
     """
     
     # 1. EVIDENCE PRIMARY (70% weight)
@@ -975,12 +977,13 @@ def calculate_final_confidence_enhanced(
     model_adjustment = min(1.0, evidence_score / 100)
     model_component = base_conf * model_adjustment * 0.20
     
-    # 3. CROSS-MODEL AGREEMENT (10% weight)
-    tech_component = (num_conf or 70) * 0.10
+    # 3. CROSS-MODEL VALIDATION (10% weight)
+    # If no secondary model, use 70 as neutral baseline
+    cross_val_component = (cross_model_conf or 70) * 0.10
     
-    final = evidence_component + model_component + tech_component
+    final = evidence_component + model_component + cross_val_component
     return round(final, 1)
-
+        
 # =========================================================
 # 9. DASHBOARD RENDERING (FIXED)
 # =========================================================
@@ -1583,25 +1586,23 @@ def main():
 # secondary_data = json.loads(secondary_response)
 
         
-        try:
-            secondary_data = json.loads(secondary_response)
-        except:
-            secondary_data = {}
-        
-        # Calculate verification scores
-      #  veracity_scores = multi_modal_verification(primary_data, secondary_data)
-        
-        # Calculate confidence scores
+
+        # Option A: Remove all secondary model code entirely
+        # DELETE lines 1560-1577
+
+        # Calculate confidence WITHOUT cross-model validation
         base_conf = float(primary_data.get("confidence", 75))
-        sem_conf = semantic_similarity(
-            primary_data.get("executive_summary", ""),
-            secondary_data.get("executive_summary", "")
+
+        # Calculate evidence-based veracity
+        with st.spinner("✅ Verifying evidence quality..."):
+            veracity_scores = evidence_based_veracity(primary_data, web_context)
+
+        # Final confidence (no sem_conf or num_conf needed)
+        final_conf = calculate_final_confidence_enhanced(
+        base_conf,
+        veracity_scores["overall"],
+        None  # No cross-model alignment
         )
-        num_conf = numeric_alignment(
-            primary_data.get("primary_metrics", {}),
-            secondary_data.get("primary_metrics", {})
-        )
-    #    src_conf = source_quality_score(primary_data.get("sources", []))
         
             #  final_conf = calculate_final_confidence(
       #      base_conf, sem_conf, num_conf, src_conf, 
@@ -1614,13 +1615,7 @@ def main():
       #  Both Weak	50%	40%	42%	Rightfully low
 
         
-        # FIXED CALL (remove src_conf parameter)
-        final_conf = calculate_final_confidence_enhanced(
-        base_conf,                    
-        veracity_scores["overall"],   # Already includes source quality
-        num_conf                      # Only cross-model numeric alignment
-        )
-
+       
         
         # Download JSON
         output = {
