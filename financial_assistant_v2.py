@@ -1,6 +1,6 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v6.0 - REFACTORED
-# With Web Search, Multi-Model Validation, Confidence Scoring
+# YUREEKA AI RESEARCH ASSISTANT v7.0 - CORRECTED
+# With Web Search, Evidence-Based Verification, Confidence Scoring
 # =========================================================
 
 import os
@@ -11,7 +11,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 import base64
-from typing import Dict, List
+from typing import Dict, List, Optional, Any, Union
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
 import google.generativeai as genai
@@ -19,7 +19,6 @@ import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime
 from collections import Counter
-from typing import List, Dict, Optional, Any, Union
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
 # =========================================================
@@ -58,7 +57,7 @@ genai.configure(api_key=GEMINI_KEY)
 gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 # =========================================================
-# 2. PYDANTIC MODELS (FIXED)
+# 2. PYDANTIC MODELS
 # =========================================================
 
 class MetricDetail(BaseModel):
@@ -82,22 +81,14 @@ class TrendForecastDetail(BaseModel):
     timeline: Optional[str] = Field(None, description="Timeline")
     model_config = ConfigDict(extra='ignore')
 
-#class VisualizationData(BaseModel):
-#    """Standardized visualization data"""
-#    chart_labels: List[str] = Field(default_factory=list, description="X-axis labels")
-#    chart_values: List[Union[float, int]] = Field(default_factory=list, description="Y-axis values")
-#    chart_title: Optional[str] = Field("Trend Analysis", description="Chart title")
-#    chart_type: Optional[str] = Field("line", description="Chart type")
-#    model_config = ConfigDict(extra='ignore')
-
 class VisualizationData(BaseModel):
     chart_labels: List[str] = Field(default_factory=list)
     chart_values: List[Union[float, int]] = Field(default_factory=list)
     chart_title: Optional[str] = Field("Trend Analysis")
     chart_type: Optional[str] = Field("line")
-    x_axis_label: Optional[str] = None  # LLM provides OR dynamic detection
-    y_axis_label: Optional[str] = None  # LLM provides OR dynamic detection
-
+    x_axis_label: Optional[str] = None
+    y_axis_label: Optional[str] = None
+    model_config = ConfigDict(extra='ignore')
 
 class ComparisonBar(BaseModel):
     """Comparison bar chart data"""
@@ -245,7 +236,7 @@ def load_models():
 domain_classifier, embedder = load_models()
 
 # =========================================================
-# 5. JSON REPAIR FUNCTIONS (CRITICAL FIXES)
+# 5. JSON REPAIR FUNCTIONS
 # =========================================================
 
 def repair_llm_response(data: dict) -> dict:
@@ -303,7 +294,7 @@ def repair_llm_response(data: dict) -> dict:
         if "values" in viz and "chart_values" not in viz:
             viz["chart_values"] = viz.pop("values")
     
-    # ✨ NEW: Fix benchmark_table numeric values
+    # Fix benchmark_table numeric values
     if "benchmark_table" in data and isinstance(data["benchmark_table"], list):
         cleaned_table = []
         for row in data["benchmark_table"]:
@@ -457,7 +448,7 @@ def classify_source_reliability(source: str) -> str:
     
     high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", "mckinsey", "bcg", "cognitive market research", 
             "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc", "imarc", "booz", "bakerinstitute.org",
-           "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs" "j.p. morgan"]
+           "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs", "j.p. morgan"]
     medium = ["wikipedia", "forbes", "cnbc", "yahoo", "statista", "ceic"]
     low = ["blog", "medium.com", "wordpress", "ad", "promo"]
     
@@ -476,11 +467,11 @@ def classify_source_reliability(source: str) -> str:
 def source_quality_score(sources: List[str]) -> float:
     """Calculate average source quality (0-100)"""
     if not sources:
-        return 60.0
+        return 50.0  # Lower default when no sources
     
     weights = {"✅ High": 100, "⚠️ Medium": 60, "❌ Low": 30}
     scores = [weights.get(classify_source_reliability(s), 60) for s in sources]
-    return sum(scores) / len(scores) if scores else 60.0
+    return sum(scores) / len(scores) if scores else 50.0
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_serpapi(query: str, num_results: int = 5) -> List[Dict]:
@@ -632,7 +623,7 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
     }
 
 # =========================================================
-# 7. LLM QUERY FUNCTIONS (FIXED)
+# 7. LLM QUERY FUNCTIONS
 # =========================================================
 
 def query_perplexity(query: str, web_context: Dict, temperature: float = 0.1) -> str:
@@ -694,7 +685,7 @@ def query_perplexity(query: str, web_context: Dict, temperature: float = 0.1) ->
         
         repaired = repair_llm_response(parsed)
         
-        # ✨ INSERT THE DEBUG HELPER HERE (before Pydantic validation):
+        # Debug helper
         validate_numeric_fields(repaired, "Perplexity")
         
         # Validate with Pydantic
@@ -751,7 +742,6 @@ def query_gemini(query: str) -> str:
             return create_fallback_response(query, 0, {})
     
     except Exception as e:
-       # st.warning(f"⚠️ Gemini API error: {e}")  # FULL WARNING MESSAGE
         st.info("Secondary model response unavailable")
         return create_fallback_response(query, 0, {})
 
@@ -787,7 +777,7 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
     return fallback.model_dump_json()
 
 # =========================================================
-# 8. VALIDATION & SCORING (FIXED)
+# 8. VALIDATION & SCORING
 # =========================================================
 
 @st.cache_data
@@ -809,185 +799,201 @@ def semantic_similarity(text1: str, text2: str) -> float:
         st.warning(f"Embedding error: {e}")
         return 0.0
 
-def numeric_alignment(metrics1: Dict, metrics2: Dict) -> Optional[float]:
-    """Compare numeric metrics between two responses"""
-    if not metrics1 or not metrics2:
-        return None
-    
-    # Extract values from MetricDetail dicts
-    v1_map = {k: v.get("value") for k, v in metrics1.items() if isinstance(v, dict)}
-    v2_map = {k: v.get("value") for k, v in metrics2.items() if isinstance(v, dict)}
-    
-    total_diff = 0
-    count = 0
-    
-    for key in v1_map:
-        if key in v2_map:
-            try:
-                val1 = float(v1_map[key])
-                val2 = float(v2_map[key])
-                
-                if val1 == 0 and val2 == 0:
-                    continue
-                
-                max_val = max(abs(val1), abs(val2))
-                if max_val == 0:
-                    continue
-                
-                diff = abs(val1 - val2) / max_val
-                total_diff += diff
-                count += 1
-            
-            except (ValueError, TypeError):
-                continue
-    
-    if count == 0:
-        return None
-    
-    alignment = 1 - (total_diff / count)
-    return round(alignment * 100, 2)
-
-def compare_lists(list1: List[str], list2: List[str]) -> float:
-    """Compare two lists of text using semantic similarity"""
-    if not list1 or not list2:
+def parse_number_with_unit(val_str: str) -> float:
+    """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
+    if not val_str:
         return 0.0
     
-    scores = []
-    for text1 in list1:
-        best_match = max([semantic_similarity(text1, text2) for text2 in list2], default=0)
-        scores.append(best_match)
+    # Clean and extract
+    val_str = str(val_str).replace('$', '').replace(',', '').strip()
     
-    return round(np.mean(scores), 2) if scores else 0.0
+    # Check for unit suffix
+    multiplier = 1.0  # Base = millions
+    if val_str.endswith('B') or val_str.endswith('b'):
+        multiplier = 1000.0  # Billions to millions
+        val_str = val_str[:-1]
+    elif val_str.endswith('M') or val_str.endswith('m'):
+        multiplier = 1.0
+        val_str = val_str[:-1]
+    elif val_str.endswith('K') or val_str.endswith('k'):
+        multiplier = 0.001  # Thousands to millions
+        val_str = val_str[:-1]
+    
+    try:
+        return float(val_str) * multiplier
+    except (ValueError, TypeError):
+        return 0.0
 
-def multi_modal_verification(json1: Dict, json2: Dict) -> Dict[str, float]:
-    """
-    Compare two LLM outputs across multiple dimensions:
-    - Executive summaries (semantic)
-    - Key findings (list similarity)
-    - Primary metrics (numeric alignment)
-    - Visualization data (chart similarity)
-    """
+def numeric_consistency_with_sources(primary_data: dict, web_context: dict) -> float:
+    """Compare primary numbers vs source numbers"""
+    primary_metrics = primary_data.get("primary_metrics", {})
+    primary_numbers = []
     
-    # Summary comparison
-    summary_score = semantic_similarity(
-        json1.get("executive_summary", ""),
-        json2.get("executive_summary", "")
-    )
+    for metric in primary_metrics.values():
+        if isinstance(metric, dict):
+            val = metric.get("value")
+            num = parse_number_with_unit(str(val))
+            if num > 0:
+                primary_numbers.append(num)
     
-    # Findings comparison
-    findings_score = compare_lists(
-        json1.get("key_findings", []),
-        json2.get("key_findings", [])
-    )
+    if not primary_numbers:
+        return 50.0  # Neutral when no metrics to compare
     
-    # Metrics comparison
-    metrics_score = numeric_alignment(
-        json1.get("primary_metrics", {}),
-        json2.get("primary_metrics", {})
-    ) or 0.0
+    # Extract source numbers with same parsing
+    source_numbers = []
+    search_results = web_context.get("search_results", [])
     
-    # Visualization comparison
-    viz1 = json1.get("visualization_data", {}) or {}
-    viz2 = json2.get("visualization_data", {}) or {}
-    
-    labels1 = viz1.get("chart_labels", [])
-    labels2 = viz2.get("chart_labels", [])
-    values1 = viz1.get("chart_values", [])
-    values2 = viz2.get("chart_values", [])
-    
-    viz_score = 0.0
-    if labels1 == labels2 and values1 and values2 and len(values1) == len(values2):
-        try:
-            v1 = np.array([float(x) for x in values1])
-            v2 = np.array([float(x) for x in values2])
-            diff = np.abs(v1 - v2)
-            max_vals = np.maximum(np.abs(v1), np.abs(v2))
-            with np.errstate(divide='ignore', invalid='ignore'):
-                rel_diff = np.where(max_vals != 0, diff / max_vals, 0)
-            viz_score = max(0, 100 - np.nanmean(rel_diff) * 100)
-        except:
-            pass
-    
-    # Overall weighted score
-    weights = {"summary": 0.3, "findings": 0.25, "metrics": 0.25, "viz": 0.2}
-    overall = (
-        summary_score * weights["summary"] +
-        findings_score * weights["findings"] +
-        metrics_score * weights["metrics"] +
-        viz_score * weights["viz"]
-    )
-    
-    return {
-        "summary_score": summary_score,
-        "findings_score": findings_score,
-        "metrics_score": metrics_score,
-        "viz_score": viz_score,
-        "overall_score": round(overall, 2)
-    }
-
-
-#def calculate_final_confidence_enhanced(
-#    base_conf: float,           # LLM self-reported confidence (0-100)
-#    evidence_score: float,      # Overall evidence quality (0-100)  
-#    src_conf: float,           # Source quality (0-100)
-#    sem_conf: float,           # Semantic consistency (0-100)
-#    num_conf: Optional[float]  # Numeric alignment (0-100)
-#    ) -> float:
-#    """
-#    Evidence-weighted confidence: Model + Evidence balance
-#    Model confidence DOWNWEIGHTED when evidence is weak
-#    """
-    
-#    # 1. EVIDENCE COMPONENT (60% weight) - Primary driver
-#    evidence_weight = 0.60
-#    evidence_component = evidence_score * evidence_weight
-    
-#    # 2. MODEL COMPONENT (20% weight) - Secondary, evidence-adjusted
-#    model_adjustment = min(1.0, evidence_score / 100)  # Weak evidence → nerf model conf
-#    model_component = base_conf * model_adjustment * 0.20
-    
-#    # 3. TECHNICAL CONSISTENCY (15% weight)
-#    tech_consistency = (sem_conf + (num_conf or 0)) / 2 * 0.15
-    
-#    # 4. SOURCE QUALITY (5% weight) 
-#    source_bonus = src_conf * 0.05
-    
-    # FINAL BLEND
-#    final_confidence = evidence_component + model_component + tech_consistency + source_bonus
-#    return round(final_confidence, 1)
-
-
-# FIXED VERSION
-def calculate_final_confidence_enhanced(
-    base_conf: float,           
-    evidence_score: float,      
-    cross_model_conf: Optional[float] = None  # Rename for clarity
-    ) -> float:
-    """
-    Confidence calculation with clear separation:
-    - Evidence (70%): Web source quality, citations, consensus
-    - Model (20%): LLM self-confidence, adjusted by evidence
-    - Cross-validation (10%): Agreement between models (if available)
-    """
-    
-    # 1. EVIDENCE PRIMARY (70% weight)
-    evidence_component = evidence_score * 0.70
-    
-    # 2. MODEL CONFIDENCE (20% weight) - Downweighted by evidence
-    model_adjustment = min(1.0, evidence_score / 100)
-    model_component = base_conf * model_adjustment * 0.20
-    
-    # 3. CROSS-MODEL VALIDATION (10% weight)
-    # If no secondary model, use 70 as neutral baseline
-    cross_val_component = (cross_model_conf or 70) * 0.10
-    
-    final = evidence_component + model_component + cross_val_component
-    return round(final, 1)
+    for result in search_results:
+        snippet = str(result.get("snippet", ""))
+        # Match patterns like "$58.3B", "123M", "456 billion"
+        patterns = [
+            r'\$?(\d+(?:\.\d+)?)\s*([BbMmKk])',  # $58.3B
+            r'(\d+(?:\.\d+)?)\s*(billion|million|thousand)',  # 58.3 billion
+        ]
         
-# =========================================================
-# 9. DASHBOARD RENDERING (FIXED)
-# =========================================================
+        for pattern in patterns:
+            matches = re.findall(pattern, snippet, re.IGNORECASE)
+            for num, unit in matches:
+                source_numbers.append(parse_number_with_unit(f"{num}{unit[0].upper()}"))
+    
+    if not source_numbers:
+        return 50.0  # Neutral when no source numbers found
+    
+    # Check agreement (within 25% tolerance)
+    agreements = 0
+    for p_num in primary_numbers:
+        for s_num in source_numbers:
+            if abs(p_num - s_num) / max(p_num, s_num, 1) < 0.25:
+                agreements += 1
+                break
+    
+    # Scale: 0 agreements = 30%, all agreements = 95%
+    agreement_ratio = agreements / len(primary_numbers)
+    agreement_pct = 30.0 + (agreement_ratio * 65.0)
+    return min(agreement_pct, 95.0)
 
+def source_consensus(web_context: dict) -> float:
+    """
+    Calculate source consensus based on proportion of high-quality sources.
+    Returns continuous score 0-100 based on quality distribution.
+    """
+    reliabilities = web_context.get("source_reliability", [])
+    
+    if not reliabilities:
+        return 50.0  # Neutral when no sources
+    
+    total = len(reliabilities)
+    high_count = sum(1 for r in reliabilities if "✅" in str(r))
+    medium_count = sum(1 for r in reliabilities if "⚠️" in str(r))
+    low_count = sum(1 for r in reliabilities if "❌" in str(r))
+    
+    # Weighted score: High=100, Medium=60, Low=30
+    weighted_sum = (high_count * 100) + (medium_count * 60) + (low_count * 30)
+    consensus_score = weighted_sum / total
+    
+    # Bonus for having multiple high-quality sources
+    if high_count >= 3:
+        consensus_score = min(100, consensus_score + 10)
+    elif high_count >= 2:
+        consensus_score = min(100, consensus_score + 5)
+    
+    return round(consensus_score, 1)
+
+def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
+    """
+    Evidence-driven veracity scoring.
+    Returns breakdown of component scores and overall score (0-100).
+    """
+    breakdown = {}
+    
+    # 1. SOURCE QUALITY (35% weight)
+    sources = primary_data.get("sources", [])
+    src_score = source_quality_score(sources)
+    breakdown["source_quality"] = round(src_score, 1)
+    
+    # 2. NUMERIC CONSISTENCY (30% weight)
+    num_score = numeric_consistency_with_sources(primary_data, web_context)
+    breakdown["numeric_consistency"] = round(num_score, 1)
+    
+    # 3. CITATION DENSITY (20% weight)
+    # FIXED: Higher score when sources support findings, not penalize detail
+    sources_count = len(sources)
+    findings_count = len(primary_data.get("key_findings", []))
+    metrics_count = len(primary_data.get("primary_metrics", {}))
+    
+    # Total claims = findings + metrics
+    total_claims = findings_count + metrics_count
+    
+    if total_claims == 0:
+        citations_score = 40.0  # Low score for no claims
+    else:
+        # Ratio of sources to claims - ideal is ~0.5-1.0 sources per claim
+        ratio = sources_count / total_claims
+        if ratio >= 1.0:
+            citations_score = 90.0  # Well-supported
+        elif ratio >= 0.5:
+            citations_score = 70.0 + (ratio - 0.5) * 40  # 70-90 range
+        elif ratio >= 0.25:
+            citations_score = 50.0 + (ratio - 0.25) * 80  # 50-70 range
+        else:
+            citations_score = ratio * 200  # 0-50 range
+    
+    breakdown["citation_density"] = round(min(citations_score, 95.0), 1)
+    
+    # 4. SOURCE CONSENSUS (15% weight)
+    consensus_score = source_consensus(web_context)
+    breakdown["source_consensus"] = round(consensus_score, 1)
+    
+    # Calculate weighted total
+    total_score = (
+        breakdown["source_quality"] * 0.35 +
+        breakdown["numeric_consistency"] * 0.30 +
+        breakdown["citation_density"] * 0.20 +
+        breakdown["source_consensus"] * 0.15
+    )
+    
+    breakdown["overall"] = round(total_score, 1)
+    
+    return breakdown
+
+def calculate_final_confidence(
+    base_conf: float,           
+    evidence_score: float
+) -> float:
+    """
+    Calculate final confidence score.
+    
+    Formula balances model confidence with evidence quality:
+    - Evidence has higher weight (65%) as it's more objective
+    - Model confidence (35%) is adjusted by evidence quality
+    
+    This ensures:
+    - High model + High evidence → High final (~85-90%)
+    - High model + Low evidence → Medium final (~55-65%)
+    - Low model + High evidence → Medium-High final (~70-80%)
+    - Low model + Low evidence → Low final (~40-50%)
+    """
+    
+    # Normalize inputs to 0-100 range
+    base_conf = max(0, min(100, base_conf))
+    evidence_score = max(0, min(100, evidence_score))
+    
+    # 1. EVIDENCE COMPONENT (65% weight) - Primary driver
+    evidence_component = evidence_score * 0.65
+    
+    # 2. MODEL COMPONENT (35% weight) - Adjusted by evidence quality
+    # When evidence is weak, model confidence is discounted
+    evidence_multiplier = 0.5 + (evidence_score / 200)  # Range: 0.5 to 1.0
+    model_component = base_conf * evidence_multiplier * 0.35
+    
+    final = evidence_component + model_component
+    
+    # Ensure result is in valid range
+    return round(max(0, min(100, final)), 1)
+
+# =========================================================
+# 9. DASHBOARD RENDERING
+# =========================================================
 
 def detect_x_label_dynamic(labels: list) -> str:
     """Enhanced X-axis detection with better region matching"""
@@ -1016,7 +1022,6 @@ def detect_x_label_dynamic(labels: list) -> str:
         return "Regions"
     
     # 2. YEARS (e.g., 2023, 2024, 2025)
-    import re
     year_pattern = r'\b(19|20)\d{2}\b'
     year_count = sum(1 for label in label_texts if re.search(year_pattern, label))
     if year_count / len(labels) > 0.5:
@@ -1052,46 +1057,50 @@ def detect_y_label_dynamic(values: list) -> str:
     if not values:
         return "Value"
     
-    numeric_values = [abs(float(v)) for v in values if str(v).replace('.','').replace('-','').isdigit()]
+    numeric_values = []
+    for v in values:
+        try:
+            numeric_values.append(abs(float(v)))
+        except (ValueError, TypeError):
+            continue
+    
     if not numeric_values:
         return "Value"
     
     avg_mag = np.mean(numeric_values)
     max_mag = max(numeric_values)
     
-    # 1. BILLIONS (market sizes > 50B)
-    if avg_mag > 50 or max_mag > 100:
+    # Non-overlapping ranges with clear boundaries
+    # 1. BILLIONS (large market sizes)
+    if max_mag > 100 or avg_mag > 50:
         return "USD B"
     
-    # 2. MILLIONS (10M - 50B)
-    elif avg_mag > 5 or max_mag > 50:
+    # 2. MILLIONS (medium values)
+    elif max_mag > 10 or avg_mag > 5:
         return "USD M"
     
-    # 3. PERCENTAGES (0.1% - 100%)
-    elif 0.1 <= avg_mag <= 50:
-        return "Percent %"
+    # 3. PERCENTAGES (typical 0-100 range, but also small decimals)
+    elif max_mag <= 100 and avg_mag <= 50:
+        # Check if values look like percentages (mostly 0-100)
+        if all(0 <= v <= 100 for v in numeric_values):
+            return "Percent %"
+        else:
+            return "USD K"
     
-    # 4. THOUSANDS (1K - 10M)
-    elif avg_mag > 0.5:
-        return "USD K"
-    
-    # 5. COUNTS/INDEX (small numbers)
+    # 4. Default
     else:
         return "Units"
-
 
 def render_dashboard(
     primary_json: str,
     final_conf: float,
-    sem_conf: float,
-    num_conf: Optional[float],
     web_context: Dict,
     base_conf: float,
- #   src_conf: float,
     user_question: str,
     veracity_scores: Optional[Dict] = None,
     source_reliability: Optional[List[str]] = None,
-    ):
+):
+    """Render the analysis dashboard"""
     
     # Parse primary response
     try:
@@ -1105,23 +1114,14 @@ def render_dashboard(
     st.header("📊 Yureeka Market Report")
     st.markdown(f"**Question:** {user_question}")
     
-    # Confidence metrics
-  #  col1, col2, col3, col4 = st.columns(4)
-  #  col1.metric("Final Confidence", f"{final_conf:.1f}%")
-  #  col2.metric("Base Model", f"{base_conf:.1f}%")
-  #  col3.metric("Semantic", f"{sem_conf:.1f}%")
-  #  if num_conf:
-  #      col4.metric("Numeric", f"{num_conf:.1f}%")
-  #  else:
-  #      col4.metric("Numeric", "N/A")
-
-    # Confidence row - NO SEMANTIC
+    # Confidence row
     col1, col2, col3 = st.columns(3)
     col1.metric("Final Confidence", f"{final_conf:.1f}%")
     col2.metric("Base Model", f"{base_conf:.1f}%")
-    col3.metric("Evidence", f"{veracity_scores['overall']:.1f}%")
-    
-
+    if veracity_scores:
+        col3.metric("Evidence", f"{veracity_scores.get('overall', 0):.1f}%")
+    else:
+        col3.metric("Evidence", "N/A")
     
     st.markdown("---")
     
@@ -1194,33 +1194,7 @@ def render_dashboard(
     
     st.markdown("---")
     
-    # Visualization #
-#    st.subheader("📊 Data Visualization")
-#    viz = data.get('visualization_data')
-    
-#    if viz and isinstance(viz, dict):
-#        labels = viz.get("chart_labels", [])
-#        values = viz.get("chart_values", [])
-#        title = viz.get("chart_title", "Market Trend")
-#        chart_type = viz.get("chart_type", "line")
-        
-#        if labels and values and len(labels) == len(values):
-#            try:
-#                df_viz = pd.DataFrame({
-#                    "Category": labels[:10],
-#                    "Value": [float(v) for v in values[:10]]
-#                })
-                
-#                if chart_type == "bar":
-#                    fig = px.bar(df_viz, x="Category", y="Value", title=title)
-#                else:
-#                    fig = px.line(df_viz, x="Category", y="Value", title=title, markers=True)
-#                
-#                st.plotly_chart(fig, use_container_width=True)
-#            except Exception as e:
-#                st.info(f"Chart data available but rendering failed: {e}")
-
-    # Visualization - FIXED X-AXIS LABELING
+    # Visualization - FIXED indentation
     st.subheader("📊 Data Visualization")
     viz = data.get('visualization_data')
 
@@ -1229,42 +1203,46 @@ def render_dashboard(
         values = viz.get("chart_values", [])
         title = viz.get("chart_title", "Trend Analysis")
         chart_type = viz.get("chart_type", "line")
-    
-    if labels and values and len(labels) == len(values):
-        try:
-            numeric_values = [float(v) for v in values[:10]]
-            
-            # ✅ DETECT AXIS LABELS
-            x_label = viz.get("x_axis_label") or detect_x_label_dynamic(labels)
-            y_label = viz.get("y_axis_label") or detect_y_label_dynamic(numeric_values)
-            
-            # ✅ CREATE DATAFRAME (column names don't matter now)
-            df_viz = pd.DataFrame({
-                "x": labels[:10],
-                "y": numeric_values
-            })
-            
-            # ✅ CREATE CHART
-            if chart_type == "bar":
-                fig = px.bar(df_viz, x="x", y="y", title=title)
-            else:
-                fig = px.line(df_viz, x="x", y="y", title=title, markers=True)
-            
-            # ✅ FIX AXIS LABELS (This is the critical part!)
-            fig.update_layout(
-                xaxis_title=x_label,      # ✅ APPLIES YOUR DETECTED LABEL
-                yaxis_title=y_label,      # ✅ APPLIES YOUR DETECTED LABEL
-                title_font_size=16,
-                font=dict(size=12),
-                xaxis=dict(tickangle=-45) if len(labels) > 5 else {}
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-        except Exception as e:
-            st.info(f"⚠️ Chart rendering failed: {e}")
         
-    # Comparison Bars #
+        if labels and values and len(labels) == len(values):
+            try:
+                numeric_values = [float(v) for v in values[:10]]
+                
+                # Detect axis labels
+                x_label = viz.get("x_axis_label") or detect_x_label_dynamic(labels)
+                y_label = viz.get("y_axis_label") or detect_y_label_dynamic(numeric_values)
+                
+                # Create DataFrame
+                df_viz = pd.DataFrame({
+                    "x": labels[:10],
+                    "y": numeric_values
+                })
+                
+                # Create chart
+                if chart_type == "bar":
+                    fig = px.bar(df_viz, x="x", y="y", title=title)
+                else:
+                    fig = px.line(df_viz, x="x", y="y", title=title, markers=True)
+                
+                # Fix axis labels
+                fig.update_layout(
+                    xaxis_title=x_label,
+                    yaxis_title=y_label,
+                    title_font_size=16,
+                    font=dict(size=12),
+                    xaxis=dict(tickangle=-45) if len(labels) > 5 else {}
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+            except Exception as e:
+                st.info(f"⚠️ Chart rendering failed: {e}")
+        else:
+            st.info("📊 Visualization data incomplete or missing")
+    else:
+        st.info("📊 No visualization data available")
+    
+    # Comparison Bars
     comp = data.get('comparison_bars')
     if comp and isinstance(comp, dict):
         cats = comp.get("categories", [])
@@ -1280,7 +1258,7 @@ def render_dashboard(
     
     st.markdown("---")
     
-    # Sources - COMPACT VERSION (shows ALL sources)
+    # Sources - COMPACT VERSION
     st.subheader("🔗 Sources & Reliability")
     all_sources = data.get('sources', []) or web_context.get('sources', [])
 
@@ -1299,59 +1277,27 @@ def render_dashboard(
         col.markdown(f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>", 
                     unsafe_allow_html=True)
 
-        
     # Metadata
     col_fresh, col_action = st.columns(2)
     with col_fresh:
         freshness = data.get('freshness', 'Current')
         st.metric("Data Freshness", freshness)
     
-  #  with col_action:  # RECOMMENDATION SECTION
-  #      action = data.get('action')
-  #      if action and isinstance(action, dict):
-  #          rec = action.get("recommendation", "Neutral")
-  #          conf = action.get("confidence", "Medium")
-  #          st.metric("Recommendation", f"{rec} ({conf})")
-    
     st.markdown("---")
     
-    # Veracity Scores
-   # if veracity_scores:
-   #     st.subheader("✅ Cross-Model Verification")
-   #     cols = st.columns(5)
-   #     metrics = [
-   #         ("Summary", "summary_score"),
-   #         ("Findings", "findings_score"),
-   #         ("Metrics", "metrics_score"),
-   #         ("Viz", "viz_score"),
-   #         ("Overall", "overall_score")
-   #     ]
-   #     for i, (label, key) in enumerate(metrics):
-   #         cols[i].metric(label, f"{veracity_scores.get(key, 0):.1f}%")
-
     # Veracity Scores - EVIDENCE-BASED
     if veracity_scores:
         st.subheader("✅ Evidence Quality Scores")
         cols = st.columns(5)
-        metrics = [
+        metrics_display = [
             ("Sources", "source_quality"),
             ("Numbers", "numeric_consistency"),
             ("Citations", "citation_density"),
             ("Consensus", "source_consensus"),
             ("Overall", "overall")
-            ]
-        for i, (label, key) in enumerate(metrics):
+        ]
+        for i, (label, key) in enumerate(metrics_display):
             cols[i].metric(label, f"{veracity_scores.get(key, 0):.0f}%")
-
-    
-    # Secondary Model (Optional)
-  #  if show_secondary and secondary_json:
-  #      with st.expander("🔍 Secondary Model Output (Gemini)"):
-  #          try:
-  #              sec_data = json.loads(secondary_json)
-  #              st.json(sec_data)
-  #          except:
-  #              st.code(secondary_json[:2000])
     
     # Web Context
     if web_context and web_context.get("search_results"):
@@ -1362,136 +1308,6 @@ def render_dashboard(
                 st.write(result.get('snippet', ''))
                 st.caption(f"[{result.get('link')}]({result.get('link')})")
                 st.markdown("---")
-
-
-def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
-    """Evidence-driven veracity scoring - FIXED"""
-    total_score = 0
-    breakdown = {}
-    
-    # 1. SOURCE QUALITY (35% weight)
-    sources = primary_data.get("sources", [])
-    src_score = source_quality_score(sources)
-    breakdown["source_quality"] = src_score
-    total_score += src_score * 0.35
-    
-    # 2. NUMERIC CONSISTENCY (30% weight)
-    num_score = numeric_consistency_with_sources(primary_data, web_context)
-    breakdown["numeric_consistency"] = num_score
-    total_score += num_score * 0.30
-    
-    # 3. CITATION DENSITY (20% weight)
-    sources_count = len(sources)
-    findings_count = len(primary_data.get("key_findings", []))
-    citation_density = sources_count / max(1, findings_count)  # ✅ Calculate FIRST
-    
-    # Better sigmoid curve for scoring
-    if citation_density >= 1.0:
-        citations_score = min(100, 75 + (citation_density - 1.0) * 25)
-    elif citation_density >= 0.5:
-        citations_score = 50 + (citation_density - 0.5) * 50
-    else:
-        citations_score = citation_density * 100
-    
-    breakdown["citation_density"] = citations_score
-    total_score += citations_score * 0.20
-    
-    # 4. SOURCE CONSENSUS (15% weight)
-    consensus_score = source_consensus(web_context)
-    breakdown["source_consensus"] = consensus_score
-    total_score += consensus_score * 0.15
-    
-    overall = round(total_score, 1)
-    breakdown["overall"] = overall
-    
-    return breakdown
-
-def parse_number_with_unit(val_str: str) -> float:
-    """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
-    if not val_str:
-        return 0.0
-    
-    # Clean and extract
-    val_str = str(val_str).replace('$', '').replace(',', '').strip()
-    
-    # Check for unit suffix
-    multiplier = 1.0  # Base = millions
-    if val_str.endswith('B') or val_str.endswith('b'):
-        multiplier = 1000.0  # Billions to millions
-        val_str = val_str[:-1]
-    elif val_str.endswith('M') or val_str.endswith('m'):
-        multiplier = 1.0
-        val_str = val_str[:-1]
-    elif val_str.endswith('K') or val_str.endswith('k'):
-        multiplier = 0.001  # Thousands to millions
-        val_str = val_str[:-1]
-    
-    try:
-        return float(val_str) * multiplier
-    except (ValueError, TypeError):
-        return 0.0
-
-def numeric_consistency_with_sources(primary_data: dict, web_context: dict) -> float:
-    """Compare primary numbers vs source numbers - FIXED"""
-    primary_metrics = primary_data.get("primary_metrics", {})
-    primary_numbers = []
-    
-    for metric in primary_metrics.values():
-        if isinstance(metric, dict):
-            val = metric.get("value")
-            num = parse_number_with_unit(str(val))
-            if num > 0:
-                primary_numbers.append(num)
-    
-    if not primary_numbers:
-        return 60.0
-    
-    # Extract source numbers with same parsing
-    source_numbers = []
-    search_results = web_context.get("search_results", [])
-    
-    for result in search_results:
-        snippet = str(result.get("snippet", ""))
-        # Match patterns like "$58.3B", "123M", "456 billion"
-        patterns = [
-            r'\$?(\d+(?:\.\d+)?)\s*([BbMmKk])',  # $58.3B
-            r'(\d+(?:\.\d+)?)\s*(billion|million|thousand)',  # 58.3 billion
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, snippet, re.IGNORECASE)
-            for num, unit in matches:
-                source_numbers.append(parse_number_with_unit(f"{num}{unit[0].upper()}"))
-    
-    if not source_numbers:
-        return 50.0
-    
-    # Check agreement (within 25% tolerance)
-    agreements = 0
-    for p_num in primary_numbers:
-        for s_num in source_numbers:
-            if abs(p_num - s_num) / max(p_num, s_num, 1) < 0.25:
-                agreements += 1
-                break
-    
-    agreement_pct = min((agreements / len(primary_numbers)) * 100, 90.0)
-    return agreement_pct
-
-def source_consensus(web_context: dict) -> float:
-    """Simple consensus from source reliability"""
-    reliabilities = web_context.get("source_reliability", [])
-    high_quality_count = sum(1 for r in reliabilities if "✅" in str(r))
-    
-    if high_quality_count >= 3:
-        return 90.0
-    elif high_quality_count >= 2:
-        return 85.0
-    elif high_quality_count == 1:
-        return 75.0
-    else:
-        return 60.0
-
-
 
 # =========================================================
 # 10. MAIN APPLICATION
@@ -1512,15 +1328,10 @@ def main():
         st.markdown("""
         **Yureeka** provides AI-powered market research and analysis for finance, 
         economics, and business questions. 
-        Powered by multi-model verification and real-time web search.
+        Powered by evidence-based verification and real-time web search.
         
         *Currently in prototype stage.*
         """)
-
-  # UNCOMMENT SECTION BELOW TO SHOW WEB SEARCH ENABLED
-  #  with col_status:
-  #      web_status = "✅ Enabled" if SERPAPI_KEY else "⚠️ Disabled"
-  #      st.metric("Web Search", web_status)
     
     # User input
     query = st.text_input(
@@ -1536,9 +1347,6 @@ def main():
             value=bool(SERPAPI_KEY),
             disabled=not SERPAPI_KEY
         )
-    
-  #  with col_opt2:
-  #      show_secondary = st.checkbox("Show secondary model output", value=False)
     
     # Analysis button
     if st.button("🔍 Analyze", type="primary") and query:
@@ -1582,51 +1390,18 @@ def main():
             st.code(primary_response[:1000])
             return
         
-        # Secondary model validation
-    #    with st.spinner("✅ Validating with secondary model..."):
-    #        secondary_response = query_gemini(query)
+        # Evidence-based veracity scoring (single call)
         with st.spinner("✅ Verifying evidence quality..."):
             veracity_scores = evidence_based_veracity(primary_data, web_context)
 
-        
-# Remove these lines entirely:
-# secondary_response = query_gemini(query)
-# secondary_data = json.loads(secondary_response)
-
-        
-
-        # Option A: Remove all secondary model code entirely
-        # DELETE lines 1560-1577
-
-        # Calculate confidence WITHOUT cross-model validation
+        # Calculate confidence
         base_conf = float(primary_data.get("confidence", 75))
 
-        # Calculate evidence-based veracity
-        with st.spinner("✅ Verifying evidence quality..."):
-            veracity_scores = evidence_based_veracity(primary_data, web_context)
-
-        num_conf = None  # ✅ No cross-model validation
-        sem_conf = 0.0   # ✅ Not used in confidence calc
-
-        # Final confidence (no sem_conf or num_conf needed)
-        final_conf = calculate_final_confidence_enhanced(
+        # Final confidence calculation
+        final_conf = calculate_final_confidence(
             base_conf,
-            veracity_scores["overall"],
-            num_conf
+            veracity_scores["overall"]
         )
-        
-            #  final_conf = calculate_final_confidence(
-      #      base_conf, sem_conf, num_conf, src_conf, 
-      #      veracity_scores["overall"]  # Now evidence-based!
-      #  )
-      #  Scenario	Model Conf	Evidence	Final Conf	Why
-      #  High Model + High Evidence	90%	89%	89%	Perfect alignment
-      #  High Model + Low Evidence	90%	45%	62%	Evidence pulls it down
-      #  Low Model + High Evidence	60%	92%	85%	Evidence boosts it up
-      #  Both Weak	50%	40%	42%	Rightfully low
-
-        
-       
         
         # Download JSON
         output = {
@@ -1636,7 +1411,7 @@ def main():
             "final_confidence": final_conf,
             "veracity_scores": veracity_scores,
             "web_sources": web_context.get("sources", [])
-            }
+        }
         
         json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8')
         filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -1652,40 +1427,21 @@ def main():
         render_dashboard(
             primary_response,
             final_conf,
-            sem_conf,  # Can remove this parameter entirely
-            num_conf,
             web_context,
             base_conf,
             query,
             veracity_scores,
             web_context.get("source_reliability", [])
         )
+        
         # Debug info
-       # with st.expander("🔧 Debug Information"):
-       #     st.write("**Confidence Breakdown:**")
-       #     st.json({
-       #         "base_confidence": base_conf,
-       #         "semantic_similarity": sem_conf,
-       #         "numeric_alignment": num_conf,
-       #         "source_quality": src_conf,
-       #         "final_confidence": final_conf
-       #     })
-            
-       #     st.write("**Primary Model Response:**")
-       #     st.json(primary_data)
-            
-       #     if show_secondary:
-       #         st.write("**Secondary Model Response:**")
-       #         st.json(secondary_data)
-
         with st.expander("🔧 Debug Information"):
             st.write("**Confidence Breakdown:**")
             st.json({
-            "base_confidence": base_conf,
-            "semantic_similarity": sem_conf,
-            "numeric_alignment": num_conf,
-         #   "source_quality": src_conf,
-            "final_confidence": final_conf
+                "base_confidence": base_conf,
+                "evidence_score": veracity_scores["overall"],
+                "final_confidence": final_conf,
+                "veracity_breakdown": veracity_scores
             })
             st.write("**Primary Model Response:**")
             st.json(primary_data)
