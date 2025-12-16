@@ -1084,7 +1084,7 @@ def render_dashboard(
     num_conf: Optional[float],
     web_context: Dict,
     base_conf: float,
-    src_conf: float,
+ #   src_conf: float,
     user_question: str,
     veracity_scores: Optional[Dict] = None,
     source_reliability: Optional[List[str]] = None,
@@ -1651,7 +1651,7 @@ def main():
         num_conf,
         web_context,
         base_conf,
-        src_conf,
+    #    src_conf,
         query,
         veracity_scores,
         web_context.get("source_reliability", [])
