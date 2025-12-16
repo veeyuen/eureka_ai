@@ -942,7 +942,7 @@ def multi_modal_verification(json1: Dict, json2: Dict) -> Dict[str, float]:
 #        ("semantic", sem_conf, 0.25),
 #        ("source", src_conf, 0.25),
 #        ("numeric", num_conf or 0, 0.20 if num_conf else 0)
-    ]
+#    ]
     
 #    total_weight = sum(w for _, _, w in components)
 #    weighted_sum = sum(score * weight for _, score, weight in components)
