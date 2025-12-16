@@ -1393,8 +1393,21 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
 
     sources_count = len(sources)
     findings_count = len(primary_data.get("key_findings", []))
-    citation_density = sources_count / max(1, findings_count)
-    citations_score = min(100, citation_density * 75)
+    # Better sigmoid curve
+    if citation_density >= 1.0:
+        citations_score = min(100, 75 + (citation_density - 1.0) * 25)  # 75-100%
+    elif citation_density >= 0.5:
+        citations_score = 50 + (citation_density - 0.5) * 50  # 50-75%
+    else:
+        citations_score = citation_density * 100  # 0-50%
+
+    # Examples:
+    # 10 sources / 8 findings = 1.25 → 81.25% ✅
+    # 8 sources / 8 findings = 1.0 → 75% ✅
+    # 5 sources / 8 findings = 0.625 → 56.25% ✅
+    # 2 sources / 8 findings = 0.25 → 25% ✅
+    
+    
     breakdown["citation_density"] = citations_score
     total_score += citations_score * 0.20
     
