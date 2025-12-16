@@ -988,54 +988,62 @@ def calculate_final_confidence_enhanced(
 
 
 def detect_x_label_dynamic(labels: list) -> str:
-    """Bulletproof X-axis detection - FIXED for regions"""
+    """Enhanced X-axis detection with better region matching"""
     if not labels:
         return "Category"
     
-    # Case-insensitive processing
+    # Convert to lowercase for comparison
     label_texts = [str(l).lower().strip() for l in labels]
     all_text = ' '.join(label_texts)
     
-    # 1. GEOGRAPHIC REGIONS - FUZZY MATCHING (PRIORITY 1)
-    region_indicators = [
-        # Exact region names
-        'north america', 'asia pacific', 'asia-pacific', 'europe', 'rest of world', 'row',
-        # Country names
-        'united states', 'usa', 'us', 'china', 'japan', 'india', 'germany', 'france', 'uk',
-        # Regional abbreviations
-        'apac', 'emea', 'latam', 'nafta'
+    # 1. GEOGRAPHIC REGIONS (PRIORITY 1)
+    region_keywords = [
+        'north america', 'asia pacific', 'asia-pacific', 'apac', 'europe', 'emea',
+        'latin america', 'latam', 'middle east', 'africa', 'oceania',
+        'rest of world', 'row', 'china', 'usa', 'india', 'japan', 'germany'
     ]
     
-    # Count exact matches + fuzzy hits
-    region_hits = 0
-    for label in label_texts:
-        for indicator in region_indicators:
-            if indicator in label or any(word in label for word in indicator.split()):
-                region_hits += 1
+    # Count how many labels contain region keywords
+    region_matches = sum(
+        1 for label in label_texts 
+        if any(keyword in label for keyword in region_keywords)
+    )
     
-    # If 2+ labels contain region indicators → "Regions"
-    if region_hits >= 2:
+    # If 40%+ of labels are regions → "Regions"
+    if region_matches / len(labels) >= 0.4:
         return "Regions"
     
-    # 2. SPECIFIC CHECK: Your exact semiconductor case
-    if any(phrase in all_text for phrase in [
-        'north america', 'asia pacific', 'asia-pacific', 'europe', 'rest of world'
-    ]):
-        return "Regions"
-    
-    # 3. YEARS
+    # 2. YEARS (e.g., 2023, 2024, 2025)
     import re
-    year_count = sum(1 for label in label_texts if re.search(r'\b(20\d{2}|19\d{2})\b', label))
+    year_pattern = r'\b(19|20)\d{2}\b'
+    year_count = sum(1 for label in label_texts if re.search(year_pattern, label))
     if year_count / len(labels) > 0.5:
         return "Years"
     
-    # 4. QUARTERS
-    quarter_count = sum(1 for label in label_texts if re.search(r'\bq[1-4]\b', label, re.IGNORECASE))
-    if quarter_count > 1:
+    # 3. QUARTERS (Q1, Q2, Q3, Q4)
+    quarter_pattern = r'\bq[1-4]\b'
+    quarter_count = sum(1 for label in label_texts if re.search(quarter_pattern, label, re.IGNORECASE))
+    if quarter_count >= 2:
         return "Quarters"
     
+    # 4. MONTHS
+    months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    month_count = sum(1 for label in label_texts if any(month in label for month in months))
+    if month_count >= 3:
+        return "Months"
+    
+    # 5. COMPANIES (common suffixes)
+    company_keywords = ['inc', 'corp', 'ltd', 'llc', 'gmbh', 'ag', 'sa', 'plc']
+    company_count = sum(1 for label in label_texts if any(kw in label for kw in company_keywords))
+    if company_count >= 2:
+        return "Companies"
+    
+    # 6. PRODUCTS/SEGMENTS (if contains "segment", "product", "category")
+    if any(word in all_text for word in ['segment', 'product line', 'category', 'type']):
+        return "Segments"
+    
+    # Default
     return "Categories"
-
 
 def detect_y_label_dynamic(values: list) -> str:
     """Fully dynamic Y-axis label based on magnitude + context"""
@@ -1210,46 +1218,49 @@ def render_dashboard(
 #            except Exception as e:
 #                st.info(f"Chart data available but rendering failed: {e}")
 
-    # Visualization - DYNAMIC LLM + SMART FALLBACK
-    viz = data.get('visualization_data')
-    if viz and isinstance(viz, dict):
-        labels = viz.get("chart_labels", [])
-        values = viz.get("chart_values", [])
-        title = viz.get("chart_title", "Trend Analysis")
-        chart_type = viz.get("chart_type", "line")
+    # Visualization - FIXED X-AXIS LABELING
+st.subheader("📊 Data Visualization")
+viz = data.get('visualization_data')
+
+if viz and isinstance(viz, dict):
+    labels = viz.get("chart_labels", [])
+    values = viz.get("chart_values", [])
+    title = viz.get("chart_title", "Trend Analysis")
+    chart_type = viz.get("chart_type", "line")
     
     if labels and values and len(labels) == len(values):
         try:
             numeric_values = [float(v) for v in values[:10]]
             
-            # PRIORITY 1: Use LLM-provided labels
+            # ✅ DETECT AXIS LABELS
             x_label = viz.get("x_axis_label") or detect_x_label_dynamic(labels)
             y_label = viz.get("y_axis_label") or detect_y_label_dynamic(numeric_values)
             
+            # ✅ CREATE DATAFRAME (column names don't matter now)
             df_viz = pd.DataFrame({
-                "Category": labels[:10],
-                "Value": numeric_values
+                "x": labels[:10],
+                "y": numeric_values
             })
             
+            # ✅ CREATE CHART
             if chart_type == "bar":
-                fig = px.bar(df_viz, x="Category", y="Value", title=title,
-                           labels={'Category': x_label, 'Value': y_label})
+                fig = px.bar(df_viz, x="x", y="y", title=title)
             else:
-                fig = px.line(df_viz, x="Category", y="Value", title=title, markers=True,
-                            labels={'Category': x_label, 'Value': y_label})
+                fig = px.line(df_viz, x="x", y="y", title=title, markers=True)
             
+            # ✅ FIX AXIS LABELS (This is the critical part!)
             fig.update_layout(
-                xaxis_title=x_label,
-                yaxis_title=y_label,
+                xaxis_title=x_label,      # ✅ APPLIES YOUR DETECTED LABEL
+                yaxis_title=y_label,      # ✅ APPLIES YOUR DETECTED LABEL
                 title_font_size=16,
-                font=dict(size=12)
+                font=dict(size=12),
+                xaxis=dict(tickangle=-45) if len(labels) > 5 else {}
             )
             
             st.plotly_chart(fig, use_container_width=True)
             
         except Exception as e:
-            st.info(f"Chart rendering failed: {e}")
-
+            st.info(f"⚠️ Chart rendering failed: {e}")
         
     # Comparison Bars #
     comp = data.get('comparison_bars')
@@ -1350,51 +1361,42 @@ def render_dashboard(
                 st.caption(f"[{result.get('link')}]({result.get('link')})")
                 st.markdown("---")
 
+
 def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
-    """Evidence-driven veracity scoring"""
+    """Evidence-driven veracity scoring - FIXED WEIGHTS"""
     total_score = 0
     breakdown = {}
     
-    # 1. SOURCE QUALITY (40% weight)
+    # 1. SOURCE QUALITY (35% weight) - Most important
     sources = primary_data.get("sources", [])
-    src_score = source_quality_score(sources)  # Your existing function
+    src_score = source_quality_score(sources)
     breakdown["source_quality"] = src_score
-    total_score += src_score * 0.4
+    total_score += src_score * 0.35
     
-    # 2. NUMERIC CONSISTENCY (30% weight)
+    # 2. NUMERIC CONSISTENCY (30% weight) - Fact verification
     #Numeric Consistency	Meaning	Risk Level
     #90%	Excellent (most numbers verified)	✅ Low
     #50-80%	Medium (half verified)	⚠️ Moderate
     #0-40%	Poor (few/no matches)	❌ High
-    
+
     num_score = numeric_consistency_with_sources(primary_data, web_context)
     breakdown["numeric_consistency"] = num_score
-    total_score += num_score * 0.3
+    total_score += num_score * 0.30
     
-    # 3. CITATION DENSITY (20% weight)
+    # 3. CITATION DENSITY (20% weight) - Claims vs sources
     #Raw Density	Score	% of Category	Interpretation
     #<0.5	0-12	0-50%	Weak (few sources)
     #0.5-1.0	13-25	50-100%	Good (1 source/claim)
     #>1.0	25	100%	Excellent (multiple sources/claim)
 
-    findings_count = len(primary_data.get("key_findings", []))
-    
-    # 3. CITATION DENSITY (20% weight) - FIXED
     sources_count = len(sources)
     findings_count = len(primary_data.get("key_findings", []))
     citation_density = sources_count / max(1, findings_count)
-    citations_score = min(100, citation_density * 75)  # 10/8 * 75 = 94%
-
-    breakdown["citation_density"] = citations_score    # FIXED: use citations_score
-    total_score += citations_score * 0.2               # FIXED: single line
-
+    citations_score = min(100, citation_density * 75)
+    breakdown["citation_density"] = citations_score
+    total_score += citations_score * 0.20
     
-    # 4. DATA FRESHNESS (10% weight)
-    freshness = str(primary_data.get("freshness", ""))
-    freshness_score = 10 if any(year in freshness for year in ["2025", "2024", "current"]) else 5
-    breakdown["freshness"] = freshness_score
-    total_score += freshness_score * 0.1
-    
+    # 4. SOURCE CONSENSUS (15% weight) - High-quality source agreement
     # 5. CONSENSUS (10% weight)
     #3+ High-quality sources → 90% (Strong consensus)
     #2 High-quality sources → 85% (Good consensus)  
@@ -1403,7 +1405,10 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
 
     consensus_score = source_consensus(web_context)
     breakdown["source_consensus"] = consensus_score
-    total_score += consensus_score * 0.1
+    total_score += consensus_score * 0.15
+    
+    # REMOVED: Data Freshness (not truly "evidence" - it's metadata)
+    # Now total = 35 + 30 + 20 + 15 = 100% ✅
     
     overall = round(total_score, 1)
     breakdown["overall"] = overall
