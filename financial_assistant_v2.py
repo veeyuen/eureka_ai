@@ -1365,71 +1365,46 @@ def render_dashboard(
 
 
 def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
-    """Evidence-driven veracity scoring - FIXED WEIGHTS"""
+    """Evidence-driven veracity scoring - FIXED"""
     total_score = 0
     breakdown = {}
     
-    # 1. SOURCE QUALITY (35% weight) - Most important
+    # 1. SOURCE QUALITY (35% weight)
     sources = primary_data.get("sources", [])
     src_score = source_quality_score(sources)
     breakdown["source_quality"] = src_score
     total_score += src_score * 0.35
     
-    # 2. NUMERIC CONSISTENCY (30% weight) - Fact verification
-    #Numeric Consistency	Meaning	Risk Level
-    #90%	Excellent (most numbers verified)	✅ Low
-    #50-80%	Medium (half verified)	⚠️ Moderate
-    #0-40%	Poor (few/no matches)	❌ High
-
+    # 2. NUMERIC CONSISTENCY (30% weight)
     num_score = numeric_consistency_with_sources(primary_data, web_context)
     breakdown["numeric_consistency"] = num_score
     total_score += num_score * 0.30
     
-    # 3. CITATION DENSITY (20% weight) - Claims vs sources
-    #Raw Density	Score	% of Category	Interpretation
-    #<0.5	0-12	0-50%	Weak (few sources)
-    #0.5-1.0	13-25	50-100%	Good (1 source/claim)
-    #>1.0	25	100%	Excellent (multiple sources/claim)
-
+    # 3. CITATION DENSITY (20% weight)
     sources_count = len(sources)
     findings_count = len(primary_data.get("key_findings", []))
-    # Better sigmoid curve
-    if citation_density >= 1.0:
-        citations_score = min(100, 75 + (citation_density - 1.0) * 25)  # 75-100%
-    elif citation_density >= 0.5:
-        citations_score = 50 + (citation_density - 0.5) * 50  # 50-75%
-    else:
-        citations_score = citation_density * 100  # 0-50%
-
-    # Examples:
-    # 10 sources / 8 findings = 1.25 → 81.25% ✅
-    # 8 sources / 8 findings = 1.0 → 75% ✅
-    # 5 sources / 8 findings = 0.625 → 56.25% ✅
-    # 2 sources / 8 findings = 0.25 → 25% ✅
+    citation_density = sources_count / max(1, findings_count)  # ✅ Calculate FIRST
     
+    # Better sigmoid curve for scoring
+    if citation_density >= 1.0:
+        citations_score = min(100, 75 + (citation_density - 1.0) * 25)
+    elif citation_density >= 0.5:
+        citations_score = 50 + (citation_density - 0.5) * 50
+    else:
+        citations_score = citation_density * 100
     
     breakdown["citation_density"] = citations_score
     total_score += citations_score * 0.20
     
-    # 4. SOURCE CONSENSUS (15% weight) - High-quality source agreement
-    # 5. CONSENSUS (10% weight)
-    #3+ High-quality sources → 90% (Strong consensus)
-    #2 High-quality sources → 85% (Good consensus)  
-    #1 High-quality source → 75% (Acceptable)
-    #0 High-quality → 60% (Weak consensus)
-
+    # 4. SOURCE CONSENSUS (15% weight)
     consensus_score = source_consensus(web_context)
     breakdown["source_consensus"] = consensus_score
     total_score += consensus_score * 0.15
-    
-    # REMOVED: Data Freshness (not truly "evidence" - it's metadata)
-    # Now total = 35 + 30 + 20 + 15 = 100% ✅
     
     overall = round(total_score, 1)
     breakdown["overall"] = overall
     
     return breakdown
-
 
 def parse_number_with_unit(val_str: str) -> float:
     """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
