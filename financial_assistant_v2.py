@@ -457,7 +457,7 @@ def classify_source_reliability(source: str) -> str:
     
     high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", "mckinsey", "bcg", "cognitive market research", 
             "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc", "imarc", "booz", "bakerinstitute.org",
-           "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs", "j.p. morgan"]
+           "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs" "j.p. morgan"]
     medium = ["wikipedia", "forbes", "cnbc", "yahoo", "statista", "ceic"]
     low = ["blog", "medium.com", "wordpress", "ad", "promo"]
     
@@ -1083,6 +1083,7 @@ def detect_y_label_dynamic(values: list) -> str:
 def render_dashboard(
     primary_json: str,
     final_conf: float,
+    sem_conf: float,
     num_conf: Optional[float],
     web_context: Dict,
     base_conf: float,
@@ -1091,8 +1092,6 @@ def render_dashboard(
     veracity_scores: Optional[Dict] = None,
     source_reliability: Optional[List[str]] = None,
     ):
-
-
     
     # Parse primary response
     try:
@@ -1365,48 +1364,6 @@ def render_dashboard(
                 st.markdown("---")
 
 
-#def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
-##    """Evidence-driven veracity scoring - FIXED"""
-##    total_score = 0
-#    breakdown = {}
-    
-    # 1. SOURCE QUALITY (35% weight)
-#    sources = primary_data.get("sources", [])
-#    src_score = source_quality_score(sources)
-#    breakdown["source_quality"] = src_score
-#    total_score += src_score * 0.35
-    
-    # 2. NUMERIC CONSISTENCY (30% weight)
-#    num_score = numeric_consistency_with_sources(primary_data, web_context)
-#    breakdown["numeric_consistency"] = num_score
-#    total_score += num_score * 0.30
-    
-    # 3. CITATION DENSITY (20% weight)
-#    sources_count = len(sources)
-#    findings_count = len(primary_data.get("key_findings", []))
-#    citation_density = sources_count / max(1, findings_count)  # ✅ Calculate FIRST
-    
-    # Better sigmoid curve for scoring
-#    if citation_density >= 1.0:
-#        citations_score = min(100, 75 + (citation_density - 1.0) * 25)
-#    elif citation_density >= 0.5:
-#        citations_score = 50 + (citation_density - 0.5) * 50
-#    else:
-#        citations_score = citation_density * 100
-    
-#    breakdown["citation_density"] = citations_score
-#    total_score += citations_score * 0.20
-    
-    # 4. SOURCE CONSENSUS (15% weight)
-#    consensus_score = source_consensus(web_context)
-#    breakdown["source_consensus"] = consensus_score
-#    total_score += consensus_score * 0.15
-    
-#    overall = round(total_score, 1)
-#    breakdown["overall"] = overall
-    
-#    return breakdown
-
 def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     """Evidence-driven veracity scoring - FIXED"""
     total_score = 0
@@ -1415,18 +1372,18 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     # 1. SOURCE QUALITY (35% weight)
     sources = primary_data.get("sources", [])
     src_score = source_quality_score(sources)
-    breakdown["sources"] = src_score  # ← CHANGED KEY
+    breakdown["source_quality"] = src_score
     total_score += src_score * 0.35
     
     # 2. NUMERIC CONSISTENCY (30% weight)
     num_score = numeric_consistency_with_sources(primary_data, web_context)
-    breakdown["numbers"] = num_score  # ← CHANGED KEY
+    breakdown["numeric_consistency"] = num_score
     total_score += num_score * 0.30
     
     # 3. CITATION DENSITY (20% weight)
     sources_count = len(sources)
     findings_count = len(primary_data.get("key_findings", []))
-    citation_density = sources_count / max(1, findings_count)
+    citation_density = sources_count / max(1, findings_count)  # ✅ Calculate FIRST
     
     # Better sigmoid curve for scoring
     if citation_density >= 1.0:
@@ -1436,19 +1393,18 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     else:
         citations_score = citation_density * 100
     
-    breakdown["citations"] = citations_score  # ← CHANGED KEY
+    breakdown["citation_density"] = citations_score
     total_score += citations_score * 0.20
     
     # 4. SOURCE CONSENSUS (15% weight)
     consensus_score = source_consensus(web_context)
-    breakdown["consensus"] = consensus_score  # ← CHANGED KEY
+    breakdown["source_consensus"] = consensus_score
     total_score += consensus_score * 0.15
     
     overall = round(total_score, 1)
     breakdown["overall"] = overall
     
     return breakdown
-
 
 def parse_number_with_unit(val_str: str) -> float:
     """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
@@ -1629,6 +1585,19 @@ def main():
         # Secondary model validation
     #    with st.spinner("✅ Validating with secondary model..."):
     #        secondary_response = query_gemini(query)
+        with st.spinner("✅ Verifying evidence quality..."):
+            veracity_scores = evidence_based_veracity(primary_data, web_context)
+
+        
+# Remove these lines entirely:
+# secondary_response = query_gemini(query)
+# secondary_data = json.loads(secondary_response)
+
+        
+
+        # Option A: Remove all secondary model code entirely
+        # DELETE lines 1560-1577
+
         # Calculate confidence WITHOUT cross-model validation
         base_conf = float(primary_data.get("confidence", 75))
 
@@ -1678,23 +1647,19 @@ def main():
             file_name=filename,
             mime="application/json"
         )
-
         
         # Render dashboard
-
         render_dashboard(
-            primary_data,          # JSON string
+            primary_response,
             final_conf,
-            0.0,                   # sem_conf (unused placeholder)
+            sem_conf,  # Can remove this parameter entirely
             num_conf,
             web_context,
             base_conf,
             query,
-            veracity_scores
+            veracity_scores,
+            web_context.get("source_reliability", [])
         )
-
-
-        
         # Debug info
        # with st.expander("🔧 Debug Information"):
        #     st.write("**Confidence Breakdown:**")
