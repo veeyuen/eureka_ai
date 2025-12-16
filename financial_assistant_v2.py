@@ -1365,6 +1365,48 @@ def render_dashboard(
                 st.markdown("---")
 
 
+#def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
+##    """Evidence-driven veracity scoring - FIXED"""
+##    total_score = 0
+#    breakdown = {}
+    
+    # 1. SOURCE QUALITY (35% weight)
+#    sources = primary_data.get("sources", [])
+#    src_score = source_quality_score(sources)
+#    breakdown["source_quality"] = src_score
+#    total_score += src_score * 0.35
+    
+    # 2. NUMERIC CONSISTENCY (30% weight)
+#    num_score = numeric_consistency_with_sources(primary_data, web_context)
+#    breakdown["numeric_consistency"] = num_score
+#    total_score += num_score * 0.30
+    
+    # 3. CITATION DENSITY (20% weight)
+#    sources_count = len(sources)
+#    findings_count = len(primary_data.get("key_findings", []))
+#    citation_density = sources_count / max(1, findings_count)  # ✅ Calculate FIRST
+    
+    # Better sigmoid curve for scoring
+#    if citation_density >= 1.0:
+#        citations_score = min(100, 75 + (citation_density - 1.0) * 25)
+#    elif citation_density >= 0.5:
+#        citations_score = 50 + (citation_density - 0.5) * 50
+#    else:
+#        citations_score = citation_density * 100
+    
+#    breakdown["citation_density"] = citations_score
+#    total_score += citations_score * 0.20
+    
+    # 4. SOURCE CONSENSUS (15% weight)
+#    consensus_score = source_consensus(web_context)
+#    breakdown["source_consensus"] = consensus_score
+#    total_score += consensus_score * 0.15
+    
+#    overall = round(total_score, 1)
+#    breakdown["overall"] = overall
+    
+#    return breakdown
+
 def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     """Evidence-driven veracity scoring - FIXED"""
     total_score = 0
@@ -1373,18 +1415,18 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     # 1. SOURCE QUALITY (35% weight)
     sources = primary_data.get("sources", [])
     src_score = source_quality_score(sources)
-    breakdown["source_quality"] = src_score
+    breakdown["sources"] = src_score  # ← CHANGED KEY
     total_score += src_score * 0.35
     
     # 2. NUMERIC CONSISTENCY (30% weight)
     num_score = numeric_consistency_with_sources(primary_data, web_context)
-    breakdown["numeric_consistency"] = num_score
+    breakdown["numbers"] = num_score  # ← CHANGED KEY
     total_score += num_score * 0.30
     
     # 3. CITATION DENSITY (20% weight)
     sources_count = len(sources)
     findings_count = len(primary_data.get("key_findings", []))
-    citation_density = sources_count / max(1, findings_count)  # ✅ Calculate FIRST
+    citation_density = sources_count / max(1, findings_count)
     
     # Better sigmoid curve for scoring
     if citation_density >= 1.0:
@@ -1394,18 +1436,19 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     else:
         citations_score = citation_density * 100
     
-    breakdown["citation_density"] = citations_score
+    breakdown["citations"] = citations_score  # ← CHANGED KEY
     total_score += citations_score * 0.20
     
     # 4. SOURCE CONSENSUS (15% weight)
     consensus_score = source_consensus(web_context)
-    breakdown["source_consensus"] = consensus_score
+    breakdown["consensus"] = consensus_score  # ← CHANGED KEY
     total_score += consensus_score * 0.15
     
     overall = round(total_score, 1)
     breakdown["overall"] = overall
     
     return breakdown
+
 
 def parse_number_with_unit(val_str: str) -> float:
     """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
