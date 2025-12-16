@@ -208,10 +208,11 @@ nli_classifier, embedder = load_models()
 # 6. SOURCE CLASSIFICATION
 # =========================================================
 
+
 HIGH_QUALITY_DOMAINS = {
-    "gov", "imf.org", "worldbank.org", "federalreserve.gov", "reuters.com",
-    "spglobal.com", "economist.com", "mckinsey.com", "ft.com", "wsj.com",
-    "bloomberg.com", "deloitte.com", "kpmg.com", "sec.gov", "nature.com"
+    "gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", "mckinsey", "bcg", "cognitive market research", 
+    "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc", "imarc", "booz", "bakerinstitute.org",
+    "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs", "j.p. morgan"
 }
 
 MEDIUM_QUALITY_DOMAINS = {
