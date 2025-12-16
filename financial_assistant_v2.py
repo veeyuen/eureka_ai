@@ -1417,48 +1417,68 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     
     return breakdown
 
+
+def parse_number_with_unit(val_str: str) -> float:
+    """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
+    if not val_str:
+        return 0.0
+    
+    # Clean and extract
+    val_str = str(val_str).replace('$', '').replace(',', '').strip()
+    
+    # Check for unit suffix
+    multiplier = 1.0  # Base = millions
+    if val_str.endswith('B') or val_str.endswith('b'):
+        multiplier = 1000.0  # Billions to millions
+        val_str = val_str[:-1]
+    elif val_str.endswith('M') or val_str.endswith('m'):
+        multiplier = 1.0
+        val_str = val_str[:-1]
+    elif val_str.endswith('K') or val_str.endswith('k'):
+        multiplier = 0.001  # Thousands to millions
+        val_str = val_str[:-1]
+    
+    try:
+        return float(val_str) * multiplier
+    except (ValueError, TypeError):
+        return 0.0
+
 def numeric_consistency_with_sources(primary_data: dict, web_context: dict) -> float:
-    """Compare primary numbers vs source numbers"""
-    # Extract primary numbers
+    """Compare primary numbers vs source numbers - FIXED"""
     primary_metrics = primary_data.get("primary_metrics", {})
     primary_numbers = []
     
     for metric in primary_metrics.values():
         if isinstance(metric, dict):
             val = metric.get("value")
-            try:
-                primary_numbers.append(float(str(val).replace('$', '').replace('B', '').replace('M', '')))
-            except (ValueError, TypeError):
-                continue
+            num = parse_number_with_unit(str(val))
+            if num > 0:
+                primary_numbers.append(num)
     
     if not primary_numbers:
         return 60.0
     
-    # Extract source numbers
+    # Extract source numbers with same parsing
     source_numbers = []
     search_results = web_context.get("search_results", [])
     
     for result in search_results:
         snippet = str(result.get("snippet", ""))
-        # Simple number extraction: $123B, 456M, 789, etc.
-        numbers = re.findall(r'[\$]?(\d+(?:\.\d+)?)([BKM]?)', snippet, re.IGNORECASE)
-        for num, unit in numbers:
-            try:
-                val = float(num)
-                if unit.upper() == 'B':
-                    val *= 1000
-                elif unit.upper() == 'M':
-                    val *= 1
-                elif unit.upper() == 'K':
-                    val *= 0.001
-                source_numbers.append(val)
-            except:
-                continue
+        # Match patterns like "$58.3B", "123M", "456 billion"
+        patterns = [
+            r'\$?(\d+(?:\.\d+)?)\s*([BbMmKk])',  # $58.3B
+            r'(\d+(?:\.\d+)?)\s*(billion|million|thousand)',  # 58.3 billion
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, snippet, re.IGNORECASE)
+            for num, unit in matches:
+                source_numbers.append(parse_number_with_unit(f"{num}{unit[0].upper()}"))
     
     if not source_numbers:
         return 50.0
     
-    # Check agreement (within 25% range)
+    # Check agreement (within 25% tolerance)
     agreements = 0
     for p_num in primary_numbers:
         for s_num in source_numbers:
