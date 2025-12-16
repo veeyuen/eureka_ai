@@ -457,7 +457,7 @@ def classify_source_reliability(source: str) -> str:
     
     high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", "mckinsey", "bcg", "cognitive market research", 
             "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc", "imarc", "booz", "bakerinstitute.org",
-           "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs" "j.p. morgan"]
+           "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs", "j.p. morgan"]
     medium = ["wikipedia", "forbes", "cnbc", "yahoo", "statista", "ceic"]
     low = ["blog", "medium.com", "wordpress", "ad", "promo"]
     
@@ -1585,19 +1585,6 @@ def main():
         # Secondary model validation
     #    with st.spinner("✅ Validating with secondary model..."):
     #        secondary_response = query_gemini(query)
-        with st.spinner("✅ Verifying evidence quality..."):
-            veracity_scores = evidence_based_veracity(primary_data, web_context)
-
-        
-# Remove these lines entirely:
-# secondary_response = query_gemini(query)
-# secondary_data = json.loads(secondary_response)
-
-        
-
-        # Option A: Remove all secondary model code entirely
-        # DELETE lines 1560-1577
-
         # Calculate confidence WITHOUT cross-model validation
         base_conf = float(primary_data.get("confidence", 75))
 
@@ -1652,7 +1639,7 @@ def main():
         render_dashboard(
             primary_response,
             final_conf,
-            sem_conf,  # Can remove this parameter entirely
+            0,  # Can remove this parameter entirely
             num_conf,
             web_context,
             base_conf,
