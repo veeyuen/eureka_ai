@@ -1680,7 +1680,7 @@ def main():
             "base_confidence": base_conf,
             "semantic_similarity": sem_conf,
             "numeric_alignment": num_conf,
-            "source_quality": src_conf,
+         #   "source_quality": src_conf,
             "final_confidence": final_conf
             })
             st.write("**Primary Model Response:**")
