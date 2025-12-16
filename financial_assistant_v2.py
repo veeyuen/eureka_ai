@@ -456,7 +456,7 @@ def classify_source_reliability(source: str) -> str:
     source = source.lower() if isinstance(source, str) else ""
     
     high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", 
-            "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc",
+            "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc", "imarc",
            "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jpmorgan", "citibank", "goldman sachs"]
     medium = ["wikipedia", "forbes", "cnbc", "yahoo", "statista", "ceic"]
     low = ["blog", "medium.com", "wordpress", "ad", "promo"]
@@ -925,30 +925,61 @@ def multi_modal_verification(json1: Dict, json2: Dict) -> Dict[str, float]:
         "overall_score": round(overall, 2)
     }
 
-def calculate_final_confidence(
-    base_conf: float,
-    sem_conf: float,
-    num_conf: Optional[float],
-    src_conf: float,
-    veracity_conf: float
-) -> float:
-    """
-    Calculate weighted final confidence score.
-    Note: Veracity is kept separate as it's a cross-model comparison metric.
-    """
+#def calculate_final_confidence(
+#    base_conf: float,
+#    sem_conf: float,
+#    num_conf: Optional[float],
+#    src_conf: float,
+#    veracity_conf: float
+#) -> float:
+#    """
+#    Calculate weighted final confidence score.
+#    Note: Veracity is kept separate as it's a cross-model comparison metric.
+#    """
     
-    components = [
-        ("base", base_conf, 0.30),
-        ("semantic", sem_conf, 0.25),
-        ("source", src_conf, 0.25),
-        ("numeric", num_conf or 0, 0.20 if num_conf else 0)
+#    components = [
+#        ("base", base_conf, 0.30),
+#        ("semantic", sem_conf, 0.25),
+#        ("source", src_conf, 0.25),
+#        ("numeric", num_conf or 0, 0.20 if num_conf else 0)
     ]
     
-    total_weight = sum(w for _, _, w in components)
-    weighted_sum = sum(score * weight for _, score, weight in components)
+#    total_weight = sum(w for _, _, w in components)
+#    weighted_sum = sum(score * weight for _, score, weight in components)
     
-    final = weighted_sum / total_weight if total_weight > 0 else 70.0
-    return round(final, 2)
+#    final = weighted_sum / total_weight if total_weight > 0 else 70.0
+#    return round(final, 2)
+
+def calculate_final_confidence_enhanced(
+    base_conf: float,           # LLM self-reported confidence (0-100)
+    evidence_score: float,      # Overall evidence quality (0-100)  
+    src_conf: float,           # Source quality (0-100)
+    sem_conf: float,           # Semantic consistency (0-100)
+    num_conf: Optional[float]  # Numeric alignment (0-100)
+    ) -> float:
+    """
+    Evidence-weighted confidence: Model + Evidence balance
+    Model confidence DOWNWEIGHTED when evidence is weak
+    """
+    
+    # 1. EVIDENCE COMPONENT (60% weight) - Primary driver
+    evidence_weight = 0.60
+    evidence_component = evidence_score * evidence_weight
+    
+    # 2. MODEL COMPONENT (20% weight) - Secondary, evidence-adjusted
+    model_adjustment = min(1.0, evidence_score / 100)  # Weak evidence → nerf model conf
+    model_component = base_conf * model_adjustment * 0.20
+    
+    # 3. TECHNICAL CONSISTENCY (15% weight)
+    tech_consistency = (sem_conf + (num_conf or 0)) / 2 * 0.15
+    
+    # 4. SOURCE QUALITY (5% weight) 
+    source_bonus = src_conf * 0.05
+    
+    # FINAL BLEND
+    final_confidence = evidence_component + model_component + tech_consistency + source_bonus
+    return round(final_confidence, 1)
+
 
 # =========================================================
 # 9. DASHBOARD RENDERING (FIXED)
@@ -1322,11 +1353,21 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     total_score += src_score * 0.4
     
     # 2. NUMERIC CONSISTENCY (30% weight)
+    #Numeric Consistency	Meaning	Risk Level
+    #90%	Excellent (most numbers verified)	✅ Low
+    #50-80%	Medium (half verified)	⚠️ Moderate
+    #0-40%	Poor (few/no matches)	❌ High
+    
     num_score = numeric_consistency_with_sources(primary_data, web_context)
     breakdown["numeric_consistency"] = num_score
     total_score += num_score * 0.3
     
     # 3. CITATION DENSITY (20% weight)
+    #Raw Density	Score	% of Category	Interpretation
+    #<0.5	0-12	0-50%	Weak (few sources)
+    #0.5-1.0	13-25	50-100%	Good (1 source/claim)
+    #>1.0	25	100%	Excellent (multiple sources/claim)
+
     findings_count = len(primary_data.get("key_findings", []))
     sources_count = len(sources)
     citation_density = sources_count / max(1, findings_count)
@@ -1341,6 +1382,11 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     total_score += freshness_score * 0.1
     
     # 5. CONSENSUS (10% weight)
+    #3+ High-quality sources → 90% (Strong consensus)
+    #2 High-quality sources → 85% (Good consensus)  
+    #1 High-quality source → 75% (Acceptable)
+    #0 High-quality → 60% (Weak consensus)
+
     consensus_score = source_consensus(web_context)
     breakdown["source_consensus"] = consensus_score
     total_score += consensus_score * 0.1
@@ -1539,13 +1585,23 @@ def main():
         )
         src_conf = source_quality_score(primary_data.get("sources", []))
         
-      #  final_conf = calculate_final_confidence(
-      #      base_conf, sem_conf, num_conf, src_conf,
-      #      veracity_scores["overall_score"]
+            #  final_conf = calculate_final_confidence(
+      #      base_conf, sem_conf, num_conf, src_conf, 
+      #      veracity_scores["overall"]  # Now evidence-based!
       #  )
-        final_conf = calculate_final_confidence(
-            base_conf, sem_conf, num_conf, src_conf, 
-            veracity_scores["overall"]  # Now evidence-based!
+      #  Scenario	Model Conf	Evidence	Final Conf	Why
+      #  High Model + High Evidence	90%	89%	89%	Perfect alignment
+      #  High Model + Low Evidence	90%	45%	62%	Evidence pulls it down
+      #  Low Model + High Evidence	60%	92%	85%	Evidence boosts it up
+      #  Both Weak	50%	40%	42%	Rightfully low
+
+        
+        final_conf = calculate_final_confidence_enhanced(
+        base_conf,                           # Model confidence
+        veracity_scores["overall"],          # Evidence score ← NEW PRIMARY!
+        src_conf, 
+        sem_conf, 
+        num_conf
         )
 
         
