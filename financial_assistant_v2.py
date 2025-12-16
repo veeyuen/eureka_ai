@@ -1378,17 +1378,15 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     #>1.0	25	100%	Excellent (multiple sources/claim)
 
     findings_count = len(primary_data.get("key_findings", []))
-    sources_count = len(sources)
-    citation_density = sources_count / max(1, findings_count)
-
-    # Your 10 sources → Much higher score
-    citations_score = min(100, citation_density * 75)  # 10/8 * 75 = ~94%
-    breakdown["citation_density"] = citation_density  
-    total_score += citations_score * 0.2
-
     
-    breakdown["citation_density"] = citation_score
-    total_score += citation_score * 0.2
+    # 3. CITATION DENSITY (20% weight) - FIXED
+    sources_count = len(sources)
+    findings_count = len(primary_data.get("key_findings", []))
+    citation_density = sources_count / max(1, findings_count)
+    citations_score = min(100, citation_density * 75)  # 10/8 * 75 = 94%
+
+    breakdown["citation_density"] = citations_score    # FIXED: use citations_score
+    total_score += citations_score * 0.2               # FIXED: single line
 
     
     # 4. DATA FRESHNESS (10% weight)
