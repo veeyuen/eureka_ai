@@ -1379,6 +1379,14 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
 
     findings_count = len(primary_data.get("key_findings", []))
     sources_count = len(sources)
+
+    # Count high quality sources (4 of your 10)
+    high_quality_sources = 0
+    for source in sources:
+        if source.get('quality_score', 0) >= 75 or source.get('credibility', 0) >= 0.75:
+        high_quality_sources += 1
+    
+    
     citation_density = sources_count / max(1, findings_count)
    # citation_score = min(citation_density * 50, 25) # less forgiving citation score calc
     citations_score = min(100, (sources_count * 0.75 + high_quality_sources * 1.25) / max(1, findings_count) * 50)
@@ -1386,6 +1394,7 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     
     breakdown["citation_density"] = citation_score
     total_score += citation_score * 0.2
+
     
     # 4. DATA FRESHNESS (10% weight)
     freshness = str(primary_data.get("freshness", ""))
