@@ -1384,7 +1384,7 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     high_quality_sources = 0
     for source in sources:
         if source.get('quality_score', 0) >= 75 or source.get('credibility', 0) >= 0.75:
-        high_quality_sources += 1
+            high_quality_sources += 1
     
     
     citation_density = sources_count / max(1, findings_count)
