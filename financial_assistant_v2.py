@@ -1678,19 +1678,23 @@ def main():
             file_name=filename,
             mime="application/json"
         )
+
         
         # Render dashboard
+
         render_dashboard(
-            primary_response,
+            primary_data,          # JSON string
             final_conf,
-            0,  # Can remove this parameter entirely
+            0.0,                   # sem_conf (unused placeholder)
             num_conf,
             web_context,
             base_conf,
             query,
-            veracity_scores,
-            web_context.get("source_reliability", [])
+            veracity_scores
         )
+
+
+        
         # Debug info
        # with st.expander("🔧 Debug Information"):
        #     st.write("**Confidence Breakdown:**")
