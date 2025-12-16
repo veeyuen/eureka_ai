@@ -208,7 +208,7 @@ REQUIRED FIELDS (provide substantive data):
 - visualization_data (MUST have chart_labels and chart_values)
 - benchmark_table (if included, value_1 and value_2 must be NUMBERS, not "N/A")
 
-Even if web data is sparse, use your knowledge to provide complete, detailed analysis. However, do not fabricate any details.
+Even if web data is sparse, use your knowledge to provide complete, detailed analysis without fabricating any information.
 
 Output ONLY this JSON structure:
 {RESPONSE_TEMPLATE}
