@@ -1110,11 +1110,7 @@ def render_dashboard(
     col1.metric("Final Confidence", f"{final_conf:.1f}%")
     col2.metric("Base Model", f"{base_conf:.1f}%")
     col3.metric("Evidence", f"{veracity_scores['overall']:.1f}%")
-    if num_conf:
-        col4.metric("Numeric", f"{num_conf:.1f}%")
-    else:
-        col4.metric("Numeric", "N/A")
-
+    
 
     
     st.markdown("---")
