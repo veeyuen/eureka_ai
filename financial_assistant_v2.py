@@ -1083,7 +1083,6 @@ def detect_y_label_dynamic(values: list) -> str:
 def render_dashboard(
     primary_json: str,
     final_conf: float,
-    sem_conf: float,
     num_conf: Optional[float],
     web_context: Dict,
     base_conf: float,
@@ -1092,6 +1091,8 @@ def render_dashboard(
     veracity_scores: Optional[Dict] = None,
     source_reliability: Optional[List[str]] = None,
     ):
+
+
     
     # Parse primary response
     try:
