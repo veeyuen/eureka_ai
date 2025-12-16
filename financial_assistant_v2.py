@@ -956,31 +956,30 @@ def multi_modal_verification(json1: Dict, json2: Dict) -> Dict[str, float]:
 #    final_confidence = evidence_component + model_component + tech_consistency + source_bonus
 #    return round(final_confidence, 1)
 
+
+# FIXED VERSION
 def calculate_final_confidence_enhanced(
-    base_conf: float,           # LLM confidence (20% weight)
-    evidence_score: float,      # Evidence overall (60% weight)  
-    src_conf: float,           # Source quality (10% weight)
-    num_conf: Optional[float]  # Numeric alignment (10% weight)
+    base_conf: float,           
+    evidence_score: float,      # Already contains source quality
+    num_conf: Optional[float]   # Cross-model alignment only
     ) -> float:
-    """Evidence-weighted, NO semantic confidence"""
+    """
+    Evidence-weighted confidence - NO double-counting.
+    Source quality is already inside evidence_score.
+    """
     
-    # EVIDENCE PRIMARY (60%)
-    evidence_component = evidence_score * 0.60
+    # 1. EVIDENCE PRIMARY (70% weight)
+    evidence_component = evidence_score * 0.70
     
-    # MODEL SECONDARY (20%)
+    # 2. MODEL CONFIDENCE (20% weight) - Downweighted by evidence
     model_adjustment = min(1.0, evidence_score / 100)
     model_component = base_conf * model_adjustment * 0.20
     
-    # TECHNICAL (10%)
-    tech_component = (num_conf or 0) * 0.10
+    # 3. CROSS-MODEL AGREEMENT (10% weight)
+    tech_component = (num_conf or 70) * 0.10
     
-    # SOURCES BONUS (10%)
-    source_component = src_conf * 0.10
-    
-    final = evidence_component + model_component + tech_component + source_component
+    final = evidence_component + model_component + tech_component
     return round(final, 1)
-
-
 
 # =========================================================
 # 9. DASHBOARD RENDERING (FIXED)
@@ -1602,7 +1601,7 @@ def main():
             primary_data.get("primary_metrics", {}),
             secondary_data.get("primary_metrics", {})
         )
-        src_conf = source_quality_score(primary_data.get("sources", []))
+    #    src_conf = source_quality_score(primary_data.get("sources", []))
         
             #  final_conf = calculate_final_confidence(
       #      base_conf, sem_conf, num_conf, src_conf, 
@@ -1615,11 +1614,11 @@ def main():
       #  Both Weak	50%	40%	42%	Rightfully low
 
         
+        # FIXED CALL (remove src_conf parameter)
         final_conf = calculate_final_confidence_enhanced(
-        base_conf,                    # 88.0%
-        veracity_scores["overall"],   # 60.0%
-        src_conf,                     # 76.0%
-        num_conf                      # 50.0%
+        base_conf,                    
+        veracity_scores["overall"],   # Already includes source quality
+        num_conf                      # Only cross-model numeric alignment
         )
 
         
