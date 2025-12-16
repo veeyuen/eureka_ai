@@ -1654,14 +1654,14 @@ def main():
        
         
         # Download JSON
-       output = {
+        output = {
             "question": query,
             "timestamp": datetime.now().isoformat(),
             "primary_response": primary_data,
             "final_confidence": final_conf,
             "veracity_scores": veracity_scores,
             "web_sources": web_context.get("sources", [])
-        }
+            }
         
         json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8')
         filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
