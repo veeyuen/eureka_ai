@@ -669,6 +669,7 @@ def source_quality_score(sources: List[str]) -> float:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
+    def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
     """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
@@ -2340,6 +2341,282 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
 
 
 # =========================================================
+# 8D. SOURCE-ANCHORED EVOLUTION
+# Re-fetch the SAME sources from previous analysis for true stability
+# =========================================================
+
+def fetch_url_content(url: str) -> Optional[str]:
+    """Fetch content from a specific URL"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
+        # Remove noise
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        clean_text = ' '.join(line for line in lines if line)
+
+        return clean_text[:5000]
+    except:
+        return None
+
+def extract_numbers_from_text(text: str) -> List[Dict]:
+    """Extract all numbers with context from text"""
+    if not text:
+        return []
+
+    numbers = []
+
+    # Pattern: number with optional unit, capture surrounding context
+    pattern = r'(\$?\d+(?:\.\d+)?)\s*(trillion|billion|million|%|T|B|M)?'
+
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        value_str = match.group(1).replace('$', '')
+        unit = match.group(2) or ''
+
+        try:
+            value = float(value_str)
+        except:
+            continue
+
+        # Skip very small or very large unlikely values
+        if value == 0 or value > 1000000:
+            continue
+
+        # Get context (50 chars before and after)
+        start = max(0, match.start() - 50)
+        end = min(len(text), match.end() + 50)
+        context = text[start:end].lower()
+
+        # Normalize unit
+        unit_map = {'trillion': 'T', 't': 'T', 'billion': 'B', 'b': 'B', 'million': 'M', 'm': 'M', '%': '%'}
+        unit_norm = unit_map.get(unit.lower(), '') if unit else ''
+
+        numbers.append({
+            'value': value,
+            'unit': unit_norm,
+            'context': context,
+            'raw': f"{value_str}{unit}"
+        })
+
+    return numbers
+
+def compute_source_anchored_diff(previous_data: Dict) -> Dict:
+    """
+    Re-fetch the SAME sources from previous analysis and extract current numbers.
+    This ensures we're comparing apples to apples.
+    """
+    prev_response = previous_data.get('primary_response', {})
+    prev_sources = previous_data.get('web_sources', []) or prev_response.get('sources', [])
+
+    if not prev_sources:
+        return {
+            'status': 'no_sources',
+            'message': 'No sources found in previous analysis',
+            'metric_changes': [],
+            'source_changes': []
+        }
+
+    # Limit to top 5 sources
+    sources_to_check = prev_sources[:5]
+
+    # Extract numbers from previous metrics for comparison
+    prev_metrics = prev_response.get('primary_metrics', {})
+    prev_numbers = {}
+    for key, metric in prev_metrics.items():
+        if isinstance(metric, dict):
+            val = parse_to_float(metric.get('value'))
+            if val is not None:
+                prev_numbers[metric.get('name', key)] = {
+                    'value': val,
+                    'unit': metric.get('unit', ''),
+                    'raw': str(metric.get('value', ''))
+                }
+
+    # Re-fetch each source and extract current numbers
+    source_results = []
+    all_current_numbers = []
+
+    for url in sources_to_check:
+        content = fetch_url_content(url)
+
+        if content:
+            numbers = extract_numbers_from_text(content)
+            source_results.append({
+                'url': url,
+                'status': 'fetched',
+                'numbers_found': len(numbers)
+            })
+            all_current_numbers.extend(numbers)
+        else:
+            source_results.append({
+                'url': url,
+                'status': 'failed',
+                'numbers_found': 0
+            })
+
+    # Match previous metrics against current numbers
+    metric_changes = []
+
+    for metric_name, prev_data in prev_numbers.items():
+        prev_val = prev_data['value']
+        prev_unit = prev_data['unit']
+
+        # Find matching numbers in current data (same magnitude, same unit type)
+        best_match = None
+        best_match_score = 0
+
+        for curr_num in all_current_numbers:
+            # Check unit compatibility
+            if prev_unit and curr_num['unit'] and prev_unit.replace('$', '') != curr_num['unit']:
+                continue
+
+            # Check if values are in same order of magnitude (within 10x)
+            if prev_val > 0 and curr_num['value'] > 0:
+                ratio = curr_num['value'] / prev_val
+                if 0.1 <= ratio <= 10:
+                    # Score by closeness
+                    score = 1 / (1 + abs(ratio - 1))
+                    if score > best_match_score:
+                        best_match_score = score
+                        best_match = curr_num
+
+        if best_match:
+            change_pct = compute_percent_change(prev_val, best_match['value'])
+
+            if change_pct is None:
+                change_type = 'unchanged'
+            elif abs(change_pct) < 1:
+                change_type = 'unchanged'
+            elif change_pct > 0:
+                change_type = 'increased'
+            else:
+                change_type = 'decreased'
+
+            metric_changes.append({
+                'name': metric_name,
+                'previous_value': prev_data['raw'],
+                'current_value': best_match['raw'],
+                'change_pct': change_pct,
+                'change_type': change_type,
+                'match_confidence': round(best_match_score * 100, 1)
+            })
+        else:
+            metric_changes.append({
+                'name': metric_name,
+                'previous_value': prev_data['raw'],
+                'current_value': 'Not found',
+                'change_pct': None,
+                'change_type': 'not_found',
+                'match_confidence': 0
+            })
+
+    # Calculate stability
+    found_count = sum(1 for m in metric_changes if m['change_type'] != 'not_found')
+    unchanged_count = sum(1 for m in metric_changes if m['change_type'] == 'unchanged')
+
+    if metric_changes:
+        stability = (unchanged_count / len(metric_changes)) * 100
+    else:
+        stability = 100
+
+    return {
+        'status': 'success',
+        'sources_checked': len(sources_to_check),
+        'sources_fetched': sum(1 for s in source_results if s['status'] == 'fetched'),
+        'source_results': source_results,
+        'metric_changes': metric_changes,
+        'stability_score': round(stability, 1),
+        'summary': {
+            'total_metrics': len(metric_changes),
+            'metrics_found': found_count,
+            'metrics_unchanged': unchanged_count,
+            'metrics_increased': sum(1 for m in metric_changes if m['change_type'] == 'increased'),
+            'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
+        }
+    }
+
+def render_source_anchored_results(results: Dict, query: str):
+    """Render source-anchored evolution results"""
+
+    st.header("📈 Source-Anchored Evolution Analysis")
+    st.markdown(f"**Query:** {query}")
+
+    if results['status'] != 'success':
+        st.error(f"❌ {results.get('message', 'Analysis failed')}")
+        return
+
+    # Overview
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Sources Checked", results['sources_checked'])
+    col2.metric("Sources Fetched", results['sources_fetched'])
+    col3.metric("Stability", f"{results['stability_score']:.0f}%")
+
+    summary = results['summary']
+    if summary['metrics_increased'] > summary['metrics_decreased']:
+        col4.success("📈 Trending Up")
+    elif summary['metrics_decreased'] > summary['metrics_increased']:
+        col4.error("📉 Trending Down")
+    else:
+        col4.info("➡️ Stable")
+
+    st.markdown("---")
+
+    # Source status
+    st.subheader("🔗 Source Verification")
+    for src in results['source_results']:
+        status_icon = "✅" if src['status'] == 'fetched' else "❌"
+        st.markdown(f"{status_icon} {src['url'][:60]}... ({src['numbers_found']} numbers found)")
+
+    st.markdown("---")
+
+    # Metric changes
+    st.subheader("💰 Metric Changes")
+
+    if results['metric_changes']:
+        rows = []
+        for m in results['metric_changes']:
+            icon = {
+                'increased': '📈',
+                'decreased': '📉',
+                'unchanged': '➡️',
+                'not_found': '❓'
+            }.get(m['change_type'], '•')
+
+            change_str = f"{m['change_pct']:+.1f}%" if m['change_pct'] is not None else "-"
+
+            rows.append({
+                '': icon,
+                'Metric': m['name'],
+                'Previous': m['previous_value'],
+                'Current': m['current_value'],
+                'Change': change_str,
+                'Confidence': f"{m['match_confidence']:.0f}%"
+            })
+
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No metrics to compare")
+
+    st.markdown("---")
+
+    # Summary stats
+    st.subheader("📊 Summary")
+    cols = st.columns(4)
+    cols[0].metric("Total Metrics", summary['total_metrics'])
+    cols[1].metric("Found in Sources", summary['metrics_found'])
+    cols[2].metric("Increased", summary['metrics_increased'])
+    cols[3].metric("Decreased", summary['metrics_decreased'])
+
+# =========================================================
 # 9. DASHBOARD RENDERING
 # =========================================================
 
@@ -2818,80 +3095,6 @@ def main():
     # TAB 2: EVOLUTION TRACKER (ANCHORED)
     # =====================
     with tab2:
-        st.markdown("""
-        Upload a previous Yureeka analysis to track how the analysis has evolved.
-
-        **How it works:**
-        - Your previous analysis is fed to the model as context
-        - The model searches for UPDATES to the same metrics/entities
-        - Changes are explicitly tracked (increased/decreased/new/removed)
-        - Stability score indicates how much has drifted
-        """)
-
-        # Upload previous analysis
-        uploaded_file = st.file_uploader(
-            "📁 Upload previous Yureeka JSON analysis",
-            type=['json'],
-            key="evolution_upload"
-        )
-
-        previous_data = None
-        if uploaded_file:
-            try:
-                previous_data = json.load(uploaded_file)
-                prev_response = previous_data.get("primary_response", {})
-                prev_timestamp = previous_data.get("timestamp", "Unknown")
-
-                st.success(f"✅ Loaded: {previous_data.get('question', 'Unknown query')}")
-                st.caption(f"📅 Previous analysis from: {prev_timestamp}")
-
-                # Show previous analysis summary
-                with st.expander("📋 Previous Analysis Summary", expanded=False):
-                    st.write(f"**Confidence:** {previous_data.get('final_confidence', 'N/A')}%")
-                    st.write(f"**Summary:** {prev_response.get('executive_summary', 'N/A')}")
-
-                    st.write("**Previous Metrics:**")
-                    for k, m in list(prev_response.get("primary_metrics", {}).items())[:5]:
-                        if isinstance(m, dict):
-                            st.write(f"- {m.get('name', k)}: {m.get('value')} {m.get('unit', '')}")
-
-                    st.write("**Previous Top Entities:**")
-                    for i, e in enumerate(prev_response.get("top_entities", [])[:5], 1):
-                        if isinstance(e, dict):
-                            st.write(f"{i}. {e.get('name')}: {e.get('share', 'N/A')}")
-
-            except Exception as e:
-                st.error(f"❌ Failed to load JSON: {e}")
-                previous_data = None
-
-        # Options
-        col1, col2 = st.columns(2)
-        with col1:
-            use_web_evo = st.checkbox(
-                "Enable web search for current data",
-                value=bool(SERPAPI_KEY),
-                disabled=not SERPAPI_KEY,
-                key="web_evolution"
-            )
-
-        with col2:
-            use_same_query = st.checkbox(
-                "Use same query as previous",
-                value=True,
-                key="same_query"
-            )
-
-        # Query input
-        if use_same_query and previous_data:
-            evolution_query = previous_data.get("question", "")
-            st.info(f"📝 Using previous query: {evolution_query}")
-        else:
-            evolution_query = st.text_input(
-                "Please enter your query here:",
-                value=previous_data.get("question", "") if previous_data else "",
-                key="evolution_query"
-            )
-
         # Run evolution analysis
         if st.button("🔄 Run Evolution Analysis", type="primary", key="evolution_btn"):
             if not previous_data:
@@ -2901,77 +3104,63 @@ def main():
             else:
                 evolution_query = evolution_query.strip()[:500]
 
-                # Web search for current data
-                web_context_evo = {}
-                if use_web_evo:
-                    with st.spinner("🌐 Searching for current data..."):
-                        web_context_evo = fetch_web_context(evolution_query, num_sources=3)
+                # SOURCE-ANCHORED ANALYSIS
+                # Re-fetch the SAME sources from previous analysis
+                with st.spinner("🔗 Re-fetching original sources for comparison..."):
+                    results = compute_source_anchored_diff(previous_data)
 
-                if not web_context_evo:
-                    web_context_evo = {
-                        "search_results": [], "scraped_content": {},
-                        "summary": "", "sources": [], "source_reliability": []
-                    }
+                # Optional: Get LLM explanation of the changes
+                if results['status'] == 'success' and results['metric_changes']:
+                    with st.spinner("💬 Generating interpretation..."):
+                        # Build simple explanation prompt
+                        changes_text = []
+                        for m in results['metric_changes']:
+                            if m['change_type'] == 'increased':
+                                changes_text.append(f"- {m['name']}: {m['previous_value']} → {m['current_value']} (UP {m['change_pct']:+.1f}%)")
+                            elif m['change_type'] == 'decreased':
+                                changes_text.append(f"- {m['name']}: {m['previous_value']} → {m['current_value']} (DOWN {m['change_pct']:+.1f}%)")
 
-                # OPTION B: Extract data directly from sources (no LLM variance)
-                with st.spinner("🔢 Extracting current data from sources..."):
-                    # Extract metrics directly from web snippets
-                    extracted_metrics = extract_metrics_from_sources(web_context_evo)
-                    extracted_entities = extract_entities_from_sources(web_context_evo)
+                        if changes_text:
+                            explanation_prompt = f"""Based on these metric changes for "{evolution_query}": {chr(10).join(changes_text)}
+                            Provide a 2-3 sentence interpretation of what these changes mean for the market.
+                            Return ONLY a JSON object: {{"interpretation": "your interpretation here"}}"""
 
-                # Build synthetic "new analysis" from extracted data
-                new_analysis = {
-                    "question": evolution_query,
-                    "timestamp": datetime.now().isoformat(),
-                    "primary_response": {
-                        "primary_metrics": extracted_metrics,
-                        "top_entities": extracted_entities,
-                        "key_findings": [],  # No findings from extraction - just metrics
-                        "sources": web_context_evo.get("sources", [])
-                    }
-                }
-
-                # DETERMINISTIC DIFF COMPUTATION
-                with st.spinner("🔢 Computing differences..."):
-                    diff = compute_evolution_diff(previous_data, new_analysis)
-
-                # LLM EXPLANATION ONLY (explains computed diffs, doesn't discover them)
-                with st.spinner("💬 Generating interpretation..."):
-                    explanation = get_llm_explanation(diff, evolution_query)
+                            try:
+                                headers = {"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"}
+                                payload = {"model": "sonar", "temperature": 0.0, "max_tokens": 200, "messages": [{"role": "user", "content": explanation_prompt}]}
+                                resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=20)
+                                explanation_data = parse_json_safely(resp.json()["choices"][0]["message"]["content"], "Explanation")
+                                interpretation = explanation_data.get('interpretation', '')
+                            except:
+                                interpretation = ''
+                        else:
+                            interpretation = "No significant changes detected."
+                else:
+                    interpretation = ''
 
                 # Build output for download
                 evolution_output = {
                     "question": evolution_query,
                     "timestamp": datetime.now().isoformat(),
-                    "analysis_type": "source_extracted_evolution",
+                    "analysis_type": "source_anchored",
                     "previous_timestamp": previous_data.get("timestamp"),
-                    "extracted_data": {
-                        "metrics": extracted_metrics,
-                        "entities": extracted_entities
-                    },
-                    "diff": {
-                        "stability_score": diff.stability_score,
-                        "time_delta_hours": diff.time_delta_hours,
-                        "summary_stats": diff.summary_stats,
-                        "metric_changes": [vars(m) for m in diff.metric_diffs],
-                        "entity_changes": [vars(e) for e in diff.entity_diffs],
-                    },
-                    "explanation": explanation,
-                    "sources_used": web_context_evo.get("sources", [])
+                    "results": results,
+                    "interpretation": interpretation
                 }
 
                 # Download button
                 st.download_button(
                     label="💾 Download Evolution Analysis",
-                    data=json.dumps(evolution_output, indent=2, ensure_ascii=False, default=str).encode('utf-8'),
+                    data=json.dumps(evolution_output, indent=2, ensure_ascii=False).encode('utf-8'),
                     file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                     mime="application/json"
                 )
 
-                # Render deterministic results
-                render_evolution_results(diff, explanation, evolution_query)
+                # Show interpretation
+                if interpretation:
+                    st.info(f"**Interpretation:** {interpretation}")
 
+                # Render results
+                render_source_anchored_results(results, evolution_query)
 if __name__ == "__main__":
     main()
-
-
