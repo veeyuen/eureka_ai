@@ -1,11 +1,12 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.6
+# YUREEKA AI RESEARCH ASSISTANT v7.7
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
 # Deterministic Output From LLM
 # Deterministic Evolution Core Using Python Diff Engine
 # Anchored Evolution Analysis Using JSON As Input Into Model
+# Implementation of Source-Based Evolution
 # =========================================================
 
 import os
@@ -668,6 +669,7 @@ def source_quality_score(sources: List[str]) -> float:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
+    def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
     """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
@@ -1734,6 +1736,219 @@ def compute_finding_diffs(old_findings: List[str], new_findings: List[str]) -> L
 
     return diffs
 
+# =========================================================
+# 8C. DETERMINISTIC SOURCE EXTRACTION
+# Extract metrics/entities directly from web snippets - NO LLM
+# =========================================================
+
+def extract_metrics_from_sources(web_context: Dict) -> Dict:
+    """
+    Extract numeric metrics directly from web search snippets.
+    100% deterministic - no LLM involved.
+    """
+    extracted = {}
+    search_results = web_context.get("search_results", [])
+
+    # Patterns to match common metric formats
+    patterns = [
+        # Market size patterns
+        (r'\$\s*(\d+(?:\.\d+)?)\s*(trillion|billion|million|T|B|M)\b', 'market_size'),
+        (r'market\s+size[:\s]+\$?\s*(\d+(?:\.\d+)?)\s*(trillion|billion|million|T|B|M)', 'market_size'),
+        (r'valued\s+at\s+\$?\s*(\d+(?:\.\d+)?)\s*(trillion|billion|million|T|B|M)', 'market_size'),
+        (r'worth\s+\$?\s*(\d+(?:\.\d+)?)\s*(trillion|billion|million|T|B|M)', 'market_size'),
+
+        # Growth rate patterns
+        (r'CAGR[:\s]+of?\s*(\d+(?:\.\d+)?)\s*%', 'cagr'),
+        (r'(\d+(?:\.\d+)?)\s*%\s*CAGR', 'cagr'),
+        (r'grow(?:th|ing)?\s+(?:at\s+)?(\d+(?:\.\d+)?)\s*%', 'growth_rate'),
+
+        # Revenue patterns
+        (r'revenue[:\s]+\$?\s*(\d+(?:\.\d+)?)\s*(trillion|billion|million|T|B|M)', 'revenue'),
+
+        # Year-specific values
+        (r'(?:in\s+)?20\d{2}[:\s]+\$?\s*(\d+(?:\.\d+)?)\s*(trillion|billion|million|T|B|M)', 'year_value'),
+    ]
+
+    all_matches = []
+
+    for result in search_results:
+        snippet = result.get("snippet", "")
+        title = result.get("title", "")
+        source = result.get("source", "")
+        text = f"{title} {snippet}".lower()
+
+        for pattern, metric_type in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                if isinstance(match, tuple):
+                    value_str, unit = match[0], match[1] if len(match) > 1 else ''
+                else:
+                    value_str, unit = match, ''
+
+                try:
+                    value = float(value_str)
+
+                    # Normalize unit
+                    unit_lower = unit.lower() if unit else ''
+                    if unit_lower in ['t', 'trillion']:
+                        unit_normalized = 'T'
+                        value_in_billions = value * 1000
+                    elif unit_lower in ['b', 'billion']:
+                        unit_normalized = 'B'
+                        value_in_billions = value
+                    elif unit_lower in ['m', 'million']:
+                        unit_normalized = 'M'
+                        value_in_billions = value / 1000
+                    elif unit_lower == '%':
+                        unit_normalized = '%'
+                        value_in_billions = value  # Keep as-is for percentages
+                    else:
+                        unit_normalized = ''
+                        value_in_billions = value
+
+                    all_matches.append({
+                        'type': metric_type,
+                        'value': value,
+                        'unit': unit_normalized,
+                        'value_normalized': value_in_billions,
+                        'source': source,
+                        'raw': f"{value_str} {unit}".strip()
+                    })
+                except (ValueError, TypeError):
+                    continue
+
+    # Deduplicate and select best matches by type
+    metrics_by_type = {}
+    for match in all_matches:
+        mtype = match['type']
+        if mtype not in metrics_by_type:
+            metrics_by_type[mtype] = []
+        metrics_by_type[mtype].append(match)
+
+    # For each type, take the most common value (mode) or median
+    metric_counter = 0
+    for mtype, matches in metrics_by_type.items():
+        if not matches:
+            continue
+
+        # Group by similar values (within 10%)
+        value_groups = []
+        for m in matches:
+            added = False
+            for group in value_groups:
+                if group and abs(m['value_normalized'] - group[0]['value_normalized']) / max(group[0]['value_normalized'], 0.001) < 0.1:
+                    group.append(m)
+                    added = True
+                    break
+            if not added:
+                value_groups.append([m])
+
+        # Take the largest group (most consensus)
+        if value_groups:
+            best_group = max(value_groups, key=len)
+            representative = best_group[0]
+
+            metric_counter += 1
+            metric_key = f"extracted_{mtype}_{metric_counter}"
+
+            # Map type to readable name
+            type_names = {
+                'market_size': 'Market Size',
+                'cagr': 'CAGR',
+                'growth_rate': 'Growth Rate',
+                'revenue': 'Revenue',
+                'year_value': 'Market Value'
+            }
+
+            extracted[metric_key] = {
+                'name': type_names.get(mtype, mtype.replace('_', ' ').title()),
+                'value': representative['value'],
+                'unit': f"${representative['unit']}" if representative['unit'] in ['T', 'B', 'M'] else representative['unit'],
+                'source_count': len(best_group),
+                'sources': list(set(m['source'] for m in best_group))[:3]
+            }
+
+    return extracted
+
+
+def extract_entities_from_sources(web_context: Dict) -> List[Dict]:
+    """
+    Extract company/entity names from web search snippets.
+    100% deterministic - no LLM involved.
+    """
+    search_results = web_context.get("search_results", [])
+
+    # Common market leaders that appear in financial contexts
+    known_entities = [
+        # Tech
+        'apple', 'microsoft', 'google', 'alphabet', 'amazon', 'meta', 'facebook',
+        'nvidia', 'tesla', 'intel', 'amd', 'qualcomm', 'broadcom', 'cisco',
+        'ibm', 'oracle', 'salesforce', 'adobe', 'netflix', 'uber', 'airbnb',
+        # Finance
+        'jpmorgan', 'goldman sachs', 'morgan stanley', 'bank of america',
+        'wells fargo', 'citigroup', 'blackrock', 'vanguard', 'fidelity',
+        # Auto
+        'toyota', 'volkswagen', 'ford', 'gm', 'general motors', 'honda',
+        'bmw', 'mercedes', 'byd', 'nio', 'rivian', 'lucid',
+        # Pharma
+        'pfizer', 'johnson & johnson', 'roche', 'novartis', 'merck',
+        'abbvie', 'eli lilly', 'astrazeneca', 'moderna', 'gilead',
+        # Energy
+        'exxon', 'chevron', 'shell', 'bp', 'totalenergies', 'conocophillips',
+        # Consumer
+        'walmart', 'costco', 'home depot', 'nike', 'starbucks', 'mcdonalds',
+        'coca-cola', 'pepsi', 'procter & gamble', 'unilever',
+        # Regions (for market share by region)
+        'north america', 'europe', 'asia pacific', 'asia-pacific', 'apac',
+        'china', 'united states', 'japan', 'germany', 'india', 'uk',
+        'latin america', 'middle east', 'africa'
+    ]
+
+    entity_mentions = {}
+
+    for result in search_results:
+        snippet = result.get("snippet", "").lower()
+        title = result.get("title", "").lower()
+        text = f"{title} {snippet}"
+
+        for entity in known_entities:
+            if entity in text:
+                # Try to extract market share if mentioned
+                share_pattern = rf'{re.escape(entity)}[^.]*?(\d+(?:\.\d+)?)\s*%'
+                share_match = re.search(share_pattern, text, re.IGNORECASE)
+
+                share = None
+                if share_match:
+                    share = f"{share_match.group(1)}%"
+
+                if entity not in entity_mentions:
+                    entity_mentions[entity] = {'count': 0, 'shares': []}
+
+                entity_mentions[entity]['count'] += 1
+                if share:
+                    entity_mentions[entity]['shares'].append(share)
+
+    # Sort by mention count and build list
+    sorted_entities = sorted(entity_mentions.items(), key=lambda x: x[1]['count'], reverse=True)
+
+    entities = []
+    for entity_name, data in sorted_entities[:10]:  # Top 10
+        # Use most common share if available
+        share = None
+        if data['shares']:
+            # Take the most common share value
+            share_counts = Counter(data['shares'])
+            share = share_counts.most_common(1)[0][0]
+
+        entities.append({
+            'name': entity_name.title(),
+            'share': share,
+            'growth': None,  # Can't reliably extract growth from snippets
+            'mention_count': data['count']
+        })
+
+    return entities
+
 # ------------------------------------
 # STABILITY SCORE COMPUTATION
 # ------------------------------------
@@ -2696,64 +2911,65 @@ def main():
                         "summary": "", "sources": [], "source_reliability": []
                     }
 
-                # Run NEW analysis first
-                with st.spinner("🤖 Running new analysis..."):
-                    new_response = query_perplexity(evolution_query, web_context_evo)
+                # OPTION B: Extract data directly from sources (no LLM variance)
+                with st.spinner("🔢 Extracting current data from sources..."):
+                    # Extract metrics directly from web snippets
+                    extracted_metrics = extract_metrics_from_sources(web_context_evo)
+                    extracted_entities = extract_entities_from_sources(web_context_evo)
 
-                if not new_response:
-                    st.error("❌ New analysis failed")
-                else:
-                    try:
-                        new_parsed = json.loads(new_response)
-                    except:
-                        st.error("❌ Failed to parse new analysis")
-                        new_parsed = None
+                # Build synthetic "new analysis" from extracted data
+                new_analysis = {
+                    "question": evolution_query,
+                    "timestamp": datetime.now().isoformat(),
+                    "primary_response": {
+                        "primary_metrics": extracted_metrics,
+                        "top_entities": extracted_entities,
+                        "key_findings": [],  # No findings from extraction - just metrics
+                        "sources": web_context_evo.get("sources", [])
+                    }
+                }
 
-                    if new_parsed:
-                        # Build new analysis structure
-                        new_analysis = {
-                            "question": evolution_query,
-                            "timestamp": datetime.now().isoformat(),
-                            "primary_response": new_parsed
-                        }
+                # DETERMINISTIC DIFF COMPUTATION
+                with st.spinner("🔢 Computing differences..."):
+                    diff = compute_evolution_diff(previous_data, new_analysis)
 
-                        # DETERMINISTIC DIFF COMPUTATION
-                        with st.spinner("🔢 Computing differences (deterministic)..."):
-                            diff = compute_evolution_diff(previous_data, new_analysis)
+                # LLM EXPLANATION ONLY (explains computed diffs, doesn't discover them)
+                with st.spinner("💬 Generating interpretation..."):
+                    explanation = get_llm_explanation(diff, evolution_query)
 
-                        # LLM EXPLANATION ONLY
-                        with st.spinner("💬 Generating interpretation..."):
-                            explanation = get_llm_explanation(diff, evolution_query)
+                # Build output for download
+                evolution_output = {
+                    "question": evolution_query,
+                    "timestamp": datetime.now().isoformat(),
+                    "analysis_type": "source_extracted_evolution",
+                    "previous_timestamp": previous_data.get("timestamp"),
+                    "extracted_data": {
+                        "metrics": extracted_metrics,
+                        "entities": extracted_entities
+                    },
+                    "diff": {
+                        "stability_score": diff.stability_score,
+                        "time_delta_hours": diff.time_delta_hours,
+                        "summary_stats": diff.summary_stats,
+                        "metric_changes": [vars(m) for m in diff.metric_diffs],
+                        "entity_changes": [vars(e) for e in diff.entity_diffs],
+                    },
+                    "explanation": explanation,
+                    "sources_used": web_context_evo.get("sources", [])
+                }
 
-                        # Build output for download
-                        evolution_output = {
-                            "question": evolution_query,
-                            "timestamp": datetime.now().isoformat(),
-                            "analysis_type": "deterministic_evolution",
-                            "previous_timestamp": previous_data.get("timestamp"),
-                            "new_response": new_parsed,
-                            "diff": {
-                                "stability_score": diff.stability_score,
-                                "time_delta_hours": diff.time_delta_hours,
-                                "summary_stats": diff.summary_stats,
-                                "metric_changes": [vars(m) for m in diff.metric_diffs],
-                                "entity_changes": [vars(e) for e in diff.entity_diffs],
-                                "finding_changes": [vars(f) for f in diff.finding_diffs],
-                            },
-                            "explanation": explanation
-                        }
+                # Download button
+                st.download_button(
+                    label="💾 Download Evolution Analysis",
+                    data=json.dumps(evolution_output, indent=2, ensure_ascii=False, default=str).encode('utf-8'),
+                    file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
 
-                        # Download button
-                        st.download_button(
-                            label="💾 Download Evolution Analysis",
-                            data=json.dumps(evolution_output, indent=2, ensure_ascii=False, default=str).encode('utf-8'),
-                            file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                            mime="application/json"
-                        )
+                # Render deterministic results
+                render_evolution_results(diff, explanation, evolution_query)
 
-                        # Render deterministic results
-                        render_evolution_results(diff, explanation, evolution_query)
-                
 if __name__ == "__main__":
     main()
+
 
