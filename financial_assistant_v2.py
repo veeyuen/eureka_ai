@@ -15,7 +15,7 @@ import base64
 import hashlib
 import numpy as np
 import google.generativeai as genai
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Tuple
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
 from datetime import datetime, timedelta
