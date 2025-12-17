@@ -2025,10 +2025,13 @@ def compute_evolution_diff(old_analysis: Dict, new_analysis: Dict) -> EvolutionD
         new_response.get('top_entities', [])
     )
 
-    finding_diffs = compute_finding_diffs(
-        old_response.get('key_findings', []),
-        new_response.get('key_findings', [])
-    )
+    #finding_diffs = compute_finding_diffs(
+    #    old_response.get('key_findings', []),
+    #    new_response.get('key_findings', [])
+    #)
+
+    # Skip findings comparison - too volatile
+    finding_diffs = []
 
     # Compute stability
     stability = compute_stability_score(metric_diffs, entity_diffs, finding_diffs)
