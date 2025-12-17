@@ -1,8 +1,10 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.4
+# YUREEKA AI RESEARCH ASSISTANT v7.5
 # With Web Search, Evidence-Based Verification, Confidence Scoring
-# Stable SerpAPI Output with Evolution Layer Version
-# Additional Stability Control Through Feeding JSON Into Model
+# SerpAPI Output with Evolution Layer Version
+# Updated SerpAPI parameters for stable output
+# Redundant code culled
+# Anchored Evolution Analysis Using JSON As Input Into Model
 # =========================================================
 
 import os
@@ -544,23 +546,27 @@ def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
 # =========================================================
 
 # Fixed parameters to prevent geo/personalization variance
+
 SERPAPI_STABILITY_CONFIG = {
     "gl": "us",                    # Fixed country
     "hl": "en",                    # Fixed language
     "google_domain": "google.com", # Fixed domain
     "nfpr": "1",                   # No auto-query correction
+    "safe": "active",              # Consistent safe search
+    "device": "desktop",           # Fixed device type
+    "no_cache": "false",           # Allow Google caching (more stable)
 }
 
 # Preferred domains for consistent sourcing (sorted by priority)
 PREFERRED_SOURCE_DOMAINS = [
-    "statista.com", "reuters.com", "bloomberg.com", "imf.org", "wsj.com", "bcg.com",
-    "worldbank.org", "mckinsey.com", "deloitte.com", "spglobal.com", "ft.com", "pwc.com",
-    "ft.com", "economist.com", "wsj.com", "forbes.com", "cnbc.com", "kpmg.com"
+    "statista.com", "reuters.com", "bloomberg.com", "imf.org", "wsj.com", "bcg.com", "opec.org",
+    "worldbank.org", "mckinsey.com", "deloitte.com", "spglobal.com", "ft.com", "pwc.com", "semiconductors.org",
+    "ft.com", "economist.com", "wsj.com", "forbes.com", "cnbc.com", "kpmg.com", "eia.org"
 ]
 
 # Search results cache
 _search_cache: Dict[str, Tuple[List[Dict], datetime]] = {}
-SEARCH_CACHE_TTL_HOURS = 12
+SEARCH_CACHE_TTL_HOURS = 24
 
 def get_search_cache_key(query: str) -> str:
     """Generate stable cache key for search query"""
@@ -630,17 +636,29 @@ def source_quality_score(sources: List[str]) -> float:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
+    def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
     """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
 
-    # Check cache first
+    # Check cache first (this is the ONLY cache we use - removed @st.cache_data to avoid conflicts)
     cached = get_cached_search_results(query)
     if cached:
+        st.info("📦 Using cached search results")
         return cached
 
-    # Normalize query for consistent searches
-    query_normalized = re.sub(r'\b(latest|current|today|now)\b', '2024', query.lower())
+    # Aggressive query normalization for consistent searches
+    query_normalized = query.lower().strip()
+
+    # Remove temporal words that cause variance
+    query_normalized = re.sub(r'\b(latest|current|today|now|recent|new|upcoming|this year|this month)\b', '', query_normalized)
+
+    # Normalize whitespace
+    query_normalized = re.sub(r'\s+', ' ', query_normalized).strip()
+
+    # Add year for consistency
+    if not re.search(r'\b20\d{2}\b', query_normalized):
+        query_normalized = f"{query_normalized} 2024"
 
     # Build search terms
     query_lower = query_normalized
@@ -743,7 +761,7 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
     """Search web and scrape top sources"""
     search_results = search_serpapi(query, num_results=10)
 
-    # Replace the single line with: NEW
+    # Show what SerpAPI has found
     source_counts = {
     "total": len(search_results),
     "high_quality": sum(1 for r in search_results if "✅" in classify_source_reliability(r.get("link", ""))),
@@ -888,41 +906,6 @@ def query_perplexity(query: str, web_context: Dict, temperature: float = 0.1) ->
         st.error(f"❌ Perplexity API error: {e}")
         return create_fallback_response(query, search_count, web_context)
 
-def query_gemini(query: str) -> str:
-    """Query Gemini API"""
-    prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
-
-    try:
-        response = gemini_model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=2000
-            )
-        )
-
-        content = getattr(response, "text", None)
-        if not content or not content.strip():
-            raise Exception("Empty Gemini response")
-
-        # Parse and repair
-        parsed = parse_json_safely(content, "Gemini")
-        if not parsed:
-            return create_fallback_response(query, 0, {})
-
-        repaired = repair_llm_response(parsed)
-
-        validate_numeric_fields(repaired, "Gemini")
-
-        try:
-            llm_obj = LLMResponse.model_validate(repaired)
-            return llm_obj.model_dump_json()
-        except ValidationError:
-            return create_fallback_response(query, 0, {})
-
-    except Exception as e:
-        st.info("Secondary model response unavailable")
-        return create_fallback_response(query, 0, {})
 
 def create_fallback_response(query: str, search_count: int, web_context: Dict) -> str:
     """Create fallback response matching schema"""
@@ -1110,24 +1093,6 @@ def create_anchored_fallback(query: str, previous_data: Dict, web_context: Dict)
 # 8. VALIDATION & SCORING
 # =========================================================
 
-@st.cache_data
-def get_embedding(text: str):
-    """Cache embeddings for performance"""
-    return embedder.encode(text)
-
-def semantic_similarity(text1: str, text2: str) -> float:
-    """Calculate semantic similarity score (0-100)"""
-    if not text1 or not text2:
-        return 0.0
-
-    try:
-        v1 = get_embedding(text1)
-        v2 = get_embedding(text2)
-        sim = util.cos_sim(v1, v2)
-        return round(float(sim.item()) * 100, 2)
-    except Exception as e:
-        st.warning(f"Embedding error: {e}")
-        return 0.0
 
 def parse_number_with_unit(val_str: str) -> float:
     """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
@@ -1692,150 +1657,6 @@ def analyze_evolution(old_data: Dict, new_data: Dict) -> Dict:
         }
     }
 
-def render_evolution_dashboard(evolution: Dict, old_question: str):
-    """Render the evolution analysis dashboard"""
-
-    st.header("📈 Evolution Analysis")
-    st.markdown(f"**Query:** {old_question}")
-
-    # Time and stability overview
-    col1, col2, col3, col4 = st.columns(4)
-
-    time_delta = evolution.get("time_delta_hours")
-    if time_delta:
-        if time_delta < 24:
-            time_str = f"{time_delta:.1f} hours"
-        else:
-            time_str = f"{time_delta/24:.1f} days"
-        col1.metric("Time Since Last", time_str)
-    else:
-        col1.metric("Time Since Last", "Unknown")
-
-    stability = evolution.get("stability", {})
-    col2.metric("Overall Stability", f"{stability.get('overall_stability', 0):.0f}%")
-
-    conf = evolution.get("confidence_change", {})
-    col3.metric("Confidence", f"{conf.get('new', 0):.0f}%", f"{conf.get('change', 0):+.1f}%")
-
-    # Stability indicator
-    overall_stab = stability.get('overall_stability', 0)
-    if overall_stab >= 80:
-        col4.success("🟢 Highly Stable")
-    elif overall_stab >= 60:
-        col4.warning("🟡 Moderately Stable")
-    else:
-        col4.error("🔴 Significant Changes")
-
-    st.markdown("---")
-
-    # Stability breakdown
-    st.subheader("📊 Stability Breakdown")
-    stab_cols = st.columns(3)
-    stab_cols[0].metric("Metrics", f"{stability.get('metrics_stability', 0):.0f}%")
-    stab_cols[1].metric("Entities", f"{stability.get('entities_stability', 0):.0f}%")
-    stab_cols[2].metric("Findings", f"{stability.get('findings_stability', 0):.0f}%")
-
-    st.markdown("---")
-
-    # Metric changes
-    st.subheader("💰 Metric Changes")
-    metric_changes = evolution.get("metric_changes", [])
-
-    if metric_changes:
-        metric_data = []
-        for m in metric_changes:
-            direction = m.get("direction", "")
-            if direction == "increased":
-                icon = "📈"
-            elif direction == "decreased":
-                icon = "📉"
-            elif direction == "new":
-                icon = "🆕"
-            elif direction == "removed":
-                icon = "❌"
-            else:
-                icon = "➡️"
-
-            change_str = f"{m.get('change_pct', 0):+.1f}%" if m.get('change_pct') is not None else "-"
-
-            metric_data.append({
-                "": icon,
-                "Metric": m.get("name", ""),
-                "Previous": m.get("old_value", "N/A"),
-                "Current": m.get("new_value", "N/A"),
-                "Change": change_str
-            })
-
-        st.dataframe(pd.DataFrame(metric_data), hide_index=True, use_container_width=True)
-    else:
-        st.info("No metric changes to display")
-
-    st.markdown("---")
-
-    # Entity changes
-    st.subheader("🏢 Entity Ranking Changes")
-    entity_changes = evolution.get("entity_changes", [])
-
-    if entity_changes:
-        entity_data = []
-        for e in entity_changes:
-            direction = e.get("direction", "")
-            if direction == "moved_up":
-                icon = "⬆️"
-            elif direction == "moved_down":
-                icon = "⬇️"
-            elif direction == "new":
-                icon = "🆕"
-            elif direction == "removed":
-                icon = "❌"
-            else:
-                icon = "➡️"
-
-            rank_change = e.get("rank_change")
-            rank_str = f"{rank_change:+d}" if rank_change is not None else "-"
-
-            entity_data.append({
-                "": icon,
-                "Entity": e.get("name", ""),
-                "Prev Rank": e.get("old_rank", "-"),
-                "New Rank": e.get("new_rank", "-"),
-                "Rank Δ": rank_str,
-                "Prev Share": e.get("old_share", "-"),
-                "New Share": e.get("new_share", "-")
-            })
-
-        st.dataframe(pd.DataFrame(entity_data), hide_index=True, use_container_width=True)
-    else:
-        st.info("No entity changes to display")
-
-    st.markdown("---")
-
-    # Finding changes
-    st.subheader("🔍 Key Finding Changes")
-    finding_changes = evolution.get("finding_changes", [])
-
-    if finding_changes:
-        new_findings = [f for f in finding_changes if f.get("status") == "new"]
-        removed_findings = [f for f in finding_changes if f.get("status") == "removed"]
-        modified_findings = [f for f in finding_changes if f.get("status") == "modified"]
-
-        if new_findings:
-            st.markdown("**🆕 New Findings:**")
-            for f in new_findings:
-                st.markdown(f"- {f.get('new_finding', '')}")
-
-        if removed_findings:
-            st.markdown("**❌ Removed Findings:**")
-            for f in removed_findings:
-                st.markdown(f"- ~~{f.get('old_finding', '')}~~")
-
-        if modified_findings:
-            st.markdown("**✏️ Modified Findings:**")
-            for f in modified_findings:
-                st.markdown(f"- {f.get('new_finding', '')} *(was: {f.get('old_finding', '')[:50]}...)*")
-    else:
-        st.info("No finding changes to display")
-
 # =========================================================
 # 8B. EVOLUTION DASHBOARD RENDERING
 # =========================================================
@@ -2362,7 +2183,7 @@ def main():
         """)
 
     # Create tabs
-    tab1, tab2 = st.tabs(["🔍 New Analysis", "📈 Evolution Tracker"])
+    tab1, tab2 = st.tabs(["🔍 New Analysis", "📈 Evolution Analysis"])
 
     # =====================
     # TAB 1: NEW ANALYSIS
@@ -2499,7 +2320,7 @@ def main():
     # =====================
     with tab2:
         st.markdown("""
-        ### 📈 Evolution Tracker
+        ###
         Upload a previous Yureeka analysis to track how the data has evolved.
 
         **How it works:**
@@ -2637,4 +2458,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
