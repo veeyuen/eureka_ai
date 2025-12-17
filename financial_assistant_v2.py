@@ -1,4 +1,4 @@
-# =========================================================
+   # =========================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.7
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
@@ -3095,7 +3095,7 @@ def main():
     # =====================
     with tab2:
         st.markdown("""
-        ### 📈 Evolution Tracker
+        📈 Evolution Analysis
         Upload a previous Yureeka analysis to track how the analysis has evolved.
 
         **How it works:**
