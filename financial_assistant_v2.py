@@ -2427,7 +2427,7 @@ def main():
             st.info(f"📝 Using previous query: {evolution_query}")
         else:
             evolution_query = st.text_input(
-                "Query for evolution analysis:",
+                "Please enter your query here:",
                 value=previous_data.get("question", "") if previous_data else "",
                 key="evolution_query"
             )
