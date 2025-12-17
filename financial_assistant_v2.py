@@ -3,7 +3,7 @@
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
-# Redundant code culled
+# Deterministic Output From LLM
 # Anchored Evolution Analysis Using JSON As Input Into Model
 # =========================================================
 
@@ -589,6 +589,35 @@ def cache_search_results(query: str, results: List[Dict]):
     cache_key = get_search_cache_key(query)
     _search_cache[cache_key] = (results, datetime.now())
 
+# =========================================================
+# LLM RESPONSE CACHE - Prevents variance on identical inputs
+# =========================================================
+_llm_cache: Dict[str, Tuple[str, datetime]] = {}
+LLM_CACHE_TTL_HOURS = 24  # Cache LLM responses for 24 hours
+
+def get_llm_cache_key(query: str, web_context: Dict) -> str:
+    """Generate cache key from query + source URLs"""
+    # Include source URLs so cache invalidates if sources change
+    source_urls = sorted(web_context.get("sources", [])[:5])
+    cache_input = f"{query.lower().strip()}|{'|'.join(source_urls)}"
+    return hashlib.md5(cache_input.encode()).hexdigest()[:20]
+
+def get_cached_llm_response(query: str, web_context: Dict) -> Optional[str]:
+    """Get cached LLM response if still valid"""
+    cache_key = get_llm_cache_key(query, web_context)
+    if cache_key in _llm_cache:
+        cached_response, cached_time = _llm_cache[cache_key]
+        if datetime.now() - cached_time < timedelta(hours=LLM_CACHE_TTL_HOURS):
+            return cached_response
+        del _llm_cache[cache_key]
+    return None
+
+def cache_llm_response(query: str, web_context: Dict, response: str):
+    """Cache LLM response"""
+    cache_key = get_llm_cache_key(query, web_context)
+    _llm_cache[cache_key] = (response, datetime.now())
+
+
 def sort_results_deterministically(results: List[Dict]) -> List[Dict]:
     """Sort results for consistent ordering"""
     def sort_key(r):
@@ -601,6 +630,7 @@ def sort_results_deterministically(results: List[Dict]) -> List[Dict]:
                 break
         return (priority, link)
     return sorted(results, key=sort_key)
+
 
 def classify_source_reliability(source: str) -> str:
     """Classify source as High/Medium/Low quality"""
@@ -636,6 +666,7 @@ def source_quality_score(sources: List[str]) -> float:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
+    def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
     """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
@@ -822,8 +853,14 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
 # 7. LLM QUERY FUNCTIONS
 # =========================================================
 
-def query_perplexity(query: str, web_context: Dict, temperature: float = 0.1) -> str:
-    """Query Perplexity API with web context"""
+def query_perplexity(query: str, web_context: Dict, temperature: float = 0.0) -> str:
+    """Query Perplexity API with web context - deterministic settings"""
+
+    # Check LLM cache first
+    cached_response = get_cached_llm_response(query, web_context)
+    if cached_response:
+        st.info("📦 Using cached LLM response (identical sources)")
+        return cached_response
 
     search_count = len(web_context.get("search_results", []))
 
@@ -856,9 +893,9 @@ def query_perplexity(query: str, web_context: Dict, temperature: float = 0.1) ->
 
     payload = {
         "model": "sonar",
-        "temperature": temperature,
+        "temperature": 0.0,      # DETERMINISTIC: No randomness
         "max_tokens": 2000,
-        "top_p": 0.8,
+        "top_p": 1.0,            # DETERMINISTIC: No nucleus sampling
         "messages": [{"role": "user", "content": enhanced_query}]
     }
 
@@ -895,7 +932,10 @@ def query_perplexity(query: str, web_context: Dict, temperature: float = 0.1) ->
                 llm_obj.sources = merged[:10]
                 llm_obj.freshness = "Current (web-enhanced)"
 
-            return llm_obj.model_dump_json()
+                result = llm_obj.model_dump_json()
+                # Cache the successful response
+                cache_llm_response(query, web_context, result)
+                return result
 
         except ValidationError as e:
             st.warning(f"⚠️ Pydantic validation failed: {e}")
@@ -1023,11 +1063,12 @@ def query_perplexity_anchored(query: str, previous_data: Dict, web_context: Dict
         "Content-Type": "application/json"
     }
 
+
     payload = {
         "model": "sonar",
-        "temperature": temperature,
+        "temperature": 0.0,      # DETERMINISTIC
         "max_tokens": 2500,
-        "top_p": 0.8,
+        "top_p": 1.0,            # DETERMINISTIC
         "messages": [{"role": "user", "content": anchored_prompt}]
     }
 
@@ -2457,5 +2498,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
