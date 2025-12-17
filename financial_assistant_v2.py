@@ -669,6 +669,7 @@ def source_quality_score(sources: List[str]) -> float:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
+    def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
     """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
@@ -3091,27 +3092,87 @@ def main():
                 st.json(primary_data)
 
     # =====================
-    # TAB 2: EVOLUTION TRACKER (ANCHORED)
+    # TAB 2: EVOLUTION TRACKER
     # =====================
     with tab2:
+        st.markdown("""
+        ### 📈 Evolution Tracker
+        Upload a previous Yureeka analysis to track how the analysis has evolved.
+
+        **How it works:**
+        - Re-fetches the SAME sources from your previous analysis
+        - Extracts current numbers from those sources
+        - Computes deterministic diffs (no LLM variance)
+        - Provides stability score and change summary
+        """)
+
+        # Upload previous analysis
+        uploaded_file = st.file_uploader(
+            "📁 Upload previous Yureeka JSON analysis",
+            type=['json'],
+            key="evolution_upload"
+        )
+
+        previous_data = None
+        if uploaded_file:
+            try:
+                previous_data = json.load(uploaded_file)
+                prev_response = previous_data.get("primary_response", {})
+                prev_timestamp = previous_data.get("timestamp", "Unknown")
+
+                st.success(f"✅ Loaded: {previous_data.get('question', 'Unknown query')}")
+                st.caption(f"📅 Previous analysis from: {prev_timestamp}")
+
+                # Show previous analysis summary
+                with st.expander("📋 Previous Analysis Summary", expanded=False):
+                    st.write(f"**Confidence:** {previous_data.get('final_confidence', 'N/A')}%")
+                    st.write(f"**Summary:** {prev_response.get('executive_summary', 'N/A')}")
+
+                    st.write("**Previous Metrics:**")
+                    for k, m in list(prev_response.get("primary_metrics", {}).items())[:5]:
+                        if isinstance(m, dict):
+                            st.write(f"- {m.get('name', k)}: {m.get('value')} {m.get('unit', '')}")
+
+                    st.write("**Previous Top Entities:**")
+                    for i, e in enumerate(prev_response.get("top_entities", [])[:5], 1):
+                        if isinstance(e, dict):
+                            st.write(f"{i}. {e.get('name')}: {e.get('share', 'N/A')}")
+
+                    st.write("**Previous Sources:**")
+                    prev_sources = previous_data.get('web_sources', []) or prev_response.get('sources', [])
+                    for i, src in enumerate(prev_sources[:5], 1):
+                        st.write(f"{i}. {src[:60]}...")
+
+            except Exception as e:
+                st.error(f"❌ Failed to load JSON: {e}")
+                previous_data = None
+
+        # Query display
+        if previous_data:
+            evolution_query = previous_data.get("question", "")
+            st.info(f"📝 Query: {evolution_query}")
+        else:
+            evolution_query = ""
+
         # Run evolution analysis
         if st.button("🔄 Run Evolution Analysis", type="primary", key="evolution_btn"):
             if not previous_data:
                 st.error("❌ Please upload a previous analysis JSON first")
             elif not evolution_query or len(evolution_query.strip()) < 5:
-                st.error("❌ Please enter a valid query")
+                st.error("❌ No valid query found in previous analysis")
             else:
                 evolution_query = evolution_query.strip()[:500]
 
                 # SOURCE-ANCHORED ANALYSIS
-                # Re-fetch the SAME sources from previous analysis
                 with st.spinner("🔗 Re-fetching original sources for comparison..."):
                     results = compute_source_anchored_diff(previous_data)
 
-                # Optional: Get LLM explanation of the changes
-                if results['status'] == 'success' and results['metric_changes']:
-                    with st.spinner("💬 Generating interpretation..."):
-                        # Build simple explanation prompt
+                if results['status'] != 'success':
+                    st.error(f"❌ {results.get('message', 'Analysis failed')}")
+                else:
+                    # Generate interpretation
+                    interpretation = ""
+                    if results['metric_changes']:
                         changes_text = []
                         for m in results['metric_changes']:
                             if m['change_type'] == 'increased':
@@ -3120,46 +3181,128 @@ def main():
                                 changes_text.append(f"- {m['name']}: {m['previous_value']} → {m['current_value']} (DOWN {m['change_pct']:+.1f}%)")
 
                         if changes_text:
-                            explanation_prompt = """Based on these metric changes for "{evolution_query}": {chr(10).join(changes_text)}
-                            Provide a 2-3 sentence interpretation of what these changes mean for the market. 
-                            Return ONLY a JSON object: {{"interpretation": "your interpretation here"}}"""
+                            with st.spinner("💬 Generating interpretation..."):
+                                try:
+                                    explanation_prompt = f"""Based on these metric changes for "{evolution_query}":
+{chr(10).join(changes_text)}
 
-                            try:
-                                headers = {"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"}
-                                payload = {"model": "sonar", "temperature": 0.0, "max_tokens": 200, "messages": [{"role": "user", "content": explanation_prompt}]}
-                                resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=20)
-                                explanation_data = parse_json_safely(resp.json()["choices"][0]["message"]["content"], "Explanation")
-                                interpretation = explanation_data.get('interpretation', '')
-                            except:
-                                interpretation = ''
+Provide a 2-3 sentence interpretation of what these changes mean.
+Return ONLY JSON: {{"interpretation": "your text here"}}"""
+
+                                    headers = {"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"}
+                                    payload = {"model": "sonar", "temperature": 0.0, "max_tokens": 200, "top_p": 1.0, "messages": [{"role": "user", "content": explanation_prompt}]}
+                                    resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=20)
+                                    explanation_data = parse_json_safely(resp.json()["choices"][0]["message"]["content"], "Explanation")
+                                    interpretation = explanation_data.get('interpretation', '')
+                                except Exception as e:
+                                    interpretation = f"Unable to generate interpretation: {e}"
                         else:
-                            interpretation = "No significant changes detected."
-                else:
-                    interpretation = ''
+                            interpretation = "No significant metric changes detected."
 
-                # Build output for download
-                evolution_output = {
-                    "question": evolution_query,
-                    "timestamp": datetime.now().isoformat(),
-                    "analysis_type": "source_anchored",
-                    "previous_timestamp": previous_data.get("timestamp"),
-                    "results": results,
-                    "interpretation": interpretation
-                }
+                    # Build output for download
+                    evolution_output = {
+                        "question": evolution_query,
+                        "timestamp": datetime.now().isoformat(),
+                        "analysis_type": "source_anchored",
+                        "previous_timestamp": previous_data.get("timestamp"),
+                        "results": results,
+                        "interpretation": interpretation
+                    }
 
-                # Download button
-                st.download_button(
-                    label="💾 Download Evolution Analysis",
-                    data=json.dumps(evolution_output, indent=2, ensure_ascii=False).encode('utf-8'),
-                    file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
+                    # Download button
+                    st.download_button(
+                        label="💾 Download Evolution Analysis",
+                        data=json.dumps(evolution_output, indent=2, ensure_ascii=False).encode('utf-8'),
+                        file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
 
-                # Show interpretation
-                if interpretation:
-                    st.info(f"**Interpretation:** {interpretation}")
+                    # =====================
+                    # RENDER RESULTS DASHBOARD
+                    # =====================
+                    st.header("📈 Evolution Analysis Results")
+                    st.markdown(f"**Query:** {evolution_query}")
 
-                # Render results
-                render_source_anchored_results(results, evolution_query)
-if __name__ == "__main__":
+                    # Overview metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Sources Checked", results['sources_checked'])
+                    col2.metric("Sources Fetched", results['sources_fetched'])
+                    col3.metric("Stability", f"{results['stability_score']:.0f}%")
+
+                    summary = results['summary']
+                    if summary['metrics_increased'] > summary['metrics_decreased']:
+                        col4.success("📈 Trending Up")
+                    elif summary['metrics_decreased'] > summary['metrics_increased']:
+                        col4.error("📉 Trending Down")
+                    else:
+                        col4.info("➡️ Stable")
+
+                    # Stability indicator
+                    st.markdown("---")
+                    if results['stability_score'] >= 80:
+                        st.success(f"🟢 **High Stability ({results['stability_score']:.0f}%)** - Data is consistent with previous analysis")
+                    elif results['stability_score'] >= 60:
+                        st.warning(f"🟡 **Moderate Stability ({results['stability_score']:.0f}%)** - Some changes detected")
+                    else:
+                        st.error(f"🔴 **Low Stability ({results['stability_score']:.0f}%)** - Significant changes from previous analysis")
+
+                    # Interpretation
+                    if interpretation:
+                        st.markdown("---")
+                        st.subheader("💬 Interpretation")
+                        st.info(interpretation)
+
+                    # Source verification
+                    st.markdown("---")
+                    st.subheader("🔗 Source Verification")
+                    for src in results['source_results']:
+                        if src['status'] == 'fetched':
+                            st.success(f"✅ {src['url'][:70]}... ({src['numbers_found']} numbers extracted)")
+                        else:
+                            st.error(f"❌ {src['url'][:70]}... (failed to fetch)")
+
+                    # Metric changes table
+                    st.markdown("---")
+                    st.subheader("💰 Metric Changes")
+
+                    if results['metric_changes']:
+                        rows = []
+                        for m in results['metric_changes']:
+                            icon = {
+                                'increased': '📈',
+                                'decreased': '📉',
+                                'unchanged': '➡️',
+                                'not_found': '❓'
+                            }.get(m['change_type'], '•')
+
+                            change_str = f"{m['change_pct']:+.1f}%" if m['change_pct'] is not None else "-"
+
+                            rows.append({
+                                '': icon,
+                                'Metric': m['name'],
+                                'Previous': m['previous_value'],
+                                'Current': m['current_value'],
+                                'Change': change_str,
+                                'Match Confidence': f"{m['match_confidence']:.0f}%"
+                            })
+
+                        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                    else:
+                        st.info("No metrics to compare")
+
+                    # Summary statistics
+                    st.markdown("---")
+                    st.subheader("📊 Change Summary")
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Total Metrics", summary['total_metrics'])
+                    col2.metric("Found in Sources", summary['metrics_found'])
+                    col3.metric("📈 Increased", summary['metrics_increased'])
+                    col4.metric("📉 Decreased", summary['metrics_decreased'])
+
+                    # Debug expander
+                    with st.expander("🔧 Debug Information"):
+                        st.json(results)
+
+    if __name__ == "__main__":
     main()
