@@ -2359,10 +2359,10 @@ def main():
     # =====================
     with tab2:
         st.markdown("""
-        Upload a previous Yureeka analysis to track how the data has evolved.
+        Upload a previous Yureeka analysis to track how the analysis has evolved.
 
         **How it works:**
-        - Your previous analysis is fed to the model as context
+        - Your previous analysis is fed to the model as context in JSON format
         - The model searches for UPDATES to the same metrics/entities
         - Changes are explicitly tracked (increased/decreased/new/removed)
         - Stability score indicates how much has drifted
