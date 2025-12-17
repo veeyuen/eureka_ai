@@ -1,7 +1,7 @@
 # =========================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.2
 # With Web Search, Evidence-Based Verification, Confidence Scoring
-# Stable SerpAPI Output Version
+# Stable SerpAPI Output with Evolution Layer Version
 # =========================================================
 
 import os
@@ -14,6 +14,7 @@ import streamlit as st
 import base64
 import hashlib
 import numpy as np
+import difflib
 import google.generativeai as genai
 from typing import Dict, List, Optional, Any, Union, Tuple
 from sentence_transformers import SentenceTransformer, util
@@ -1064,6 +1065,521 @@ def calculate_final_confidence(
     return round(max(0, min(100, final)), 1)
 
 # =========================================================
+# 8B. EVOLUTION LAYER - TRACK CHANGES OVER TIME
+# =========================================================
+
+def parse_numeric_for_comparison(value: Any) -> Optional[float]:
+    """Parse any value to float for comparison"""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = re.sub(r'[,$%]', '', value.strip())
+        multiplier = 1.0
+        if 'trillion' in cleaned.lower() or cleaned.lower().endswith('t'):
+            multiplier = 1000000
+            cleaned = re.sub(r'[tT](?:rillion)?', '', cleaned)
+        elif 'billion' in cleaned.lower() or cleaned.lower().endswith('b'):
+            multiplier = 1000
+            cleaned = re.sub(r'[bB](?:illion)?', '', cleaned)
+        elif 'million' in cleaned.lower() or cleaned.lower().endswith('m'):
+            multiplier = 1
+            cleaned = re.sub(r'[mM](?:illion)?', '', cleaned)
+        try:
+            return float(cleaned.strip()) * multiplier
+        except:
+            return None
+    return None
+
+def calculate_percent_change(old_val: Any, new_val: Any) -> Optional[float]:
+    """Calculate percent change between two values"""
+    old_num = parse_numeric_for_comparison(old_val)
+    new_num = parse_numeric_for_comparison(new_val)
+
+    if old_num is None or new_num is None:
+        return None
+    if old_num == 0:
+        return None if new_num == 0 else 100.0
+
+    return ((new_num - old_num) / abs(old_num)) * 100
+
+def normalize_metric_name(name: str) -> str:
+    """Normalize metric name for matching"""
+    if not name:
+        return ""
+    norm = re.sub(r'[^\w\s]', '', name.lower().strip())
+    norm = re.sub(r'\s+', ' ', norm)
+    return norm
+
+def fuzzy_match_names(name1: str, name2: str, threshold: float = 0.7) -> bool:
+    """Check if two names match using fuzzy matching"""
+    n1 = normalize_metric_name(name1)
+    n2 = normalize_metric_name(name2)
+
+    if n1 == n2:
+        return True
+
+    # Check if one contains the other
+    if n1 in n2 or n2 in n1:
+        return True
+
+    # Fuzzy ratio
+    ratio = difflib.SequenceMatcher(None, n1, n2).ratio()
+    return ratio >= threshold
+
+def compare_metrics(old_metrics: Dict, new_metrics: Dict) -> List[Dict]:
+    """Compare metrics between old and new responses"""
+    changes = []
+
+    # Track which new metrics have been matched
+    matched_new_keys = set()
+
+    # Compare old metrics to new
+    for old_key, old_m in old_metrics.items():
+        if not isinstance(old_m, dict):
+            continue
+
+        old_name = old_m.get("name", old_key)
+        old_val = old_m.get("value")
+        old_unit = old_m.get("unit", "")
+
+        # Find matching new metric
+        matched = False
+        for new_key, new_m in new_metrics.items():
+            if new_key in matched_new_keys:
+                continue
+            if not isinstance(new_m, dict):
+                continue
+
+            new_name = new_m.get("name", new_key)
+
+            if fuzzy_match_names(old_name, new_name):
+                matched_new_keys.add(new_key)
+                matched = True
+
+                new_val = new_m.get("value")
+                new_unit = new_m.get("unit", "")
+                pct_change = calculate_percent_change(old_val, new_val)
+
+                # Determine direction
+                if pct_change is None:
+                    direction = "unchanged"
+                elif abs(pct_change) < 1:
+                    direction = "unchanged"
+                elif pct_change > 0:
+                    direction = "increased"
+                else:
+                    direction = "decreased"
+
+                changes.append({
+                    "name": new_name,
+                    "old_value": f"{old_val} {old_unit}".strip(),
+                    "new_value": f"{new_val} {new_unit}".strip(),
+                    "change_pct": pct_change,
+                    "direction": direction,
+                    "status": "updated"
+                })
+                break
+
+        if not matched:
+            changes.append({
+                "name": old_name,
+                "old_value": f"{old_val} {old_unit}".strip(),
+                "new_value": "N/A",
+                "change_pct": None,
+                "direction": "removed",
+                "status": "removed"
+            })
+
+    # Find new metrics that weren't in old
+    for new_key, new_m in new_metrics.items():
+        if new_key in matched_new_keys:
+            continue
+        if not isinstance(new_m, dict):
+            continue
+
+        new_name = new_m.get("name", new_key)
+        new_val = new_m.get("value")
+        new_unit = new_m.get("unit", "")
+
+        changes.append({
+            "name": new_name,
+            "old_value": "N/A",
+            "new_value": f"{new_val} {new_unit}".strip(),
+            "change_pct": None,
+            "direction": "new",
+            "status": "new"
+        })
+
+    return changes
+
+def compare_entities(old_entities: List, new_entities: List) -> List[Dict]:
+    """Compare top entities between old and new responses"""
+    changes = []
+
+    # Build lookup for old entities
+    old_lookup = {}
+    for i, e in enumerate(old_entities):
+        if isinstance(e, dict):
+            name = e.get("name", "").lower().strip()
+            old_lookup[name] = {"rank": i + 1, "share": e.get("share"), "growth": e.get("growth")}
+
+    # Build lookup for new entities
+    new_lookup = {}
+    for i, e in enumerate(new_entities):
+        if isinstance(e, dict):
+            name = e.get("name", "").lower().strip()
+            new_lookup[name] = {"rank": i + 1, "share": e.get("share"), "growth": e.get("growth"), "original_name": e.get("name")}
+
+    # Compare
+    all_names = set(old_lookup.keys()) | set(new_lookup.keys())
+
+    for name in all_names:
+        old_data = old_lookup.get(name)
+        new_data = new_lookup.get(name)
+
+        if old_data and new_data:
+            rank_change = old_data["rank"] - new_data["rank"]  # Positive = moved up
+            share_change = calculate_percent_change(old_data["share"], new_data["share"])
+
+            if rank_change > 0:
+                direction = "moved_up"
+            elif rank_change < 0:
+                direction = "moved_down"
+            else:
+                direction = "unchanged"
+
+            changes.append({
+                "name": new_data.get("original_name", name),
+                "old_rank": old_data["rank"],
+                "new_rank": new_data["rank"],
+                "rank_change": rank_change,
+                "old_share": old_data["share"],
+                "new_share": new_data["share"],
+                "share_change_pct": share_change,
+                "direction": direction,
+                "status": "updated"
+            })
+        elif old_data:
+            changes.append({
+                "name": name,
+                "old_rank": old_data["rank"],
+                "new_rank": None,
+                "rank_change": None,
+                "old_share": old_data["share"],
+                "new_share": None,
+                "share_change_pct": None,
+                "direction": "removed",
+                "status": "removed"
+            })
+        elif new_data:
+            changes.append({
+                "name": new_data.get("original_name", name),
+                "old_rank": None,
+                "new_rank": new_data["rank"],
+                "rank_change": None,
+                "old_share": None,
+                "new_share": new_data["share"],
+                "share_change_pct": None,
+                "direction": "new",
+                "status": "new"
+            })
+
+    # Sort by new rank
+    changes.sort(key=lambda x: x.get("new_rank") or 999)
+    return changes
+
+def compare_findings(old_findings: List[str], new_findings: List[str]) -> List[Dict]:
+    """Compare key findings using semantic similarity"""
+    changes = []
+    matched_new = set()
+
+    for old_f in old_findings:
+        if not old_f:
+            continue
+
+        best_match = None
+        best_similarity = 0
+
+        for i, new_f in enumerate(new_findings):
+            if i in matched_new or not new_f:
+                continue
+
+            # Simple word overlap similarity
+            old_words = set(normalize_metric_name(old_f).split())
+            new_words = set(normalize_metric_name(new_f).split())
+
+            if old_words and new_words:
+                overlap = len(old_words & new_words) / len(old_words | new_words)
+                if overlap > best_similarity:
+                    best_similarity = overlap
+                    best_match = (i, new_f)
+
+        if best_match and best_similarity > 0.5:
+            matched_new.add(best_match[0])
+            changes.append({
+                "old_finding": old_f,
+                "new_finding": best_match[1],
+                "similarity": round(best_similarity * 100, 1),
+                "status": "retained" if best_similarity > 0.8 else "modified"
+            })
+        else:
+            changes.append({
+                "old_finding": old_f,
+                "new_finding": None,
+                "similarity": 0,
+                "status": "removed"
+            })
+
+    # New findings
+    for i, new_f in enumerate(new_findings):
+        if i not in matched_new and new_f:
+            changes.append({
+                "old_finding": None,
+                "new_finding": new_f,
+                "similarity": 0,
+                "status": "new"
+            })
+
+    return changes
+
+def calculate_stability_score(metric_changes: List[Dict], entity_changes: List[Dict], finding_changes: List[Dict]) -> Dict:
+    """Calculate overall stability score"""
+
+    # Metrics stability (40% weight)
+    if metric_changes:
+        unchanged_metrics = sum(1 for m in metric_changes if m.get("direction") == "unchanged")
+        small_change_metrics = sum(1 for m in metric_changes if m.get("change_pct") is not None and abs(m.get("change_pct", 0)) < 10)
+        metrics_stability = ((unchanged_metrics + small_change_metrics * 0.5) / len(metric_changes)) * 100
+    else:
+        metrics_stability = 100
+
+    # Entity stability (30% weight)
+    if entity_changes:
+        unchanged_entities = sum(1 for e in entity_changes if e.get("direction") == "unchanged")
+        entities_stability = (unchanged_entities / len(entity_changes)) * 100
+    else:
+        entities_stability = 100
+
+    # Findings stability (30% weight)
+    if finding_changes:
+        retained_findings = sum(1 for f in finding_changes if f.get("status") in ["retained", "modified"])
+        findings_stability = (retained_findings / len(finding_changes)) * 100
+    else:
+        findings_stability = 100
+
+    overall = (metrics_stability * 0.4 + entities_stability * 0.3 + findings_stability * 0.3)
+
+    return {
+        "metrics_stability": round(metrics_stability, 1),
+        "entities_stability": round(entities_stability, 1),
+        "findings_stability": round(findings_stability, 1),
+        "overall_stability": round(overall, 1)
+    }
+
+def analyze_evolution(old_data: Dict, new_data: Dict) -> Dict:
+    """Analyze evolution between two analysis snapshots"""
+
+    # Extract responses
+    old_response = old_data.get("primary_response", {})
+    new_response = new_data.get("primary_response", {})
+
+    # Calculate time delta
+    old_time = old_data.get("timestamp", "")
+    new_time = new_data.get("timestamp", "")
+
+    try:
+        old_dt = datetime.fromisoformat(old_time.replace("Z", "+00:00")) if old_time else None
+        new_dt = datetime.fromisoformat(new_time.replace("Z", "+00:00")) if new_time else None
+        time_delta_hours = (new_dt - old_dt).total_seconds() / 3600 if old_dt and new_dt else None
+    except:
+        time_delta_hours = None
+
+    # Compare components
+    metric_changes = compare_metrics(
+        old_response.get("primary_metrics", {}),
+        new_response.get("primary_metrics", {})
+    )
+
+    entity_changes = compare_entities(
+        old_response.get("top_entities", []),
+        new_response.get("top_entities", [])
+    )
+
+    finding_changes = compare_findings(
+        old_response.get("key_findings", []),
+        new_response.get("key_findings", [])
+    )
+
+    # Calculate stability
+    stability = calculate_stability_score(metric_changes, entity_changes, finding_changes)
+
+    # Confidence evolution
+    old_conf = old_data.get("final_confidence", 0)
+    new_conf = new_data.get("final_confidence", 0)
+    conf_change = new_conf - old_conf
+
+    return {
+        "old_timestamp": old_time,
+        "new_timestamp": new_time,
+        "time_delta_hours": round(time_delta_hours, 1) if time_delta_hours else None,
+        "metric_changes": metric_changes,
+        "entity_changes": entity_changes,
+        "finding_changes": finding_changes,
+        "stability": stability,
+        "confidence_change": {
+            "old": old_conf,
+            "new": new_conf,
+            "change": round(conf_change, 1)
+        }
+    }
+
+def render_evolution_dashboard(evolution: Dict, old_question: str):
+    """Render the evolution analysis dashboard"""
+
+    st.header("📈 Evolution Analysis")
+    st.markdown(f"**Query:** {old_question}")
+
+    # Time and stability overview
+    col1, col2, col3, col4 = st.columns(4)
+
+    time_delta = evolution.get("time_delta_hours")
+    if time_delta:
+        if time_delta < 24:
+            time_str = f"{time_delta:.1f} hours"
+        else:
+            time_str = f"{time_delta/24:.1f} days"
+        col1.metric("Time Since Last", time_str)
+    else:
+        col1.metric("Time Since Last", "Unknown")
+
+    stability = evolution.get("stability", {})
+    col2.metric("Overall Stability", f"{stability.get('overall_stability', 0):.0f}%")
+
+    conf = evolution.get("confidence_change", {})
+    col3.metric("Confidence", f"{conf.get('new', 0):.0f}%", f"{conf.get('change', 0):+.1f}%")
+
+    # Stability indicator
+    overall_stab = stability.get('overall_stability', 0)
+    if overall_stab >= 80:
+        col4.success("🟢 Highly Stable")
+    elif overall_stab >= 60:
+        col4.warning("🟡 Moderately Stable")
+    else:
+        col4.error("🔴 Significant Changes")
+
+    st.markdown("---")
+
+    # Stability breakdown
+    st.subheader("📊 Stability Breakdown")
+    stab_cols = st.columns(3)
+    stab_cols[0].metric("Metrics", f"{stability.get('metrics_stability', 0):.0f}%")
+    stab_cols[1].metric("Entities", f"{stability.get('entities_stability', 0):.0f}%")
+    stab_cols[2].metric("Findings", f"{stability.get('findings_stability', 0):.0f}%")
+
+    st.markdown("---")
+
+    # Metric changes
+    st.subheader("💰 Metric Changes")
+    metric_changes = evolution.get("metric_changes", [])
+
+    if metric_changes:
+        metric_data = []
+        for m in metric_changes:
+            direction = m.get("direction", "")
+            if direction == "increased":
+                icon = "📈"
+            elif direction == "decreased":
+                icon = "📉"
+            elif direction == "new":
+                icon = "🆕"
+            elif direction == "removed":
+                icon = "❌"
+            else:
+                icon = "➡️"
+
+            change_str = f"{m.get('change_pct', 0):+.1f}%" if m.get('change_pct') is not None else "-"
+
+            metric_data.append({
+                "": icon,
+                "Metric": m.get("name", ""),
+                "Previous": m.get("old_value", "N/A"),
+                "Current": m.get("new_value", "N/A"),
+                "Change": change_str
+            })
+
+        st.dataframe(pd.DataFrame(metric_data), hide_index=True, use_container_width=True)
+    else:
+        st.info("No metric changes to display")
+
+    st.markdown("---")
+
+    # Entity changes
+    st.subheader("🏢 Entity Ranking Changes")
+    entity_changes = evolution.get("entity_changes", [])
+
+    if entity_changes:
+        entity_data = []
+        for e in entity_changes:
+            direction = e.get("direction", "")
+            if direction == "moved_up":
+                icon = "⬆️"
+            elif direction == "moved_down":
+                icon = "⬇️"
+            elif direction == "new":
+                icon = "🆕"
+            elif direction == "removed":
+                icon = "❌"
+            else:
+                icon = "➡️"
+
+            rank_change = e.get("rank_change")
+            rank_str = f"{rank_change:+d}" if rank_change is not None else "-"
+
+            entity_data.append({
+                "": icon,
+                "Entity": e.get("name", ""),
+                "Prev Rank": e.get("old_rank", "-"),
+                "New Rank": e.get("new_rank", "-"),
+                "Rank Δ": rank_str,
+                "Prev Share": e.get("old_share", "-"),
+                "New Share": e.get("new_share", "-")
+            })
+
+        st.dataframe(pd.DataFrame(entity_data), hide_index=True, use_container_width=True)
+    else:
+        st.info("No entity changes to display")
+
+    st.markdown("---")
+
+    # Finding changes
+    st.subheader("🔍 Key Finding Changes")
+    finding_changes = evolution.get("finding_changes", [])
+
+    if finding_changes:
+        new_findings = [f for f in finding_changes if f.get("status") == "new"]
+        removed_findings = [f for f in finding_changes if f.get("status") == "removed"]
+        modified_findings = [f for f in finding_changes if f.get("status") == "modified"]
+
+        if new_findings:
+            st.markdown("**🆕 New Findings:**")
+            for f in new_findings:
+                st.markdown(f"- {f.get('new_finding', '')}")
+
+        if removed_findings:
+            st.markdown("**❌ Removed Findings:**")
+            for f in removed_findings:
+                st.markdown(f"- ~~{f.get('old_finding', '')}~~")
+
+        if modified_findings:
+            st.markdown("**✏️ Modified Findings:**")
+            for f in modified_findings:
+                st.markdown(f"- {f.get('new_finding', '')} *(was: {f.get('old_finding', '')[:50]}...)*")
+    else:
+        st.info("No finding changes to display")
+
+# =========================================================
 # 9. DASHBOARD RENDERING
 # =========================================================
 
@@ -1405,119 +1921,273 @@ def main():
         *Currently in prototype stage.*
         """)
 
+    # Create tabs
+    tab1, tab2 = st.tabs(["🔍 New Analysis", "📈 Evolution Tracker"])
+
+    # =====================
+    # TAB 1: NEW ANALYSIS
+    # =====================
+    with tab1:
+
     # User input
-    query = st.text_input(
-        "Enter your question about markets, industries, finance, or economics:",
-        placeholder="e.g., What is the size of the global EV battery market?"
-    )
+        query = st.text_input(
+            "Enter your question about markets, industries, finance, or economics:",
+            placeholder="e.g., What is the size of the global EV battery market?"
+            )
 
-    # Options
-    col_opt1, col_opt2 = st.columns(2)
-    with col_opt1:
-        use_web = st.checkbox(
-            "Enable web search (recommended)",
-            value=bool(SERPAPI_KEY),
-            disabled=not SERPAPI_KEY
-        )
+        # Options
+        col_opt1, col_opt2 = st.columns(2)
+        with col_opt1:
+            use_web = st.checkbox(
+                "Enable web search (recommended)",
+                value=bool(SERPAPI_KEY),
+                disabled=not SERPAPI_KEY
+            )
 
-    # Analysis button
-    if st.button("🔍 Analyze", type="primary") and query:
+        # Analysis button
+        if st.button("🔍 Analyze", type="primary") and query:
 
-        # Validate query
-        if len(query.strip()) < 5:
-            st.error("❌ Please enter a question with at least 5 characters")
-            return
+            # Validate query
+            if len(query.strip()) < 5:
+                st.error("❌ Please enter a question with at least 5 characters")
+                return
 
-        query = query.strip()[:500]  # Limit length
+            query = query.strip()[:500]  # Limit length
 
-        # Web search
-        web_context = {}
-        if use_web:
-            with st.spinner("🌐 Searching the web..."):
-                web_context = fetch_web_context(query, num_sources=3)
+            # Web search
+            web_context = {}
+            if use_web:
+                with st.spinner("🌐 Searching the web..."):
+                    web_context = fetch_web_context(query, num_sources=3)
 
-        if not web_context or not web_context.get("search_results"):
-            st.info("💡 Using AI knowledge without web search")
-            web_context = {
-                "search_results": [],
-                "scraped_content": {},
-                "summary": "",
-                "sources": [],
-                "source_reliability": []
+            if not web_context or not web_context.get("search_results"):
+                st.info("💡 Using AI knowledge without web search")
+                web_context = {
+                    "search_results": [],
+                    "scraped_content": {},
+                    "summary": "",
+                    "sources": [],
+                    "source_reliability": []
+                }
+
+            # Primary model query
+            with st.spinner("🤖 Analyzing with primary model..."):
+                primary_response = query_perplexity(query, web_context)
+
+            if not primary_response:
+                st.error("❌ Primary model failed to respond")
+                return
+
+            # Parse primary response
+            try:
+                primary_data = json.loads(primary_response)
+            except Exception as e:
+                st.error(f"❌ Failed to parse primary response: {e}")
+                st.code(primary_response[:1000])
+                return
+
+            # Evidence-based veracity scoring (single call)
+            with st.spinner("✅ Verifying evidence quality..."):
+                veracity_scores = evidence_based_veracity(primary_data, web_context)
+
+            # Calculate confidence
+            base_conf = float(primary_data.get("confidence", 75))
+
+            # Final confidence calculation
+            final_conf = calculate_final_confidence(
+                base_conf,
+                veracity_scores["overall"]
+            )
+
+            # Download JSON
+            output = {
+                "question": query,
+                "timestamp": datetime.now().isoformat(),
+                "primary_response": primary_data,
+                "final_confidence": final_conf,
+                "veracity_scores": veracity_scores,
+                "web_sources": web_context.get("sources", [])
             }
 
-        # Primary model query
-        with st.spinner("🤖 Analyzing with primary model..."):
-            primary_response = query_perplexity(query, web_context)
+            json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8')
+            filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
-        if not primary_response:
-            st.error("❌ Primary model failed to respond")
-            return
+            st.download_button(
+                label="💾 Download Analysis JSON",
+                data=json_bytes,
+                file_name=filename,
+                mime="application/json"
+            )
 
-        # Parse primary response
-        try:
-            primary_data = json.loads(primary_response)
-        except Exception as e:
-            st.error(f"❌ Failed to parse primary response: {e}")
-            st.code(primary_response[:1000])
-            return
+            # Render dashboard
+            render_dashboard(
+                primary_response,
+                final_conf,
+                web_context,
+                base_conf,
+                query,
+                veracity_scores,
+                web_context.get("source_reliability", [])
+            )
 
-        # Evidence-based veracity scoring (single call)
-        with st.spinner("✅ Verifying evidence quality..."):
-            veracity_scores = evidence_based_veracity(primary_data, web_context)
+            # Debug info
+            with st.expander("🔧 Debug Information"):
+                st.write("**Confidence Breakdown:**")
+                st.json({
+                    "base_confidence": base_conf,
+                    "evidence_score": veracity_scores["overall"],
+                    "final_confidence": final_conf,
+                    "veracity_breakdown": veracity_scores
+                })
+                st.write("**Primary Model Response:**")
+                st.json(primary_data)
 
-        # Calculate confidence
-        base_conf = float(primary_data.get("confidence", 75))
+            # Debug info
+            with st.expander("🔧 Debug Information"):
+                st.write("**Confidence Breakdown:**")
+                st.json({
+                    "base_confidence": base_conf,
+                    "evidence_score": veracity_scores["overall"],
+                    "final_confidence": final_conf,
+                    "veracity_breakdown": veracity_scores
+                })
+                st.write("**Primary Model Response:**")
+                st.json(primary_data)
 
-        # Final confidence calculation
-        final_conf = calculate_final_confidence(
-            base_conf,
-            veracity_scores["overall"]
+    # =====================
+    # TAB 2: EVOLUTION TRACKER
+    # =====================
+    with tab2:
+        st.markdown("""
+        ### 📈 Evolution Tracker
+        Upload a previous Yureeka analysis JSON to compare with a new analysis.
+        This will show what has changed and provide stability metrics.
+        """)
+
+        # Upload previous analysis
+        uploaded_file = st.file_uploader(
+            "Upload previous Yureeka JSON analysis",
+            type=['json'],
+            key="evolution_upload"
         )
 
-        # Download JSON
-        output = {
-            "question": query,
-            "timestamp": datetime.now().isoformat(),
-            "primary_response": primary_data,
-            "final_confidence": final_conf,
-            "veracity_scores": veracity_scores,
-            "web_sources": web_context.get("sources", [])
-        }
+        previous_data = None
+        if uploaded_file:
+            try:
+                previous_data = json.load(uploaded_file)
+                st.success(f"✅ Loaded previous analysis: {previous_data.get('question', 'Unknown query')}")
 
-        json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8')
-        filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                # Show previous analysis summary
+                with st.expander("📋 Previous Analysis Summary"):
+                    prev_response = previous_data.get("primary_response", {})
+                    st.write(f"**Timestamp:** {previous_data.get('timestamp', 'Unknown')}")
+                    st.write(f"**Confidence:** {previous_data.get('final_confidence', 'N/A')}%")
+                    st.write(f"**Summary:** {prev_response.get('executive_summary', 'N/A')[:200]}...")
 
-        st.download_button(
-            label="💾 Download Analysis JSON",
-            data=json_bytes,
-            file_name=filename,
-            mime="application/json"
+                    # Show previous metrics
+                    prev_metrics = prev_response.get("primary_metrics", {})
+                    if prev_metrics:
+                        st.write("**Previous Metrics:**")
+                        for k, m in list(prev_metrics.items())[:5]:
+                            if isinstance(m, dict):
+                                st.write(f"- {m.get('name', k)}: {m.get('value')} {m.get('unit', '')}")
+            except Exception as e:
+                st.error(f"❌ Failed to load JSON: {e}")
+
+        # Query input for new analysis
+        evolution_query = st.text_input(
+            "Query for new analysis (or use same as previous):",
+            value=previous_data.get("question", "") if previous_data else "",
+            key="evolution_query"
         )
 
-        # Render dashboard
-        render_dashboard(
-            primary_response,
-            final_conf,
-            web_context,
-            base_conf,
-            query,
-            veracity_scores,
-            web_context.get("source_reliability", [])
-        )
+        col1, col2 = st.columns(2)
+        with col1:
+            use_web_evo = st.checkbox(
+                "Enable web search",
+                value=bool(SERPAPI_KEY),
+                disabled=not SERPAPI_KEY,
+                key="web_evolution"
+            )
 
-        # Debug info
-        with st.expander("🔧 Debug Information"):
-            st.write("**Confidence Breakdown:**")
-            st.json({
-                "base_confidence": base_conf,
-                "evidence_score": veracity_scores["overall"],
-                "final_confidence": final_conf,
-                "veracity_breakdown": veracity_scores
-            })
-            st.write("**Primary Model Response:**")
-            st.json(primary_data)
+        # Run evolution analysis
+        if st.button("🔄 Run Evolution Analysis", type="primary", key="evolution_btn"):
+            if not previous_data:
+                st.error("❌ Please upload a previous analysis JSON first")
+            elif not evolution_query or len(evolution_query.strip()) < 5:
+                st.error("❌ Please enter a valid query")
+            else:
+                evolution_query = evolution_query.strip()[:500]
+
+                # Web search
+                web_context_evo = {}
+                if use_web_evo:
+                    with st.spinner("🌐 Searching the web..."):
+                        web_context_evo = fetch_web_context(evolution_query, num_sources=3)
+
+                if not web_context_evo or not web_context_evo.get("search_results"):
+                    web_context_evo = {
+                        "search_results": [], "scraped_content": {},
+                        "summary": "", "sources": [], "source_reliability": []
+                    }
+
+                # Run new analysis
+                with st.spinner("🤖 Running new analysis..."):
+                    new_response = query_perplexity(evolution_query, web_context_evo)
+
+                if not new_response:
+                    st.error("❌ Analysis failed")
+                else:
+                    try:
+                        new_data_parsed = json.loads(new_response)
+                    except:
+                        st.error("❌ Failed to parse response")
+                        new_data_parsed = None
+
+                    if new_data_parsed:
+                        # Calculate veracity for new analysis
+                        veracity_evo = evidence_based_veracity(new_data_parsed, web_context_evo)
+                        base_conf_evo = float(new_data_parsed.get("confidence", 75))
+                        final_conf_evo = calculate_final_confidence(base_conf_evo, veracity_evo["overall"])
+
+                        # Build new data structure
+                        new_analysis = {
+                            "question": evolution_query,
+                            "timestamp": datetime.now().isoformat(),
+                            "primary_response": new_data_parsed,
+                            "final_confidence": final_conf_evo,
+                            "veracity_scores": veracity_evo,
+                            "web_sources": web_context_evo.get("sources", [])
+                        }
+
+                        # Analyze evolution
+                        with st.spinner("📊 Analyzing changes..."):
+                            evolution_result = analyze_evolution(previous_data, new_analysis)
+
+                        # Download new analysis
+                        st.download_button(
+                            label="💾 Download New Analysis JSON",
+                            data=json.dumps(new_analysis, indent=2, ensure_ascii=False).encode('utf-8'),
+                            file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json"
+                        )
+
+                        # Render evolution dashboard
+                        render_evolution_dashboard(evolution_result, evolution_query)
+
+                        st.markdown("---")
+
+                        # Also show the new analysis
+                        st.subheader("📊 New Analysis Details")
+                        render_dashboard(
+                            new_response,
+                            final_conf_evo,
+                            web_context_evo,
+                            base_conf_evo,
+                            evolution_query,
+                            veracity_evo,
+                            web_context_evo.get("source_reliability", [])
+                        )
 
 if __name__ == "__main__":
     main()
-
