@@ -3301,5 +3301,5 @@ def main():
                     with st.expander("🔧 Debug Information"):
                         st.json(results)
 
-    if __name__ == "__main__":
+if __name__ == "__main__":
     main()
