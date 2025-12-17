@@ -3120,8 +3120,8 @@ def main():
                                 changes_text.append(f"- {m['name']}: {m['previous_value']} → {m['current_value']} (DOWN {m['change_pct']:+.1f}%)")
 
                         if changes_text:
-                            explanation_prompt = f"""Based on these metric changes for "{evolution_query}": {chr(10).join(changes_text)}
-                            Provide a 2-3 sentence interpretation of what these changes mean for the market.
+                            explanation_prompt = """Based on these metric changes for "{evolution_query}": {chr(10).join(changes_text)}
+                            Provide a 2-3 sentence interpretation of what these changes mean for the market. 
                             Return ONLY a JSON object: {{"interpretation": "your interpretation here"}}"""
 
                             try:
