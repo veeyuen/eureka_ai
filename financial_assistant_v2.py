@@ -1,7 +1,8 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.2
+# YUREEKA AI RESEARCH ASSISTANT v7.4
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # Stable SerpAPI Output with Evolution Layer Version
+# Additional Stability Control Through Feeding JSON Into Model
 # =========================================================
 
 import os
@@ -215,6 +216,102 @@ Even if web data is sparse, use your knowledge to provide complete, detailed ana
 
 Output ONLY this JSON structure:
 {RESPONSE_TEMPLATE}
+"""
+
+EVOLUTION_PROMPT_TEMPLATE = """You are a market research analyst performing an UPDATE ANALYSIS.
+
+You have been given a PREVIOUS ANALYSIS from {time_ago}. Your task is to:
+1. Search for CURRENT data on the same metrics and entities
+2. Identify what has CHANGED vs what has STAYED THE SAME
+3. Provide updated values where data has changed
+4. Flag any metrics/entities that are no longer relevant or have new entries
+
+PREVIOUS ANALYSIS:
+==================
+Question: {previous_question}
+Timestamp: {previous_timestamp}
+
+Previous Executive Summary:
+{previous_summary}
+
+Previous Key Metrics:
+{previous_metrics}
+
+Previous Top Entities:
+{previous_entities}
+
+Previous Key Findings:
+{previous_findings}
+==================
+
+CRITICAL RULES:
+1. Return ONLY valid JSON. NO markdown, NO code blocks.
+2. For EACH metric, indicate if it INCREASED, DECREASED, or stayed UNCHANGED
+3. Keep the SAME metric names as previous analysis for easy comparison
+4. If a metric is no longer available, mark it as "discontinued"
+5. If there's a NEW important metric, add it with status "new"
+
+REQUIRED OUTPUT FORMAT:
+{{
+  "executive_summary": "Updated 4-6 sentence summary noting key changes since last analysis",
+  "analysis_delta": {{
+    "time_since_previous": "{time_ago}",
+    "overall_trend": "improving/declining/stable",
+    "major_changes": ["Change 1", "Change 2"],
+    "data_freshness": "Q4 2024"
+  }},
+  "primary_metrics": {{
+    "metric_key": {{
+      "name": "Same metric name as before",
+      "previous_value": 100,
+      "current_value": 110,
+      "unit": "$B",
+      "change_pct": 10.0,
+      "direction": "increased/decreased/unchanged",
+      "status": "updated/discontinued/new"
+    }}
+  }},
+  "key_findings": [
+    "[UNCHANGED] Finding that remains true",
+    "[UPDATED] Finding with new data",
+    "[NEW] Completely new finding",
+    "[REMOVED] Finding no longer relevant - reason"
+  ],
+  "top_entities": [
+    {{
+      "name": "Company A",
+      "previous_share": "25%",
+      "current_share": "27%",
+      "previous_rank": 1,
+      "current_rank": 1,
+      "change": "increased",
+      "status": "updated"
+    }}
+  ],
+  "trends_forecast": [
+    {{"trend": "Trend description", "direction": "↑", "timeline": "2025-2027", "confidence": "high/medium/low"}}
+  ],
+  "visualization_data": {{
+    "chart_labels": ["Previous", "Current"],
+    "chart_values": [100, 110],
+    "chart_title": "Market Size Evolution"
+  }},
+  "sources": ["source1.com", "source2.com"],
+  "confidence": 85,
+  "freshness": "Dec 2024",
+  "drift_summary": {{
+    "metrics_changed": 2,
+    "metrics_unchanged": 3,
+    "entities_reshuffled": 1,
+    "findings_updated": 4,
+    "overall_stability_pct": 75
+  }}
+}}
+
+NOW, search for CURRENT information to UPDATE the previous analysis.
+Focus on finding CHANGES to the metrics and entities listed above.
+
+User Question: {query}
 """
 
 # =========================================================
@@ -850,6 +947,157 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
     return fallback.model_dump_json()
 
 # =========================================================
+# 7B. ANCHORED EVOLUTION QUERY
+# =========================================================
+
+def format_previous_metrics(metrics: Dict) -> str:
+    """Format previous metrics for prompt"""
+    if not metrics:
+        return "No previous metrics available"
+
+    lines = []
+    for key, m in metrics.items():
+        if isinstance(m, dict):
+            lines.append(f"- {m.get('name', key)}: {m.get('value', 'N/A')} {m.get('unit', '')}")
+    return "\n".join(lines) if lines else "No metrics"
+
+def format_previous_entities(entities: List) -> str:
+    """Format previous entities for prompt"""
+    if not entities:
+        return "No previous entities available"
+
+    lines = []
+    for i, e in enumerate(entities, 1):
+        if isinstance(e, dict):
+            lines.append(f"{i}. {e.get('name', 'Unknown')}: {e.get('share', 'N/A')} share, {e.get('growth', 'N/A')} growth")
+    return "\n".join(lines) if lines else "No entities"
+
+def format_previous_findings(findings: List) -> str:
+    """Format previous findings for prompt"""
+    if not findings:
+        return "No previous findings available"
+
+    lines = [f"- {f}" for f in findings if f]
+    return "\n".join(lines) if lines else "No findings"
+
+def calculate_time_ago(timestamp_str: str) -> str:
+    """Calculate human-readable time difference"""
+    try:
+        prev_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        delta = datetime.now() - prev_time.replace(tzinfo=None)
+
+        hours = delta.total_seconds() / 3600
+        if hours < 24:
+            return f"{hours:.1f} hours ago"
+        elif hours < 168:  # 7 days
+            return f"{hours/24:.1f} days ago"
+        elif hours < 720:  # 30 days
+            return f"{hours/168:.1f} weeks ago"
+        else:
+            return f"{hours/720:.1f} months ago"
+    except:
+        return "unknown time ago"
+
+def query_perplexity_anchored(query: str, previous_data: Dict, web_context: Dict, temperature: float = 0.1) -> str:
+    """
+    Query Perplexity with previous analysis as anchor.
+    This produces an evolution-aware response that tracks changes.
+    """
+
+    prev_response = previous_data.get("primary_response", {})
+    prev_timestamp = previous_data.get("timestamp", "")
+    prev_question = previous_data.get("question", query)
+
+    time_ago = calculate_time_ago(prev_timestamp)
+
+    # Build the anchored prompt
+    anchored_prompt = EVOLUTION_PROMPT_TEMPLATE.format(
+        time_ago=time_ago,
+        previous_question=prev_question,
+        previous_timestamp=prev_timestamp,
+        previous_summary=prev_response.get("executive_summary", "No previous summary"),
+        previous_metrics=format_previous_metrics(prev_response.get("primary_metrics", {})),
+        previous_entities=format_previous_entities(prev_response.get("top_entities", [])),
+        previous_findings=format_previous_findings(prev_response.get("key_findings", [])),
+        query=query
+    )
+
+    # Add web context if available
+    if web_context.get("summary"):
+        anchored_prompt = f"CURRENT WEB RESEARCH:\n{web_context['summary']}\n\n{anchored_prompt}"
+
+    # API request
+    headers = {
+        "Authorization": f"Bearer {PERPLEXITY_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "sonar",
+        "temperature": temperature,
+        "max_tokens": 2500,
+        "top_p": 0.8,
+        "messages": [{"role": "user", "content": anchored_prompt}]
+    }
+
+    try:
+        resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if "choices" not in data:
+            raise Exception("No choices in response")
+
+        content = data["choices"][0]["message"]["content"]
+        if not content:
+            raise Exception("Empty response")
+
+        # Parse JSON
+        parsed = parse_json_safely(content, "Perplexity-Anchored")
+        if not parsed:
+            return create_anchored_fallback(query, previous_data, web_context)
+
+        # Add sources from web context
+        if web_context.get("sources"):
+            existing = parsed.get("sources", [])
+            parsed["sources"] = list(dict.fromkeys(existing + web_context["sources"]))[:10]
+
+        return json.dumps(parsed)
+
+    except Exception as e:
+        st.error(f"❌ Anchored query error: {e}")
+        return create_anchored_fallback(query, previous_data, web_context)
+
+def create_anchored_fallback(query: str, previous_data: Dict, web_context: Dict) -> str:
+    """Create fallback for anchored evolution query"""
+    prev_response = previous_data.get("primary_response", {})
+
+    fallback = {
+        "executive_summary": f"Evolution analysis for '{query}' - model returned invalid format. Showing previous data.",
+        "analysis_delta": {
+            "time_since_previous": calculate_time_ago(previous_data.get("timestamp", "")),
+            "overall_trend": "unknown",
+            "major_changes": ["Unable to determine changes - API error"],
+            "data_freshness": "Unknown"
+        },
+        "primary_metrics": prev_response.get("primary_metrics", {}),
+        "key_findings": ["[UNCHANGED] " + f for f in prev_response.get("key_findings", [])[:3]],
+        "top_entities": prev_response.get("top_entities", []),
+        "trends_forecast": prev_response.get("trends_forecast", []),
+        "sources": web_context.get("sources", []),
+        "confidence": 50,
+        "freshness": "Fallback",
+        "drift_summary": {
+            "metrics_changed": 0,
+            "metrics_unchanged": len(prev_response.get("primary_metrics", {})),
+            "entities_reshuffled": 0,
+            "findings_updated": 0,
+            "overall_stability_pct": 100
+        }
+    }
+    return json.dumps(fallback)
+
+# =========================================================
 # 8. VALIDATION & SCORING
 # =========================================================
 
@@ -1065,7 +1313,7 @@ def calculate_final_confidence(
     return round(max(0, min(100, final)), 1)
 
 # =========================================================
-# 8B. EVOLUTION LAYER - TRACK CHANGES OVER TIME
+# 8A. EVOLUTION LAYER - TRACK CHANGES OVER TIME
 # =========================================================
 
 def parse_numeric_for_comparison(value: Any) -> Optional[float]:
@@ -1580,6 +1828,189 @@ def render_evolution_dashboard(evolution: Dict, old_question: str):
         st.info("No finding changes to display")
 
 # =========================================================
+# 8B. EVOLUTION DASHBOARD RENDERING
+# =========================================================
+
+def render_evolution_results(evolution_data: Dict, query: str):
+    """Render the anchored evolution analysis results"""
+
+    st.header("📈 Evolution Analysis Results")
+    st.markdown(f"**Query:** {query}")
+
+    # Parse the evolution response
+    try:
+        if isinstance(evolution_data, str):
+            data = json.loads(evolution_data)
+        else:
+            data = evolution_data
+    except:
+        st.error("Failed to parse evolution data")
+        return
+
+    # Delta summary
+    delta = data.get("analysis_delta", {})
+    drift = data.get("drift_summary", {})
+
+    st.subheader("📊 Change Summary")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Time Since Previous", delta.get("time_since_previous", "Unknown"))
+    col2.metric("Overall Trend", delta.get("overall_trend", "Unknown").title())
+    col3.metric("Stability Score", f"{drift.get('overall_stability_pct', 0)}%")
+
+    # Trend indicator
+    trend = delta.get("overall_trend", "stable").lower()
+    if trend == "improving":
+        col4.success("📈 Improving")
+    elif trend == "declining":
+        col4.error("📉 Declining")
+    else:
+        col4.info("➡️ Stable")
+
+    # Major changes
+    major_changes = delta.get("major_changes", [])
+    if major_changes:
+        st.markdown("**🔔 Major Changes:**")
+        for change in major_changes:
+            st.markdown(f"- {change}")
+
+    st.markdown("---")
+
+    # Executive Summary
+    st.subheader("📋 Updated Executive Summary")
+    st.markdown(f"**{data.get('executive_summary', 'No summary')}**")
+
+    st.markdown("---")
+
+    # Metrics with change indicators
+    st.subheader("💰 Metrics Evolution")
+    metrics = data.get("primary_metrics", {})
+
+    if metrics:
+        metric_rows = []
+        for key, m in metrics.items():
+            if isinstance(m, dict):
+                direction = m.get("direction", "unchanged")
+                status = m.get("status", "updated")
+
+                # Icons
+                if direction == "increased":
+                    icon = "📈"
+                elif direction == "decreased":
+                    icon = "📉"
+                elif status == "new":
+                    icon = "🆕"
+                elif status == "discontinued":
+                    icon = "❌"
+                else:
+                    icon = "➡️"
+
+                change_pct = m.get("change_pct")
+                change_str = f"{change_pct:+.1f}%" if change_pct is not None else "-"
+
+                metric_rows.append({
+                    "": icon,
+                    "Metric": m.get("name", key),
+                    "Previous": f"{m.get('previous_value', 'N/A')} {m.get('unit', '')}".strip(),
+                    "Current": f"{m.get('current_value', m.get('value', 'N/A'))} {m.get('unit', '')}".strip(),
+                    "Change": change_str,
+                    "Status": status.title()
+                })
+
+        if metric_rows:
+            st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No metrics data")
+
+    st.markdown("---")
+
+    # Entities with ranking changes
+    st.subheader("🏢 Entity Rankings Evolution")
+    entities = data.get("top_entities", [])
+
+    if entities:
+        entity_rows = []
+        for e in entities:
+            if isinstance(e, dict):
+                change = e.get("change", "unchanged")
+                status = e.get("status", "updated")
+
+                if change == "increased" or e.get("current_rank", 99) < e.get("previous_rank", 99):
+                    icon = "⬆️"
+                elif change == "decreased" or e.get("current_rank", 0) > e.get("previous_rank", 0):
+                    icon = "⬇️"
+                elif status == "new":
+                    icon = "🆕"
+                else:
+                    icon = "➡️"
+
+                entity_rows.append({
+                    "": icon,
+                    "Entity": e.get("name", "Unknown"),
+                    "Prev Rank": e.get("previous_rank", "-"),
+                    "Curr Rank": e.get("current_rank", "-"),
+                    "Prev Share": e.get("previous_share", "-"),
+                    "Curr Share": e.get("current_share", e.get("share", "-")),
+                    "Status": status.title()
+                })
+
+        if entity_rows:
+            st.dataframe(pd.DataFrame(entity_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No entity data")
+
+    st.markdown("---")
+
+    # Findings with change tags
+    st.subheader("🔍 Key Findings Evolution")
+    findings = data.get("key_findings", [])
+
+    if findings:
+        for finding in findings:
+            if finding.startswith("[UNCHANGED]"):
+                st.markdown(f"➡️ {finding.replace('[UNCHANGED]', '').strip()}")
+            elif finding.startswith("[UPDATED]"):
+                st.markdown(f"✏️ **{finding.replace('[UPDATED]', '').strip()}**")
+            elif finding.startswith("[NEW]"):
+                st.success(f"🆕 {finding.replace('[NEW]', '').strip()}")
+            elif finding.startswith("[REMOVED]"):
+                st.warning(f"❌ ~~{finding.replace('[REMOVED]', '').strip()}~~")
+            else:
+                st.markdown(f"- {finding}")
+    else:
+        st.info("No findings data")
+
+    st.markdown("---")
+
+    # Drift Summary
+    st.subheader("📉 Drift Summary")
+
+    drift_cols = st.columns(4)
+    drift_cols[0].metric("Metrics Changed", drift.get("metrics_changed", 0))
+    drift_cols[1].metric("Metrics Unchanged", drift.get("metrics_unchanged", 0))
+    drift_cols[2].metric("Entities Reshuffled", drift.get("entities_reshuffled", 0))
+    drift_cols[3].metric("Findings Updated", drift.get("findings_updated", 0))
+
+    # Stability gauge
+    stability = drift.get("overall_stability_pct", 0)
+    if stability >= 80:
+        st.success(f"🟢 **High Stability ({stability}%)** - Data is consistent with previous analysis")
+    elif stability >= 60:
+        st.warning(f"🟡 **Moderate Stability ({stability}%)** - Some changes detected")
+    else:
+        st.error(f"🔴 **Low Stability ({stability}%)** - Significant drift from previous analysis")
+
+    st.markdown("---")
+
+    # Sources
+    st.subheader("🔗 Sources")
+    sources = data.get("sources", [])
+    if sources:
+        cols = st.columns(2)
+        for i, src in enumerate(sources[:8], 1):
+            cols[(i-1) % 2].markdown(f"{i}. [{src[:50]}...]({src})")
+
+# =========================================================
 # 9. DASHBOARD RENDERING
 # =========================================================
 
@@ -2058,15 +2489,24 @@ def main():
     # TAB 2: EVOLUTION TRACKER
     # =====================
     with tab2:
+        # =====================
+    # TAB 2: EVOLUTION TRACKER (ANCHORED)
+    # =====================
+    with tab2:
         st.markdown("""
         ### 📈 Evolution Tracker
-        Upload a previous Yureeka analysis JSON to compare with a new analysis.
-        This will show what has changed and provide stability metrics.
+        Upload a previous Yureeka analysis to track how the data has evolved.
+
+        **How it works:**
+        - Your previous analysis is fed to the model as context
+        - The model searches for UPDATES to the same metrics/entities
+        - Changes are explicitly tracked (increased/decreased/new/removed)
+        - Stability score indicates how much has drifted
         """)
 
         # Upload previous analysis
         uploaded_file = st.file_uploader(
-            "Upload previous Yureeka JSON analysis",
+            "📁 Upload previous Yureeka JSON analysis",
             type=['json'],
             key="evolution_upload"
         )
@@ -2075,39 +2515,57 @@ def main():
         if uploaded_file:
             try:
                 previous_data = json.load(uploaded_file)
-                st.success(f"✅ Loaded previous analysis: {previous_data.get('question', 'Unknown query')}")
+                prev_response = previous_data.get("primary_response", {})
+                prev_timestamp = previous_data.get("timestamp", "Unknown")
+
+                st.success(f"✅ Loaded: {previous_data.get('question', 'Unknown query')}")
+                st.caption(f"📅 Previous analysis from: {prev_timestamp}")
 
                 # Show previous analysis summary
-                with st.expander("📋 Previous Analysis Summary"):
-                    prev_response = previous_data.get("primary_response", {})
-                    st.write(f"**Timestamp:** {previous_data.get('timestamp', 'Unknown')}")
+                with st.expander("📋 Previous Analysis Summary", expanded=False):
                     st.write(f"**Confidence:** {previous_data.get('final_confidence', 'N/A')}%")
-                    st.write(f"**Summary:** {prev_response.get('executive_summary', 'N/A')[:200]}...")
+                    st.write(f"**Summary:** {prev_response.get('executive_summary', 'N/A')}")
 
-                    # Show previous metrics
-                    prev_metrics = prev_response.get("primary_metrics", {})
-                    if prev_metrics:
-                        st.write("**Previous Metrics:**")
-                        for k, m in list(prev_metrics.items())[:5]:
-                            if isinstance(m, dict):
-                                st.write(f"- {m.get('name', k)}: {m.get('value')} {m.get('unit', '')}")
+                    st.write("**Previous Metrics:**")
+                    for k, m in list(prev_response.get("primary_metrics", {}).items())[:5]:
+                        if isinstance(m, dict):
+                            st.write(f"- {m.get('name', k)}: {m.get('value')} {m.get('unit', '')}")
+
+                    st.write("**Previous Top Entities:**")
+                    for i, e in enumerate(prev_response.get("top_entities", [])[:5], 1):
+                        if isinstance(e, dict):
+                            st.write(f"{i}. {e.get('name')}: {e.get('share', 'N/A')}")
+
             except Exception as e:
                 st.error(f"❌ Failed to load JSON: {e}")
+                previous_data = None
 
-        # Query input for new analysis
-        evolution_query = st.text_input(
-            "Query for new analysis (or use same as previous):",
-            value=previous_data.get("question", "") if previous_data else "",
-            key="evolution_query"
-        )
-
+        # Options
         col1, col2 = st.columns(2)
         with col1:
             use_web_evo = st.checkbox(
-                "Enable web search",
+                "Enable web search for current data",
                 value=bool(SERPAPI_KEY),
                 disabled=not SERPAPI_KEY,
                 key="web_evolution"
+            )
+
+        with col2:
+            use_same_query = st.checkbox(
+                "Use same query as previous",
+                value=True,
+                key="same_query"
+            )
+
+        # Query input
+        if use_same_query and previous_data:
+            evolution_query = previous_data.get("question", "")
+            st.info(f"📝 Using previous query: {evolution_query}")
+        else:
+            evolution_query = st.text_input(
+                "Query for evolution analysis:",
+                value=previous_data.get("question", "") if previous_data else "",
+                key="evolution_query"
             )
 
         # Run evolution analysis
@@ -2119,75 +2577,59 @@ def main():
             else:
                 evolution_query = evolution_query.strip()[:500]
 
-                # Web search
+                # Web search for current data
                 web_context_evo = {}
                 if use_web_evo:
-                    with st.spinner("🌐 Searching the web..."):
+                    with st.spinner("🌐 Searching for current data..."):
                         web_context_evo = fetch_web_context(evolution_query, num_sources=3)
 
-                if not web_context_evo or not web_context_evo.get("search_results"):
+                if not web_context_evo:
                     web_context_evo = {
                         "search_results": [], "scraped_content": {},
                         "summary": "", "sources": [], "source_reliability": []
                     }
 
-                # Run new analysis
-                with st.spinner("🤖 Running new analysis..."):
-                    new_response = query_perplexity(evolution_query, web_context_evo)
+                # Run anchored evolution analysis
+                with st.spinner("🤖 Analyzing evolution (anchored to previous)..."):
+                    evolution_response = query_perplexity_anchored(
+                        evolution_query,
+                        previous_data,
+                        web_context_evo
+                    )
 
-                if not new_response:
-                    st.error("❌ Analysis failed")
-                else:
+                if evolution_response:
+                    # Parse response
                     try:
-                        new_data_parsed = json.loads(new_response)
+                        evolution_parsed = json.loads(evolution_response)
                     except:
-                        st.error("❌ Failed to parse response")
-                        new_data_parsed = None
+                        st.error("❌ Failed to parse evolution response")
+                        evolution_parsed = None
 
-                    if new_data_parsed:
-                        # Calculate veracity for new analysis
-                        veracity_evo = evidence_based_veracity(new_data_parsed, web_context_evo)
-                        base_conf_evo = float(new_data_parsed.get("confidence", 75))
-                        final_conf_evo = calculate_final_confidence(base_conf_evo, veracity_evo["overall"])
-
-                        # Build new data structure
-                        new_analysis = {
+                    if evolution_parsed:
+                        # Build output for download
+                        evolution_output = {
                             "question": evolution_query,
                             "timestamp": datetime.now().isoformat(),
-                            "primary_response": new_data_parsed,
-                            "final_confidence": final_conf_evo,
-                            "veracity_scores": veracity_evo,
+                            "analysis_type": "evolution",
+                            "previous_timestamp": previous_data.get("timestamp"),
+                            "primary_response": evolution_parsed,
+                            "drift_summary": evolution_parsed.get("drift_summary", {}),
                             "web_sources": web_context_evo.get("sources", [])
                         }
 
-                        # Analyze evolution
-                        with st.spinner("📊 Analyzing changes..."):
-                            evolution_result = analyze_evolution(previous_data, new_analysis)
-
-                        # Download new analysis
+                        # Download button
                         st.download_button(
-                            label="💾 Download New Analysis JSON",
-                            data=json.dumps(new_analysis, indent=2, ensure_ascii=False).encode('utf-8'),
+                            label="💾 Download Evolution Analysis",
+                            data=json.dumps(evolution_output, indent=2, ensure_ascii=False).encode('utf-8'),
                             file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                             mime="application/json"
                         )
 
                         # Render evolution dashboard
-                        render_evolution_dashboard(evolution_result, evolution_query)
-
-                        st.markdown("---")
-
-                        # Also show the new analysis
-                        st.subheader("📊 New Analysis Details")
-                        render_dashboard(
-                            new_response,
-                            final_conf_evo,
-                            web_context_evo,
-                            base_conf_evo,
-                            evolution_query,
-                            veracity_evo,
-                            web_context_evo.get("source_reliability", [])
-                        )
+                        render_evolution_results(evolution_parsed, evolution_query)
+                else:
+                    st.error("❌ Evolution analysis failed")
 
 if __name__ == "__main__":
     main()
+
