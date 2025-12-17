@@ -3096,7 +3096,7 @@ def main():
     with tab2:
         # Run evolution analysis
         if st.button("🔄 Run Evolution Analysis", type="primary", key="evolution_btn"):
-            if not prev_data:
+            if not previous_data:
                 st.error("❌ Please upload a previous analysis JSON first")
             elif not evolution_query or len(evolution_query.strip()) < 5:
                 st.error("❌ Please enter a valid query")
