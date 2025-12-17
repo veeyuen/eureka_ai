@@ -2359,7 +2359,6 @@ def main():
     # =====================
     with tab2:
         st.markdown("""
-        #
         Upload a previous Yureeka analysis to track how the data has evolved.
 
         **How it works:**
