@@ -2531,8 +2531,8 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     # Calculate stability - include small changes as "stable"
    # found_count = sum(1 for m in metric_changes if m['change_type'] != 'not_found')
-   # stable_count = sum(1 for m in metric_changes if m['change_type'] in ['unchanged'] or
-                       (m['change_pct'] is not None and abs(m['change_pct']) < 10))
+   # stable_count = sum(1 for m in metric_changes if m['change_type'] in ['unchanged'] o
+    (m['change_pct'] is not None and abs(m['change_pct']) < 10))
 
    # stability = (stable_count / len(metric_changes)) * 100 if metric_changes else 100
 
