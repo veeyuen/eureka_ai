@@ -2753,9 +2753,7 @@ def main():
 
                         # Render deterministic results
                         render_evolution_results(diff, explanation, evolution_query)
-                else:
-                    st.error("❌ Evolution analysis failed")
-
+                
 if __name__ == "__main__":
     main()
 
