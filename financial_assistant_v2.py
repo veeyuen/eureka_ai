@@ -3182,11 +3182,9 @@ def main():
                         if changes_text:
                             with st.spinner("💬 Generating interpretation..."):
                                 try:
-                                    explanation_prompt = f"""Based on these metric changes for "{evolution_query}":
-{chr(10).join(changes_text)}
-
-Provide a 2-3 sentence interpretation of what these changes mean.
-Return ONLY JSON: {{"interpretation": "your text here"}}"""
+                                    explanation_prompt = """Based on these metric changes for "{evolution_query}": {chr(10).join(changes_text)}
+                                    Provide a 2-3 sentence interpretation of what these changes mean. Return ONLY JSON: {{"interpretation": "your text here"}}
+                                    """
 
                                     headers = {"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"}
                                     payload = {"model": "sonar", "temperature": 0.0, "max_tokens": 200, "top_p": 1.0, "messages": [{"role": "user", "content": explanation_prompt}]}
