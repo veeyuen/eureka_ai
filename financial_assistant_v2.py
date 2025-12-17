@@ -553,9 +553,9 @@ SERPAPI_STABILITY_CONFIG = {
 
 # Preferred domains for consistent sourcing (sorted by priority)
 PREFERRED_SOURCE_DOMAINS = [
-    "statista.com", "reuters.com", "bloomberg.com", "imf.org",
-    "worldbank.org", "mckinsey.com", "deloitte.com", "spglobal.com",
-    "ft.com", "economist.com", "wsj.com", "forbes.com", "cnbc.com",
+    "statista.com", "reuters.com", "bloomberg.com", "imf.org", "wsj.com", "bcg.com",
+    "worldbank.org", "mckinsey.com", "deloitte.com", "spglobal.com", "ft.com", "pwc.com",
+    "ft.com", "economist.com", "wsj.com", "forbes.com", "cnbc.com", "kpmg.com"
 ]
 
 # Search results cache
