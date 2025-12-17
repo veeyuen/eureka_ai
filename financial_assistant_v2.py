@@ -1,9 +1,10 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.5
+# YUREEKA AI RESEARCH ASSISTANT v7.6
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
 # Deterministic Output From LLM
+# Deterministic Evolution Core Using Python Diff Engine
 # Anchored Evolution Analysis Using JSON As Input Into Model
 # =========================================================
 
@@ -19,6 +20,7 @@ import hashlib
 import numpy as np
 import difflib
 import google.generativeai as genai
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union, Tuple
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
@@ -666,6 +668,7 @@ def source_quality_score(sources: List[str]) -> float:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
+    def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
     """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
@@ -1326,558 +1329,799 @@ def calculate_final_confidence(
     return round(max(0, min(100, final)), 1)
 
 # =========================================================
-# 8A. EVOLUTION LAYER - TRACK CHANGES OVER TIME
+# 8A. DETERMINISTIC DIFF ENGINE
+# Pure Python computation - no LLM variance
 # =========================================================
 
-def parse_numeric_for_comparison(value: Any) -> Optional[float]:
-    """Parse any value to float for comparison"""
+@dataclass
+class MetricDiff:
+    """Single metric change record"""
+    name: str
+    old_value: Optional[float]
+    new_value: Optional[float]
+    old_raw: str  # Original string representation
+    new_raw: str
+    unit: str
+    change_pct: Optional[float]
+    change_type: str  # 'increased', 'decreased', 'unchanged', 'added', 'removed'
+
+@dataclass
+class EntityDiff:
+    """Single entity ranking change record"""
+    name: str
+    old_rank: Optional[int]
+    new_rank: Optional[int]
+    old_share: Optional[str]
+    new_share: Optional[str]
+    rank_change: Optional[int]  # Positive = moved up
+    change_type: str  # 'moved_up', 'moved_down', 'unchanged', 'added', 'removed'
+
+@dataclass
+class FindingDiff:
+    """Single finding change record"""
+    old_text: Optional[str]
+    new_text: Optional[str]
+    similarity: float  # 0-100
+    change_type: str  # 'retained', 'modified', 'added', 'removed'
+
+@dataclass
+class EvolutionDiff:
+    """Complete diff between two analyses"""
+    old_timestamp: str
+    new_timestamp: str
+    time_delta_hours: Optional[float]
+    metric_diffs: List[MetricDiff]
+    entity_diffs: List[EntityDiff]
+    finding_diffs: List[FindingDiff]
+    stability_score: float  # 0-100
+    summary_stats: Dict[str, int]
+
+# ------------------------------------
+# NUMERIC PARSING (DETERMINISTIC)
+# ------------------------------------
+
+def parse_to_float(value: Any) -> Optional[float]:
+    """
+    Deterministically parse any value to float.
+    Returns None if unparseable.
+    """
     if value is None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
-    if isinstance(value, str):
-        cleaned = re.sub(r'[,$%]', '', value.strip())
-        multiplier = 1.0
-        if 'trillion' in cleaned.lower() or cleaned.lower().endswith('t'):
-            multiplier = 1000000
-            cleaned = re.sub(r'[tT](?:rillion)?', '', cleaned)
-        elif 'billion' in cleaned.lower() or cleaned.lower().endswith('b'):
-            multiplier = 1000
-            cleaned = re.sub(r'[bB](?:illion)?', '', cleaned)
-        elif 'million' in cleaned.lower() or cleaned.lower().endswith('m'):
-            multiplier = 1
-            cleaned = re.sub(r'[mM](?:illion)?', '', cleaned)
-        try:
-            return float(cleaned.strip()) * multiplier
-        except:
-            return None
-    return None
-
-def calculate_percent_change(old_val: Any, new_val: Any) -> Optional[float]:
-    """Calculate percent change between two values"""
-    old_num = parse_numeric_for_comparison(old_val)
-    new_num = parse_numeric_for_comparison(new_val)
-
-    if old_num is None or new_num is None:
+    if not isinstance(value, str):
         return None
-    if old_num == 0:
-        return None if new_num == 0 else 100.0
 
-    return ((new_num - old_num) / abs(old_num)) * 100
+    # Clean string
+    cleaned = value.strip().upper()
+    cleaned = re.sub(r'[,$]', '', cleaned)
 
-def normalize_metric_name(name: str) -> str:
-    """Normalize metric name for matching"""
+    # Handle empty/NA
+    if cleaned in ['', 'N/A', 'NA', 'NULL', 'NONE', '-', '—']:
+        return None
+
+    # Extract multiplier
+    multiplier = 1.0
+    if 'TRILLION' in cleaned or cleaned.endswith('T'):
+        multiplier = 1_000_000
+        cleaned = re.sub(r'T(?:RILLION)?', '', cleaned)
+    elif 'BILLION' in cleaned or cleaned.endswith('B'):
+        multiplier = 1_000
+        cleaned = re.sub(r'B(?:ILLION)?', '', cleaned)
+    elif 'MILLION' in cleaned or cleaned.endswith('M'):
+        multiplier = 1
+        cleaned = re.sub(r'M(?:ILLION)?', '', cleaned)
+    elif 'THOUSAND' in cleaned or cleaned.endswith('K'):
+        multiplier = 0.001
+        cleaned = re.sub(r'K(?:THOUSAND)?', '', cleaned)
+
+    # Handle percentages
+    if '%' in cleaned:
+        cleaned = cleaned.replace('%', '')
+        # Don't apply multiplier to percentages
+        multiplier = 1.0
+
+    try:
+        return float(cleaned.strip()) * multiplier
+    except (ValueError, TypeError):
+        return None
+
+def compute_percent_change(old_val: Optional[float], new_val: Optional[float]) -> Optional[float]:
+    """
+    Compute percent change. Returns None if either value is None or old is 0.
+    """
+    if old_val is None or new_val is None:
+        return None
+    if old_val == 0:
+        return None if new_val == 0 else float('inf')
+    return round(((new_val - old_val) / abs(old_val)) * 100, 2)
+
+# ------------------------------------
+# NAME MATCHING (DETERMINISTIC)
+# ------------------------------------
+
+def normalize_name(name: str) -> str:
+    """Normalize name for matching"""
     if not name:
         return ""
-    norm = re.sub(r'[^\w\s]', '', name.lower().strip())
-    norm = re.sub(r'\s+', ' ', norm)
-    return norm
+    n = name.lower().strip()
+    n = re.sub(r'[^\w\s]', '', n)
+    n = re.sub(r'\s+', ' ', n)
+    return n
 
-def fuzzy_match_names(name1: str, name2: str, threshold: float = 0.7) -> bool:
-    """Check if two names match using fuzzy matching"""
-    n1 = normalize_metric_name(name1)
-    n2 = normalize_metric_name(name2)
-
+def name_similarity(name1: str, name2: str) -> float:
+    """Compute similarity ratio between two names (0-1)"""
+    n1 = normalize_name(name1)
+    n2 = normalize_name(name2)
+    if not n1 or not n2:
+        return 0.0
     if n1 == n2:
-        return True
-
-    # Check if one contains the other
+        return 1.0
+    # Check containment
     if n1 in n2 or n2 in n1:
-        return True
+        return 0.9
+    # Sequence matcher
+    return difflib.SequenceMatcher(None, n1, n2).ratio()
 
-    # Fuzzy ratio
-    ratio = difflib.SequenceMatcher(None, n1, n2).ratio()
-    return ratio >= threshold
+def find_best_match(name: str, candidates: List[str], threshold: float = 0.7) -> Optional[str]:
+    """Find best matching name from candidates"""
+    best_match = None
+    best_score = threshold
+    for candidate in candidates:
+        score = name_similarity(name, candidate)
+        if score > best_score:
+            best_score = score
+            best_match = candidate
+    return best_match
 
-def compare_metrics(old_metrics: Dict, new_metrics: Dict) -> List[Dict]:
-    """Compare metrics between old and new responses"""
-    changes = []
+# ------------------------------------
+# METRIC DIFF COMPUTATION
+# ------------------------------------
 
-    # Track which new metrics have been matched
+def compute_metric_diffs(old_metrics: Dict, new_metrics: Dict) -> List[MetricDiff]:
+    """
+    Compute deterministic diffs between metric dictionaries.
+    Returns list of MetricDiff objects.
+    """
+    diffs = []
     matched_new_keys = set()
 
-    # Compare old metrics to new
+    # Build lookup for new metrics by normalized name
+    new_by_name = {}
+    for key, m in new_metrics.items():
+        if isinstance(m, dict):
+            name = m.get('name', key)
+            new_by_name[normalize_name(name)] = (key, m)
+
+    # Process old metrics
     for old_key, old_m in old_metrics.items():
         if not isinstance(old_m, dict):
             continue
 
-        old_name = old_m.get("name", old_key)
-        old_val = old_m.get("value")
-        old_unit = old_m.get("unit", "")
+        old_name = old_m.get('name', old_key)
+        old_raw = str(old_m.get('value', ''))
+        old_unit = old_m.get('unit', '')
+        old_val = parse_to_float(old_m.get('value'))
 
         # Find matching new metric
-        matched = False
-        for new_key, new_m in new_metrics.items():
-            if new_key in matched_new_keys:
-                continue
-            if not isinstance(new_m, dict):
-                continue
+        norm_name = normalize_name(old_name)
+        match = new_by_name.get(norm_name)
 
-            new_name = new_m.get("name", new_key)
+        if not match:
+            # Try fuzzy matching
+            best = find_best_match(old_name, [m.get('name', k) for k, m in new_metrics.items() if isinstance(m, dict)])
+            if best:
+                for k, m in new_metrics.items():
+                    if isinstance(m, dict) and m.get('name', k) == best:
+                        match = (k, m)
+                        break
 
-            if fuzzy_match_names(old_name, new_name):
-                matched_new_keys.add(new_key)
-                matched = True
+        if match:
+            new_key, new_m = match
+            matched_new_keys.add(new_key)
 
-                new_val = new_m.get("value")
-                new_unit = new_m.get("unit", "")
-                pct_change = calculate_percent_change(old_val, new_val)
+            new_raw = str(new_m.get('value', ''))
+            new_val = parse_to_float(new_m.get('value'))
+            new_unit = new_m.get('unit', old_unit)
 
-                # Determine direction
-                if pct_change is None:
-                    direction = "unchanged"
-                elif abs(pct_change) < 1:
-                    direction = "unchanged"
-                elif pct_change > 0:
-                    direction = "increased"
-                else:
-                    direction = "decreased"
+            change_pct = compute_percent_change(old_val, new_val)
 
-                changes.append({
-                    "name": new_name,
-                    "old_value": f"{old_val} {old_unit}".strip(),
-                    "new_value": f"{new_val} {new_unit}".strip(),
-                    "change_pct": pct_change,
-                    "direction": direction,
-                    "status": "updated"
-                })
-                break
+            # Determine change type
+            if change_pct is None:
+                change_type = 'unchanged'
+            elif abs(change_pct) < 0.5:  # Less than 0.5% change = unchanged
+                change_type = 'unchanged'
+            elif change_pct > 0:
+                change_type = 'increased'
+            else:
+                change_type = 'decreased'
 
-        if not matched:
-            changes.append({
-                "name": old_name,
-                "old_value": f"{old_val} {old_unit}".strip(),
-                "new_value": "N/A",
-                "change_pct": None,
-                "direction": "removed",
-                "status": "removed"
-            })
+            diffs.append(MetricDiff(
+                name=old_name,
+                old_value=old_val,
+                new_value=new_val,
+                old_raw=old_raw,
+                new_raw=new_raw,
+                unit=new_unit or old_unit,
+                change_pct=change_pct,
+                change_type=change_type
+            ))
+        else:
+            # Metric was removed
+            diffs.append(MetricDiff(
+                name=old_name,
+                old_value=old_val,
+                new_value=None,
+                old_raw=old_raw,
+                new_raw='',
+                unit=old_unit,
+                change_pct=None,
+                change_type='removed'
+            ))
 
-    # Find new metrics that weren't in old
+    # Find added metrics
     for new_key, new_m in new_metrics.items():
         if new_key in matched_new_keys:
             continue
         if not isinstance(new_m, dict):
             continue
 
-        new_name = new_m.get("name", new_key)
-        new_val = new_m.get("value")
-        new_unit = new_m.get("unit", "")
+        new_name = new_m.get('name', new_key)
+        new_raw = str(new_m.get('value', ''))
+        new_val = parse_to_float(new_m.get('value'))
+        new_unit = new_m.get('unit', '')
 
-        changes.append({
-            "name": new_name,
-            "old_value": "N/A",
-            "new_value": f"{new_val} {new_unit}".strip(),
-            "change_pct": None,
-            "direction": "new",
-            "status": "new"
-        })
+        diffs.append(MetricDiff(
+            name=new_name,
+            old_value=None,
+            new_value=new_val,
+            old_raw='',
+            new_raw=new_raw,
+            unit=new_unit,
+            change_pct=None,
+            change_type='added'
+        ))
 
-    return changes
+    return diffs
 
-def compare_entities(old_entities: List, new_entities: List) -> List[Dict]:
-    """Compare top entities between old and new responses"""
-    changes = []
+# ------------------------------------
+# ENTITY DIFF COMPUTATION
+# ------------------------------------
 
-    # Build lookup for old entities
+def compute_entity_diffs(old_entities: List, new_entities: List) -> List[EntityDiff]:
+    """
+    Compute deterministic diffs between entity rankings.
+    """
+    diffs = []
+
+    # Build lookups with ranks
     old_lookup = {}
     for i, e in enumerate(old_entities):
         if isinstance(e, dict):
-            name = e.get("name", "").lower().strip()
-            old_lookup[name] = {"rank": i + 1, "share": e.get("share"), "growth": e.get("growth")}
+            name = normalize_name(e.get('name', ''))
+            old_lookup[name] = {
+                'rank': i + 1,
+                'share': e.get('share'),
+                'original_name': e.get('name', '')
+            }
 
-    # Build lookup for new entities
     new_lookup = {}
     for i, e in enumerate(new_entities):
         if isinstance(e, dict):
-            name = e.get("name", "").lower().strip()
-            new_lookup[name] = {"rank": i + 1, "share": e.get("share"), "growth": e.get("growth"), "original_name": e.get("name")}
+            name = normalize_name(e.get('name', ''))
+            new_lookup[name] = {
+                'rank': i + 1,
+                'share': e.get('share'),
+                'original_name': e.get('name', '')
+            }
 
-    # Compare
+    # All unique names
     all_names = set(old_lookup.keys()) | set(new_lookup.keys())
 
-    for name in all_names:
-        old_data = old_lookup.get(name)
-        new_data = new_lookup.get(name)
+    for norm_name in all_names:
+        old_data = old_lookup.get(norm_name)
+        new_data = new_lookup.get(norm_name)
 
         if old_data and new_data:
-            rank_change = old_data["rank"] - new_data["rank"]  # Positive = moved up
-            share_change = calculate_percent_change(old_data["share"], new_data["share"])
+            # Entity exists in both
+            rank_change = old_data['rank'] - new_data['rank']  # Positive = moved up
 
             if rank_change > 0:
-                direction = "moved_up"
+                change_type = 'moved_up'
             elif rank_change < 0:
-                direction = "moved_down"
+                change_type = 'moved_down'
             else:
-                direction = "unchanged"
+                change_type = 'unchanged'
 
-            changes.append({
-                "name": new_data.get("original_name", name),
-                "old_rank": old_data["rank"],
-                "new_rank": new_data["rank"],
-                "rank_change": rank_change,
-                "old_share": old_data["share"],
-                "new_share": new_data["share"],
-                "share_change_pct": share_change,
-                "direction": direction,
-                "status": "updated"
-            })
+            diffs.append(EntityDiff(
+                name=new_data['original_name'],
+                old_rank=old_data['rank'],
+                new_rank=new_data['rank'],
+                old_share=old_data['share'],
+                new_share=new_data['share'],
+                rank_change=rank_change,
+                change_type=change_type
+            ))
         elif old_data:
-            changes.append({
-                "name": name,
-                "old_rank": old_data["rank"],
-                "new_rank": None,
-                "rank_change": None,
-                "old_share": old_data["share"],
-                "new_share": None,
-                "share_change_pct": None,
-                "direction": "removed",
-                "status": "removed"
-            })
-        elif new_data:
-            changes.append({
-                "name": new_data.get("original_name", name),
-                "old_rank": None,
-                "new_rank": new_data["rank"],
-                "rank_change": None,
-                "old_share": None,
-                "new_share": new_data["share"],
-                "share_change_pct": None,
-                "direction": "new",
-                "status": "new"
-            })
+            # Entity removed
+            diffs.append(EntityDiff(
+                name=old_data['original_name'],
+                old_rank=old_data['rank'],
+                new_rank=None,
+                old_share=old_data['share'],
+                new_share=None,
+                rank_change=None,
+                change_type='removed'
+            ))
+        else:
+            # Entity added
+            diffs.append(EntityDiff(
+                name=new_data['original_name'],
+                old_rank=None,
+                new_rank=new_data['rank'],
+                old_share=None,
+                new_share=new_data['share'],
+                rank_change=None,
+                change_type='added'
+            ))
 
-    # Sort by new rank
-    changes.sort(key=lambda x: x.get("new_rank") or 999)
-    return changes
+    # Sort by new rank (added entities at end)
+    diffs.sort(key=lambda x: x.new_rank if x.new_rank else 999)
+    return diffs
 
-def compare_findings(old_findings: List[str], new_findings: List[str]) -> List[Dict]:
-    """Compare key findings using semantic similarity"""
-    changes = []
-    matched_new = set()
+# ------------------------------------
+# FINDING DIFF COMPUTATION
+# ------------------------------------
 
+def compute_finding_diffs(old_findings: List[str], new_findings: List[str]) -> List[FindingDiff]:
+    """
+    Compute deterministic diffs between findings using text similarity.
+    """
+    diffs = []
+    matched_new_indices = set()
+
+    # Match old findings to new
     for old_f in old_findings:
         if not old_f:
             continue
 
-        best_match = None
-        best_similarity = 0
+        best_match_idx = None
+        best_similarity = 0.5  # Minimum threshold
 
         for i, new_f in enumerate(new_findings):
-            if i in matched_new or not new_f:
+            if i in matched_new_indices or not new_f:
                 continue
 
-            # Simple word overlap similarity
-            old_words = set(normalize_metric_name(old_f).split())
-            new_words = set(normalize_metric_name(new_f).split())
+            sim = name_similarity(old_f, new_f)  # Reuse name similarity for text
+            if sim > best_similarity:
+                best_similarity = sim
+                best_match_idx = i
 
-            if old_words and new_words:
-                overlap = len(old_words & new_words) / len(old_words | new_words)
-                if overlap > best_similarity:
-                    best_similarity = overlap
-                    best_match = (i, new_f)
+        if best_match_idx is not None:
+            matched_new_indices.add(best_match_idx)
+            similarity_pct = round(best_similarity * 100, 1)
 
-        if best_match and best_similarity > 0.5:
-            matched_new.add(best_match[0])
-            changes.append({
-                "old_finding": old_f,
-                "new_finding": best_match[1],
-                "similarity": round(best_similarity * 100, 1),
-                "status": "retained" if best_similarity > 0.8 else "modified"
-            })
+            if similarity_pct >= 90:
+                change_type = 'retained'
+            else:
+                change_type = 'modified'
+
+            diffs.append(FindingDiff(
+                old_text=old_f,
+                new_text=new_findings[best_match_idx],
+                similarity=similarity_pct,
+                change_type=change_type
+            ))
         else:
-            changes.append({
-                "old_finding": old_f,
-                "new_finding": None,
-                "similarity": 0,
-                "status": "removed"
-            })
+            # Finding removed
+            diffs.append(FindingDiff(
+                old_text=old_f,
+                new_text=None,
+                similarity=0,
+                change_type='removed'
+            ))
 
-    # New findings
+    # Find added findings
     for i, new_f in enumerate(new_findings):
-        if i not in matched_new and new_f:
-            changes.append({
-                "old_finding": None,
-                "new_finding": new_f,
-                "similarity": 0,
-                "status": "new"
-            })
+        if i in matched_new_indices or not new_f:
+            continue
 
-    return changes
+        diffs.append(FindingDiff(
+            old_text=None,
+            new_text=new_f,
+            similarity=0,
+            change_type='added'
+        ))
 
-def calculate_stability_score(metric_changes: List[Dict], entity_changes: List[Dict], finding_changes: List[Dict]) -> Dict:
-    """Calculate overall stability score"""
+    return diffs
 
-    # Metrics stability (40% weight)
-    if metric_changes:
-        unchanged_metrics = sum(1 for m in metric_changes if m.get("direction") == "unchanged")
-        small_change_metrics = sum(1 for m in metric_changes if m.get("change_pct") is not None and abs(m.get("change_pct", 0)) < 10)
-        metrics_stability = ((unchanged_metrics + small_change_metrics * 0.5) / len(metric_changes)) * 100
-    else:
-        metrics_stability = 100
+# ------------------------------------
+# STABILITY SCORE COMPUTATION
+# ------------------------------------
 
-    # Entity stability (30% weight)
-    if entity_changes:
-        unchanged_entities = sum(1 for e in entity_changes if e.get("direction") == "unchanged")
-        entities_stability = (unchanged_entities / len(entity_changes)) * 100
-    else:
-        entities_stability = 100
+def compute_stability_score(
+    metric_diffs: List[MetricDiff],
+    entity_diffs: List[EntityDiff],
+    finding_diffs: List[FindingDiff]
+) -> float:
+    """
+    Compute overall stability score (0-100).
+    Higher = more stable (less change).
+    """
+    scores = []
 
-    # Findings stability (30% weight)
-    if finding_changes:
-        retained_findings = sum(1 for f in finding_changes if f.get("status") in ["retained", "modified"])
-        findings_stability = (retained_findings / len(finding_changes)) * 100
-    else:
-        findings_stability = 100
+    # Metric stability (40% weight)
+    if metric_diffs:
+        stable_metrics = sum(1 for m in metric_diffs if m.change_type == 'unchanged')
+        small_change = sum(1 for m in metric_diffs if m.change_pct and abs(m.change_pct) < 10)
+        metric_score = ((stable_metrics + small_change * 0.5) / len(metric_diffs)) * 100
+        scores.append(('metrics', metric_score, 0.4))
 
-    overall = (metrics_stability * 0.4 + entities_stability * 0.3 + findings_stability * 0.3)
+    # Entity stability (35% weight)
+    if entity_diffs:
+        stable_entities = sum(1 for e in entity_diffs if e.change_type == 'unchanged')
+        entity_score = (stable_entities / len(entity_diffs)) * 100
+        scores.append(('entities', entity_score, 0.35))
 
-    return {
-        "metrics_stability": round(metrics_stability, 1),
-        "entities_stability": round(entities_stability, 1),
-        "findings_stability": round(findings_stability, 1),
-        "overall_stability": round(overall, 1)
-    }
+    # Finding stability (25% weight)
+    if finding_diffs:
+        retained = sum(1 for f in finding_diffs if f.change_type in ['retained', 'modified'])
+        finding_score = (retained / len(finding_diffs)) * 100
+        scores.append(('findings', finding_score, 0.25))
 
-def analyze_evolution(old_data: Dict, new_data: Dict) -> Dict:
-    """Analyze evolution between two analysis snapshots"""
+    if not scores:
+        return 100.0
 
-    # Extract responses
-    old_response = old_data.get("primary_response", {})
-    new_response = new_data.get("primary_response", {})
+    # Weighted average
+    total_weight = sum(s[2] for s in scores)
+    weighted_sum = sum(s[1] * s[2] for s in scores)
+    return round(weighted_sum / total_weight, 1)
+
+# ------------------------------------
+# MAIN DIFF COMPUTATION
+# ------------------------------------
+
+def compute_evolution_diff(old_analysis: Dict, new_analysis: Dict) -> EvolutionDiff:
+    """
+    Main entry point: compute complete deterministic diff between two analyses.
+    """
+    old_response = old_analysis.get('primary_response', {})
+    new_response = new_analysis.get('primary_response', {})
+
+    # Timestamps
+    old_ts = old_analysis.get('timestamp', '')
+    new_ts = new_analysis.get('timestamp', '')
 
     # Calculate time delta
-    old_time = old_data.get("timestamp", "")
-    new_time = new_data.get("timestamp", "")
+    time_delta = None
+    try:
+        old_dt = datetime.fromisoformat(old_ts.replace('Z', '+00:00'))
+        new_dt = datetime.fromisoformat(new_ts.replace('Z', '+00:00'))
+        time_delta = round((new_dt.replace(tzinfo=None) - old_dt.replace(tzinfo=None)).total_seconds() / 3600, 1)
+    except:
+        pass
+
+    # Compute diffs
+    metric_diffs = compute_metric_diffs(
+        old_response.get('primary_metrics', {}),
+        new_response.get('primary_metrics', {})
+    )
+
+    entity_diffs = compute_entity_diffs(
+        old_response.get('top_entities', []),
+        new_response.get('top_entities', [])
+    )
+
+    finding_diffs = compute_finding_diffs(
+        old_response.get('key_findings', []),
+        new_response.get('key_findings', [])
+    )
+
+    # Compute stability
+    stability = compute_stability_score(metric_diffs, entity_diffs, finding_diffs)
+
+    # Summary stats
+    summary_stats = {
+        'metrics_increased': sum(1 for m in metric_diffs if m.change_type == 'increased'),
+        'metrics_decreased': sum(1 for m in metric_diffs if m.change_type == 'decreased'),
+        'metrics_unchanged': sum(1 for m in metric_diffs if m.change_type == 'unchanged'),
+        'metrics_added': sum(1 for m in metric_diffs if m.change_type == 'added'),
+        'metrics_removed': sum(1 for m in metric_diffs if m.change_type == 'removed'),
+        'entities_moved_up': sum(1 for e in entity_diffs if e.change_type == 'moved_up'),
+        'entities_moved_down': sum(1 for e in entity_diffs if e.change_type == 'moved_down'),
+        'entities_unchanged': sum(1 for e in entity_diffs if e.change_type == 'unchanged'),
+        'entities_added': sum(1 for e in entity_diffs if e.change_type == 'added'),
+        'entities_removed': sum(1 for e in entity_diffs if e.change_type == 'removed'),
+        'findings_retained': sum(1 for f in finding_diffs if f.change_type == 'retained'),
+        'findings_modified': sum(1 for f in finding_diffs if f.change_type == 'modified'),
+        'findings_added': sum(1 for f in finding_diffs if f.change_type == 'added'),
+        'findings_removed': sum(1 for f in finding_diffs if f.change_type == 'removed'),
+    }
+
+    return EvolutionDiff(
+        old_timestamp=old_ts,
+        new_timestamp=new_ts,
+        time_delta_hours=time_delta,
+        metric_diffs=metric_diffs,
+        entity_diffs=entity_diffs,
+        finding_diffs=finding_diffs,
+        stability_score=stability,
+        summary_stats=summary_stats
+    )
+
+# ------------------------------------
+# LLM EXPLANATION (ONLY INTERPRETS DIFFS)
+# ------------------------------------
+
+def generate_diff_explanation_prompt(diff: EvolutionDiff, query: str) -> str:
+    """
+    Generate prompt for LLM to EXPLAIN computed diffs (not discover them).
+    """
+    # Build metric changes text
+    metric_changes = []
+    for m in diff.metric_diffs:
+        if m.change_type == 'increased':
+            metric_changes.append(f"- {m.name}: {m.old_raw} → {m.new_raw} ({m.change_pct:+.1f}%) INCREASED")
+        elif m.change_type == 'decreased':
+            metric_changes.append(f"- {m.name}: {m.old_raw} → {m.new_raw} ({m.change_pct:+.1f}%) DECREASED")
+        elif m.change_type == 'added':
+            metric_changes.append(f"- {m.name}: NEW metric added with value {m.new_raw}")
+        elif m.change_type == 'removed':
+            metric_changes.append(f"- {m.name}: REMOVED (was {m.old_raw})")
+
+    # Build entity changes text
+    entity_changes = []
+    for e in diff.entity_diffs:
+        if e.change_type == 'moved_up':
+            entity_changes.append(f"- {e.name}: Rank {e.old_rank} → {e.new_rank} (moved UP {e.rank_change} positions)")
+        elif e.change_type == 'moved_down':
+            entity_changes.append(f"- {e.name}: Rank {e.old_rank} → {e.new_rank} (moved DOWN {abs(e.rank_change)} positions)")
+        elif e.change_type == 'added':
+            entity_changes.append(f"- {e.name}: NEW entrant at rank {e.new_rank}")
+        elif e.change_type == 'removed':
+            entity_changes.append(f"- {e.name}: DROPPED OUT (was rank {e.old_rank})")
+
+    # Build findings changes text
+    finding_changes = []
+    for f in diff.finding_diffs:
+        if f.change_type == 'added':
+            finding_changes.append(f"- NEW: {f.new_text}")
+        elif f.change_type == 'removed':
+            finding_changes.append(f"- REMOVED: {f.old_text}")
+        elif f.change_type == 'modified':
+            finding_changes.append(f"- MODIFIED: '{f.old_text[:50]}...' → '{f.new_text[:50]}...'")
+
+    prompt = f"""You are a market analyst explaining changes between two analysis snapshots.
+
+    QUERY: {query}
+    TIME ELAPSED: {diff.time_delta_hours:.1f} hours
+    STABILITY SCORE: {diff.stability_score:.0f}%
+
+    COMPUTED METRIC CHANGES:
+    {chr(10).join(metric_changes) if metric_changes else "No significant metric changes"}
+
+    COMPUTED ENTITY RANKING CHANGES:
+    {chr(10).join(entity_changes) if entity_changes else "No ranking changes"}
+
+    COMPUTED FINDING CHANGES:
+    {chr(10).join(finding_changes) if finding_changes else "No finding changes"}
+
+    SUMMARY STATS:
+    - Metrics: {diff.summary_stats['metrics_increased']} increased, {diff.summary_stats['metrics_decreased']} decreased, {diff.summary_stats['metrics_unchanged']} unchanged
+    - Entities: {diff.summary_stats['entities_moved_up']} moved up, {diff.summary_stats['entities_moved_down']} moved down
+    - Findings: {diff.summary_stats['findings_added']} new, {diff.summary_stats['findings_removed']} removed
+
+    YOUR TASK: Provide a 3-5 sentence executive interpretation of these changes.
+    - What is the overall trend (improving/declining/stable)?
+    - What are the most significant changes and why might they have occurred?
+    - What should stakeholders pay attention to?
+
+    Return ONLY a JSON object:
+    {{
+        "trend": "improving/declining/stable",
+        "headline": "One sentence summary of key change",
+        "interpretation": "3-5 sentence detailed interpretation",
+        "watch_items": ["Item 1 to monitor", "Item 2 to monitor"]
+    }}
+    """
+    return prompt
+
+def get_llm_explanation(diff: EvolutionDiff, query: str) -> Dict:
+    """
+    Ask LLM to explain the computed diffs (not discover them).
+    """
+    prompt = generate_diff_explanation_prompt(diff, query)
+
+    headers = {
+        "Authorization": f"Bearer {PERPLEXITY_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "sonar",
+        "temperature": 0.0,  # Deterministic
+        "max_tokens": 500,
+        "top_p": 1.0,
+        "messages": [{"role": "user", "content": prompt}]
+    }
 
     try:
-        old_dt = datetime.fromisoformat(old_time.replace("Z", "+00:00")) if old_time else None
-        new_dt = datetime.fromisoformat(new_time.replace("Z", "+00:00")) if new_time else None
-        time_delta_hours = (new_dt - old_dt).total_seconds() / 3600 if old_dt and new_dt else None
-    except:
-        time_delta_hours = None
+        resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
 
-    # Compare components
-    metric_changes = compare_metrics(
-        old_response.get("primary_metrics", {}),
-        new_response.get("primary_metrics", {})
-    )
+        parsed = parse_json_safely(content, "Explanation")
+        if parsed:
+            return parsed
+    except Exception as e:
+        st.warning(f"LLM explanation failed: {e}")
 
-    entity_changes = compare_entities(
-        old_response.get("top_entities", []),
-        new_response.get("top_entities", [])
-    )
-
-    finding_changes = compare_findings(
-        old_response.get("key_findings", []),
-        new_response.get("key_findings", [])
-    )
-
-    # Calculate stability
-    stability = calculate_stability_score(metric_changes, entity_changes, finding_changes)
-
-    # Confidence evolution
-    old_conf = old_data.get("final_confidence", 0)
-    new_conf = new_data.get("final_confidence", 0)
-    conf_change = new_conf - old_conf
-
+    # Fallback
     return {
-        "old_timestamp": old_time,
-        "new_timestamp": new_time,
-        "time_delta_hours": round(time_delta_hours, 1) if time_delta_hours else None,
-        "metric_changes": metric_changes,
-        "entity_changes": entity_changes,
-        "finding_changes": finding_changes,
-        "stability": stability,
-        "confidence_change": {
-            "old": old_conf,
-            "new": new_conf,
-            "change": round(conf_change, 1)
-        }
+        "trend": "stable" if diff.stability_score >= 70 else "changing",
+        "headline": f"Analysis shows {diff.stability_score:.0f}% stability over {diff.time_delta_hours:.0f} hours",
+        "interpretation": "Unable to generate detailed interpretation.",
+        "watch_items": []
     }
+
 
 # =========================================================
 # 8B. EVOLUTION DASHBOARD RENDERING
 # =========================================================
 
-def render_evolution_results(evolution_data: Dict, query: str):
-    """Render the anchored evolution analysis results"""
+def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str):
+    """Render deterministic evolution results"""
 
-    st.header("📈 Evolution Analysis Results")
+    st.header("📈 Evolution Analysis")
     st.markdown(f"**Query:** {query}")
 
-    # Parse the evolution response
-    try:
-        if isinstance(evolution_data, str):
-            data = json.loads(evolution_data)
-        else:
-            data = evolution_data
-    except:
-        st.error("Failed to parse evolution data")
-        return
-
-    # Delta summary
-    delta = data.get("analysis_delta", {})
-    drift = data.get("drift_summary", {})
-
-    st.subheader("📊 Change Summary")
-
+    # Overview metrics
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Time Since Previous", delta.get("time_since_previous", "Unknown"))
-    col2.metric("Overall Trend", delta.get("overall_trend", "Unknown").title())
-    col3.metric("Stability Score", f"{drift.get('overall_stability_pct', 0)}%")
 
-    # Trend indicator
-    trend = delta.get("overall_trend", "stable").lower()
-    if trend == "improving":
-        col4.success("📈 Improving")
-    elif trend == "declining":
-        col4.error("📉 Declining")
+    if diff.time_delta_hours:
+        if diff.time_delta_hours < 24:
+            time_str = f"{diff.time_delta_hours:.1f}h"
+        else:
+            time_str = f"{diff.time_delta_hours/24:.1f}d"
+        col1.metric("Time Elapsed", time_str)
     else:
-        col4.info("➡️ Stable")
+        col1.metric("Time Elapsed", "Unknown")
 
-    # Major changes
-    major_changes = delta.get("major_changes", [])
-    if major_changes:
-        st.markdown("**🔔 Major Changes:**")
-        for change in major_changes:
-            st.markdown(f"- {change}")
+    col2.metric("Stability", f"{diff.stability_score:.0f}%")
+
+    trend = explanation.get('trend', 'stable')
+    trend_icon = {'improving': '📈', 'declining': '📉', 'stable': '➡️'}.get(trend, '➡️')
+    col3.metric("Trend", f"{trend_icon} {trend.title()}")
+
+    # Stability indicator
+    if diff.stability_score >= 80:
+        col4.success("🟢 Highly Stable")
+    elif diff.stability_score >= 60:
+        col4.warning("🟡 Moderate Changes")
+    else:
+        col4.error("🔴 Significant Drift")
+
+    # Headline
+    st.info(f"**{explanation.get('headline', 'Analysis complete')}**")
 
     st.markdown("---")
 
-    # Executive Summary
-    st.subheader("📋 Updated Executive Summary")
-    st.markdown(f"**{data.get('executive_summary', 'No summary')}**")
+    # Interpretation
+    st.subheader("📋 Interpretation")
+    st.markdown(explanation.get('interpretation', 'No interpretation available'))
+
+    # Watch items
+    watch_items = explanation.get('watch_items', [])
+    if watch_items:
+        st.markdown("**🔔 Watch Items:**")
+        for item in watch_items:
+            st.markdown(f"- {item}")
 
     st.markdown("---")
 
-    # Metrics with change indicators
-    st.subheader("💰 Metrics Evolution")
-    metrics = data.get("primary_metrics", {})
-
-    if metrics:
+    # Metric Changes Table
+    st.subheader("💰 Metric Changes")
+    if diff.metric_diffs:
         metric_rows = []
-        for key, m in metrics.items():
-            if isinstance(m, dict):
-                direction = m.get("direction", "unchanged")
-                status = m.get("status", "updated")
+        for m in diff.metric_diffs:
+            icon = {
+                'increased': '📈', 'decreased': '📉', 'unchanged': '➡️',
+                'added': '🆕', 'removed': '❌'
+            }.get(m.change_type, '•')
 
-                # Icons
-                if direction == "increased":
-                    icon = "📈"
-                elif direction == "decreased":
-                    icon = "📉"
-                elif status == "new":
-                    icon = "🆕"
-                elif status == "discontinued":
-                    icon = "❌"
-                else:
-                    icon = "➡️"
+            change_str = f"{m.change_pct:+.1f}%" if m.change_pct is not None else "-"
 
-                change_pct = m.get("change_pct")
-                change_str = f"{change_pct:+.1f}%" if change_pct is not None else "-"
-
-                metric_rows.append({
-                    "": icon,
-                    "Metric": m.get("name", key),
-                    "Previous": f"{m.get('previous_value', 'N/A')} {m.get('unit', '')}".strip(),
-                    "Current": f"{m.get('current_value', m.get('value', 'N/A'))} {m.get('unit', '')}".strip(),
-                    "Change": change_str,
-                    "Status": status.title()
-                })
-
-        if metric_rows:
-            st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
+            metric_rows.append({
+                "": icon,
+                "Metric": m.name,
+                "Previous": m.old_raw or "-",
+                "Current": m.new_raw or "-",
+                "Change": change_str,
+                "Status": m.change_type.replace('_', ' ').title()
+            })
+        st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
     else:
-        st.info("No metrics data")
+        st.info("No metrics to compare")
 
     st.markdown("---")
 
-    # Entities with ranking changes
-    st.subheader("🏢 Entity Rankings Evolution")
-    entities = data.get("top_entities", [])
-
-    if entities:
+    # Entity Changes Table
+    st.subheader("🏢 Entity Ranking Changes")
+    if diff.entity_diffs:
         entity_rows = []
-        for e in entities:
-            if isinstance(e, dict):
-                change = e.get("change", "unchanged")
-                status = e.get("status", "updated")
+        for e in diff.entity_diffs:
+            icon = {
+                'moved_up': '⬆️', 'moved_down': '⬇️', 'unchanged': '➡️',
+                'added': '🆕', 'removed': '❌'
+            }.get(e.change_type, '•')
 
-                if change == "increased" or e.get("current_rank", 99) < e.get("previous_rank", 99):
-                    icon = "⬆️"
-                elif change == "decreased" or e.get("current_rank", 0) > e.get("previous_rank", 0):
-                    icon = "⬇️"
-                elif status == "new":
-                    icon = "🆕"
-                else:
-                    icon = "➡️"
+            rank_str = f"{e.rank_change:+d}" if e.rank_change else "-"
 
-                entity_rows.append({
-                    "": icon,
-                    "Entity": e.get("name", "Unknown"),
-                    "Prev Rank": e.get("previous_rank", "-"),
-                    "Curr Rank": e.get("current_rank", "-"),
-                    "Prev Share": e.get("previous_share", "-"),
-                    "Curr Share": e.get("current_share", e.get("share", "-")),
-                    "Status": status.title()
-                })
-
-        if entity_rows:
-            st.dataframe(pd.DataFrame(entity_rows), hide_index=True, use_container_width=True)
+            entity_rows.append({
+                "": icon,
+                "Entity": e.name,
+                "Old Rank": e.old_rank or "-",
+                "New Rank": e.new_rank or "-",
+                "Rank Δ": rank_str,
+                "Old Share": e.old_share or "-",
+                "New Share": e.new_share or "-"
+            })
+        st.dataframe(pd.DataFrame(entity_rows), hide_index=True, use_container_width=True)
     else:
-        st.info("No entity data")
+        st.info("No entities to compare")
 
     st.markdown("---")
 
-    # Findings with change tags
-    st.subheader("🔍 Key Findings Evolution")
-    findings = data.get("key_findings", [])
+    # Finding Changes
+    st.subheader("🔍 Finding Changes")
+    if diff.finding_diffs:
+        added = [f for f in diff.finding_diffs if f.change_type == 'added']
+        removed = [f for f in diff.finding_diffs if f.change_type == 'removed']
+        modified = [f for f in diff.finding_diffs if f.change_type == 'modified']
 
-    if findings:
-        for finding in findings:
-            if finding.startswith("[UNCHANGED]"):
-                st.markdown(f"➡️ {finding.replace('[UNCHANGED]', '').strip()}")
-            elif finding.startswith("[UPDATED]"):
-                st.markdown(f"✏️ **{finding.replace('[UPDATED]', '').strip()}**")
-            elif finding.startswith("[NEW]"):
-                st.success(f"🆕 {finding.replace('[NEW]', '').strip()}")
-            elif finding.startswith("[REMOVED]"):
-                st.warning(f"❌ ~~{finding.replace('[REMOVED]', '').strip()}~~")
-            else:
-                st.markdown(f"- {finding}")
+        if added:
+            st.markdown("**🆕 New Findings:**")
+            for f in added:
+                st.success(f"• {f.new_text}")
+
+        if removed:
+            st.markdown("**❌ Removed Findings:**")
+            for f in removed:
+                st.error(f"• ~~{f.old_text}~~")
+
+        if modified:
+            st.markdown("**✏️ Modified Findings:**")
+            for f in modified:
+                st.warning(f"• {f.new_text} *(similarity: {f.similarity:.0f}%)*")
     else:
-        st.info("No findings data")
+        st.info("No findings to compare")
 
     st.markdown("---")
 
-    # Drift Summary
-    st.subheader("📉 Drift Summary")
+    # Summary Stats
+    st.subheader("📊 Change Summary")
+    stats = diff.summary_stats
 
-    drift_cols = st.columns(4)
-    drift_cols[0].metric("Metrics Changed", drift.get("metrics_changed", 0))
-    drift_cols[1].metric("Metrics Unchanged", drift.get("metrics_unchanged", 0))
-    drift_cols[2].metric("Entities Reshuffled", drift.get("entities_reshuffled", 0))
-    drift_cols[3].metric("Findings Updated", drift.get("findings_updated", 0))
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**Metrics:**")
+        st.write(f"📈 {stats['metrics_increased']} increased")
+        st.write(f"📉 {stats['metrics_decreased']} decreased")
+        st.write(f"➡️ {stats['metrics_unchanged']} unchanged")
 
-    # Stability gauge
-    stability = drift.get("overall_stability_pct", 0)
-    if stability >= 80:
-        st.success(f"🟢 **High Stability ({stability}%)** - Data is consistent with previous analysis")
-    elif stability >= 60:
-        st.warning(f"🟡 **Moderate Stability ({stability}%)** - Some changes detected")
-    else:
-        st.error(f"🔴 **Low Stability ({stability}%)** - Significant drift from previous analysis")
+    with col2:
+        st.markdown("**Entities:**")
+        st.write(f"⬆️ {stats['entities_moved_up']} moved up")
+        st.write(f"⬇️ {stats['entities_moved_down']} moved down")
+        st.write(f"🆕 {stats['entities_added']} new")
 
-    st.markdown("---")
+    with col3:
+        st.markdown("**Findings:**")
+        st.write(f"✅ {stats['findings_retained']} retained")
+        st.write(f"✏️ {stats['findings_modified']} modified")
+        st.write(f"🆕 {stats['findings_added']} new")
 
-    # Sources
-    st.subheader("🔗 Sources")
-    sources = data.get("sources", [])
-    if sources:
-        cols = st.columns(2)
-        for i, src in enumerate(sources[:8], 1):
-            cols[(i-1) % 2].markdown(f"{i}. [{src[:50]}...]({src})")
 
 # =========================================================
 # 9. DASHBOARD RENDERING
@@ -2362,7 +2606,7 @@ def main():
         Upload a previous Yureeka analysis to track how the analysis has evolved.
 
         **How it works:**
-        - Your previous analysis is fed to the model as context in JSON format
+        - Your previous analysis is fed to the model as context
         - The model searches for UPDATES to the same metrics/entities
         - Changes are explicitly tracked (increased/decreased/new/removed)
         - Stability score indicates how much has drifted
@@ -2453,44 +2697,63 @@ def main():
                         "summary": "", "sources": [], "source_reliability": []
                     }
 
-                # Run anchored evolution analysis
-                with st.spinner("🤖 Analyzing evolution (anchored to previous)..."):
-                    evolution_response = query_perplexity_anchored(
-                        evolution_query,
-                        previous_data,
-                        web_context_evo
-                    )
+                # Run NEW analysis first
+                with st.spinner("🤖 Running new analysis..."):
+                    new_response = query_perplexity(evolution_query, web_context_evo)
 
-                if evolution_response:
-                    # Parse response
+                if not new_response:
+                    st.error("❌ New analysis failed")
+                else:
                     try:
-                        evolution_parsed = json.loads(evolution_response)
+                        new_parsed = json.loads(new_response)
                     except:
-                        st.error("❌ Failed to parse evolution response")
-                        evolution_parsed = None
+                        st.error("❌ Failed to parse new analysis")
+                        new_parsed = None
 
-                    if evolution_parsed:
+                    if new_parsed:
+                        # Build new analysis structure
+                        new_analysis = {
+                            "question": evolution_query,
+                            "timestamp": datetime.now().isoformat(),
+                            "primary_response": new_parsed
+                        }
+
+                        # DETERMINISTIC DIFF COMPUTATION
+                        with st.spinner("🔢 Computing differences (deterministic)..."):
+                            diff = compute_evolution_diff(previous_data, new_analysis)
+
+                        # LLM EXPLANATION ONLY
+                        with st.spinner("💬 Generating interpretation..."):
+                            explanation = get_llm_explanation(diff, evolution_query)
+
                         # Build output for download
                         evolution_output = {
                             "question": evolution_query,
                             "timestamp": datetime.now().isoformat(),
-                            "analysis_type": "evolution",
+                            "analysis_type": "deterministic_evolution",
                             "previous_timestamp": previous_data.get("timestamp"),
-                            "primary_response": evolution_parsed,
-                            "drift_summary": evolution_parsed.get("drift_summary", {}),
-                            "web_sources": web_context_evo.get("sources", [])
+                            "new_response": new_parsed,
+                            "diff": {
+                                "stability_score": diff.stability_score,
+                                "time_delta_hours": diff.time_delta_hours,
+                                "summary_stats": diff.summary_stats,
+                                "metric_changes": [vars(m) for m in diff.metric_diffs],
+                                "entity_changes": [vars(e) for e in diff.entity_diffs],
+                                "finding_changes": [vars(f) for f in diff.finding_diffs],
+                            },
+                            "explanation": explanation
                         }
 
                         # Download button
                         st.download_button(
                             label="💾 Download Evolution Analysis",
-                            data=json.dumps(evolution_output, indent=2, ensure_ascii=False).encode('utf-8'),
+                            data=json.dumps(evolution_output, indent=2, ensure_ascii=False, default=str).encode('utf-8'),
                             file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                             mime="application/json"
                         )
 
-                        # Render evolution dashboard
-                        render_evolution_results(evolution_parsed, evolution_query)
+                        # Render deterministic results
+                        render_evolution_results(diff, explanation, evolution_query)
                 else:
                     st.error("❌ Evolution analysis failed")
 
