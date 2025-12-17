@@ -2486,10 +2486,6 @@ def main():
                 st.json(primary_data)
 
     # =====================
-    # TAB 2: EVOLUTION TRACKER
-    # =====================
-    with tab2:
-        # =====================
     # TAB 2: EVOLUTION TRACKER (ANCHORED)
     # =====================
     with tab2:
