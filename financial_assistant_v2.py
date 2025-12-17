@@ -1,7 +1,7 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.1 - STABLE OUTPUT
-# Based on v7.0 with added stability controls
-# Changes marked with: # STABILITY ADDITION
+# YUREEKA AI RESEARCH ASSISTANT v7.2
+# With Web Search, Evidence-Based Verification, Confidence Scoring
+# Stable SerpAPI output version
 # =========================================================
 
 import os
@@ -12,15 +12,13 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 import base64
-import hashlib  # STABILITY ADDITION
-import difflib  # STABILITY ADDITION
-from typing import Dict, List, Optional, Any, Union, Tuple  # STABILITY ADDITION: Added Tuple
+from typing import Dict, List, Optional, Any, Union
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
 import google.generativeai as genai
 import numpy as np
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta  # STABILITY ADDITION: Added timedelta
+from datetime import datetime
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
@@ -41,6 +39,7 @@ def load_api_keys():
         SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
         SCRAPINGDOG_KEY = os.getenv("SCRAPINGDOG_KEY", "")
 
+    # Validate critical keys
     if not PERPLEXITY_KEY or len(PERPLEXITY_KEY) < 10:
         st.error("❌ PERPLEXITY_API_KEY is missing or invalid")
         st.stop()
@@ -54,233 +53,30 @@ def load_api_keys():
 PERPLEXITY_KEY, GEMINI_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY = load_api_keys()
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 
+# Configure Gemini
 genai.configure(api_key=GEMINI_KEY)
 gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
-
-# =========================================================
-# STABILITY ADDITION: NEW SECTION - STABILITY CONFIGURATION
-# =========================================================
-
-# Cache TTL by data type (in hours)
-CACHE_TTL_HOURS = {
-    "market_size": 168,      # 1 week - market sizes change slowly
-    "industry_data": 72,     # 3 days
-    "company_rankings": 24,  # 1 day
-    "stock_price": 0.5,      # 30 min - prices change rapidly
-    "economic_indicator": 24,
-    "default": 24
-}
-
-# Keywords for detecting data type
-DATA_TYPE_KEYWORDS = {
-    "market_size": ["market size", "industry size", "total market", "tam", "market value", "market worth"],
-    "stock_price": ["stock price", "share price", "trading at", "stock quote", "ticker"],
-    "company_rankings": ["market share", "top companies", "leading players", "market leaders", "top players"],
-    "economic_indicator": ["gdp", "inflation", "unemployment", "interest rate", "cpi", "ppi"],
-}
-
-# Anchoring thresholds - if new value within X% of old, keep old value
-METRIC_ANCHOR_THRESHOLD = 0.10   # 10% for numeric metrics
-ENTITY_ANCHOR_THRESHOLD = 0.15  # 15% for entity market shares
-
-# In-memory response cache
-_response_cache: Dict[str, Tuple[dict, datetime]] = {}
-
-def detect_data_type(query: str) -> str:
-    """Detect data type from query to determine cache TTL and stability rules"""
-    query_lower = query.lower()
-    for dtype, keywords in DATA_TYPE_KEYWORDS.items():
-        if any(kw in query_lower for kw in keywords):
-            return dtype
-    return "default"
-
-def get_cache_ttl_hours(query: str) -> int:
-    """Get cache TTL in hours based on query data type"""
-    dtype = detect_data_type(query)
-    return CACHE_TTL_HOURS.get(dtype, CACHE_TTL_HOURS["default"])
-
-def get_query_cache_key(query: str, sources: List[str] = None) -> str:
-    """Generate stable cache key from query and sources"""
-    # Normalize query
-    normalized = re.sub(r'\s+', ' ', query.lower().strip())
-    # Remove time-sensitive words that shouldn't affect caching
-    normalized = re.sub(r'\b(today|current|latest|now|recent|this year)\b', '2024', normalized)
-
-    content = normalized
-    if sources:
-        # Include top sources in key for consistency
-        content += "|" + "|".join(sorted(s.lower()[:50] for s in sources[:3]))
-
-    return hashlib.md5(content.encode()).hexdigest()[:16]
-
-def get_cached_response(query: str, sources: List[str] = None) -> Optional[dict]:
-    """Get cached response if still valid"""
-    cache_key = get_query_cache_key(query, sources)
-
-    if cache_key in _response_cache:
-        cached_data, cached_time = _response_cache[cache_key]
-        ttl_hours = get_cache_ttl_hours(query)
-
-        if datetime.now() - cached_time < timedelta(hours=ttl_hours):
-            return cached_data
-        else:
-            # Expired - remove from cache
-            del _response_cache[cache_key]
-
-    return None
-
-def cache_response(query: str, response_data: dict, sources: List[str] = None):
-    """Cache response with timestamp"""
-    cache_key = get_query_cache_key(query, sources)
-    _response_cache[cache_key] = (response_data, datetime.now())
-
-def parse_numeric_value(value: Any) -> Optional[float]:
-    """Parse any value to float for comparison"""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        cleaned = re.sub(r'[,$%]', '', value.strip())
-        multiplier = 1.0
-        if 'billion' in cleaned.lower() or cleaned.lower().endswith('b'):
-            multiplier = 1000
-            cleaned = re.sub(r'[bB](?:illion)?', '', cleaned)
-        elif 'million' in cleaned.lower() or cleaned.lower().endswith('m'):
-            multiplier = 1
-            cleaned = re.sub(r'[mM](?:illion)?', '', cleaned)
-        elif 'trillion' in cleaned.lower() or cleaned.lower().endswith('t'):
-            multiplier = 1000000
-            cleaned = re.sub(r'[tT](?:rillion)?', '', cleaned)
-        try:
-            return float(cleaned.strip()) * multiplier
-        except:
-            return None
-    return None
-
-def values_within_threshold(old_val: Any, new_val: Any, threshold: float) -> bool:
-    """Check if two values are within threshold percentage of each other"""
-    old_num = parse_numeric_value(old_val)
-    new_num = parse_numeric_value(new_val)
-
-    if old_num is None or new_num is None:
-        return False
-    if old_num == 0:
-        return new_num == 0
-
-    pct_diff = abs(old_num - new_num) / abs(old_num)
-    return pct_diff <= threshold
-
-def normalize_metric_name(name: str) -> str:
-    """Normalize metric name for matching across responses"""
-    if not name:
-        return ""
-    norm = re.sub(r'[^\w\s]', '', name.lower().strip())
-    norm = re.sub(r'\s+', ' ', norm)
-
-    # Common synonyms
-    synonyms = {
-        "market_size": ["market size", "total market", "market value", "industry size"],
-        "growth_rate": ["growth rate", "cagr", "growth", "annual growth"],
-        "market_share": ["market share", "share", "market portion"],
-    }
-
-    for canonical, variants in synonyms.items():
-        if any(v in norm for v in variants):
-            return canonical
-    return norm
-
-def fuzzy_match_metric_names(name1: str, name2: str, threshold: float = 0.7) -> bool:
-    """Check if two metric names refer to the same thing"""
-    n1 = normalize_metric_name(name1)
-    n2 = normalize_metric_name(name2)
-
-    if n1 == n2:
-        return True
-
-    # Fuzzy match
-    ratio = difflib.SequenceMatcher(None, n1, n2).ratio()
-    return ratio >= threshold
-
-def apply_anchoring(new_response: dict, previous_response: dict) -> dict:
-    """
-    Apply anchoring: keep previous values if new values are within threshold.
-    This reduces volatility from LLM randomness.
-    """
-    if not previous_response:
-        return new_response
-
-    # Anchor metrics
-    old_metrics = previous_response.get("primary_metrics", {})
-    new_metrics = new_response.get("primary_metrics", {})
-
-    if old_metrics and new_metrics:
-        for old_key, old_m in old_metrics.items():
-            if not isinstance(old_m, dict):
-                continue
-
-            old_name = old_m.get("name", old_key)
-            old_val = old_m.get("value")
-
-            # Find matching metric in new response
-            for new_key, new_m in new_metrics.items():
-                if not isinstance(new_m, dict):
-                    continue
-
-                new_name = new_m.get("name", new_key)
-
-                if fuzzy_match_metric_names(old_name, new_name):
-                    new_val = new_m.get("value")
-
-                    # If within threshold, keep old value
-                    if values_within_threshold(old_val, new_val, METRIC_ANCHOR_THRESHOLD):
-                        new_metrics[new_key]["value"] = old_val
-                        new_metrics[new_key]["_anchored"] = True
-                    break
-
-    # Anchor entity market shares
-    old_entities = previous_response.get("top_entities", [])
-    new_entities = new_response.get("top_entities", [])
-
-    if old_entities and new_entities:
-        old_shares = {}
-        for e in old_entities:
-            if isinstance(e, dict):
-                name = e.get("name", "").lower().strip()
-                old_shares[name] = e.get("share")
-
-        for new_e in new_entities:
-            if isinstance(new_e, dict):
-                name = new_e.get("name", "").lower().strip()
-                if name in old_shares:
-                    old_share = old_shares[name]
-                    new_share = new_e.get("share")
-
-                    if values_within_threshold(old_share, new_share, ENTITY_ANCHOR_THRESHOLD):
-                        new_e["share"] = old_share
-                        new_e["_anchored"] = True
-
-    return new_response
-
-# END STABILITY ADDITION
 
 # =========================================================
 # 2. PYDANTIC MODELS
 # =========================================================
 
 class MetricDetail(BaseModel):
+    """Individual metric with name, value, and unit"""
     name: str = Field(..., description="Metric name")
     value: Union[float, int, str] = Field(..., description="Metric value")
     unit: str = Field(default="", description="Unit of measurement")
     model_config = ConfigDict(extra='ignore')
 
 class TopEntityDetail(BaseModel):
+    """Entity in top_entities list"""
     name: str = Field(..., description="Entity name")
     share: Optional[str] = Field(None, description="Market share")
     growth: Optional[str] = Field(None, description="Growth rate")
     model_config = ConfigDict(extra='ignore')
 
 class TrendForecastDetail(BaseModel):
+    """Trend forecast item"""
     trend: str = Field(..., description="Trend description")
     direction: Optional[str] = Field(None, description="Direction indicator")
     timeline: Optional[str] = Field(None, description="Timeline")
@@ -296,24 +92,28 @@ class VisualizationData(BaseModel):
     model_config = ConfigDict(extra='ignore')
 
 class ComparisonBar(BaseModel):
+    """Comparison bar chart data"""
     title: str = Field("Comparison", description="Chart title")
     categories: List[str] = Field(default_factory=list)
     values: List[Union[float, int]] = Field(default_factory=list)
     model_config = ConfigDict(extra='ignore')
 
 class BenchmarkTable(BaseModel):
+    """Benchmark table row"""
     category: str
-    value_1: Union[float, int, str] = Field(default=0)
-    value_2: Union[float, int, str] = Field(default=0)
+    value_1: Union[float, int, str] = Field(default=0, description="Numeric value or string")
+    value_2: Union[float, int, str] = Field(default=0, description="Numeric value or string")
     model_config = ConfigDict(extra='ignore')
 
 class Action(BaseModel):
-    recommendation: str = Field("Neutral")
-    confidence: str = Field("Medium")
-    rationale: str = Field("")
+    """Investment/action recommendation"""
+    recommendation: str = Field("Neutral", description="Buy/Hold/Sell/Neutral")
+    confidence: str = Field("Medium", description="High/Medium/Low")
+    rationale: str = Field("", description="Reasoning")
     model_config = ConfigDict(extra='ignore')
 
 class LLMResponse(BaseModel):
+    """Complete LLM response schema"""
     executive_summary: str = Field(..., description="High-level summary")
     primary_metrics: Dict[str, MetricDetail] = Field(default_factory=dict)
     key_findings: List[str] = Field(default_factory=list)
@@ -329,113 +129,91 @@ class LLMResponse(BaseModel):
     model_config = ConfigDict(extra='ignore')
 
 # =========================================================
-# 3. PROMPTS - STABILITY ADDITION: Enhanced for consistent output
+# 3. PROMPTS
 # =========================================================
 
 RESPONSE_TEMPLATE = """
 {
-  "executive_summary": "4-6 sentences with specific numbers",
+  "executive_summary": "1-2 sentence high-level answer",
   "primary_metrics": {
     "metric_1": {"name": "Key Metric 1", "value": 25.5, "unit": "%"},
     "metric_2": {"name": "Key Metric 2", "value": 623, "unit": "$B"}
   },
-  "key_findings": ["Finding 1", "Finding 2"],
-  "top_entities": [{"name": "Entity 1", "share": "25%", "growth": "15%"}],
-  "trends_forecast": [{"trend": "Trend description", "direction": "↑", "timeline": "2025-2027"}],
+  "key_findings": [
+    "Finding 1 with quantified impact",
+    "Finding 2 explaining drivers"
+  ],
+  "top_entities": [
+    {"name": "Entity 1", "share": "25%", "growth": "15%"}
+  ],
+  "trends_forecast": [
+    {"trend": "Trend description", "direction": "↑", "timeline": "2025-2027"}
+  ],
   "visualization_data": {
     "chart_labels": ["2023", "2024", "2025"],
     "chart_values": [100, 120, 145],
     "chart_title": "Market Growth",
     "chart_type": "line"
   },
+  "comparison_bars": {
+    "title": "Market Share",
+    "categories": ["A", "B", "C"],
+    "values": [45, 30, 25]
+  },
+  "benchmark_table": [
+    {"category": "Company A", "value_1": 25.5, "value_2": 623}
+  ],
   "sources": ["source1.com"],
   "confidence": 87,
-  "freshness": "Dec 2024"
+  "freshness": "Dec 2024",
+  "action": {
+    "recommendation": "Buy/Hold/Neutral/Sell",
+    "confidence": "High/Medium/Low",
+    "rationale": "1-sentence reason"
+  }
 }
 """
 
-# STABILITY ADDITION: Enhanced system prompt with stability rules
-SYSTEM_PROMPT = f"""You are a professional market research analyst providing CONSISTENT, VERIFIABLE data.
+SYSTEM_PROMPT = f"""You are a professional market research analyst.
 
 CRITICAL RULES:
 1. Return ONLY valid JSON. NO markdown, NO code blocks, NO extra text.
 2. NO citation references like [1][2] inside strings.
 3. Use double quotes for all keys and string values.
 4. NO trailing commas in arrays or objects.
+5. Escape internal quotes with backslash.
 
-STABILITY RULES (IMPORTANT FOR CONSISTENT OUTPUT):
-- Round market sizes to nearest $0.1B (e.g., $58.3B not $58.27B)
-- Round percentages to nearest 0.1% (e.g., 21.5% not 21.47%)
-- Use consistent units: USD billions for market sizes, % for growth rates
-- Entity rankings should be based on market share and remain stable unless clear evidence contradicts
-- Use CAGR for growth projections when available
-- For forecasts, use most commonly cited industry projections
+NUMERIC FIELD RULES (IMPORTANT):
+- In benchmark_table: value_1 and value_2 MUST be numbers (never "N/A", "null", or text)
+- If data unavailable, use 0 for benchmark_table values
+- In primary_metrics: values can be numbers or strings with units (e.g., "25.5" or "25.5 billion")
+- In top_entities: share and growth can be strings (e.g., "25%")
 
-NUMERIC PRECISION RULES:
-- Market sizes > $1B: Round to 1 decimal (58.3B)
-- Market sizes < $1B: Round to whole millions (847M)
-- Percentages: Always 1 decimal (21.5%)
-- Rankings: Only change if market share data clearly supports different order
+REQUIRED FIELDS (provide substantive data):
 
-REQUIRED FIELDS:
-- executive_summary: 4-6 sentences with specific quantitative data
-- primary_metrics: 3+ metrics with numbers and consistent units
-- key_findings: 3+ findings with quantitative details
-- top_entities: 3+ companies/countries with market share %
-- trends_forecast: 2+ trends with timelines
-- visualization_data: chart_labels and chart_values arrays
+**executive_summary** - MUST be 4-6 complete sentences covering:
+  • Sentence 1: Direct answer with specific quantitative data (market size, revenue, units, etc.)
+  • Sentence 2: Major players or regional breakdown with percentages/numbers
+  • Sentence 3: Key growth drivers or market dynamics
+  • Sentence 4: Future outlook with projected CAGR, timeline, or target values
+  • Sentence 5 (optional): Challenge, risk, or competitive dynamic
+
+  BAD (too short): "The EV market is growing rapidly due to government policies."
+
+  GOOD: "The global electric vehicle market reached 14.2 million units sold in 2023, representing 18% of total auto sales. China dominates with 60% market share, followed by Europe (25%) and North America (10%). Growth is driven by battery cost reductions (down 89% since 2010), expanding charging infrastructure, and stricter emission regulations in over 20 countries. The market is projected to grow at 21% CAGR through 2030, reaching 40 million units annually. However, supply chain constraints for lithium and cobalt remain key challenges."
+
+- primary_metrics (3+ metrics with numbers)
+- key_findings (3+ findings with quantitative details)
+- top_entities (3+ companies/countries with market share %)
+- trends_forecast (2+ trends with timelines)
+- visualization_data (MUST have chart_labels and chart_values)
+- benchmark_table (if included, value_1 and value_2 must be NUMBERS, not "N/A")
+
+Even if web data is sparse, use your knowledge to provide complete, detailed analysis.
 
 Output ONLY this JSON structure:
 {RESPONSE_TEMPLATE}
 """
-
-# STABILITY ADDITION: Function to build prompt with previous values for anchoring
-def build_stable_prompt(query: str, web_context: Dict, previous_response: Optional[dict] = None) -> str:
-    """
-    Build prompt with optional anchoring to previous values.
-    If previous_response provided, includes it as reference for stability.
-    """
-    search_count = len(web_context.get("search_results", []))
-
-    # Base context
-    if not web_context.get("summary") or search_count < 2:
-        context_section = f"Web search returned {search_count} results. Use your knowledge for complete analysis."
-    else:
-        context_section = f"LATEST WEB RESEARCH:\n{web_context['summary']}\n"
-        if web_context.get('scraped_content'):
-            context_section += "\nDETAILED CONTENT:\n"
-            for url, content in list(web_context['scraped_content'].items())[:2]:
-                context_section += f"\n{url}:\n{content[:800]}...\n"
-
-    # STABILITY ADDITION: Add anchoring section if previous response exists
-    anchor_section = ""
-    if previous_response:
-        anchor_section = "\n\nPREVIOUS ANALYSIS (use as anchor - only deviate if sources clearly contradict):\n"
-
-        # Previous metrics
-        prev_metrics = previous_response.get("primary_metrics", {})
-        if prev_metrics:
-            anchor_section += "Previous Metrics:\n"
-            for k, m in list(prev_metrics.items())[:5]:
-                if isinstance(m, dict):
-                    anchor_section += f"  - {m.get('name', k)}: {m.get('value')} {m.get('unit', '')}\n"
-
-        # Previous entity rankings
-        prev_entities = previous_response.get("top_entities", [])
-        if prev_entities:
-            anchor_section += "Previous Entity Rankings:\n"
-            for i, e in enumerate(prev_entities[:5], 1):
-                if isinstance(e, dict):
-                    anchor_section += f"  {i}. {e.get('name')}: {e.get('share', 'N/A')}\n"
-
-        anchor_section += """
-ANCHORING RULES:
-- If new data is within 10% of previous values, KEEP the previous value for stability
-- Only update metrics if sources show CLEAR evidence of change
-- Maintain entity rankings unless market share data explicitly contradicts
-"""
-
-    return f"{context_section}{anchor_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
 
 # =========================================================
 # 4. MODEL LOADING
@@ -443,8 +221,13 @@ ANCHORING RULES:
 
 @st.cache_resource(show_spinner="🔧 Loading AI models...")
 def load_models():
+    """Load and cache sentence transformer and classifier"""
     try:
-        classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
+        classifier = pipeline(
+            "zero-shot-classification",
+            model="facebook/bart-large-mnli",
+            device=-1
+        )
         embedder = SentenceTransformer("all-MiniLM-L6-v2")
         return classifier, embedder
     except Exception as e:
@@ -454,10 +237,19 @@ def load_models():
 domain_classifier, embedder = load_models()
 
 # =========================================================
-# 5. JSON REPAIR FUNCTIONS (unchanged from v7)
+# 5. JSON REPAIR FUNCTIONS
 # =========================================================
 
 def repair_llm_response(data: dict) -> dict:
+    """
+    Repair common LLM JSON structure issues:
+    - Convert primary_metrics from list to dict
+    - Ensure top_entities and trends_forecast are lists
+    - Fix benchmark_table numeric values
+    - Add missing required fields
+    """
+
+    # Fix primary_metrics: list → dict
     if "primary_metrics" in data and isinstance(data["primary_metrics"], list):
         new_metrics = {}
         for i, item in enumerate(data["primary_metrics"]):
@@ -466,29 +258,36 @@ def repair_llm_response(data: dict) -> dict:
                 key = re.sub(r'[^a-z0-9_]', '', raw_name.lower().replace(" ", "_"))
                 if not key:
                     key = f"metric_{i+1}"
+
                 original_key = key
                 j = 1
                 while key in new_metrics:
                     key = f"{original_key}_{j}"
                     j += 1
+
                 item.setdefault("name", raw_name)
                 item.setdefault("value", "N/A")
                 item.setdefault("unit", "")
+
                 new_metrics[key] = item
+
         data["primary_metrics"] = new_metrics
 
+    # Fix top_entities: ensure list
     if "top_entities" in data:
         if isinstance(data["top_entities"], dict):
             data["top_entities"] = list(data["top_entities"].values())
         elif not isinstance(data["top_entities"], list):
             data["top_entities"] = []
 
+    # Fix trends_forecast: ensure list
     if "trends_forecast" in data:
         if isinstance(data["trends_forecast"], dict):
             data["trends_forecast"] = list(data["trends_forecast"].values())
         elif not isinstance(data["trends_forecast"], list):
             data["trends_forecast"] = []
 
+    # Fix visualization_data: handle old 'labels'/'values' keys
     if "visualization_data" in data and isinstance(data["visualization_data"], dict):
         viz = data["visualization_data"]
         if "labels" in viz and "chart_labels" not in viz:
@@ -496,74 +295,158 @@ def repair_llm_response(data: dict) -> dict:
         if "values" in viz and "chart_values" not in viz:
             viz["chart_values"] = viz.pop("values")
 
+    # Fix benchmark_table numeric values
     if "benchmark_table" in data and isinstance(data["benchmark_table"], list):
+        cleaned_table = []
         for row in data["benchmark_table"]:
             if isinstance(row, dict):
-                row.setdefault("category", "Unknown")
+                # Ensure category exists
+                if "category" not in row:
+                    row["category"] = "Unknown"
+
+                # Fix numeric fields
                 for key in ["value_1", "value_2"]:
-                    val = row.get(key, 0)
+                    if key not in row:
+                        row[key] = 0
+                        continue
+
+                    val = row[key]
+
+                    # Convert "N/A" and similar to 0
                     if isinstance(val, str):
-                        if val.upper().strip() in ["N/A", "NA", "NULL", "NONE", "", "-"]:
+                        val_upper = val.upper().strip()
+                        if val_upper in ["N/A", "NA", "NULL", "NONE", "", "-", "—"]:
                             row[key] = 0
                         else:
+                            # Try to parse numeric strings like "25.5", "$100", "1,234"
                             try:
                                 cleaned = re.sub(r'[^\d.-]', '', val)
-                                row[key] = float(cleaned) if cleaned else 0
-                            except:
+                                if cleaned:
+                                    row[key] = float(cleaned) if '.' in cleaned else int(cleaned)
+                                else:
+                                    row[key] = 0
+                            except (ValueError, TypeError):
                                 row[key] = 0
+                    elif not isinstance(val, (int, float)):
+                        row[key] = 0
+
+                cleaned_table.append(row)
+
+        data["benchmark_table"] = cleaned_table
+
     return data
 
+def validate_numeric_fields(data: dict, context: str = "LLM Response") -> None:
+    """Log warnings for non-numeric values in expected numeric fields"""
+
+    # Check benchmark_table
+    if "benchmark_table" in data and isinstance(data["benchmark_table"], list):
+        for i, row in enumerate(data["benchmark_table"]):
+            if isinstance(row, dict):
+                for key in ["value_1", "value_2"]:
+                    val = row.get(key)
+                    if isinstance(val, str):
+                        st.warning(
+                            f"⚠️ {context}: benchmark_table[{i}].{key} is string: '{val}' "
+                            f"(will be converted to 0)"
+                        )
+
 def preclean_json(raw: str) -> str:
-    if not raw:
+    """Remove markdown fences and citations before parsing"""
+    if not raw or not isinstance(raw, str):
         return ""
+
     text = raw.strip()
+
+    # Remove code fences
     if text.startswith("```json"):
         text = text[7:]
     elif text.startswith("```"):
         text = text[3:]
     if text.endswith("```"):
         text = text[:-3]
+
+    text = text.strip()
+
+    # Remove citations
     text = re.sub(r'\[web:\d+\]', '', text)
     text = re.sub(r'\[\d+\]', '', text)
-    return text.strip()
+    text = re.sub(r'\(\d+\)', '', text)
+
+    return text
 
 def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
+    """
+    Parse JSON with aggressive error recovery:
+    1. Pre-clean
+    2. Extract JSON object
+    3. Fix common issues (trailing commas, unquoted keys)
+    4. Iterative quote repair for unterminated strings
+    """
     if not json_str:
         return {}
+
     cleaned = preclean_json(json_str)
+
+    # Extract main JSON object
     match = re.search(r'\{.*\}', cleaned, flags=re.DOTALL)
     if not match:
+        st.warning(f"⚠️ No JSON object found in {context} response")
         return {}
+
     json_content = match.group(0)
 
+    # Structural repairs
     try:
+        # Fix unquoted keys: {key: → {"key":
         json_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', json_content)
-        json_content = re.sub(r',\s*([\]\}])', r'\1', json_content)
-        json_content = json_content.replace(': True', ': true').replace(': False', ': false')
-    except:
-        pass
 
-    for _ in range(10):
+        # Remove trailing commas
+        json_content = re.sub(r',\s*([\]\}])', r'\1', json_content)
+
+        # Fix boolean/null capitalization
+        json_content = json_content.replace(': True', ': true')
+        json_content = json_content.replace(': False', ': false')
+        json_content = json_content.replace(': Null', ': null')
+
+    except Exception as e:
+        st.warning(f"Regex repair failed: {e}")
+
+    # Iterative parsing with quote repair
+    max_attempts = 10
+    for attempt in range(max_attempts):
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            if "Unterminated string" not in str(e):
+            if "Unterminated string" not in e.msg:
+                if attempt == 0:
+                    st.warning(f"JSON parse error in {context}: {e.msg[:100]}")
                 break
-            pos = getattr(e, 'pos', 0)
-            for i in range(pos - 1, max(0, pos - 150), -1):
-                if i < len(json_content) and json_content[i] == '"' and (i == 0 or json_content[i-1] != '\\'):
-                    json_content = json_content[:i] + '\\"' + json_content[i+1:]
-                    break
-            else:
+
+            # Find and escape unescaped quote near error position
+            error_pos = e.pos
+            found = False
+            for i in range(error_pos - 1, max(0, error_pos - 150), -1):
+                if i < len(json_content) and json_content[i] == '"':
+                    if i == 0 or json_content[i-1] != '\\':
+                        json_content = json_content[:i] + '\\"' + json_content[i+1:]
+                        found = True
+                        break
+
+            if not found:
                 break
+
+    st.error(f"❌ Failed to parse JSON from {context} after {max_attempts} attempts")
     return {}
 
 # =========================================================
-# 6. WEB SEARCH FUNCTIONS (unchanged from v7)
+# 6. WEB SEARCH FUNCTIONS
 # =========================================================
 
 def classify_source_reliability(source: str) -> str:
+    """Classify source as High/Medium/Low quality"""
     source = source.lower() if isinstance(source, str) else ""
+
     high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", "mckinsey", "bcg", "cognitive market research",
             "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc", "imarc", "booz", "bakerinstitute.org",
            "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs", "j.p. morgan"]
@@ -579,141 +462,184 @@ def classify_source_reliability(source: str) -> str:
     for l in low:
         if l in source:
             return "❌ Low"
+
     return "⚠️ Medium"
 
 def source_quality_score(sources: List[str]) -> float:
+    """Calculate average source quality (0-100)"""
     if not sources:
-        return 50.0
+        return 50.0  # Lower default when no sources
+
     weights = {"✅ High": 100, "⚠️ Medium": 60, "❌ Low": 30}
     scores = [weights.get(classify_source_reliability(s), 60) for s in sources]
     return sum(scores) / len(scores) if scores else 50.0
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def search_serpapi(query: str, num_results: int = 5) -> List[Dict]:
+def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
+    """STABLE SerpAPI - Identical results every run"""
     if not SERPAPI_KEY:
         return []
 
-    # STABILITY ADDITION: Normalize query for consistent search
-    query_normalized = re.sub(r'\b(latest|current|today|now)\b', '2024', query.lower())
-
-    query_lower = query_normalized
-    if any(kw in query_lower for kw in ["industry", "market", "sector", "size", "growth"]):
-        search_terms = f"{query_normalized} market size growth trends 2024"
-        tbm, tbs = "", ""
-    else:
-        search_terms = f"{query_normalized} finance economics data"
-        tbm, tbs = "nws", "qdr:m"
-
-    params = {"engine": "google", "q": search_terms, "api_key": SERPAPI_KEY, "num": num_results, "tbm": tbm, "tbs": tbs}
+    params = {
+        "engine": "google",
+        "q": query,                    # RAW QUERY - NO MODIFIERS
+        "api_key": SERPAPI_KEY,
+        "num": num_results,
+        "gl": "us",                    # Fixed
+        "hl": "en",                    # Fixed
+        "no_cache": False,             # SerpAPI cache
+        # NO tbm, NO tbs → Pure web search stability
+    }
 
     try:
         resp = requests.get("https://serpapi.com/search", params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
 
+        # ONLY organic_results → Stable analyst reports, not news
         results = []
-        for item in data.get("news_results", [])[:num_results]:
-            src = item.get("source", {})
+        for item in data.get("organic_results", [])[:num_results]:
             results.append({
-                "title": item.get("title", ""), "link": item.get("link", ""),
-                "snippet": item.get("snippet", ""), "date": item.get("date", ""),
-                "source": src.get("name", "") if isinstance(src, dict) else str(src)
+                "title": item.get("title", ""),
+                "link": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+                "date": "",
+                "source": item.get("source", "")
             })
 
-        if not results:
-            for item in data.get("organic_results", [])[:num_results]:
-                results.append({
-                    "title": item.get("title", ""), "link": item.get("link", ""),
-                    "snippet": item.get("snippet", ""), "date": "", "source": item.get("source", "")
-                })
+        return results  # NO SORTING - preserve Google order
 
-        # STABILITY ADDITION: Sort for consistent ordering
-        results.sort(key=lambda x: (x.get("source", "").lower(), x.get("link", "")))
-        return results[:num_results]
-    except:
+    except Exception as e:
+        st.warning(f"⚠️ SerpAPI error: {e}")
         return []
 
+
+
 def scrape_url(url: str) -> Optional[str]:
+    """Scrape webpage content via ScrapingDog"""
     if not SCRAPINGDOG_KEY:
         return None
+
+    params = {
+        "api_key": SCRAPINGDOG_KEY,
+        "url": url,
+        "dynamic": "false"
+    }
+
     try:
-        resp = requests.get("https://api.scrapingdog.com/scrape",
-                          params={"api_key": SCRAPINGDOG_KEY, "url": url, "dynamic": "false"}, timeout=15)
+        resp = requests.get("https://api.scrapingdog.com/scrape", params=params, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'html.parser')
+
+        # Remove noise
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
+
         text = soup.get_text()
         lines = (line.strip() for line in text.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        return '\n'.join(chunk for chunk in chunks if chunk)[:3000]
-    except:
+        clean_text = '\n'.join(chunk for chunk in chunks if chunk)
+
+        return clean_text[:3000]
+
+    except Exception as e:
+        st.warning(f"⚠️ Scraping error for {url[:50]}: {e}")
         return None
 
 def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
-    search_results = search_serpapi(query, num_results=5)
-    if not search_results:
-        return {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
+    """Search web and scrape top sources"""
+    search_results = search_serpapi(query, num_results=10)
 
+    if not search_results:
+        return {
+            "search_results": [],
+            "scraped_content": {},
+            "summary": "",
+            "sources": [],
+            "source_reliability": []
+        }
+
+    # Scrape top sources
     scraped_content = {}
     if SCRAPINGDOG_KEY:
         progress = st.progress(0)
+        st.info(f"🔍 Scraping top {num_sources} sources...")
+
         for i, result in enumerate(search_results[:num_sources]):
-            content = scrape_url(result["link"])
+            url = result["link"]
+            content = scrape_url(url)
             if content:
-                scraped_content[result["link"]] = content
+                scraped_content[url] = content
+                st.success(f"✓ {i+1}/{num_sources}: {result['source']}")
             progress.progress((i + 1) / num_sources)
+
         progress.empty()
 
-    context_parts, reliabilities = [], []
+    # Build context summary
+    context_parts = []
+    reliabilities = []
+
     for r in search_results:
+        date_str = f" ({r['date']})" if r['date'] else ""
         reliability = classify_source_reliability(r.get("link", "") + " " + r.get("source", ""))
         reliabilities.append(reliability)
-        context_parts.append(f"**{r['title']}**\nSource: {r['source']} [{reliability}]\n{r['snippet']}\nURL: {r['link']}")
+
+        context_parts.append(
+            f"**{r['title']}**{date_str}\n"
+            f"Source: {r['source']} [{reliability}]\n"
+            f"{r['snippet']}\n"
+            f"URL: {r['link']}"
+        )
 
     return {
-        "search_results": search_results, "scraped_content": scraped_content,
-        "summary": "\n\n---\n\n".join(context_parts), "sources": [r["link"] for r in search_results],
+        "search_results": search_results,
+        "scraped_content": scraped_content,
+        "summary": "\n\n---\n\n".join(context_parts),
+        "sources": [r["link"] for r in search_results],
         "source_reliability": reliabilities
     }
 
 # =========================================================
-# 7. LLM QUERY FUNCTIONS - STABILITY ADDITION: Modified for stable output
+# 7. LLM QUERY FUNCTIONS
 # =========================================================
 
-def query_perplexity(
-    query: str,
-    web_context: Dict,
-    temperature: float = 0.0,  # STABILITY CHANGE: Default to 0 for deterministic output
-    previous_response: Optional[dict] = None,  # STABILITY ADDITION
-    force_refresh: bool = False  # STABILITY ADDITION
-) -> Tuple[str, bool]:  # STABILITY CHANGE: Returns (response, was_cached)
-    """
-    Query Perplexity API with stability controls.
-    Returns (response_json, was_cached) tuple.
-    """
-
-    sources = web_context.get("sources", [])
-
-    # STABILITY ADDITION: Check cache first
-    if not force_refresh:
-        cached = get_cached_response(query, sources)
-        if cached:
-            return json.dumps(cached), True
+def query_perplexity(query: str, web_context: Dict, temperature: float = 0.1) -> str:
+    """Query Perplexity API with web context"""
 
     search_count = len(web_context.get("search_results", []))
 
-    # STABILITY ADDITION: Use stable prompt builder
-    enhanced_query = build_stable_prompt(query, web_context, previous_response)
+    # Build enhanced prompt
+    if not web_context.get("summary") or search_count < 2:
+        enhanced_query = (
+            f"{SYSTEM_PROMPT}\n\n"
+            f"User Question: {query}\n\n"
+            f"Web search returned {search_count} results. "
+            f"Use your knowledge to provide complete analysis with all required fields."
+        )
+    else:
+        context_section = (
+            "LATEST WEB RESEARCH:\n"
+            f"{web_context['summary']}\n\n"
+        )
 
-    headers = {"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"}
+        if web_context.get('scraped_content'):
+            context_section += "\nDETAILED CONTENT:\n"
+            for url, content in list(web_context['scraped_content'].items())[:2]:
+                context_section += f"\n{url}:\n{content[:800]}...\n"
 
-    # STABILITY CHANGE: temperature=0 for deterministic output
+        enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
+
+    # API request
+    headers = {
+        "Authorization": f"Bearer {PERPLEXITY_KEY}",
+        "Content-Type": "application/json"
+    }
+
     payload = {
         "model": "sonar",
-        "temperature": temperature,  # 0 = deterministic
+        "temperature": temperature,
         "max_tokens": 2000,
-        "top_p": 1.0,  # STABILITY CHANGE: No nucleus sampling
+        "top_p": 0.8,
         "messages": [{"role": "user", "content": enhanced_query}]
     }
 
@@ -723,273 +649,424 @@ def query_perplexity(
         data = resp.json()
 
         if "choices" not in data:
-            raise Exception("No choices in response")
+            raise Exception("No 'choices' in Perplexity response")
 
         content = data["choices"][0]["message"]["content"]
-        if not content:
-            raise Exception("Empty response")
+        if not content or not content.strip():
+            raise Exception("Empty Perplexity response")
 
+        # Parse and repair
         parsed = parse_json_safely(content, "Perplexity")
         if not parsed:
-            return create_fallback_response(query, search_count, web_context), False
+            return create_fallback_response(query, search_count, web_context)
 
         repaired = repair_llm_response(parsed)
 
-        # STABILITY ADDITION: Apply anchoring if previous response exists
-        if previous_response:
-            repaired = apply_anchoring(repaired, previous_response)
+        # Debug helper
+        validate_numeric_fields(repaired, "Perplexity")
 
+        # Validate with Pydantic
         try:
             llm_obj = LLMResponse.model_validate(repaired)
+
+            # Merge web sources
             if web_context.get("sources"):
                 existing = llm_obj.sources or []
-                llm_obj.sources = list(dict.fromkeys(existing + web_context["sources"]))[:10]
+                merged = list(dict.fromkeys(existing + web_context["sources"]))
+                llm_obj.sources = merged[:10]
                 llm_obj.freshness = "Current (web-enhanced)"
 
-            result = json.loads(llm_obj.model_dump_json())
+            return llm_obj.model_dump_json()
 
-            # STABILITY ADDITION: Cache the response
-            cache_response(query, result, sources)
-
-            return json.dumps(result), False
-
-        except ValidationError:
-            return create_fallback_response(query, search_count, web_context), False
+        except ValidationError as e:
+            st.warning(f"⚠️ Pydantic validation failed: {e}")
+            return create_fallback_response(query, search_count, web_context)
 
     except Exception as e:
         st.error(f"❌ Perplexity API error: {e}")
-        return create_fallback_response(query, search_count, web_context), False
+        return create_fallback_response(query, search_count, web_context)
 
 def query_gemini(query: str) -> str:
-    """Query Gemini API (unchanged from v7)"""
+    """Query Gemini API"""
     prompt = f"{SYSTEM_PROMPT}\n\nUser query: {query}"
 
     try:
         response = gemini_model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0.0, max_output_tokens=2000)  # STABILITY: temp=0
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=2000
+            )
         )
-        content = getattr(response, "text", None)
-        if not content:
-            raise Exception("Empty response")
 
+        content = getattr(response, "text", None)
+        if not content or not content.strip():
+            raise Exception("Empty Gemini response")
+
+        # Parse and repair
         parsed = parse_json_safely(content, "Gemini")
         if not parsed:
             return create_fallback_response(query, 0, {})
 
         repaired = repair_llm_response(parsed)
+
+        validate_numeric_fields(repaired, "Gemini")
+
         try:
             llm_obj = LLMResponse.model_validate(repaired)
             return llm_obj.model_dump_json()
         except ValidationError:
             return create_fallback_response(query, 0, {})
-    except Exception:
+
+    except Exception as e:
+        st.info("Secondary model response unavailable")
         return create_fallback_response(query, 0, {})
 
 def create_fallback_response(query: str, search_count: int, web_context: Dict) -> str:
+    """Create fallback response matching schema"""
     fallback = LLMResponse(
-        executive_summary=f"Analysis of '{query}' with {search_count} sources. Fallback structure used.",
-        primary_metrics={"sources": MetricDetail(name="Web Sources", value=search_count, unit="sources")},
-        key_findings=[f"Found {search_count} sources", "Fallback response generated"],
-        top_entities=[TopEntityDetail(name="N/A", share="N/A", growth="N/A")],
-        trends_forecast=[TrendForecastDetail(trend="Fallback", direction="⚠️", timeline="N/A")],
-        visualization_data=VisualizationData(chart_labels=["N/A"], chart_values=[0], chart_title="No Data"),
+        executive_summary=f"Analysis of '{query}' completed with {search_count} web sources. Schema validation used fallback structure.",
+        primary_metrics={
+            "sources": MetricDetail(name="Web Sources", value=search_count, unit="sources"),
+            "quality": MetricDetail(name="Data Quality", value=70, unit="%")
+        },
+        key_findings=[
+            f"Web search found {search_count} relevant sources.",
+            "Primary model output required fallback due to format issues.",
+            "Manual review of raw data recommended for accuracy."
+        ],
+        top_entities=[
+            TopEntityDetail(name="Source 1", share="N/A", growth="N/A")
+        ],
+        trends_forecast=[
+            TrendForecastDetail(trend="Schema validation used fallback", direction="⚠️", timeline="Now")
+        ],
+        visualization_data=VisualizationData(
+            chart_labels=["Attempt"],
+            chart_values=[search_count],
+            chart_title="Search Results"
+        ),
         sources=web_context.get("sources", []),
-        confidence=50,
+        confidence=60,
         freshness="Current (fallback)"
     )
+
     return fallback.model_dump_json()
 
 # =========================================================
-# 8. VALIDATION & SCORING (unchanged from v7)
+# 8. VALIDATION & SCORING
 # =========================================================
 
 @st.cache_data
 def get_embedding(text: str):
+    """Cache embeddings for performance"""
     return embedder.encode(text)
 
 def semantic_similarity(text1: str, text2: str) -> float:
+    """Calculate semantic similarity score (0-100)"""
     if not text1 or not text2:
         return 0.0
+
     try:
         v1 = get_embedding(text1)
         v2 = get_embedding(text2)
-        return round(float(util.cos_sim(v1, v2).item()) * 100, 2)
-    except:
+        sim = util.cos_sim(v1, v2)
+        return round(float(sim.item()) * 100, 2)
+    except Exception as e:
+        st.warning(f"Embedding error: {e}")
         return 0.0
 
 def parse_number_with_unit(val_str: str) -> float:
+    """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
     if not val_str:
         return 0.0
+
+    # Clean and extract
     val_str = str(val_str).replace('$', '').replace(',', '').strip()
-    multiplier = 1.0
-    if val_str.endswith(('B', 'b')):
-        multiplier = 1000.0
+
+    # Check for unit suffix
+    multiplier = 1.0  # Base = millions
+    if val_str.endswith('B') or val_str.endswith('b'):
+        multiplier = 1000.0  # Billions to millions
         val_str = val_str[:-1]
-    elif val_str.endswith(('M', 'm')):
+    elif val_str.endswith('M') or val_str.endswith('m'):
+        multiplier = 1.0
         val_str = val_str[:-1]
-    elif val_str.endswith(('K', 'k')):
-        multiplier = 0.001
+    elif val_str.endswith('K') or val_str.endswith('k'):
+        multiplier = 0.001  # Thousands to millions
         val_str = val_str[:-1]
+
     try:
         return float(val_str) * multiplier
-    except:
+    except (ValueError, TypeError):
         return 0.0
 
 def numeric_consistency_with_sources(primary_data: dict, web_context: dict) -> float:
+    """Compare primary numbers vs source numbers"""
     primary_metrics = primary_data.get("primary_metrics", {})
     primary_numbers = []
+
     for metric in primary_metrics.values():
         if isinstance(metric, dict):
-            num = parse_number_with_unit(str(metric.get("value", "")))
+            val = metric.get("value")
+            num = parse_number_with_unit(str(val))
             if num > 0:
                 primary_numbers.append(num)
 
     if not primary_numbers:
-        return 50.0
+        return 50.0  # Neutral when no metrics to compare
 
+    # Extract source numbers with same parsing
     source_numbers = []
-    for result in web_context.get("search_results", []):
+    search_results = web_context.get("search_results", [])
+
+    for result in search_results:
         snippet = str(result.get("snippet", ""))
-        patterns = [r'\$?(\d+(?:\.\d+)?)\s*([BbMmKk])', r'(\d+(?:\.\d+)?)\s*(billion|million)']
+        # Match patterns like "$58.3B", "123M", "456 billion"
+        patterns = [
+            r'\$?(\d+(?:\.\d+)?)\s*([BbMmKk])',  # $58.3B
+            r'(\d+(?:\.\d+)?)\s*(billion|million|thousand)',  # 58.3 billion
+        ]
+
         for pattern in patterns:
-            for num, unit in re.findall(pattern, snippet, re.IGNORECASE):
+            matches = re.findall(pattern, snippet, re.IGNORECASE)
+            for num, unit in matches:
                 source_numbers.append(parse_number_with_unit(f"{num}{unit[0].upper()}"))
 
     if not source_numbers:
-        return 50.0
+        return 50.0  # Neutral when no source numbers found
 
-    agreements = sum(1 for p in primary_numbers if any(abs(p - s) / max(p, s, 1) < 0.25 for s in source_numbers))
-    return min(30.0 + (agreements / len(primary_numbers) * 65.0), 95.0)
+    # Check agreement (within 25% tolerance)
+    agreements = 0
+    for p_num in primary_numbers:
+        for s_num in source_numbers:
+            if abs(p_num - s_num) / max(p_num, s_num, 1) < 0.25:
+                agreements += 1
+                break
+
+    # Scale: 0 agreements = 30%, all agreements = 95%
+    agreement_ratio = agreements / len(primary_numbers)
+    agreement_pct = 30.0 + (agreement_ratio * 65.0)
+    return min(agreement_pct, 95.0)
 
 def source_consensus(web_context: dict) -> float:
+    """
+    Calculate source consensus based on proportion of high-quality sources.
+    Returns continuous score 0-100 based on quality distribution.
+    """
     reliabilities = web_context.get("source_reliability", [])
+
     if not reliabilities:
-        return 50.0
+        return 50.0  # Neutral when no sources
 
-    high = sum(1 for r in reliabilities if "✅" in str(r))
-    medium = sum(1 for r in reliabilities if "⚠️" in str(r))
-    low = sum(1 for r in reliabilities if "❌" in str(r))
     total = len(reliabilities)
+    high_count = sum(1 for r in reliabilities if "✅" in str(r))
+    medium_count = sum(1 for r in reliabilities if "⚠️" in str(r))
+    low_count = sum(1 for r in reliabilities if "❌" in str(r))
 
-    score = (high * 100 + medium * 60 + low * 30) / total
-    if high >= 3:
-        score = min(100, score + 10)
-    elif high >= 2:
-        score = min(100, score + 5)
-    return round(score, 1)
+    # Weighted score: High=100, Medium=60, Low=30
+    weighted_sum = (high_count * 100) + (medium_count * 60) + (low_count * 30)
+    consensus_score = weighted_sum / total
+
+    # Bonus for having multiple high-quality sources
+    if high_count >= 3:
+        consensus_score = min(100, consensus_score + 10)
+    elif high_count >= 2:
+        consensus_score = min(100, consensus_score + 5)
+
+    return round(consensus_score, 1)
 
 def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
+    """
+    Evidence-driven veracity scoring.
+    Returns breakdown of component scores and overall score (0-100).
+    """
+    breakdown = {}
+
+    # 1. SOURCE QUALITY (35% weight)
     sources = primary_data.get("sources", [])
     src_score = source_quality_score(sources)
-    num_score = numeric_consistency_with_sources(primary_data, web_context)
+    breakdown["source_quality"] = round(src_score, 1)
 
+    # 2. NUMERIC CONSISTENCY (30% weight)
+    num_score = numeric_consistency_with_sources(primary_data, web_context)
+    breakdown["numeric_consistency"] = round(num_score, 1)
+
+    # 3. CITATION DENSITY (20% weight)
+    # FIXED: Higher score when sources support findings, not penalize detail
     sources_count = len(sources)
-    total_claims = len(primary_data.get("key_findings", [])) + len(primary_data.get("primary_metrics", {}))
+    findings_count = len(primary_data.get("key_findings", []))
+    metrics_count = len(primary_data.get("primary_metrics", {}))
+
+    # Total claims = findings + metrics
+    total_claims = findings_count + metrics_count
 
     if total_claims == 0:
-        citations_score = 40.0
+        citations_score = 40.0  # Low score for no claims
     else:
+        # Ratio of sources to claims - ideal is ~0.5-1.0 sources per claim
         ratio = sources_count / total_claims
-        citations_score = min(90.0 if ratio >= 1.0 else 70.0 + (ratio - 0.5) * 40 if ratio >= 0.5 else 50.0 + (ratio - 0.25) * 80 if ratio >= 0.25 else ratio * 200, 95.0)
+        if ratio >= 1.0:
+            citations_score = 90.0  # Well-supported
+        elif ratio >= 0.5:
+            citations_score = 70.0 + (ratio - 0.5) * 40  # 70-90 range
+        elif ratio >= 0.25:
+            citations_score = 50.0 + (ratio - 0.25) * 80  # 50-70 range
+        else:
+            citations_score = ratio * 200  # 0-50 range
 
+    breakdown["citation_density"] = round(min(citations_score, 95.0), 1)
+
+    # 4. SOURCE CONSENSUS (15% weight)
     consensus_score = source_consensus(web_context)
+    breakdown["source_consensus"] = round(consensus_score, 1)
 
-    return {
-        "source_quality": round(src_score, 1),
-        "numeric_consistency": round(num_score, 1),
-        "citation_density": round(citations_score, 1),
-        "source_consensus": round(consensus_score, 1),
-        "overall": round(src_score * 0.35 + num_score * 0.30 + citations_score * 0.20 + consensus_score * 0.15, 1)
-    }
+    # Calculate weighted total
+    total_score = (
+        breakdown["source_quality"] * 0.35 +
+        breakdown["numeric_consistency"] * 0.30 +
+        breakdown["citation_density"] * 0.20 +
+        breakdown["source_consensus"] * 0.15
+    )
 
-def calculate_final_confidence(base_conf: float, evidence_score: float) -> float:
+    breakdown["overall"] = round(total_score, 1)
+
+    return breakdown
+
+def calculate_final_confidence(
+    base_conf: float,
+    evidence_score: float
+) -> float:
+    """
+    Calculate final confidence score.
+
+    Formula balances model confidence with evidence quality:
+    - Evidence has higher weight (65%) as it's more objective
+    - Model confidence (35%) is adjusted by evidence quality
+
+    This ensures:
+    - High model + High evidence → High final (~85-90%)
+    - High model + Low evidence → Medium final (~55-65%)
+    - Low model + High evidence → Medium-High final (~70-80%)
+    - Low model + Low evidence → Low final (~40-50%)
+    """
+
+    # Normalize inputs to 0-100 range
     base_conf = max(0, min(100, base_conf))
     evidence_score = max(0, min(100, evidence_score))
+
+    # 1. EVIDENCE COMPONENT (65% weight) - Primary driver
     evidence_component = evidence_score * 0.65
-    evidence_multiplier = 0.5 + (evidence_score / 200)
+
+    # 2. MODEL COMPONENT (35% weight) - Adjusted by evidence quality
+    # When evidence is weak, model confidence is discounted
+    evidence_multiplier = 0.5 + (evidence_score / 200)  # Range: 0.5 to 1.0
     model_component = base_conf * evidence_multiplier * 0.35
-    return round(max(0, min(100, evidence_component + model_component)), 1)
+
+    final = evidence_component + model_component
+
+    # Ensure result is in valid range
+    return round(max(0, min(100, final)), 1)
 
 # =========================================================
-# 9. DASHBOARD RENDERING - STABILITY ADDITION: Show stability info
+# 9. DASHBOARD RENDERING
 # =========================================================
 
 def detect_x_label_dynamic(labels: list) -> str:
+    """Enhanced X-axis detection with better region matching"""
     if not labels:
         return "Category"
-    label_texts = [str(l).lower() for l in labels]
+
+    # Convert to lowercase for comparison
+    label_texts = [str(l).lower().strip() for l in labels]
     all_text = ' '.join(label_texts)
 
-    region_kw = ['north america', 'asia pacific', 'europe', 'latin america', 'middle east', 'china', 'usa', 'india']
-    if sum(1 for l in label_texts if any(k in l for k in region_kw)) / len(labels) >= 0.4:
+    # 1. GEOGRAPHIC REGIONS (PRIORITY 1)
+    region_keywords = [
+        'north america', 'asia pacific', 'asia-pacific', 'apac', 'europe', 'emea',
+        'latin america', 'latam', 'middle east', 'africa', 'oceania',
+        'rest of world', 'row', 'china', 'usa', 'india', 'japan', 'germany'
+    ]
+
+    # Count how many labels contain region keywords
+    region_matches = sum(
+        1 for label in label_texts
+        if any(keyword in label for keyword in region_keywords)
+    )
+
+    # If 40%+ of labels are regions → "Regions"
+    if region_matches / len(labels) >= 0.4:
         return "Regions"
-    if sum(1 for l in label_texts if re.search(r'\b20\d{2}\b', l)) / len(labels) > 0.5:
+
+    # 2. YEARS (e.g., 2023, 2024, 2025)
+    year_pattern = r'\b(19|20)\d{2}\b'
+    year_count = sum(1 for label in label_texts if re.search(year_pattern, label))
+    if year_count / len(labels) > 0.5:
         return "Years"
-    if sum(1 for l in label_texts if re.search(r'\bq[1-4]\b', l, re.I)) >= 2:
+
+    # 3. QUARTERS (Q1, Q2, Q3, Q4)
+    quarter_pattern = r'\bq[1-4]\b'
+    quarter_count = sum(1 for label in label_texts if re.search(quarter_pattern, label, re.IGNORECASE))
+    if quarter_count >= 2:
         return "Quarters"
+
+    # 4. MONTHS
+    months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    month_count = sum(1 for label in label_texts if any(month in label for month in months))
+    if month_count >= 3:
+        return "Months"
+
+    # 5. COMPANIES (common suffixes)
+    company_keywords = ['inc', 'corp', 'ltd', 'llc', 'gmbh', 'ag', 'sa', 'plc']
+    company_count = sum(1 for label in label_texts if any(kw in label for kw in company_keywords))
+    if company_count >= 2:
+        return "Companies"
+
+    # 6. PRODUCTS/SEGMENTS (if contains "segment", "product", "category")
+    if any(word in all_text for word in ['segment', 'product line', 'category', 'type']):
+        return "Segments"
+
+    # Default
     return "Categories"
 
 def detect_y_label_dynamic(values: list) -> str:
+    """Fully dynamic Y-axis label based on magnitude + context"""
     if not values:
         return "Value"
-    try:
-        nums = [abs(float(v)) for v in values]
-        avg, mx = np.mean(nums), max(nums)
-        if mx > 500 or avg > 100:
-            return "USD B"
-        elif mx > 50 or avg > 10:
-            return "USD M"
-        elif all(0 <= v <= 100 for v in nums):
+
+    numeric_values = []
+    for v in values:
+        try:
+            numeric_values.append(abs(float(v)))
+        except (ValueError, TypeError):
+            continue
+
+    if not numeric_values:
+        return "Value"
+
+    avg_mag = np.mean(numeric_values)
+    max_mag = max(numeric_values)
+
+    # Non-overlapping ranges with clear boundaries
+    # 1. BILLIONS (large market sizes)
+    if max_mag > 100 or avg_mag > 50:
+        return "USD B"
+
+    # 2. MILLIONS (medium values)
+    elif max_mag > 10 or avg_mag > 5:
+        return "USD M"
+
+    # 3. PERCENTAGES (typical 0-100 range, but also small decimals)
+    elif max_mag <= 100 and avg_mag <= 50:
+        # Check if values look like percentages (mostly 0-100)
+        if all(0 <= v <= 100 for v in numeric_values):
             return "Percent %"
-    except:
-        pass
-    return "Value"
+        else:
+            return "USD K"
 
-# STABILITY ADDITION: New function to render stability information
-def render_stability_info(was_cached: bool, query: str, data: dict):
-    """Render stability status panel"""
-    st.subheader("🔒 Output Stability")
-
-    cols = st.columns(4)
-
-    # Cache status
-    data_type = detect_data_type(query)
-    ttl = get_cache_ttl_hours(query)
-
-    if was_cached:
-        cols[0].metric("Cache Status", "✅ Cached", help="Response from cache - guaranteed stable")
+    # 4. Default
     else:
-        cols[0].metric("Cache Status", "🔄 Fresh", help="New response generated")
-
-    cols[1].metric("Data Type", data_type.replace("_", " ").title())
-    cols[2].metric("Cache TTL", f"{ttl}h")
-
-    # Count anchored values
-    anchored_count = 0
-    for m in data.get("primary_metrics", {}).values():
-        if isinstance(m, dict) and m.get("_anchored"):
-            anchored_count += 1
-    for e in data.get("top_entities", []):
-        if isinstance(e, dict) and e.get("_anchored"):
-            anchored_count += 1
-
-    cols[3].metric("Anchored Values", anchored_count, help="Values kept from previous for stability")
-
-    # Explanation expander
-    with st.expander("ℹ️ How stability works"):
-        st.markdown(f"""
-        **Stability Controls Applied:**
-        1. **Response Caching**: Same query returns cached response for {ttl} hours
-        2. **Temperature = 0**: LLM generates deterministically
-        3. **Value Anchoring**: New values within 10% of previous are kept unchanged
-        4. **Query Normalization**: "latest"/"current" → "2024" for consistent search
-        5. **Structured Prompting**: Explicit rounding rules for numbers
-
-        **Data Type: {data_type.replace("_", " ").title()}**
-        - Cache TTL: {ttl} hours
-        - {"Market data changes slowly - high stability expected" if data_type == "market_size" else "Standard caching applied"}
-        """)
+        return "Units"
 
 def render_dashboard(
     primary_json: str,
@@ -997,60 +1074,67 @@ def render_dashboard(
     web_context: Dict,
     base_conf: float,
     user_question: str,
-    veracity_scores: Dict,
-    source_reliability: List[str],
-    was_cached: bool = False  # STABILITY ADDITION
+    veracity_scores: Optional[Dict] = None,
+    source_reliability: Optional[List[str]] = None,
 ):
+    """Render the analysis dashboard"""
+
+    # Parse primary response
     try:
         data = json.loads(primary_json)
     except Exception as e:
         st.error(f"❌ Cannot render dashboard: {e}")
+        st.code(primary_json[:1000])
         return
 
+    # Header
     st.header("📊 Yureeka Market Report")
     st.markdown(f"**Question:** {user_question}")
 
     # Confidence row
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     col1.metric("Final Confidence", f"{final_conf:.1f}%")
-    col2.metric("Model Confidence", f"{base_conf:.1f}%")
-    col3.metric("Evidence Score", f"{veracity_scores.get('overall', 0):.1f}%")
-    # STABILITY ADDITION
-    col4.metric("Cache Status", "📦 Cached" if was_cached else "🔄 Fresh")
-
-    # STABILITY ADDITION: Show stability info
-    st.markdown("---")
-    render_stability_info(was_cached, user_question, data)
+    col2.metric("Base Model", f"{base_conf:.1f}%")
+    if veracity_scores:
+        col3.metric("Evidence", f"{veracity_scores.get('overall', 0):.1f}%")
+    else:
+        col3.metric("Evidence", "N/A")
 
     st.markdown("---")
 
     # Executive Summary
     st.subheader("📋 Executive Summary")
     st.markdown(f"**{data.get('executive_summary', 'No summary available')}**")
+
     st.markdown("---")
 
     # Key Metrics
     st.subheader("💰 Key Metrics")
     metrics = data.get('primary_metrics', {})
-    if metrics:
-        rows = []
-        for k, m in list(metrics.items())[:6]:
-            if isinstance(m, dict):
-                # STABILITY ADDITION: Show anchored indicator
-                anchored = " 🔗" if m.get("_anchored") else ""
-                rows.append({
-                    "Metric": m.get("name", k) + anchored,
-                    "Value": f"{m.get('value', 'N/A')} {m.get('unit', '')}".strip()
+
+    if metrics and isinstance(metrics, dict):
+        metric_rows = []
+        for key, detail in list(metrics.items())[:6]:
+            if isinstance(detail, dict):
+                metric_rows.append({
+                    "Metric": detail.get("name", key),
+                    "Value": f"{detail.get('value', 'N/A')} {detail.get('unit', '')}".strip()
                 })
-        if rows:
-            st.table(pd.DataFrame(rows))
+
+        if metric_rows:
+            st.table(pd.DataFrame(metric_rows))
+    else:
+        st.info("No metrics available")
+
     st.markdown("---")
 
     # Key Findings
     st.subheader("🔍 Key Findings")
-    for i, finding in enumerate(data.get('key_findings', [])[:8], 1):
+    findings = data.get('key_findings', [])
+    for i, finding in enumerate(findings[:8], 1):
         if finding:
             st.markdown(f"**{i}.** {finding}")
+
     st.markdown("---")
 
     # Top Entities
@@ -1058,277 +1142,286 @@ def render_dashboard(
     if entities:
         st.subheader("🏢 Top Market Players")
         entity_data = []
-        for e in entities:
-            if isinstance(e, dict):
-                # STABILITY ADDITION: Show anchored indicator
-                anchored = " 🔗" if e.get("_anchored") else ""
+        for ent in entities:
+            if isinstance(ent, dict):
                 entity_data.append({
-                    "Entity": e.get("name", "N/A") + anchored,
-                    "Share": e.get("share", "N/A"),
-                    "Growth": e.get("growth", "N/A")
+                    "Entity": ent.get("name", "N/A"),
+                    "Share": ent.get("share", "N/A"),
+                    "Growth": ent.get("growth", "N/A")
                 })
+
         if entity_data:
             st.dataframe(pd.DataFrame(entity_data), hide_index=True, use_container_width=True)
 
-    # Trends
+    # Trends Forecast
     trends = data.get('trends_forecast', [])
     if trends:
         st.subheader("📈 Trends & Forecast")
-        trend_data = [{"Trend": t.get("trend", "N/A"), "Direction": t.get("direction", "→"), "Timeline": t.get("timeline", "N/A")}
-                     for t in trends if isinstance(t, dict)]
+        trend_data = []
+        for trend in trends:
+            if isinstance(trend, dict):
+                trend_data.append({
+                    "Trend": trend.get("trend", "N/A"),
+                    "Direction": trend.get("direction", "→"),
+                    "Timeline": trend.get("timeline", "N/A")
+                })
+
         if trend_data:
             st.table(pd.DataFrame(trend_data))
+
     st.markdown("---")
 
-    # Visualization
+    # Visualization - FIXED indentation
     st.subheader("📊 Data Visualization")
     viz = data.get('visualization_data')
+
     if viz and isinstance(viz, dict):
         labels = viz.get("chart_labels", [])
         values = viz.get("chart_values", [])
+        title = viz.get("chart_title", "Trend Analysis")
+        chart_type = viz.get("chart_type", "line")
+
         if labels and values and len(labels) == len(values):
             try:
-                nums = [float(v) for v in values[:10]]
-                df = pd.DataFrame({"x": labels[:10], "y": nums})
-                chart_type = viz.get("chart_type", "line")
-                fig = px.bar(df, x="x", y="y", title=viz.get("chart_title", "Trend")) if chart_type == "bar" else px.line(df, x="x", y="y", title=viz.get("chart_title", "Trend"), markers=True)
-                fig.update_layout(xaxis_title=detect_x_label_dynamic(labels), yaxis_title=detect_y_label_dynamic(nums))
+                numeric_values = [float(v) for v in values[:10]]
+
+                # Detect axis labels
+                x_label = viz.get("x_axis_label") or detect_x_label_dynamic(labels)
+                y_label = viz.get("y_axis_label") or detect_y_label_dynamic(numeric_values)
+
+                # Create DataFrame
+                df_viz = pd.DataFrame({
+                    "x": labels[:10],
+                    "y": numeric_values
+                })
+
+                # Create chart
+                if chart_type == "bar":
+                    fig = px.bar(df_viz, x="x", y="y", title=title)
+                else:
+                    fig = px.line(df_viz, x="x", y="y", title=title, markers=True)
+
+                # Fix axis labels
+                fig.update_layout(
+                    xaxis_title=x_label,
+                    yaxis_title=y_label,
+                    title_font_size=16,
+                    font=dict(size=12),
+                    xaxis=dict(tickangle=-45) if len(labels) > 5 else {}
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            except Exception as e:
+                st.info(f"⚠️ Chart rendering failed: {e}")
+        else:
+            st.info("📊 Visualization data incomplete or missing")
+    else:
+        st.info("📊 No visualization data available")
+
+    # Comparison Bars
+    comp = data.get('comparison_bars')
+    if comp and isinstance(comp, dict):
+        cats = comp.get("categories", [])
+        vals = comp.get("values", [])
+        if cats and vals and len(cats) == len(vals):
+            try:
+                df_comp = pd.DataFrame({"Category": cats, "Value": vals})
+                fig = px.bar(df_comp, x="Category", y="Value",
+                           title=comp.get("title", "Comparison"), text_auto=True)
                 st.plotly_chart(fig, use_container_width=True)
             except:
-                st.info("Chart rendering failed")
+                pass
+
     st.markdown("---")
 
-    # Sources
-    st.subheader("🔗 Sources")
+    # Sources - COMPACT VERSION
+    st.subheader("🔗 Sources & Reliability")
     all_sources = data.get('sources', []) or web_context.get('sources', [])
-    if all_sources:
-        cols = st.columns(2)
-        for i, src in enumerate(all_sources[:10], 1):
-            reliability = classify_source_reliability(str(src))
-            cols[(i-1) % 2].markdown(f"**{i}.** [{src[:50]}...]({src}) {reliability}", unsafe_allow_html=True)
+
+    if not all_sources:
+        st.info("No sources found")
+    else:
+        st.success(f"📊 Found {len(all_sources)} sources")
+
+    # Compact display - 2 columns, short URLs
+    cols = st.columns(2)
+    for i, src in enumerate(all_sources[:10], 1):
+        col = cols[(i-1) % 2]
+        short_url = src[:60] + "..." if len(src) > 60 else src
+        reliability = classify_source_reliability(str(src))
+
+        col.markdown(f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
+                    unsafe_allow_html=True)
+
+    # Metadata
+    col_fresh, col_action = st.columns(2)
+    with col_fresh:
+        freshness = data.get('freshness', 'Current')
+        st.metric("Data Freshness", freshness)
+
     st.markdown("---")
 
-    # Evidence Quality
+    # Veracity Scores - EVIDENCE-BASED
     if veracity_scores:
         st.subheader("✅ Evidence Quality Scores")
         cols = st.columns(5)
-        for i, (label, key) in enumerate([("Sources", "source_quality"), ("Numbers", "numeric_consistency"),
-                                          ("Citations", "citation_density"), ("Consensus", "source_consensus"), ("Overall", "overall")]):
+        metrics_display = [
+            ("Sources", "source_quality"),
+            ("Numbers", "numeric_consistency"),
+            ("Citations", "citation_density"),
+            ("Consensus", "source_consensus"),
+            ("Overall", "overall")
+        ]
+        for i, (label, key) in enumerate(metrics_display):
             cols[i].metric(label, f"{veracity_scores.get(key, 0):.0f}%")
 
     # Web Context
-    if web_context.get("search_results"):
+    if web_context and web_context.get("search_results"):
         with st.expander("🌐 Web Search Details"):
-            for i, r in enumerate(web_context["search_results"][:5], 1):
-                st.markdown(f"**{i}. {r.get('title')}**")
-                st.caption(f"{r.get('source')} - {r.get('date')}")
-                st.write(r.get('snippet', ''))
+            for i, result in enumerate(web_context["search_results"][:5]):
+                st.markdown(f"**{i+1}. {result.get('title')}**")
+                st.caption(f"{result.get('source')} - {result.get('date')}")
+                st.write(result.get('snippet', ''))
+                st.caption(f"[{result.get('link')}]({result.get('link')})")
                 st.markdown("---")
 
 # =========================================================
-# 10. MAIN APPLICATION - STABILITY ADDITION: Added controls
+# 10. MAIN APPLICATION
 # =========================================================
 
 def main():
-    st.set_page_config(page_title="Yureeka Market Report", page_icon="💹", layout="wide")
+    st.set_page_config(
+        page_title="Yureeka Market Report",
+        page_icon="💹",
+        layout="wide"
+    )
 
     st.title("💹 Yureeka Market Intelligence")
 
-    # STABILITY ADDITION: Version info with stability features
-    st.markdown("""
-    **Yureeka v7.1** - Now with output stability controls.
-
-    *Features: Response caching, value anchoring, deterministic LLM output*
-    """)
-
-    # STABILITY ADDITION: Cache status in sidebar
-    with st.sidebar:
-        st.subheader("🔒 Stability Controls")
-        st.write(f"**Cached queries:** {len(_response_cache)}")
-
-        for key, (data, time) in list(_response_cache.items())[:3]:
-            age = (datetime.now() - time).total_seconds() / 3600
-            st.caption(f"• `{key[:8]}...` - {age:.1f}h ago")
-
-        if st.button("🗑️ Clear Cache"):
-            _response_cache.clear()
-            st.success("Cache cleared!")
-            st.rerun()
-
-        st.markdown("---")
+    # Info section
+    col_info, col_status = st.columns([3, 1])
+    with col_info:
         st.markdown("""
-        **Stability Features:**
-        - 🌡️ Temperature = 0
-        - 📦 Response caching
-        - 🔗 Value anchoring
-        - 📝 Structured prompts
+        **Yureeka** provides AI-powered market research and analysis for finance,
+        economics, and business questions.
+        Powered by evidence-based verification and real-time web search.
+
+        *Currently in prototype stage.*
         """)
 
-    # Main tabs
-    tab1, tab2 = st.tabs(["🔍 New Analysis", "📊 Compare with Previous"])
+    # User input
+    query = st.text_input(
+        "Enter your question about markets, industries, finance, or economics:",
+        placeholder="e.g., What is the size of the global EV battery market?"
+    )
 
-    with tab1:
-        query = st.text_input(
-            "Enter your question about markets, industries, finance, or economics:",
-            placeholder="e.g., What is the size of the global EV battery market?",
-            key="query_new"
+    # Options
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        use_web = st.checkbox(
+            "Enable web search (recommended)",
+            value=bool(SERPAPI_KEY),
+            disabled=not SERPAPI_KEY
         )
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            use_web = st.checkbox("Enable web search", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY, key="web_new")
-        with col2:
-            # STABILITY ADDITION
-            force_refresh = st.checkbox("Force refresh (skip cache)", value=False, key="refresh_new")
-        with col3:
-            if query:
-                dtype = detect_data_type(query)
-                ttl = get_cache_ttl_hours(query)
-                st.caption(f"Type: {dtype} | Cache: {ttl}h")
+    # Analysis button
+    if st.button("🔍 Analyze", type="primary") and query:
 
-        if st.button("🔍 Analyze", type="primary", key="analyze_new") and query:
-            run_analysis(query.strip()[:500], use_web, force_refresh, None)
+        # Validate query
+        if len(query.strip()) < 5:
+            st.error("❌ Please enter a question with at least 5 characters")
+            return
 
-    with tab2:
-        st.markdown("### Compare with Previous Analysis")
-        st.markdown("Upload a previous Yureeka JSON to use as anchor for stable comparison.")
+        query = query.strip()[:500]  # Limit length
 
-        uploaded = st.file_uploader("Upload previous JSON output", type=['json'], key="upload")
+        # Web search
+        web_context = {}
+        if use_web:
+            with st.spinner("🌐 Searching the web..."):
+                web_context = fetch_web_context(query, num_sources=3)
 
-        previous_data = None
-        if uploaded:
-            try:
-                previous_data = json.load(uploaded)
-                st.success(f"✅ Loaded: {previous_data.get('question', 'Unknown')}")
-                st.caption(f"Timestamp: {previous_data.get('timestamp', 'Unknown')}")
-
-                # Show previous metrics
-                prev_resp = previous_data.get("primary_response", {})
-                prev_metrics = prev_resp.get("primary_metrics", {})
-                if prev_metrics:
-                    with st.expander("📋 Previous Metrics (will be used for anchoring)"):
-                        for k, m in list(prev_metrics.items())[:5]:
-                            if isinstance(m, dict):
-                                st.write(f"**{m.get('name', k)}**: {m.get('value')} {m.get('unit', '')}")
-            except Exception as e:
-                st.error(f"Failed to parse JSON: {e}")
-
-        query2 = st.text_input(
-            "Query (or use same as previous):",
-            value=previous_data.get("question", "") if previous_data else "",
-            key="query_compare"
-        )
-
-        col1, col2 = st.columns(2)
-        with col1:
-            use_web2 = st.checkbox("Enable web search", value=bool(SERPAPI_KEY), disabled=not SERPAPI_KEY, key="web_compare")
-        with col2:
-            force_refresh2 = st.checkbox("Force refresh", value=False, key="refresh_compare")
-
-        if st.button("🔄 Run Comparison", type="primary", key="analyze_compare") and query2:
-            prev_resp = previous_data.get("primary_response") if previous_data else None
-            run_analysis(query2.strip()[:500], use_web2, force_refresh2, prev_resp)
-
-def run_analysis(query: str, use_web: bool, force_refresh: bool, previous_response: Optional[dict]):
-    """Run analysis with stability controls"""
-
-    if len(query.strip()) < 5:
-        st.error("❌ Please enter a question with at least 5 characters")
-        return
-
-    # Web search
-    web_context = {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
-    if use_web:
-        with st.spinner("🌐 Searching the web..."):
-            web_context = fetch_web_context(query, num_sources=3)
-
-        if web_context.get("search_results"):
-            st.success(f"Found {len(web_context['search_results'])} sources")
-        else:
+        if not web_context or not web_context.get("search_results"):
             st.info("💡 Using AI knowledge without web search")
+            web_context = {
+                "search_results": [],
+                "scraped_content": {},
+                "summary": "",
+                "sources": [],
+                "source_reliability": []
+            }
 
-    # Query LLM with stability controls
-    with st.spinner("🤖 Analyzing (with stability controls)..."):
-        primary_response, was_cached = query_perplexity(
-            query,
-            web_context,
-            temperature=0.0,  # Deterministic
-            previous_response=previous_response,
-            force_refresh=force_refresh
+        # Primary model query
+        with st.spinner("🤖 Analyzing with primary model..."):
+            primary_response = query_perplexity(query, web_context)
+
+        if not primary_response:
+            st.error("❌ Primary model failed to respond")
+            return
+
+        # Parse primary response
+        try:
+            primary_data = json.loads(primary_response)
+        except Exception as e:
+            st.error(f"❌ Failed to parse primary response: {e}")
+            st.code(primary_response[:1000])
+            return
+
+        # Evidence-based veracity scoring (single call)
+        with st.spinner("✅ Verifying evidence quality..."):
+            veracity_scores = evidence_based_veracity(primary_data, web_context)
+
+        # Calculate confidence
+        base_conf = float(primary_data.get("confidence", 75))
+
+        # Final confidence calculation
+        final_conf = calculate_final_confidence(
+            base_conf,
+            veracity_scores["overall"]
         )
 
-    if was_cached:
-        st.info("📦 Response loaded from cache (guaranteed stable)")
-
-    if not primary_response:
-        st.error("❌ Analysis failed")
-        return
-
-    try:
-        primary_data = json.loads(primary_response)
-    except Exception as e:
-        st.error(f"❌ Parse error: {e}")
-        return
-
-    # Veracity scoring
-    with st.spinner("✅ Verifying evidence quality..."):
-        veracity_scores = evidence_based_veracity(primary_data, web_context)
-
-    base_conf = float(primary_data.get("confidence", 75))
-    final_conf = calculate_final_confidence(base_conf, veracity_scores["overall"])
-
-    # Build output
-    output = {
-        "question": query,
-        "timestamp": datetime.now().isoformat(),
-        "primary_response": primary_data,
-        "final_confidence": final_conf,
-        "veracity_scores": veracity_scores,
-        "web_sources": web_context.get("sources", []),
-        # STABILITY ADDITION
-        "stability": {
-            "was_cached": was_cached,
-            "data_type": detect_data_type(query),
-            "cache_ttl_hours": get_cache_ttl_hours(query),
-            "had_previous_anchor": previous_response is not None
-        }
-    }
-
-    # Download button
-    st.download_button(
-        "💾 Download Analysis JSON",
-        json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8'),
-        f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        "application/json"
-    )
-
-    # Render dashboard
-    render_dashboard(
-        primary_response,
-        final_conf,
-        web_context,
-        base_conf,
-        query,
-        veracity_scores,
-        web_context.get("source_reliability", []),
-        was_cached  # STABILITY ADDITION
-    )
-
-    # Debug info
-    with st.expander("🔧 Debug Information"):
-        st.json({
-            "base_confidence": base_conf,
-            "evidence_score": veracity_scores["overall"],
+        # Download JSON
+        output = {
+            "question": query,
+            "timestamp": datetime.now().isoformat(),
+            "primary_response": primary_data,
             "final_confidence": final_conf,
-            "was_cached": was_cached,
-            "cache_key": get_query_cache_key(query, web_context.get("sources")),
-            "data_type": detect_data_type(query),
-            "cache_ttl": get_cache_ttl_hours(query),
-            "anchored_metrics": [k for k, v in primary_data.get("primary_metrics", {}).items()
-                                if isinstance(v, dict) and v.get("_anchored")],
-            "veracity_breakdown": veracity_scores
-        })
+            "veracity_scores": veracity_scores,
+            "web_sources": web_context.get("sources", [])
+        }
+
+        json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8')
+        filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+        st.download_button(
+            label="💾 Download Analysis JSON",
+            data=json_bytes,
+            file_name=filename,
+            mime="application/json"
+        )
+
+        # Render dashboard
+        render_dashboard(
+            primary_response,
+            final_conf,
+            web_context,
+            base_conf,
+            query,
+            veracity_scores,
+            web_context.get("source_reliability", [])
+        )
+
+        # Debug info
+        with st.expander("🔧 Debug Information"):
+            st.write("**Confidence Breakdown:**")
+            st.json({
+                "base_confidence": base_conf,
+                "evidence_score": veracity_scores["overall"],
+                "final_confidence": final_conf,
+                "veracity_breakdown": veracity_scores
+            })
+            st.write("**Primary Model Response:**")
+            st.json(primary_data)
 
 if __name__ == "__main__":
     main()
-
