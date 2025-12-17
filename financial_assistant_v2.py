@@ -1,4 +1,4 @@
- # =========================================================
+# =========================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.7
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
@@ -2531,8 +2531,8 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     # Calculate stability - include small changes as "stable"
    # found_count = sum(1 for m in metric_changes if m['change_type'] != 'not_found')
-   # stable_count = sum(1 for m in metric_changes if m['change_type'] in ['unchanged'] o
-   # (m['change_pct'] is not None and abs(m['change_pct']) < 10))
+   # stable_count = sum(1 for m in metric_changes if m['change_type'] in ['unchanged'] or
+    #                   (m['change_pct'] is not None and abs(m['change_pct']) < 10))
 
    # stability = (stable_count / len(metric_changes)) * 100 if metric_changes else 100
 
@@ -2540,13 +2540,15 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     # Calculate stability - be more lenient
     # "Stable" = unchanged OR small change (< 10%) OR not found (can't compare)
-    found_metrics = [m for m in metric_changes if m['change_type'] != 'not_found']
+    # Calculate stability - be more lenient
+    found_count = sum(1 for m in metric_changes if m['change_type'] != 'not_found')
+    unchanged_count = sum(1 for m in metric_changes if m['change_type'] == 'unchanged')
+    stable_count = sum(1 for m in metric_changes if
+                       m['change_type'] == 'unchanged' or
+                       (m['change_pct'] is not None and abs(m['change_pct']) < 10))
 
-    if found_metrics:
-        stable_count = sum(1 for m in found_metrics if
-                         m['change_type'] == 'unchanged' or
-                         (m['change_pct'] is not None and abs(m['change_pct']) < 10))
-        stability = (stable_count / len(found_metrics)) * 100
+    if found_count > 0:
+        stability = (stable_count / found_count) * 100
     else:
         stability = 100  # No metrics found = can't determine instability
 
@@ -2560,13 +2562,13 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         'summary': {
             'total_metrics': len(metric_changes),
             'metrics_found': found_count,
-            'metrics_unchanged': sum(1 for m in metric_changes if m['change_type'] == 'unchanged'),
+            'metrics_unchanged': unchanged_count,
+            'metrics_stable': stable_count,
             'metrics_increased': sum(1 for m in metric_changes if m['change_type'] == 'increased'),
             'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
             'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
         }
     }
-
 
 def extract_context_keywords(metric_name: str) -> List[str]:
     """Extract meaningful keywords from metric name for matching"""
@@ -3293,7 +3295,7 @@ def main():
                         if changes_text:
                             with st.spinner("💬 Generating interpretation..."):
                                 try:
-                                    explanation_prompt = """Based on these metric changes for "{evolution_query}":{chr(10).join(changes_text)}
+                                    explanation_prompt = """Based on these metric changes for "{evolution_query}": {chr(10).join(changes_text)}
                                     Provide a 2-3 sentence interpretation of what these changes mean.
                                     Return ONLY JSON: {{"interpretation": "your text here"}}"""
 
@@ -3417,4 +3419,4 @@ def main():
                         st.json(results)
 
 if __name__ == "__main__":
-   main()
+    main()
