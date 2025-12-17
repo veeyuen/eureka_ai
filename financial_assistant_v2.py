@@ -1,4 +1,4 @@
-   # =========================================================
+ # =========================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.7
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
@@ -2411,7 +2411,7 @@ def extract_numbers_from_text(text: str) -> List[Dict]:
 def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Re-fetch the SAME sources from previous analysis and extract current numbers.
-    This ensures we're comparing apples to apples.
+    Uses context-aware matching to reduce false positives.
     """
     prev_response = previous_data.get('primary_response', {})
     prev_sources = previous_data.get('web_sources', []) or prev_response.get('sources', [])
@@ -2419,28 +2419,33 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     if not prev_sources:
         return {
             'status': 'no_sources',
-            'message': 'No sources found in previous analysis',
+            'message': 'No sources found in previous analysis. Please run a new analysis first.',
             'metric_changes': [],
-            'source_changes': []
+            'source_results': []
         }
 
-    # Limit to top 5 sources
     sources_to_check = prev_sources[:5]
 
-    # Extract numbers from previous metrics for comparison
+    # Extract previous metrics with context keywords
     prev_metrics = prev_response.get('primary_metrics', {})
     prev_numbers = {}
     for key, metric in prev_metrics.items():
         if isinstance(metric, dict):
             val = parse_to_float(metric.get('value'))
             if val is not None:
-                prev_numbers[metric.get('name', key)] = {
+                metric_name = metric.get('name', key)
+
+                # Extract context keywords from metric name
+                keywords = extract_context_keywords(metric_name)
+
+                prev_numbers[metric_name] = {
                     'value': val,
                     'unit': metric.get('unit', ''),
-                    'raw': str(metric.get('value', ''))
+                    'raw': str(metric.get('value', '')),
+                    'keywords': keywords
                 }
 
-    # Re-fetch each source and extract current numbers
+    # Re-fetch sources and extract numbers WITH context
     source_results = []
     all_current_numbers = []
 
@@ -2448,52 +2453,56 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         content = fetch_url_content(url)
 
         if content:
-            numbers = extract_numbers_from_text(content)
-            source_results.append({
-                'url': url,
-                'status': 'fetched',
-                'numbers_found': len(numbers)
-            })
+            numbers = extract_numbers_with_context(content)
+            source_results.append({'url': url, 'status': 'fetched', 'numbers_found': len(numbers)})
             all_current_numbers.extend(numbers)
         else:
-            source_results.append({
-                'url': url,
-                'status': 'failed',
-                'numbers_found': 0
-            })
+            source_results.append({'url': url, 'status': 'failed', 'numbers_found': 0})
 
-    # Match previous metrics against current numbers
+    # Match metrics using context-aware matching
     metric_changes = []
 
-    for metric_name, prev_data in prev_numbers.items():
-        prev_val = prev_data['value']
-        prev_unit = prev_data['unit']
+    for metric_name, prev_data_item in prev_numbers.items():
+        prev_val = prev_data_item['value']
+        prev_unit = prev_data_item['unit']
+        prev_keywords = prev_data_item['keywords']
 
-        # Find matching numbers in current data (same magnitude, same unit type)
         best_match = None
         best_match_score = 0
 
         for curr_num in all_current_numbers:
-            # Check unit compatibility
-            if prev_unit and curr_num['unit'] and prev_unit.replace('$', '') != curr_num['unit']:
-                continue
+            # Skip if units don't match (when both have units)
+            if prev_unit and curr_num['unit']:
+                prev_unit_clean = prev_unit.replace('$', '').replace(' ', '').upper()
+                curr_unit_clean = curr_num['unit'].upper()
+                if prev_unit_clean and curr_unit_clean and prev_unit_clean[0] != curr_unit_clean[0]:
+                    continue
 
-            # Check if values are in same order of magnitude (within 10x)
+            # Check value similarity (must be within 50% for initial filter)
             if prev_val > 0 and curr_num['value'] > 0:
                 ratio = curr_num['value'] / prev_val
-                if 0.1 <= ratio <= 10:
-                    # Score by closeness
-                    score = 1 / (1 + abs(ratio - 1))
-                    if score > best_match_score:
-                        best_match_score = score
-                        best_match = curr_num
+                if not (0.5 <= ratio <= 2.0):
+                    continue
 
-        if best_match:
+                # Base score from value similarity
+                value_score = 1 / (1 + abs(ratio - 1))
+
+                # Context keyword matching score
+                context_score = calculate_context_match(prev_keywords, curr_num['context'])
+
+                # Combined score: 40% value similarity, 60% context match
+                combined_score = (value_score * 0.4) + (context_score * 0.6)
+
+                if combined_score > best_match_score:
+                    best_match_score = combined_score
+                    best_match = curr_num
+
+        # Only accept matches with confidence > 50%
+        if best_match and best_match_score > 0.5:
             change_pct = compute_percent_change(prev_val, best_match['value'])
 
-            if change_pct is None:
-                change_type = 'unchanged'
-            elif abs(change_pct) < 1:
+            # More lenient threshold: < 5% change = unchanged
+            if change_pct is None or abs(change_pct) < 5:
                 change_type = 'unchanged'
             elif change_pct > 0:
                 change_type = 'increased'
@@ -2502,30 +2511,44 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             metric_changes.append({
                 'name': metric_name,
-                'previous_value': prev_data['raw'],
+                'previous_value': prev_data_item['raw'],
                 'current_value': best_match['raw'],
                 'change_pct': change_pct,
                 'change_type': change_type,
-                'match_confidence': round(best_match_score * 100, 1)
+                'match_confidence': round(best_match_score * 100, 1),
+                'context_snippet': best_match['context'][:100]
             })
         else:
             metric_changes.append({
                 'name': metric_name,
-                'previous_value': prev_data['raw'],
-                'current_value': 'Not found',
+                'previous_value': prev_data_item['raw'],
+                'current_value': 'Not found (no confident match)',
                 'change_pct': None,
                 'change_type': 'not_found',
-                'match_confidence': 0
+                'match_confidence': round(best_match_score * 100, 1) if best_match else 0,
+                'context_snippet': ''
             })
 
-    # Calculate stability
-    found_count = sum(1 for m in metric_changes if m['change_type'] != 'not_found')
-    unchanged_count = sum(1 for m in metric_changes if m['change_type'] == 'unchanged')
+    # Calculate stability - include small changes as "stable"
+   # found_count = sum(1 for m in metric_changes if m['change_type'] != 'not_found')
+   # stable_count = sum(1 for m in metric_changes if m['change_type'] in ['unchanged'] or
+                       (m['change_pct'] is not None and abs(m['change_pct']) < 10))
 
-    if metric_changes:
-        stability = (unchanged_count / len(metric_changes)) * 100
+   # stability = (stable_count / len(metric_changes)) * 100 if metric_changes else 100
+
+    # In compute_source_anchored_diff, replace stability calculation:
+
+    # Calculate stability - be more lenient
+    # "Stable" = unchanged OR small change (< 10%) OR not found (can't compare)
+    found_metrics = [m for m in metric_changes if m['change_type'] != 'not_found']
+
+    if found_metrics:
+        stable_count = sum(1 for m in found_metrics if
+                         m['change_type'] == 'unchanged' or
+                         (m['change_pct'] is not None and abs(m['change_pct']) < 10))
+        stability = (stable_count / len(found_metrics)) * 100
     else:
-        stability = 100
+        stability = 100  # No metrics found = can't determine instability
 
     return {
         'status': 'success',
@@ -2537,11 +2560,99 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         'summary': {
             'total_metrics': len(metric_changes),
             'metrics_found': found_count,
-            'metrics_unchanged': unchanged_count,
+            'metrics_unchanged': sum(1 for m in metric_changes if m['change_type'] == 'unchanged'),
             'metrics_increased': sum(1 for m in metric_changes if m['change_type'] == 'increased'),
             'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
+            'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
         }
     }
+
+
+def extract_context_keywords(metric_name: str) -> List[str]:
+    """Extract meaningful keywords from metric name for matching"""
+    name_lower = metric_name.lower()
+    keywords = []
+
+    # Year patterns
+    year_match = re.findall(r'20\d{2}', metric_name)
+    keywords.extend(year_match)
+
+    # Common metric keywords
+    keyword_patterns = [
+        'market size', 'revenue', 'sales', 'growth', 'cagr', 'share',
+        'projected', 'forecast', 'estimate', 'actual',
+        'q1', 'q2', 'q3', 'q4', 'quarter',
+        'annual', 'yearly', 'monthly',
+        'billion', 'million', 'trillion',
+        'semiconductor', 'chip', 'memory', 'logic', 'analog'
+    ]
+
+    for pattern in keyword_patterns:
+        if pattern in name_lower:
+            keywords.append(pattern)
+
+    return keywords
+
+
+def extract_numbers_with_context(text: str) -> List[Dict]:
+    """Extract numbers with surrounding context for better matching"""
+    if not text:
+        return []
+
+    numbers = []
+    # Pattern to match numbers with optional currency/unit
+    pattern = r'(\$?\d+(?:\.\d+)?)\s*(trillion|billion|million|%|T|B|M)?'
+
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        value_str = match.group(1).replace('$', '').replace(',', '')
+        unit = match.group(2) or ''
+
+        try:
+            value = float(value_str)
+        except:
+            continue
+
+        # Skip unlikely values
+        if value == 0 or value > 10000000:
+            continue
+
+        # Get larger context window (150 chars before and after)
+        start = max(0, match.start() - 150)
+        end = min(len(text), match.end() + 150)
+        context = text[start:end].lower()
+
+        # Normalize unit
+        unit_map = {'trillion': 'T', 't': 'T', 'billion': 'B', 'b': 'B', 'million': 'M', 'm': 'M', '%': '%'}
+        unit_norm = unit_map.get(unit.lower(), '') if unit else ''
+
+        numbers.append({
+            'value': value,
+            'unit': unit_norm,
+            'context': context,
+            'raw': f"{value_str}{unit}".strip()
+        })
+
+    return numbers
+
+
+def calculate_context_match(keywords: List[str], context: str) -> float:
+    """Calculate how well keywords match the context"""
+    if not keywords or not context:
+        return 0.3  # Base score when no keywords
+
+    context_lower = context.lower()
+    matches = sum(1 for kw in keywords if kw.lower() in context_lower)
+
+    # Score based on proportion of keywords found
+    # But give partial credit even for some matches
+    if len(keywords) == 0:
+        return 0.3
+
+    match_ratio = matches / len(keywords)
+
+    # Scale: 0 matches = 0.1, all matches = 1.0
+    return 0.1 + (match_ratio * 0.9)
+
 
 def render_source_anchored_results(results: Dict, query: str):
     """Render source-anchored evolution results"""
@@ -3095,7 +3206,7 @@ def main():
     # =====================
     with tab2:
         st.markdown("""
-        📈 Evolution Analysis
+        ### 📈 Evolution Tracker
         Upload a previous Yureeka analysis to track how the analysis has evolved.
 
         **How it works:**
@@ -3182,9 +3293,9 @@ def main():
                         if changes_text:
                             with st.spinner("💬 Generating interpretation..."):
                                 try:
-                                    explanation_prompt = """Based on these metric changes for "{evolution_query}": {chr(10).join(changes_text)}
-                                    Provide a 2-3 sentence interpretation of what these changes mean. Return ONLY JSON: {{"interpretation": "your text here"}}
-                                    """
+                                    explanation_prompt = """Based on these metric changes for "{evolution_query}":{chr(10).join(changes_text)}
+                                    Provide a 2-3 sentence interpretation of what these changes mean.
+                                    Return ONLY JSON: {{"interpretation": "your text here"}}"""
 
                                     headers = {"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"}
                                     payload = {"model": "sonar", "temperature": 0.0, "max_tokens": 200, "top_p": 1.0, "messages": [{"role": "user", "content": explanation_prompt}]}
@@ -3280,12 +3391,16 @@ def main():
                                 'Previous': m['previous_value'],
                                 'Current': m['current_value'],
                                 'Change': change_str,
-                                'Match Confidence': f"{m['match_confidence']:.0f}%"
+                                'Confidence': f"{m['match_confidence']:.0f}%"
                             })
 
                         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-                    else:
-                        st.info("No metrics to compare")
+
+                        # Show context for verification
+                        with st.expander("🔍 Match Context (for verification)"):
+                            for m in results['metric_changes']:
+                                if m.get('context_snippet'):
+                                    st.markdown(f"**{m['name']}:** ...{m['context_snippet']}...")
 
                     # Summary statistics
                     st.markdown("---")
@@ -3302,4 +3417,4 @@ def main():
                         st.json(results)
 
 if __name__ == "__main__":
-    main()
+   main()
