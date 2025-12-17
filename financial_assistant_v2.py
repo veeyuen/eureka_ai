@@ -743,6 +743,15 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
     """Search web and scrape top sources"""
     search_results = search_serpapi(query, num_results=10)
 
+    # Replace the single line with: NEW
+    source_counts = {
+    "total": len(search_results),
+    "high_quality": sum(1 for r in search_results if "✅" in classify_source_reliability(r.get("link", ""))),
+    "used_for_scraping": min(num_sources, len(search_results))
+    }
+    st.info(f"🔍 SerpAPI: **{source_counts['total']} total** | **{source_counts['high_quality']} high-quality** | Scraping **{source_counts['used_for_scraping']}**")
+
+
     if not search_results:
         return {
             "search_results": [],
