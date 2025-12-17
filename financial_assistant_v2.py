@@ -1,7 +1,7 @@
 # =========================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.2
 # With Web Search, Evidence-Based Verification, Confidence Scoring
-# Stable SerpAPI output version
+# Stable SerpAPI Output Version
 # =========================================================
 
 import os
@@ -12,13 +12,14 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 import base64
+import hashlib
+import numpy as np
+import google.generativeai as genai
 from typing import Dict, List, Optional, Any, Union
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
-import google.generativeai as genai
-import numpy as np
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
-from datetime import datetime
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
@@ -441,16 +442,71 @@ def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
 
 # =========================================================
 # 6. WEB SEARCH FUNCTIONS
+#   SERPAPI STABILITY CONFIGURATION
 # =========================================================
+
+# Fixed parameters to prevent geo/personalization variance
+SERPAPI_STABILITY_CONFIG = {
+    "gl": "us",                    # Fixed country
+    "hl": "en",                    # Fixed language
+    "google_domain": "google.com", # Fixed domain
+    "nfpr": "1",                   # No auto-query correction
+}
+
+# Preferred domains for consistent sourcing (sorted by priority)
+PREFERRED_SOURCE_DOMAINS = [
+    "statista.com", "reuters.com", "bloomberg.com", "imf.org",
+    "worldbank.org", "mckinsey.com", "deloitte.com", "spglobal.com",
+    "ft.com", "economist.com", "wsj.com", "forbes.com", "cnbc.com",
+]
+
+# Search results cache
+_search_cache: Dict[str, Tuple[List[Dict], datetime]] = {}
+SEARCH_CACHE_TTL_HOURS = 12
+
+def get_search_cache_key(query: str) -> str:
+    """Generate stable cache key for search query"""
+    normalized = re.sub(r'\s+', ' ', query.lower().strip())
+    normalized = re.sub(r'\b(today|current|latest|now|recent)\b', '', normalized)
+    return hashlib.md5(normalized.encode()).hexdigest()[:16]
+
+def get_cached_search_results(query: str) -> Optional[List[Dict]]:
+    """Get cached search results if still valid"""
+    cache_key = get_search_cache_key(query)
+    if cache_key in _search_cache:
+        cached_results, cached_time = _search_cache[cache_key]
+        if datetime.now() - cached_time < timedelta(hours=SEARCH_CACHE_TTL_HOURS):
+            return cached_results
+        del _search_cache[cache_key]
+    return None
+
+def cache_search_results(query: str, results: List[Dict]):
+    """Cache search results"""
+    cache_key = get_search_cache_key(query)
+    _search_cache[cache_key] = (results, datetime.now())
+
+def sort_results_deterministically(results: List[Dict]) -> List[Dict]:
+    """Sort results for consistent ordering"""
+    def sort_key(r):
+        link = r.get("link", "").lower()
+        # Priority: preferred domains first, then alphabetical
+        priority = 999
+        for i, domain in enumerate(PREFERRED_SOURCE_DOMAINS):
+            if domain in link:
+                priority = i
+                break
+        return (priority, link)
+    return sorted(results, key=sort_key)
 
 def classify_source_reliability(source: str) -> str:
     """Classify source as High/Medium/Low quality"""
     source = source.lower() if isinstance(source, str) else ""
 
     high = ["gov", "imf", "worldbank", "central bank", "fed", "ecb", "reuters", "spglobal", "economist", "mckinsey", "bcg", "cognitive market research",
-            "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc", "imarc", "booz", "bakerinstitute.org",
-           "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jp morgan", "citibank", "goldman sachs", "j.p. morgan"]
-    medium = ["wikipedia", "forbes", "cnbc", "yahoo", "statista", "ceic"]
+            "financial times", "wsj", "oecd", "bloomberg", "tradingeconomics", "deloitte", "hsbc", "imarc", "booz allen", "bakerinstitute.org", "wef",
+           "kpmg", "semiconductors.org", "eu", "iea", "world bank", "opec", "jpmorgan", "citibank", "goldmansachs", "j.p. morgan", "oecd",
+           "world bank", "sec", "federalreserve", "bls", "bea"]
+    medium = ["wikipedia", "forbes", "cnbc", "yahoo", "ceic", "statista", "trendforce", "digitimes", "idc", "gartner", "marketwatch", "fortune", "investopedia"]
     low = ["blog", "medium.com", "wordpress", "ad", "promo"]
 
     for h in high:
@@ -476,19 +532,37 @@ def source_quality_score(sources: List[str]) -> float:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
-    """STABLE SerpAPI - Identical results every run"""
+    """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
 
+    # Check cache first
+    cached = get_cached_search_results(query)
+    if cached:
+        return cached
+
+    # Normalize query for consistent searches
+    query_normalized = re.sub(r'\b(latest|current|today|now)\b', '2024', query.lower())
+
+    # Build search terms
+    query_lower = query_normalized
+    industry_kw = ["industry", "market", "sector", "size", "growth", "players"]
+
+    if any(kw in query_lower for kw in industry_kw):
+        search_terms = f"{query_normalized} market size growth statistics"
+        tbm, tbs = "", ""  # Organic results (more stable than news)
+    else:
+        search_terms = f"{query_normalized} finance economics data"
+        tbm, tbs = "", ""  # Use organic for stability
+
     params = {
         "engine": "google",
-        "q": query,                    # RAW QUERY - NO MODIFIERS
+        "q": search_terms,
         "api_key": SERPAPI_KEY,
         "num": num_results,
-        "gl": "us",                    # Fixed
-        "hl": "en",                    # Fixed
-        "no_cache": False,             # SerpAPI cache
-        # NO tbm, NO tbs → Pure web search stability
+        "tbm": tbm,
+        "tbs": tbs,
+        **SERPAPI_STABILITY_CONFIG  # Add fixed location params
     }
 
     try:
@@ -496,23 +570,44 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
         resp.raise_for_status()
         data = resp.json()
 
-        # ONLY organic_results → Stable analyst reports, not news
         results = []
+
+        # Prefer organic results (more stable than news)
         for item in data.get("organic_results", [])[:num_results]:
             results.append({
                 "title": item.get("title", ""),
                 "link": item.get("link", ""),
                 "snippet": item.get("snippet", ""),
-                "date": "",
+                "date": item.get("date", ""),
                 "source": item.get("source", "")
             })
 
-        return results  # NO SORTING - preserve Google order
+        # Fall back to news only if no organic results
+        if not results:
+            for item in data.get("news_results", [])[:num_results]:
+                src = item.get("source", {})
+                source_name = src.get("name", "") if isinstance(src, dict) else str(src)
+                results.append({
+                    "title": item.get("title", ""),
+                    "link": item.get("link", ""),
+                    "snippet": item.get("snippet", ""),
+                    "date": item.get("date", ""),
+                    "source": source_name
+                })
+
+        # Sort deterministically
+        results = sort_results_deterministically(results)
+        results = results[:num_results]
+
+        # Cache results
+        if results:
+            cache_search_results(query, results)
+
+        return results
 
     except Exception as e:
         st.warning(f"⚠️ SerpAPI error: {e}")
         return []
-
 
 
 def scrape_url(url: str) -> Optional[str]:
@@ -1425,3 +1520,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
