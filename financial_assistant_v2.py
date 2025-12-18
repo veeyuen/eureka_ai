@@ -65,7 +65,7 @@ def get_google_sheet():
         
         client = gspread.authorize(creds)
         
-        spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_History")
+        spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
         
         # Open spreadsheet
         spreadsheet = client.open(spreadsheet_name)
