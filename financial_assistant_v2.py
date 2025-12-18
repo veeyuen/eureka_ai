@@ -48,26 +48,46 @@ def get_google_sheet():
     """Connect to Google Sheet (cached connection)"""
     try:
         creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
+            dict(st.secrets["gcp_service_account"]),
             scopes=SCOPES
         )
         client = gspread.authorize(creds)
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_History")
         sheet = client.open(spreadsheet_name).sheet1
 
-        # Ensure headers exist
+        # Ensure headers exist - handle response object
         try:
             headers = sheet.row_values(1)
-            if not headers or headers[0] != "id":
-                sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
-        except:
-            sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
+            if not headers or len(headers) == 0 or headers[0] != "id":
+                # update() returns a response object in newer gspread - ignore it
+                _ = sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
+        except gspread.exceptions.APIError:
+            _ = sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
+        except Exception:
+            pass  # Headers probably already exist
 
         return sheet
+        
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("❌ Spreadsheet not found. Create 'Yureeka_History' and share with service account.")
+        return None
     except Exception as e:
+        error_str = str(e)
+        # Ignore Response [200] - it's actually success
+        if "Response [200]" in error_str:
+            # This means the connection worked, try to return the sheet anyway
+            try:
+                creds = Credentials.from_service_account_info(
+                    dict(st.secrets["gcp_service_account"]),
+                    scopes=SCOPES
+                )
+                client = gspread.authorize(creds)
+                spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_History")
+                return client.open(spreadsheet_name).sheet1
+            except:
+                pass
         st.error(f"❌ Failed to connect to Google Sheets: {e}")
         return None
-
 def generate_analysis_id() -> str:
     """Generate unique ID for analysis"""
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:6]}"
