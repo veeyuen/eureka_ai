@@ -8,3 +8,5 @@ torch>=2.0.0
 google-generativeai>=0.3.0
 beautifulsoup4
 numpy
+gspread
+google-auth
