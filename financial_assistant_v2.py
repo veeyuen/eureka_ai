@@ -22,6 +22,7 @@ import hashlib
 import numpy as np
 import difflib
 import google.generativeai as genai
+from google.oauth2.service_account import Credentials
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union, Tuple
 from sentence_transformers import SentenceTransformer, util
