@@ -3257,20 +3257,74 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
 # =========================================================
 # 8D. SOURCE-ANCHORED EVOLUTION
 # Re-fetch the SAME sources from previous analysis for true stability
+# Enhanced fetch_url_content function to use scrapingdog as fallback
 # =========================================================
 
 def fetch_url_content(url: str) -> Optional[str]:
-    """Fetch content from a specific URL"""
+    """Fetch content from a specific URL with ScrapingDog fallback"""
+
+    def extract_text(html: str) -> Optional[str]:
+        """Extract clean text from HTML"""
+        soup = BeautifulSoup(html, 'html.parser')
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        clean_text = ' '.join(line for line in lines if line)
+        return clean_text[:5000] if len(clean_text) > 200 else None
+
+    # Try 1: Direct request
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         }
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
 
-        soup = BeautifulSoup(resp.text, 'html.parser')
+        if 'captcha' not in resp.text.lower():
+            content = extract_text(resp.text)
+            if content:
+                return content
+    except:
+        pass
 
-        # Remove noise
+    # Try 2: ScrapingDog API
+    if SCRAPINGDOG_KEY:
+        try:
+            api_url = "https://api.scrapingdog.com/scrape"
+            params = {"api_key": SCRAPINGDOG_KEY, "url": url, "dynamic": "false"}
+            resp = requests.get(api_url, params=params, timeout=30)
+            if resp.status_code == 200:
+                content = extract_text(resp.text)
+                if content:
+                    return content
+        except:
+            pass
+
+    return None
+
+def fetch_url_content_with_status(url: str) -> Tuple[Optional[str], str]:
+    """Fetch content and return (content, status_message)"""
+
+    # First try: Direct request
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+
+        if resp.status_code == 403:
+            raise Exception("blocked_403")
+        if resp.status_code == 404:
+            return None, "Page not found (404)"
+
+        resp.raise_for_status()
+
+        if 'captcha' in resp.text.lower() or 'blocked' in resp.text.lower():
+            raise Exception("captcha_detected")
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
 
@@ -3278,9 +3332,41 @@ def fetch_url_content(url: str) -> Optional[str]:
         lines = (line.strip() for line in text.splitlines())
         clean_text = ' '.join(line for line in lines if line)
 
-        return clean_text[:5000]
-    except:
-        return None
+        if len(clean_text) > 200:
+            return clean_text[:5000], "success"
+        else:
+            raise Exception("empty_content")
+
+    except Exception as e:
+        error_type = str(e)
+
+    # Second try: ScrapingDog
+    if SCRAPINGDOG_KEY:
+        try:
+            api_url = "https://api.scrapingdog.com/scrape"
+            params = {"api_key": SCRAPINGDOG_KEY, "url": url, "dynamic": "false"}
+            resp = requests.get(api_url, params=params, timeout=30)
+
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+                    tag.decompose()
+                text = soup.get_text()
+                lines = (line.strip() for line in text.splitlines())
+                clean_text = ' '.join(line for line in lines if line)
+
+                if len(clean_text) > 200:
+                    return clean_text[:5000], "success_via_proxy"
+        except:
+            pass
+
+    # Map error to user-friendly message
+    error_messages = {
+        "blocked_403": "Access blocked (403)",
+        "captcha_detected": "Captcha/bot protection",
+        "empty_content": "No readable content",
+    }
+    return None, error_messages.get(error_type, f"Failed: {error_type[:30]}")
 
 def extract_numbers_from_text(text: str) -> List[Dict]:
     """Extract all numbers with context from text"""
@@ -3365,15 +3451,24 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     all_current_numbers = []
 
     for url in sources_to_check:
-        content = fetch_url_content(url)
+    content, status_msg = fetch_url_content_with_status(url)
 
-        if content:
-            numbers = extract_numbers_with_context(content)
-            source_results.append({'url': url, 'status': 'fetched', 'numbers_found': len(numbers)})
-            all_current_numbers.extend(numbers)
-        else:
-            source_results.append({'url': url, 'status': 'failed', 'numbers_found': 0})
-
+    if content:
+        numbers = extract_numbers_with_context(content)
+        source_results.append({
+            'url': url,
+            'status': 'fetched',
+            'status_detail': status_msg,
+            'numbers_found': len(numbers)
+        })
+        all_current_numbers.extend(numbers)
+    else:
+        source_results.append({
+            'url': url,
+            'status': 'failed',
+            'status_detail': status_msg,
+            'numbers_found': 0
+        })
     # Match metrics using context-aware matching
     metric_changes = []
 
@@ -3604,9 +3699,14 @@ def render_source_anchored_results(results: Dict, query: str):
 
     # Source status
     st.subheader("🔗 Source Verification")
+
+    # In the source verification display:
     for src in results['source_results']:
-        status_icon = "✅" if src['status'] == 'fetched' else "❌"
-        st.markdown(f"{status_icon} {src['url'][:60]}... ({src['numbers_found']} numbers found)")
+        if src['status'] == 'fetched':
+            st.success(f"✅ {src['url'][:70]}... ({src['numbers_found']} numbers)")
+        else:
+            reason = src.get('status_detail', 'Unknown error')
+            st.error(f"❌ {src['url'][:50]}... - {reason}")
 
     st.markdown("---")
 
