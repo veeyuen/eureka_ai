@@ -3451,7 +3451,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     all_current_numbers = []
 
     for url in sources_to_check:
-    content, status_msg = fetch_url_content_with_status(url)
+        content, status_msg = fetch_url_content_with_status(url)
 
     if content:
         numbers = extract_numbers_with_context(content)
