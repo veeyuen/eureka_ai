@@ -52,7 +52,7 @@ def get_google_sheet():
             scopes=SCOPES
         )
         client = gspread.authorize(creds)
-        spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_History")
+        spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
         sheet = client.open(spreadsheet_name).sheet1
 
         # Ensure headers exist - handle response object
