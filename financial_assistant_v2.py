@@ -21,6 +21,7 @@ import base64
 import hashlib
 import numpy as np
 import difflib
+import gspread
 import google.generativeai as genai
 from google.oauth2.service_account import Credentials
 from dataclasses import dataclass
