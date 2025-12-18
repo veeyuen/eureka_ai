@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.8
+# YUREEKA AI RESEARCH ASSISTANT v7.9
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -8,6 +8,7 @@
 # Anchored Evolution Analysis Using JSON As Input Into Model
 # Implementation of Source-Based Evolution
 # Saving of JSON output Files into Google Sheets
+# Canonical Metric Registry + Semantic Hashing of Findings
 # =========================================================
 
 import os
@@ -67,7 +68,7 @@ def get_google_sheet():
             pass  # Headers probably already exist
 
         return sheet
-        
+
     except gspread.exceptions.SpreadsheetNotFound:
         st.error("❌ Spreadsheet not found. Create 'Yureeka_History' and share with service account.")
         return None
@@ -88,6 +89,8 @@ def get_google_sheet():
                 pass
         st.error(f"❌ Failed to connect to Google Sheets: {e}")
         return None
+
+
 def generate_analysis_id() -> str:
     """Generate unique ID for analysis"""
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:6]}"
@@ -1583,6 +1586,713 @@ class EvolutionDiff:
     stability_score: float  # 0-100
     summary_stats: Dict[str, int]
 
+# =========================================================
+# CANONICAL METRIC REGISTRY & SEMANTIC FINDING HASH
+# Add this section after the dataclass definitions (around line 1587)
+# =========================================================
+
+# ------------------------------------
+# CANONICAL METRIC REGISTRY
+# Removes LLM control over metric identity
+# ------------------------------------
+
+# Metric type definitions with aliases
+METRIC_REGISTRY = {
+    # Market Size metrics
+    "market_size": {
+        "canonical_name": "Market Size",
+        "aliases": [
+            "market size", "market value", "market cap", "total market",
+            "global market", "market valuation", "industry size",
+            "total addressable market", "tam", "market worth"
+        ],
+        "unit_type": "currency",
+        "category": "size"
+    },
+    "market_size_current": {
+        "canonical_name": "Current Market Size",
+        "aliases": [
+            "2024 market size", "2025 market size", "current market",
+            "present market size", "today market", "current year market",
+            "market size 2024", "market size 2025"
+        ],
+        "unit_type": "currency",
+        "category": "size"
+    },
+    "market_size_projected": {
+        "canonical_name": "Projected Market Size",
+        "aliases": [
+            "projected market", "forecast market", "future market",
+            "2026 market", "2027 market", "2028 market", "2029 market", "2030 market",
+            "market projection", "expected market size", "estimated market"
+        ],
+        "unit_type": "currency",
+        "category": "size"
+    },
+
+    # Growth metrics
+    "cagr": {
+        "canonical_name": "CAGR",
+        "aliases": [
+            "cagr", "compound annual growth", "compound growth rate",
+            "annual growth rate", "growth rate", "yearly growth"
+        ],
+        "unit_type": "percentage",
+        "category": "growth"
+    },
+    "yoy_growth": {
+        "canonical_name": "YoY Growth",
+        "aliases": [
+            "yoy growth", "year over year", "year-over-year",
+            "annual growth", "yearly growth rate", "growth percentage"
+        ],
+        "unit_type": "percentage",
+        "category": "growth"
+    },
+
+    # Revenue metrics
+    "revenue": {
+        "canonical_name": "Revenue",
+        "aliases": [
+            "revenue", "sales", "total revenue", "annual revenue",
+            "yearly revenue", "total sales", "gross revenue"
+        ],
+        "unit_type": "currency",
+        "category": "financial"
+    },
+
+    # Market share
+    "market_share": {
+        "canonical_name": "Market Share",
+        "aliases": [
+            "market share", "share", "market portion", "market percentage",
+            "share of market"
+        ],
+        "unit_type": "percentage",
+        "category": "share"
+    },
+
+    # Volume metrics
+    "units_sold": {
+        "canonical_name": "Units Sold",
+        "aliases": [
+            "units sold", "unit sales", "volume", "units shipped",
+            "shipments", "deliveries", "production volume"
+        ],
+        "unit_type": "count",
+        "category": "volume"
+    },
+
+    # Pricing
+    "average_price": {
+        "canonical_name": "Average Price",
+        "aliases": [
+            "average price", "avg price", "mean price", "asp",
+            "average selling price", "unit price"
+        ],
+        "unit_type": "currency",
+        "category": "pricing"
+    }
+}
+
+# Year extraction pattern
+YEAR_PATTERN = re.compile(r'(20\d{2})')
+
+
+def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
+    """
+    Map a metric name to its canonical ID and display name.
+
+    Returns:
+        Tuple of (canonical_id, canonical_display_name)
+
+    Example:
+        "2024 Market Size" -> ("market_size_2024", "Market Size (2024)")
+        "Global Market Value" -> ("market_size", "Market Size")
+        "CAGR 2024-2030" -> ("cagr_2024_2030", "CAGR (2024-2030)")
+    """
+    if not metric_name:
+        return ("unknown", "Unknown Metric")
+
+    name_lower = metric_name.lower().strip()
+    name_normalized = re.sub(r'[^\w\s]', ' ', name_lower)
+    name_normalized = re.sub(r'\s+', ' ', name_normalized).strip()
+
+    # Extract years
+    years = YEAR_PATTERN.findall(metric_name)
+    year_suffix = "_".join(sorted(years)) if years else ""
+
+    # Find best matching registry entry
+    best_match_id = None
+    best_match_score = 0
+
+    for metric_id, config in METRIC_REGISTRY.items():
+        for alias in config["aliases"]:
+            # Remove years from alias for comparison
+            alias_no_year = YEAR_PATTERN.sub('', alias).strip()
+            name_no_year = YEAR_PATTERN.sub('', name_normalized).strip()
+
+            # Exact match
+            if alias_no_year == name_no_year:
+                best_match_id = metric_id
+                best_match_score = 1.0
+                break
+
+            # Containment match
+            if alias_no_year in name_no_year or name_no_year in alias_no_year:
+                score = len(alias_no_year) / max(len(name_no_year), 1)
+                if score > best_match_score:
+                    best_match_id = metric_id
+                    best_match_score = score
+
+            # Word overlap match
+            alias_words = set(alias_no_year.split())
+            name_words = set(name_no_year.split())
+            if alias_words and name_words:
+                overlap = len(alias_words & name_words) / len(alias_words | name_words)
+                if overlap > best_match_score:
+                    best_match_id = metric_id
+                    best_match_score = overlap
+
+        if best_match_score == 1.0:
+            break
+
+    # Build canonical ID and display name
+    if best_match_id and best_match_score > 0.4:
+        config = METRIC_REGISTRY[best_match_id]
+        canonical_base = best_match_id
+        display_name = config["canonical_name"]
+
+        if year_suffix:
+            canonical_id = f"{canonical_base}_{year_suffix}"
+            if len(years) == 1:
+                display_name = f"{display_name} ({years[0]})"
+            else:
+                display_name = f"{display_name} ({'-'.join(years)})"
+        else:
+            canonical_id = canonical_base
+
+        return (canonical_id, display_name)
+
+    # Fallback: create ID from normalized name
+    fallback_id = re.sub(r'\s+', '_', name_normalized)
+    if year_suffix:
+        fallback_id = f"{fallback_id}_{year_suffix}" if year_suffix not in fallback_id else fallback_id
+
+    return (fallback_id, metric_name)
+
+
+def canonicalize_metrics(metrics: Dict) -> Dict:
+    """
+    Convert all metrics to use canonical IDs.
+
+    Input: {"metric1": {"name": "2024 Market Size", "value": 100, "unit": "B"}}
+    Output: {"market_size_2024": {"name": "Market Size (2024)", "value": 100, "unit": "B",
+             "canonical_id": "market_size_2024", "original_name": "2024 Market Size"}}
+    """
+    canonicalized = {}
+
+    for key, metric in metrics.items():
+        if not isinstance(metric, dict):
+            continue
+
+        original_name = metric.get('name', key)
+        canonical_id, canonical_name = get_canonical_metric_id(original_name)
+
+        # Handle duplicate canonical IDs by appending suffix
+        final_id = canonical_id
+        suffix = 1
+        while final_id in canonicalized:
+            final_id = f"{canonical_id}_{suffix}"
+            suffix += 1
+
+        canonicalized[final_id] = {
+            **metric,
+            "name": canonical_name,
+            "canonical_id": final_id,
+            "original_name": original_name
+        }
+
+    return canonicalized
+
+
+# ------------------------------------
+# SEMANTIC FINDING HASH
+# Removes wording-based churn from findings comparison
+# ------------------------------------
+
+# Semantic components to extract from findings
+FINDING_PATTERNS = {
+    # Growth/decline patterns
+    "growth": [
+        r'(?:grow(?:ing|th)?|increas(?:e|ing)|expand(?:ing)?|ris(?:e|ing)|up)\s*(?:by|at|of)?\s*(\d+(?:\.\d+)?)\s*%?',
+        r'(\d+(?:\.\d+)?)\s*%?\s*(?:growth|increase|expansion|rise)',
+    ],
+    "decline": [
+        r'(?:declin(?:e|ing)|decreas(?:e|ing)|fall(?:ing)?|drop(?:ping)?|down)\s*(?:by|at|of)?\s*(\d+(?:\.\d+)?)\s*%?',
+        r'(\d+(?:\.\d+)?)\s*%?\s*(?:decline|decrease|drop|fall)',
+    ],
+
+    # Value patterns
+    "value": [
+        r'\$\s*(\d+(?:\.\d+)?)\s*(trillion|billion|million|T|B|M)?',
+        r'(\d+(?:\.\d+)?)\s*(trillion|billion|million|T|B|M)',
+    ],
+
+    # Ranking patterns
+    "rank": [
+        r'(?:lead(?:ing|er)?|top|first|largest|biggest|#1|number one)',
+        r'(?:second|#2|runner.?up)',
+        r'(?:third|#3)',
+    ],
+
+    # Trend patterns
+    "trend_up": [
+        r'(?:bullish|optimistic|positive|strong|robust|accelerat)',
+    ],
+    "trend_down": [
+        r'(?:bearish|pessimistic|negative|weak|slow(?:ing)?|decelerat)',
+    ],
+
+    # Entity patterns (will be filled dynamically)
+    "entities": []
+}
+
+# Common stop words to remove
+STOP_WORDS = {
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'must', 'shall', 'can', 'to', 'of', 'in',
+    'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through',
+    'during', 'before', 'after', 'above', 'below', 'between', 'under',
+    'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where',
+    'why', 'how', 'all', 'each', 'few', 'more', 'most', 'other', 'some',
+    'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than',
+    'too', 'very', 'just', 'also', 'now', 'new'
+}
+
+
+def extract_semantic_components(finding: str) -> Dict[str, Any]:
+    """
+    Extract semantic components from a finding.
+
+    Example:
+        "The market is growing at 15% annually" ->
+        {
+            "direction": "up",
+            "percentage": 15.0,
+            "subject": "market",
+            "timeframe": "annual",
+            "entities": [],
+            "keywords": ["market", "growing", "annually"]
+        }
+    """
+    if not finding:
+        return {}
+
+    finding_lower = finding.lower()
+    components = {
+        "direction": None,
+        "percentage": None,
+        "value": None,
+        "value_unit": None,
+        "subject": None,
+        "timeframe": None,
+        "entities": [],
+        "keywords": []
+    }
+
+    # Extract direction
+    for pattern in FINDING_PATTERNS["growth"]:
+        match = re.search(pattern, finding_lower)
+        if match:
+            components["direction"] = "up"
+            if match.groups():
+                try:
+                    components["percentage"] = float(match.group(1))
+                except:
+                    pass
+            break
+
+    if not components["direction"]:
+        for pattern in FINDING_PATTERNS["decline"]:
+            match = re.search(pattern, finding_lower)
+            if match:
+                components["direction"] = "down"
+                if match.groups():
+                    try:
+                        components["percentage"] = float(match.group(1))
+                    except:
+                        pass
+                break
+
+    # Extract trend sentiment
+    if not components["direction"]:
+        for pattern in FINDING_PATTERNS["trend_up"]:
+            if re.search(pattern, finding_lower):
+                components["direction"] = "up"
+                break
+        for pattern in FINDING_PATTERNS["trend_down"]:
+            if re.search(pattern, finding_lower):
+                components["direction"] = "down"
+                break
+
+    # Extract value
+    for pattern in FINDING_PATTERNS["value"]:
+        match = re.search(pattern, finding_lower)
+        if match:
+            try:
+                components["value"] = float(match.group(1))
+                if len(match.groups()) > 1 and match.group(2):
+                    components["value_unit"] = match.group(2)[0].upper()
+            except:
+                pass
+            break
+
+    # Extract timeframe
+    timeframe_patterns = {
+        "annual": r'\b(?:annual(?:ly)?|year(?:ly)?|per year|yoy|y-o-y)\b',
+        "quarterly": r'\b(?:quarter(?:ly)?|q[1-4])\b',
+        "monthly": r'\b(?:month(?:ly)?|per month)\b',
+        "2024": r'\b2024\b',
+        "2025": r'\b2025\b',
+        "2026": r'\b2026\b',
+        "2030": r'\b2030\b',
+    }
+    for tf_name, tf_pattern in timeframe_patterns.items():
+        if re.search(tf_pattern, finding_lower):
+            components["timeframe"] = tf_name
+            break
+
+    # Extract subject keywords
+    words = re.findall(r'\b[a-z]{3,}\b', finding_lower)
+    keywords = [w for w in words if w not in STOP_WORDS]
+    components["keywords"] = keywords[:10]  # Limit to top 10
+
+    # Identify likely subject
+    subject_candidates = ["market", "industry", "sector", "segment", "revenue", "sales", "demand", "supply"]
+    for word in keywords:
+        if word in subject_candidates:
+            components["subject"] = word
+            break
+
+    return components
+
+
+def compute_semantic_hash(finding: str) -> str:
+    """
+    Compute a semantic hash for a finding that's invariant to wording changes.
+
+    Two findings with the same meaning should produce the same hash.
+
+    Example:
+        "The market is growing at 15% annually" -> "up_15.0_market_annual"
+        "Annual growth rate stands at 15%" -> "up_15.0_market_annual"
+    """
+    components = extract_semantic_components(finding)
+
+    # Build hash components in consistent order
+    hash_parts = []
+
+    # Direction
+    if components.get("direction"):
+        hash_parts.append(components["direction"])
+
+    # Percentage (rounded to avoid float issues)
+    if components.get("percentage") is not None:
+        hash_parts.append(f"{components['percentage']:.1f}")
+
+    # Value with unit
+    if components.get("value") is not None:
+        val_str = f"{components['value']:.1f}"
+        if components.get("value_unit"):
+            val_str += components["value_unit"]
+        hash_parts.append(val_str)
+
+    # Subject
+    if components.get("subject"):
+        hash_parts.append(components["subject"])
+
+    # Timeframe
+    if components.get("timeframe"):
+        hash_parts.append(components["timeframe"])
+
+    # If we have enough components, use them for hash
+    if len(hash_parts) >= 2:
+        return "_".join(hash_parts)
+
+    # Fallback: use sorted keywords
+    keywords = sorted(components.get("keywords", []))[:5]
+    if keywords:
+        return "_".join(keywords)
+
+    # Last resort: normalized text hash
+    normalized = re.sub(r'\s+', ' ', finding.lower().strip())
+    return hashlib.md5(normalized.encode()).hexdigest()[:12]
+
+
+def compute_semantic_finding_diffs(old_findings: List[str], new_findings: List[str]) -> List[FindingDiff]:
+    """
+    Compute finding diffs using semantic hashing instead of text similarity.
+
+    This ensures that findings with the same meaning but different wording
+    are recognized as the same finding.
+    """
+    diffs = []
+    matched_new_indices = set()
+
+    # Compute hashes for all findings
+    old_hashes = [(f, compute_semantic_hash(f), extract_semantic_components(f)) for f in old_findings if f]
+    new_hashes = [(f, compute_semantic_hash(f), extract_semantic_components(f)) for f in new_findings if f]
+
+    # Match by semantic hash
+    for old_text, old_hash, old_components in old_hashes:
+        best_match_idx = None
+        best_match_score = 0
+
+        for i, (new_text, new_hash, new_components) in enumerate(new_hashes):
+            if i in matched_new_indices:
+                continue
+
+            # Exact hash match = same finding
+            if old_hash == new_hash:
+                best_match_idx = i
+                best_match_score = 100
+                break
+
+            # Component-based similarity
+            score = compute_component_similarity(old_components, new_components)
+            if score > best_match_score:
+                best_match_score = score
+                best_match_idx = i
+
+        if best_match_idx is not None and best_match_score >= 60:
+            matched_new_indices.add(best_match_idx)
+            new_text = new_hashes[best_match_idx][0]
+
+            if best_match_score >= 90:
+                change_type = 'retained'
+            else:
+                change_type = 'modified'
+
+            diffs.append(FindingDiff(
+                old_text=old_text,
+                new_text=new_text,
+                similarity=best_match_score,
+                change_type=change_type
+            ))
+        else:
+            # Finding removed
+            diffs.append(FindingDiff(
+                old_text=old_text,
+                new_text=None,
+                similarity=0,
+                change_type='removed'
+            ))
+
+    # Find added findings
+    for i, (new_text, new_hash, new_components) in enumerate(new_hashes):
+        if i not in matched_new_indices:
+            diffs.append(FindingDiff(
+                old_text=None,
+                new_text=new_text,
+                similarity=0,
+                change_type='added'
+            ))
+
+    return diffs
+
+
+def compute_component_similarity(comp1: Dict, comp2: Dict) -> float:
+    """
+    Compute similarity between two finding component dictionaries.
+    Returns a score from 0-100.
+    """
+    if not comp1 or not comp2:
+        return 0
+
+    score = 0
+    weights = {
+        "direction": 25,
+        "percentage": 25,
+        "value": 20,
+        "subject": 15,
+        "timeframe": 10,
+        "keywords": 5
+    }
+
+    # Direction match
+    if comp1.get("direction") and comp2.get("direction"):
+        if comp1["direction"] == comp2["direction"]:
+            score += weights["direction"]
+    elif not comp1.get("direction") and not comp2.get("direction"):
+        score += weights["direction"] * 0.5  # Both neutral
+
+    # Percentage match (within 2% tolerance)
+    if comp1.get("percentage") is not None and comp2.get("percentage") is not None:
+        diff = abs(comp1["percentage"] - comp2["percentage"])
+        if diff <= 2:
+            score += weights["percentage"]
+        elif diff <= 5:
+            score += weights["percentage"] * 0.5
+
+    # Value match (within 10% tolerance)
+    if comp1.get("value") is not None and comp2.get("value") is not None:
+        v1, v2 = comp1["value"], comp2["value"]
+        # Normalize by unit
+        if comp1.get("value_unit") == comp2.get("value_unit"):
+            if v1 > 0 and v2 > 0:
+                ratio = min(v1, v2) / max(v1, v2)
+                if ratio >= 0.9:
+                    score += weights["value"]
+                elif ratio >= 0.8:
+                    score += weights["value"] * 0.5
+
+    # Subject match
+    if comp1.get("subject") and comp2.get("subject"):
+        if comp1["subject"] == comp2["subject"]:
+            score += weights["subject"]
+
+    # Timeframe match
+    if comp1.get("timeframe") and comp2.get("timeframe"):
+        if comp1["timeframe"] == comp2["timeframe"]:
+            score += weights["timeframe"]
+
+    # Keyword overlap
+    kw1 = set(comp1.get("keywords", []))
+    kw2 = set(comp2.get("keywords", []))
+    if kw1 and kw2:
+        overlap = len(kw1 & kw2) / len(kw1 | kw2)
+        score += weights["keywords"] * overlap
+
+    return score
+
+
+# ------------------------------------
+# UPDATED METRIC DIFF COMPUTATION
+# Using canonical IDs
+# ------------------------------------
+
+def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List[MetricDiff]:
+    """
+    Compute metric diffs using canonical IDs for stable matching.
+    """
+    diffs = []
+
+    # Canonicalize both metric sets
+    old_canonical = canonicalize_metrics(old_metrics)
+    new_canonical = canonicalize_metrics(new_metrics)
+
+    matched_new_ids = set()
+
+    # Match by canonical ID
+    for old_id, old_m in old_canonical.items():
+        old_name = old_m.get('name', old_id)
+        old_raw = str(old_m.get('value', ''))
+        old_unit = old_m.get('unit', '')
+        old_val = parse_to_float(old_m.get('value'))
+
+        # Direct canonical ID match
+        if old_id in new_canonical:
+            new_m = new_canonical[old_id]
+            matched_new_ids.add(old_id)
+
+            new_raw = str(new_m.get('value', ''))
+            new_val = parse_to_float(new_m.get('value'))
+            new_unit = new_m.get('unit', old_unit)
+
+            change_pct = compute_percent_change(old_val, new_val)
+
+            if change_pct is None or abs(change_pct) < 0.5:
+                change_type = 'unchanged'
+            elif change_pct > 0:
+                change_type = 'increased'
+            else:
+                change_type = 'decreased'
+
+            diffs.append(MetricDiff(
+                name=old_name,
+                old_value=old_val,
+                new_value=new_val,
+                old_raw=old_raw,
+                new_raw=new_raw,
+                unit=new_unit or old_unit,
+                change_pct=change_pct,
+                change_type=change_type
+            ))
+        else:
+            # Try base ID match (without year suffix)
+            base_id = re.sub(r'_\d{4}(?:_\d{4})*$', '', old_id)
+            found = False
+
+            for new_id, new_m in new_canonical.items():
+                if new_id in matched_new_ids:
+                    continue
+                new_base_id = re.sub(r'_\d{4}(?:_\d{4})*$', '', new_id)
+
+                if base_id == new_base_id:
+                    matched_new_ids.add(new_id)
+                    found = True
+
+                    new_raw = str(new_m.get('value', ''))
+                    new_val = parse_to_float(new_m.get('value'))
+                    new_unit = new_m.get('unit', old_unit)
+
+                    change_pct = compute_percent_change(old_val, new_val)
+
+                    if change_pct is None or abs(change_pct) < 0.5:
+                        change_type = 'unchanged'
+                    elif change_pct > 0:
+                        change_type = 'increased'
+                    else:
+                        change_type = 'decreased'
+
+                    diffs.append(MetricDiff(
+                        name=old_name,
+                        old_value=old_val,
+                        new_value=new_val,
+                        old_raw=old_raw,
+                        new_raw=new_raw,
+                        unit=new_unit or old_unit,
+                        change_pct=change_pct,
+                        change_type=change_type
+                    ))
+                    break
+
+            if not found:
+                # Metric removed
+                diffs.append(MetricDiff(
+                    name=old_name,
+                    old_value=old_val,
+                    new_value=None,
+                    old_raw=old_raw,
+                    new_raw='',
+                    unit=old_unit,
+                    change_pct=None,
+                    change_type='removed'
+                ))
+
+    # Find added metrics
+    for new_id, new_m in new_canonical.items():
+        if new_id not in matched_new_ids:
+            new_name = new_m.get('name', new_id)
+            new_raw = str(new_m.get('value', ''))
+            new_val = parse_to_float(new_m.get('value'))
+            new_unit = new_m.get('unit', '')
+
+            diffs.append(MetricDiff(
+                name=new_name,
+                old_value=None,
+                new_value=new_val,
+                old_raw='',
+                new_raw=new_raw,
+                unit=new_unit,
+                change_pct=None,
+                change_type='added'
+            ))
+
+    return diffs
+
 # ------------------------------------
 # NUMERIC PARSING (DETERMINISTIC)
 # ------------------------------------
@@ -2221,8 +2931,8 @@ def compute_evolution_diff(old_analysis: Dict, new_analysis: Dict) -> EvolutionD
     except:
         pass
 
-    # Compute diffs
-    metric_diffs = compute_metric_diffs(
+    # Compute diffs using CANONICAL metric registry for stable matching
+    metric_diffs = compute_metric_diffs_canonical(
         old_response.get('primary_metrics', {}),
         new_response.get('primary_metrics', {})
     )
@@ -2232,13 +2942,11 @@ def compute_evolution_diff(old_analysis: Dict, new_analysis: Dict) -> EvolutionD
         new_response.get('top_entities', [])
     )
 
-    #finding_diffs = compute_finding_diffs(
-    #    old_response.get('key_findings', []),
-    #    new_response.get('key_findings', [])
-    #)
-
-    # Skip findings comparison - too volatile
-    finding_diffs = []
+    # Use SEMANTIC finding comparison (stable across wording changes)
+    finding_diffs = compute_semantic_finding_diffs(
+        old_response.get('key_findings', []),
+        new_response.get('key_findings', [])
+    )
 
     # Compute stability
     stability = compute_stability_score(metric_diffs, entity_diffs, finding_diffs)
@@ -3298,30 +4006,95 @@ def render_native_comparison(baseline: Dict, compare: Dict):
     stability_count = 0
     total_count = 0
 
-    # Collect all metric names
-    baseline_by_name = {}
-    compare_by_name = {}
+    # Canonicalize metrics for stable matching
+    baseline_canonical = canonicalize_metrics(baseline_metrics)
+    compare_canonical = canonicalize_metrics(compare_metrics)
 
-    for key, m in baseline_metrics.items():
-        if isinstance(m, dict):
-            name = m.get('name', key)
-            baseline_by_name[name] = m
+    # Build lookup by canonical ID
+    baseline_by_id = {}
+    compare_by_id = {}
 
-    for key, m in compare_metrics.items():
-        if isinstance(m, dict):
-            name = m.get('name', key)
-            compare_by_name[name] = m
+    for cid, m in baseline_canonical.items():
+        baseline_by_id[cid] = m
 
-    all_names = set(baseline_by_name.keys()) | set(compare_by_name.keys())
+    for cid, m in compare_canonical.items():
+        compare_by_id[cid] = m
 
-    for name in sorted(all_names):
-        baseline_m = baseline_by_name.get(name)
-        compare_m = compare_by_name.get(name)
+    all_ids = set(baseline_by_id.keys()) | set(compare_by_id.keys())
+
+    for cid in sorted(all_ids):
+        baseline_m = baseline_by_id.get(cid)
+        compare_m = compare_by_id.get(cid)
+
+        # Use canonical name for display, fallback to original
+        if baseline_m:
+            display_name = baseline_m.get('name', cid)
+        elif compare_m:
+            display_name = compare_m.get('name', cid)
+        else:
+            display_name = cid
 
         if baseline_m and compare_m:
             old_val = baseline_m.get('value', 'N/A')
             new_val = compare_m.get('value', 'N/A')
             unit = compare_m.get('unit', baseline_m.get('unit', ''))
+
+            old_num = parse_to_float(old_val)
+            new_num = parse_to_float(new_val)
+
+            if old_num is not None and new_num is not None and old_num != 0:
+                change_pct = ((new_num - old_num) / abs(old_num)) * 100
+
+                if abs(change_pct) < 1:
+                    icon, reason = "➡️", "No change"
+                    stability_count += 1
+                elif abs(change_pct) < 5:
+                    icon, reason = "➡️", "Minor change"
+                    stability_count += 1
+                elif change_pct > 0:
+                    icon, reason = "📈", "Increased"
+                else:
+                    icon, reason = "📉", "Decreased"
+
+                delta_str = f"{change_pct:+.1f}%"
+            else:
+                icon, delta_str, reason = "➡️", "-", "Non-numeric"
+                stability_count += 1
+
+            diff_rows.append({
+                '': icon,
+                'Metric': display_name,
+                'Old': f"{old_val} {unit}".strip(),
+                'New': f"{new_val} {unit}".strip(),
+                'Δ': delta_str,
+                'Reason': reason
+            })
+            total_count += 1
+
+        elif baseline_m:
+            old_val = baseline_m.get('value', 'N/A')
+            unit = baseline_m.get('unit', '')
+            diff_rows.append({
+                '': '❌',
+                'Metric': display_name,
+                'Old': f"{old_val} {unit}".strip(),
+                'New': '-',
+                'Δ': '-',
+                'Reason': 'Removed'
+            })
+            total_count += 1
+        else:
+            new_val = compare_m.get('value', 'N/A')
+            unit = compare_m.get('unit', '')
+            diff_rows.append({
+                '': '🆕',
+                'Metric': display_name,
+                'Old': '-',
+                'New': f"{new_val} {unit}".strip(),
+                'Δ': '-',
+                'Reason': 'New'
+            })
+            total_count += 1
 
             old_num = parse_to_float(old_val)
             new_num = parse_to_float(new_val)
@@ -3381,9 +4154,34 @@ def render_native_comparison(baseline: Dict, compare: Dict):
             total_count += 1
 
     if diff_rows:
-        st.dataframe(pd.DataFrame(diff_rows), hide_index=True, use_container_width=True)
-    else:
-        st.info("No metrics to compare")
+            st.dataframe(pd.DataFrame(diff_rows), hide_index=True, use_container_width=True)
+
+            # Show canonical ID mapping for debugging
+            with st.expander("🔧 Canonical ID Mapping (Debug)"):
+                st.write("**How metrics were matched:**")
+
+                baseline_canonical = canonicalize_metrics(baseline_metrics)
+                compare_canonical = canonicalize_metrics(compare_metrics)
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write("**Baseline Metrics:**")
+                    for cid, m in baseline_canonical.items():
+                        original = m.get('original_name', 'N/A')
+                        canonical = m.get('name', 'N/A')
+                        st.caption(f"`{cid}`")
+                        st.write(f"  {original} → {canonical}")
+
+                with col2:
+                    st.write("**Current Metrics:**")
+                    for cid, m in compare_canonical.items():
+                        original = m.get('original_name', 'N/A')
+                        canonical = m.get('name', 'N/A')
+                        st.caption(f"`{cid}`")
+                        st.write(f"  {original} → {canonical}")
+        else:
+            st.info("No metrics to compare")
 
     # Stability score
     stability_pct = (stability_count / total_count * 100) if total_count > 0 else 100
@@ -3535,6 +4333,23 @@ def main():
                 veracity_scores["overall"]
             )
 
+
+            # Canonicalize metrics before saving for stable future comparisons
+            if primary_data.get('primary_metrics'):
+                primary_data['primary_metrics_canonical'] = canonicalize_metrics(
+                    primary_data.get('primary_metrics', {})
+                )
+
+            # Compute semantic hashes for findings
+            if primary_data.get('key_findings'):
+                findings_with_hash = []
+                for finding in primary_data.get('key_findings', []):
+                    if finding:
+                        findings_with_hash.append({
+                            'text': finding,
+                            'semantic_hash': compute_semantic_hash(finding)
+                        })
+                primary_data['key_findings_hashed'] = findings_with_hash
 
             # Build output
             output = {
