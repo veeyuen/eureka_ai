@@ -1,4 +1,4 @@
- # =========================================================
+# =========================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.8
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
@@ -47,60 +47,25 @@ MAX_HISTORY_ITEMS = 50
 def get_google_sheet():
     """Connect to Google Sheet (cached connection)"""
     try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-        
-        SCOPES = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        
-        # Get credentials from secrets
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        
         creds = Credentials.from_service_account_info(
-            creds_dict,
+            st.secrets["gcp_service_account"],
             scopes=SCOPES
         )
-        
         client = gspread.authorize(creds)
-        
-        spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
-        
-        # Open spreadsheet
-        spreadsheet = client.open(spreadsheet_name)
-        sheet = spreadsheet.sheet1
-        
-        # Ensure headers exist (use batch_update for newer gspread versions)
+        spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_History")
+        sheet = client.open(spreadsheet_name).sheet1
+
+        # Ensure headers exist
         try:
             headers = sheet.row_values(1)
-            if not headers or len(headers) == 0 or headers[0] != "id":
-                sheet.update([[" id", "timestamp", "question", "confidence", "data"]], "A1:E1")
-        except Exception as header_error:
-            # Try alternative method
-            try:
-                sheet.update_cell(1, 1, "id")
-                sheet.update_cell(1, 2, "timestamp")
-                sheet.update_cell(1, 3, "question")
-                sheet.update_cell(1, 4, "confidence")
-                sheet.update_cell(1, 5, "data")
-            except:
-                pass  # Headers might already exist
-        
+            if not headers or headers[0] != "id":
+                sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
+        except:
+            sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
+
         return sheet
-        
-    except ImportError as e:
-        st.error(f"❌ Missing library: {e}")
-        return None
-    except gspread.SpreadsheetNotFound:
-        st.error(f"❌ Spreadsheet 'Yureeka_History' not found. Create it and share with service account.")
-        return None
-    except gspread.exceptions.APIError as e:
-        st.error(f"❌ Google Sheets API error: {e}")
-        return None
     except Exception as e:
-        # Log the actual error type for debugging
-        st.error(f"❌ Failed to connect to Google Sheets: {type(e).__name__}: {e}")
+        st.error(f"❌ Failed to connect to Google Sheets: {e}")
         return None
 
 def generate_analysis_id() -> str:
@@ -2612,9 +2577,9 @@ def extract_numbers_from_text(text: str) -> List[Dict]:
         if value == 0 or value > 1000000:
             continue
 
-        # Get context (50 chars before and after)
-        start = max(0, match.start() - 50)
-        end = min(len(text), match.end() + 50)
+        # Get context (150 chars before and after)
+        start = max(0, match.start() - 150)
+        end = min(len(text), match.end() + 150)
         context = text[start:end].lower()
 
         # Normalize unit
@@ -2719,8 +2684,8 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     best_match_score = combined_score
                     best_match = curr_num
 
-        # Only accept matches with confidence > 50%
-        if best_match and best_match_score > 0.5:
+        # Only accept matches with confidence > 60%
+        if best_match and best_match_score > 0.6:
             change_pct = compute_percent_change(prev_val, best_match['value'])
 
             # More lenient threshold: < 5% change = unchanged
@@ -2865,10 +2830,16 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
         return 0.3  # Base score when no keywords
 
     context_lower = context.lower()
+
+    # CRITICAL: Year keywords MUST match if present
+    year_keywords = [kw for kw in keywords if re.match(r'20\d{2}', kw)]
+    if year_keywords:
+        year_found = any(year in context_lower for year in year_keywords)
+        if not year_found:
+            return 0.0  # Reject match if year doesn't match
+
     matches = sum(1 for kw in keywords if kw.lower() in context_lower)
 
-    # Score based on proportion of keywords found
-    # But give partial credit even for some matches
     if len(keywords) == 0:
         return 0.3
 
@@ -2876,7 +2847,6 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
 
     # Scale: 0 matches = 0.1, all matches = 1.0
     return 0.1 + (match_ratio * 0.9)
-
 
 def render_source_anchored_results(results: Dict, query: str):
     """Render source-anchored evolution results"""
@@ -3447,9 +3417,6 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 # 10. MAIN APPLICATION
 # =========================================================
 
-
-
-
 def main():
     st.set_page_config(
         page_title="Yureeka Market Report",
@@ -3599,21 +3566,6 @@ def main():
                 st.write("**Primary Model Response:**")
                 st.json(primary_data)
 
-            # Debug info
-            with st.expander("🔧 Debug Information"):
-                st.write("**Confidence Breakdown:**")
-                st.json({
-                    "base_confidence": base_conf,
-                    "evidence_score": veracity_scores["overall"],
-                    "final_confidence": final_conf,
-                    "veracity_breakdown": veracity_scores
-                })
-                st.write("**Primary Model Response:**")
-                st.json(primary_data)
-
-    # =====================
-    # TAB 2: EVOLUTION TRACKER
-    # =====================
 
     # =====================
     # TAB 2: EVOLUTION TRACKER (SOURCE-ANCHORED + GOOGLE SHEETS)
@@ -3622,34 +3574,34 @@ def main():
         st.markdown("""
         ### 📈 Evolution Tracker
         Track how data has changed over time using **deterministic source-anchored analysis**.
-        
+
         **How it works:**
         - Select a baseline from your history (stored in Google Sheets)
         - Re-fetches the **exact same sources** from that analysis
         - Extracts current numbers using regex (no LLM variance)
         - Computes deterministic diffs with context-aware matching
         """)
-        
+
         # Sidebar - History Management
         with st.sidebar:
             st.subheader("📚 History")
-            
+
             if st.button("🔄 Refresh"):
                 st.cache_resource.clear()
                 st.rerun()
-            
+
             sheet = get_google_sheet()
             if sheet:
                 st.success("✅ Google Sheets connected")
             else:
                 st.warning("⚠️ Using session storage")
-        
+
         # Load history
         history = get_history()
-        
+
         if not history:
             st.info("📭 No previous analyses found. Run an analysis in the 'New Analysis' tab first.")
-            
+
             # Upload fallback
             st.markdown("---")
             uploaded_file = st.file_uploader(
@@ -3665,49 +3617,49 @@ def main():
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Failed: {e}")
-        
+
         else:
             # BASELINE SELECTOR
             st.subheader("📋 Select Baseline Analysis")
-            
+
             history_options = get_history_options()
             baseline_labels = [opt[0] for opt in history_options]
-            
+
             baseline_selection = st.selectbox(
                 "Select analysis to check for changes",
                 options=range(len(baseline_labels)),
                 format_func=lambda i: baseline_labels[i],
                 key="baseline_select"
             )
-            
+
             baseline_index = history_options[baseline_selection][1]
             baseline_data = history[baseline_index]
-            
+
             # Show baseline details
             with st.expander("📋 Baseline Details", expanded=False):
                 st.write(f"**Query:** {baseline_data.get('question', 'N/A')}")
                 st.write(f"**Timestamp:** {baseline_data.get('timestamp', 'N/A')[:19]}")
                 st.write(f"**Confidence:** {baseline_data.get('final_confidence', 'N/A')}%")
-                
+
                 prev_response = baseline_data.get('primary_response', {})
                 st.write("**Metrics:**")
                 for k, m in list(prev_response.get("primary_metrics", {}).items())[:5]:
                     if isinstance(m, dict):
                         st.write(f"- {m.get('name', k)}: {m.get('value')} {m.get('unit', '')}")
-                
+
                 st.write("**Sources:**")
                 prev_sources = baseline_data.get('web_sources', []) or prev_response.get('sources', [])
                 for i, src in enumerate(prev_sources[:5], 1):
                     st.write(f"{i}. {src[:60]}...")
-            
+
             evolution_query = baseline_data.get("question", "")
             st.info(f"📝 Query: {evolution_query}")
-            
+
             st.markdown("---")
-            
+
             # COMPARISON OPTIONS
             st.subheader("🔍 Comparison Method")
-            
+
             compare_method = st.radio(
                 "How to compare:",
                 options=[
@@ -3718,7 +3670,7 @@ def main():
                 index=0,
                 key="compare_method"
             )
-            
+
             # Additional selector for history comparison
             compare_data = None
             if "another saved analysis" in compare_method:
@@ -3735,21 +3687,21 @@ def main():
                     )
                     compare_index = history_options[compare_selection][1]
                     compare_data = history[compare_index]
-            
+
             st.markdown("---")
-            
+
             # RUN COMPARISON
             if st.button("🔍 Run Evolution Analysis", type="primary", key="evolution_btn"):
-                
+
                 if "Re-check original sources" in compare_method:
                     # =====================
                     # SOURCE-ANCHORED (DETERMINISTIC)
                     # =====================
                     st.success("✅ Using deterministic source-anchored analysis")
-                    
+
                     with st.spinner("🔗 Re-fetching original sources..."):
                         results = compute_source_anchored_diff(baseline_data)
-                    
+
                     if results['status'] != 'success':
                         st.error(f"❌ {results.get('message', 'Analysis failed')}")
                     else:
@@ -3762,13 +3714,17 @@ def main():
                                     changes_text.append(f"- {m['name']}: {m['previous_value']} → {m['current_value']} (+{m['change_pct']:.1f}%)")
                                 elif m['change_type'] == 'decreased':
                                     changes_text.append(f"- {m['name']}: {m['previous_value']} → {m['current_value']} ({m['change_pct']:.1f}%)")
-                            
+
                             if changes_text:
                                 with st.spinner("💬 Generating interpretation..."):
                                     try:
-                                        explanation_prompt = """Based on these metric changes for "{evolution_query}": {chr(10).join(changes_text)}
-                                        Provide a 2-3 sentence interpretation.
-                                        Return ONLY JSON: {{"interpretation": "your text"}}"""
+                                        changes_str = "\n".join(changes_text)
+                                        explanation_prompt = (
+                                            f'Based on these metric changes for "{evolution_query}":\n'
+                                            f'{changes_str}\n\n'
+                                            'Provide a 2-3 sentence interpretation.\n'
+                                            'Return ONLY JSON: {"interpretation": "your text"}'
+                                        )
                                         headers = {"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"}
                                         payload = {"model": "sonar", "temperature": 0.0, "max_tokens": 200, "top_p": 1.0, "messages": [{"role": "user", "content": explanation_prompt}]}
                                         resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=20)
@@ -3778,7 +3734,7 @@ def main():
                                         interpretation = ""
                             else:
                                 interpretation = "No significant changes detected in the metrics."
-                        
+
                         # Build output
                         evolution_output = {
                             "question": evolution_query,
@@ -3788,7 +3744,7 @@ def main():
                             "results": results,
                             "interpretation": interpretation
                         }
-                        
+
                         # Download
                         st.download_button(
                             label="💾 Download Evolution Report",
@@ -3796,17 +3752,17 @@ def main():
                             file_name=f"yureeka_evolution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                             mime="application/json"
                         )
-                        
+
                         # RENDER RESULTS
                         st.header("📈 Evolution Analysis Results")
                         st.markdown(f"**Query:** {evolution_query}")
-                        
+
                         # Overview
                         col1, col2, col3, col4 = st.columns(4)
                         col1.metric("Sources Checked", results['sources_checked'])
                         col2.metric("Sources Fetched", results['sources_fetched'])
                         col3.metric("Stability", f"{results['stability_score']:.0f}%")
-                        
+
                         summary = results['summary']
                         if summary['metrics_increased'] > summary['metrics_decreased']:
                             col4.success("📈 Trending Up")
@@ -3814,7 +3770,7 @@ def main():
                             col4.error("📉 Trending Down")
                         else:
                             col4.info("➡️ Stable")
-                        
+
                         # Stability indicator
                         st.markdown("---")
                         if results['stability_score'] >= 80:
@@ -3823,11 +3779,11 @@ def main():
                             st.warning(f"🟡 **Moderate Stability ({results['stability_score']:.0f}%)** - Some changes detected")
                         else:
                             st.error(f"🔴 **Low Stability ({results['stability_score']:.0f}%)** - Significant changes")
-                        
+
                         # Interpretation
                         if interpretation:
                             st.info(f"**💬 Interpretation:** {interpretation}")
-                        
+
                         # Source verification
                         st.markdown("---")
                         st.subheader("🔗 Source Verification")
@@ -3836,17 +3792,17 @@ def main():
                                 st.success(f"✅ {src['url'][:70]}... ({src['numbers_found']} numbers)")
                             else:
                                 st.error(f"❌ {src['url'][:70]}... (failed)")
-                        
+
                         # Metric changes table
                         st.markdown("---")
                         st.subheader("💰 Metric Changes")
-                        
+
                         if results['metric_changes']:
                             rows = []
                             for m in results['metric_changes']:
                                 icon = {'increased': '📈', 'decreased': '📉', 'unchanged': '➡️', 'not_found': '❓'}.get(m['change_type'], '•')
                                 change_str = f"{m['change_pct']:+.1f}%" if m['change_pct'] is not None else "-"
-                                
+
                                 rows.append({
                                     '': icon,
                                     'Metric': m['name'],
@@ -3855,9 +3811,9 @@ def main():
                                     'Δ': change_str,
                                     'Confidence': f"{m['match_confidence']:.0f}%"
                                 })
-                            
+
                             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-                            
+
                             # Show context for verification
                             with st.expander("🔍 Match Context"):
                                 for m in results['metric_changes']:
@@ -3865,7 +3821,7 @@ def main():
                                         st.caption(f"**{m['name']}:** ...{m['context_snippet']}...")
                         else:
                             st.info("No metrics to compare")
-                        
+
                         # Summary
                         st.markdown("---")
                         st.subheader("📊 Summary")
@@ -3874,7 +3830,7 @@ def main():
                         col2.metric("Found", summary['metrics_found'])
                         col3.metric("📈 Up", summary['metrics_increased'])
                         col4.metric("📉 Down", summary['metrics_decreased'])
-                
+
                 elif "another saved analysis" in compare_method:
                     # =====================
                     # HISTORY VS HISTORY (DETERMINISTIC)
@@ -3884,33 +3840,33 @@ def main():
                         render_native_comparison(baseline_data, compare_data)
                     else:
                         st.error("❌ Please select a comparison analysis")
-                
+
                 else:
                     # =====================
                     # FRESH ANALYSIS (VOLATILE)
                     # =====================
                     st.warning("⚠️ Running fresh analysis - results may vary")
-                    
+
                     query = baseline_data.get('question', '')
                     if not query:
                         st.error("❌ No query found")
                     else:
                         with st.spinner("🌐 Fetching current data..."):
                             web_context = fetch_web_context(query, num_sources=3)
-                        
+
                         if not web_context:
                             web_context = {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
-                        
+
                         with st.spinner("🤖 Running analysis..."):
                             new_response = query_perplexity(query, web_context)
-                        
+
                         if new_response:
                             try:
                                 new_parsed = json.loads(new_response)
                                 veracity = evidence_based_veracity(new_parsed, web_context)
                                 base_conf = float(new_parsed.get("confidence", 75))
                                 final_conf = calculate_final_confidence(base_conf, veracity["overall"])
-                                
+
                                 compare_data = {
                                     "question": query,
                                     "timestamp": datetime.now().isoformat(),
@@ -3919,16 +3875,16 @@ def main():
                                     "veracity_scores": veracity,
                                     "web_sources": web_context.get("sources", [])
                                 }
-                                
+
                                 add_to_history(compare_data)
                                 st.success("✅ Saved to history")
-                                
+
                                 render_native_comparison(baseline_data, compare_data)
                             except Exception as e:
                                 st.error(f"❌ Failed: {e}")
                         else:
                             st.error("❌ Analysis failed")
-            
+
             # Upload additional analyses
             st.markdown("---")
             with st.expander("📁 Upload analysis file"):
