@@ -3615,8 +3615,7 @@ def main():
     # TAB 2: EVOLUTION TRACKER
     # =====================
 
-    with tab2:
-        # =====================
+    # =====================
     # TAB 2: EVOLUTION TRACKER (SOURCE-ANCHORED + GOOGLE SHEETS)
     # =====================
     with tab2:
