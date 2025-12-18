@@ -8,5 +8,5 @@ torch>=2.0.0
 google-generativeai>=0.3.0
 beautifulsoup4
 numpy
-gspread
-google-auth
+gspread==5.12.4
+google-auth==2.23.4
