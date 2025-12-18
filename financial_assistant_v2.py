@@ -4096,92 +4096,35 @@ def render_native_comparison(baseline: Dict, compare: Dict):
             })
             total_count += 1
 
-            old_num = parse_to_float(old_val)
-            new_num = parse_to_float(new_val)
-
-            if old_num is not None and new_num is not None and old_num != 0:
-                change_pct = ((new_num - old_num) / abs(old_num)) * 100
-
-                if abs(change_pct) < 1:
-                    icon, reason = "➡️", "No change"
-                    stability_count += 1
-                elif abs(change_pct) < 5:
-                    icon, reason = "➡️", "Minor change"
-                    stability_count += 1
-                elif change_pct > 0:
-                    icon, reason = "📈", "Increased"
-                else:
-                    icon, reason = "📉", "Decreased"
-
-                delta_str = f"{change_pct:+.1f}%"
-            else:
-                icon, delta_str, reason = "➡️", "-", "Non-numeric"
-                stability_count += 1
-
-            diff_rows.append({
-                '': icon,
-                'Metric': name,
-                'Old': f"{old_val} {unit}".strip(),
-                'New': f"{new_val} {unit}".strip(),
-                'Δ': delta_str,
-                'Reason': reason
-            })
-            total_count += 1
-
-        elif baseline_m:
-            old_val = baseline_m.get('value', 'N/A')
-            unit = baseline_m.get('unit', '')
-            diff_rows.append({
-                '': '❌',
-                'Metric': name,
-                'Old': f"{old_val} {unit}".strip(),
-                'New': '-',
-                'Δ': '-',
-                'Reason': 'Removed'
-            })
-            total_count += 1
-        else:
-            new_val = compare_m.get('value', 'N/A')
-            unit = compare_m.get('unit', '')
-            diff_rows.append({
-                '': '🆕',
-                'Metric': name,
-                'Old': '-',
-                'New': f"{new_val} {unit}".strip(),
-                'Δ': '-',
-                'Reason': 'New'
-            })
-            total_count += 1
-
     if diff_rows:
-            st.dataframe(pd.DataFrame(diff_rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(diff_rows), hide_index=True, use_container_width=True)
 
-            # Show canonical ID mapping for debugging
-            with st.expander("🔧 Canonical ID Mapping (Debug)"):
-                st.write("**How metrics were matched:**")
+        # Show canonical ID mapping for debugging
+        with st.expander("🔧 Canonical ID Mapping (Debug)"):
+            st.write("**How metrics were matched:**")
 
-                baseline_canonical = canonicalize_metrics(baseline_metrics)
-                compare_canonical = canonicalize_metrics(compare_metrics)
+            baseline_canonical = canonicalize_metrics(baseline_metrics)
+            compare_canonical = canonicalize_metrics(compare_metrics)
 
-                col1, col2 = st.columns(2)
+            col1, col2 = st.columns(2)
 
-                with col1:
-                    st.write("**Baseline Metrics:**")
-                    for cid, m in baseline_canonical.items():
-                        original = m.get('original_name', 'N/A')
-                        canonical = m.get('name', 'N/A')
-                        st.caption(f"`{cid}`")
-                        st.write(f"  {original} → {canonical}")
+            with col1:
+                st.write("**Baseline Metrics:**")
+                for cid, m in baseline_canonical.items():
+                    original = m.get('original_name', 'N/A')
+                    canonical = m.get('name', 'N/A')
+                    st.caption(f"`{cid}`")
+                    st.write(f"  {original} → {canonical}")
 
-                with col2:
-                    st.write("**Current Metrics:**")
-                    for cid, m in compare_canonical.items():
-                        original = m.get('original_name', 'N/A')
-                        canonical = m.get('name', 'N/A')
-                        st.caption(f"`{cid}`")
-                        st.write(f"  {original} → {canonical}")
-        else:
-            st.info("No metrics to compare")
+            with col2:
+                st.write("**Current Metrics:**")
+                for cid, m in compare_canonical.items():
+                    original = m.get('original_name', 'N/A')
+                    canonical = m.get('name', 'N/A')
+                    st.caption(f"`{cid}`")
+                    st.write(f"  {original} → {canonical}")
+    else:
+        st.info("No metrics to compare")
 
     # Stability score
     stability_pct = (stability_count / total_count * 100) if total_count > 0 else 100
