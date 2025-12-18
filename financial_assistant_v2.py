@@ -47,25 +47,60 @@ MAX_HISTORY_ITEMS = 50
 def get_google_sheet():
     """Connect to Google Sheet (cached connection)"""
     try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        
+        SCOPES = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        
+        # Get credentials from secrets
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        
         creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
+            creds_dict,
             scopes=SCOPES
         )
+        
         client = gspread.authorize(creds)
+        
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_History")
-        sheet = client.open(spreadsheet_name).sheet1
-
-        # Ensure headers exist
+        
+        # Open spreadsheet
+        spreadsheet = client.open(spreadsheet_name)
+        sheet = spreadsheet.sheet1
+        
+        # Ensure headers exist (use batch_update for newer gspread versions)
         try:
             headers = sheet.row_values(1)
-            if not headers or headers[0] != "id":
-                sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
-        except:
-            sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
-
+            if not headers or len(headers) == 0 or headers[0] != "id":
+                sheet.update([[" id", "timestamp", "question", "confidence", "data"]], "A1:E1")
+        except Exception as header_error:
+            # Try alternative method
+            try:
+                sheet.update_cell(1, 1, "id")
+                sheet.update_cell(1, 2, "timestamp")
+                sheet.update_cell(1, 3, "question")
+                sheet.update_cell(1, 4, "confidence")
+                sheet.update_cell(1, 5, "data")
+            except:
+                pass  # Headers might already exist
+        
         return sheet
+        
+    except ImportError as e:
+        st.error(f"❌ Missing library: {e}")
+        return None
+    except gspread.SpreadsheetNotFound:
+        st.error(f"❌ Spreadsheet 'Yureeka_History' not found. Create it and share with service account.")
+        return None
+    except gspread.exceptions.APIError as e:
+        st.error(f"❌ Google Sheets API error: {e}")
+        return None
     except Exception as e:
-        st.error(f"❌ Failed to connect to Google Sheets: {e}")
+        # Log the actual error type for debugging
+        st.error(f"❌ Failed to connect to Google Sheets: {type(e).__name__}: {e}")
         return None
 
 def generate_analysis_id() -> str:
