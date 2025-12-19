@@ -4634,8 +4634,7 @@ def main():
     # =====================
     with tab2:
         st.markdown("""
-        ### 📈 Evolution Tracker
-        Track how data has changed over time using **deterministic source-anchored analysis**.
+        ### 📈 Track how data has changed over time using **deterministic source-anchored analysis**.
 
         **How it works:**
         - Select a baseline from your history (stored in Google Sheets)
