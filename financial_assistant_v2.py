@@ -3612,29 +3612,51 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
     'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
 }
+    results_stability_score = round(stability, 1)
 
+
+    #return {
+    #    'status': 'success',
+    #    'sources_checked': len(sources_to_check),
+    #    'sources_fetched': sum(1 for s in source_results if s['status'] == 'fetched'),
+    #    'source_results': source_results,
+    #    'metric_changes': metric_changes,
+    #    'stability': {
+    #        'system_stability_pct': round(stability, 1),
+    #        'data_change_detected': summary['metrics_increased'] + summary['metrics_decreased'],
+    #        'metrics_compared': found_count
+    #    },
+    #    'summary': {
+    #        'total_metrics': len(metric_changes),
+    #        'metrics_found': found_count,
+    #        'metrics_unchanged': unchanged_count,
+    #        'metrics_stable': stable_count,
+    #        'metrics_increased': sum(1 for m in metric_changes if m['change_type'] == 'increased'),
+    #        'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
+    #        'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
+    #    }
+    #}
 
     return {
-        'status': 'success',
-        'sources_checked': len(sources_to_check),
-        'sources_fetched': sum(1 for s in source_results if s['status'] == 'fetched'),
-        'source_results': source_results,
-        'metric_changes': metric_changes,
-        'stability': {
-            'system_stability_pct': round(stability, 1),
-            'data_change_detected': summary['metrics_increased'] + summary['metrics_decreased'],
-            'metrics_compared': found_count
-        },
-        'summary': {
-            'total_metrics': len(metric_changes),
-            'metrics_found': found_count,
-            'metrics_unchanged': unchanged_count,
-            'metrics_stable': stable_count,
-            'metrics_increased': sum(1 for m in metric_changes if m['change_type'] == 'increased'),
-            'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
-            'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
-        }
+    'status': 'success',
+    'sources_checked': len(sources_to_check),
+    'sources_fetched': sum(1 for s in source_results if s['status'] == 'fetched'),
+    'source_results': source_results,
+    'metric_changes': metric_changes,
+
+    # 🔹 NEW structured stability
+    'stability': {
+        'system_stability_pct': results_stability_score,
+        'data_change_detected': summary['metrics_increased'] + summary['metrics_decreased'],
+        'metrics_compared': found_count
+    },
+
+    # 🔹 BACKWARD-COMPATIBILITY
+    'stability_score': results_stability_score,
+
+    'summary': summary
     }
+
     assert sources_to_check == prev_sources[:len(sources_to_check)], \
     "Source order mutation detected – evolution must be deterministic"
 
