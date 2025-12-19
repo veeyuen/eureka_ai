@@ -3480,7 +3480,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     all_current_numbers = []
 
     for url in sources_to_check:
-    content, status_msg = fetch_url_content_with_status(url)
+        content, status_msg = fetch_url_content_with_status(url)
 
     if content:
         content_fingerprint = fingerprint_text(content)
