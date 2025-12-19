@@ -3622,7 +3622,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             # Check value similarity (must be within 50% for initial filter)
             if prev_val > 0 and curr_num['value'] > 0:
                 curr_val = curr_num.get('value_norm', curr_num['value'])
-r               ratio = curr_val / prev_val
+                ratio = curr_val / prev_val
 
                 if not (0.5 <= ratio <= 2.0):
                     continue
