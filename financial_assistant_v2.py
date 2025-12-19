@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.9
+# YUREEKA AI RESEARCH ASSISTANT v7.10
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -9,6 +9,7 @@
 # Implementation of Source-Based Evolution
 # Saving of JSON output Files into Google Sheets
 # Canonical Metric Registry + Semantic Hashing of Findings
+# Removal of Evolution Decisions from LLM
 # =========================================================
 
 import os
@@ -1061,6 +1062,14 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
         "source_reliability": reliabilities
     }
 
+def fingerprint_text(text: str) -> str:
+    if not text:
+        return ""
+    return hashlib.sha256(
+        re.sub(r'\s+', ' ', text.strip()).encode('utf-8')
+    ).hexdigest()
+
+
 # =========================================================
 # 7. LLM QUERY FUNCTIONS
 # =========================================================
@@ -1814,6 +1823,21 @@ def canonicalize_metrics(metrics: Dict) -> Dict:
         }
 
     return canonicalized
+
+def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
+    """
+    Lock metric identity + expected schema for future evolution.
+    """
+    frozen = {}
+    for cid, m in canonical_metrics.items():
+        frozen[cid] = {
+            "canonical_id": cid,
+            "name": m.get("name"),
+            "unit": (m.get("unit") or "").upper().strip(),
+            "keywords": extract_context_keywords(m.get("name", "")),
+        }
+    return frozen
+
 
 
 # ------------------------------------
@@ -3417,6 +3441,11 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     prev_response = previous_data.get('primary_response', {})
     prev_sources = previous_data.get('web_sources', []) or prev_response.get('sources', [])
 
+    frozen_schema = previous_data.get(
+    'primary_response', {}
+    ).get('metric_schema_frozen', {})
+
+
     if not prev_sources:
         return {
             'status': 'no_sources',
@@ -3451,16 +3480,20 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     all_current_numbers = []
 
     for url in sources_to_check:
-        content, status_msg = fetch_url_content_with_status(url)
+    content, status_msg = fetch_url_content_with_status(url)
 
     if content:
+        content_fingerprint = fingerprint_text(content)
         numbers = extract_numbers_with_context(content)
+
         source_results.append({
             'url': url,
             'status': 'fetched',
             'status_detail': status_msg,
-            'numbers_found': len(numbers)
+            'numbers_found': len(numbers),
+            'fingerprint': content_fingerprint
         })
+
         all_current_numbers.extend(numbers)
     else:
         source_results.append({
@@ -3469,8 +3502,16 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             'status_detail': status_msg,
             'numbers_found': 0
         })
+
     # Match metrics using context-aware matching
     metric_changes = []
+
+    schema = frozen_schema.get(metric_name)
+    if schema:
+        if schema['unit'] and best_match['unit'] != schema['unit']:
+            best_match = None
+            best_match_score = 0
+
 
     for metric_name, prev_data_item in prev_numbers.items():
         prev_val = prev_data_item['value']
@@ -3568,7 +3609,11 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         'sources_fetched': sum(1 for s in source_results if s['status'] == 'fetched'),
         'source_results': source_results,
         'metric_changes': metric_changes,
-        'stability_score': round(stability, 1),
+        'stability': {
+            'system_stability_pct': round(stability, 1),
+            'data_change_detected': summary['metrics_increased'] + summary['metrics_decreased'],
+            'metrics_compared': found_count
+        },
         'summary': {
             'total_metrics': len(metric_changes),
             'metrics_found': found_count,
@@ -3579,6 +3624,9 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
         }
     }
+    assert sources_to_check == prev_sources[:len(sources_to_check)], \
+    "Source order mutation detected – evolution must be deterministic"
+
 
 def extract_context_keywords(metric_name: str) -> List[str]:
     """Extract meaningful keywords from metric name for matching"""
@@ -3669,7 +3717,9 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
     match_ratio = matches / len(keywords)
 
     # Scale: 0 matches = 0.1, all matches = 1.0
-    return 0.1 + (match_ratio * 0.9)
+    if matches < 2:
+        return 0.0
+    return 0.2 + (match_ratio * 0.8)
 
 def render_source_anchored_results(results: Dict, query: str):
     """Render source-anchored evolution results"""
@@ -4120,19 +4170,17 @@ def render_native_comparison(baseline: Dict, compare: Dict):
     for cid, m in compare_canonical.items():
         compare_by_id[cid] = m
 
-    all_ids = set(baseline_by_id.keys()) | set(compare_by_id.keys())
+    all_ids = set(baseline_by_id.keys()).intersection(compare_by_id.keys())
 
     for cid in sorted(all_ids):
         baseline_m = baseline_by_id.get(cid)
         compare_m = compare_by_id.get(cid)
 
         # Use canonical name for display, fallback to original
-        if baseline_m:
-            display_name = baseline_m.get('name', cid)
-        elif compare_m:
-            display_name = compare_m.get('name', cid)
-        else:
-            display_name = cid
+        display_name = cid
+        if baseline_m and baseline_m.get('name'):
+            display_name = baseline_m['name']
+
 
         if baseline_m and compare_m:
             old_val = baseline_m.get('value', 'N/A')
@@ -4382,6 +4430,11 @@ def main():
                 primary_data['primary_metrics_canonical'] = canonicalize_metrics(
                     primary_data.get('primary_metrics', {})
                 )
+            if primary_data.get('primary_metrics_canonical'):
+                primary_data['metric_schema_frozen'] = freeze_metric_schema(
+                primary_data['primary_metrics_canonical']
+                )
+
 
             # Compute semantic hashes for findings
             if primary_data.get('key_findings'):
@@ -4614,14 +4667,21 @@ def main():
                                 interpretation = "No significant changes detected in the metrics."
 
                         # Build output
+
                         evolution_output = {
                             "question": evolution_query,
                             "timestamp": datetime.now().isoformat(),
                             "analysis_type": "source_anchored",
                             "previous_timestamp": baseline_data.get("timestamp"),
                             "results": results,
-                            "interpretation": interpretation
+                            "interpretation": {
+                                "text": interpretation,
+                                "authoritative": False,
+                                "source": "llm_optional"
+                            }
                         }
+
+
 
                         # Download
                         st.download_button(
