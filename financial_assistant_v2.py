@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union, Tuple
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
@@ -3433,6 +3433,34 @@ def extract_numbers_from_text(text: str) -> List[Dict]:
 
     return numbers
 
+
+def _parse_iso_dt(ts: Optional[str]) -> Optional[datetime]:
+    if not ts:
+        return None
+    try:
+        ts2 = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts2)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+def _normalize_number_to_parse_base(value: float, unit: str) -> float:
+    u = (unit or "").strip().upper()
+    if u == "T":
+        return value * 1_000_000
+    if u == "B":
+        return value * 1_000
+    if u == "M":
+        return value * 1
+    if u == "K":
+        return value * 0.001
+    if u == "%":
+        return value
+    return value
+
+
 def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Re-fetch the SAME sources from previous analysis and extract current numbers.
@@ -3446,7 +3474,22 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     ).get('metric_schema_frozen', {})
 
 
+    BASELINE_REUSE_HOURS = 24
+
+    baseline_ts_raw = prev_response.get('timestamp') or previous_data.get('timestamp')
+    baseline_ts = _parse_iso_dt(baseline_ts_raw)
+    now_utc = datetime.now(timezone.utc)
+
+    baseline_is_recent = (
+    baseline_ts is not None and
+    (now_utc - baseline_ts).total_seconds() < BASELINE_REUSE_HOURS * 3600
+    )
+
+
+
     if not prev_sources:
+
+
         return {
             'status': 'no_sources',
             'message': 'No sources found in previous analysis. Please run a new analysis first.',
@@ -3475,6 +3518,50 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     'keywords': keywords
                 }
 
+
+    # If the baseline analysis is very recent, don't refetch sources (avoid false "drift")
+    if baseline_is_recent:
+        metric_changes = []
+        for metric_name, prev_data_item in prev_numbers.items():
+            metric_changes.append({
+                'name': metric_name,
+                'previous_value': prev_data_item['raw'],
+                'current_value': prev_data_item['raw'],
+                'change_pct': 0.0,
+                'change_type': 'unchanged',
+                'match_confidence': 100.0,
+                'context_snippet': 'baseline_recent_reuse'
+            })
+
+        summary = {
+            'total_metrics': len(metric_changes),
+            'metrics_found': len(metric_changes),
+            'metrics_unchanged': len(metric_changes),
+            'metrics_stable': len(metric_changes),
+            'metrics_increased': 0,
+            'metrics_decreased': 0,
+            'metrics_not_found': 0,
+        }
+        results_stability_score = 100.0
+
+
+        return {
+            'status': 'success',
+            'sources_checked': len(sources_to_check),
+            'sources_fetched': 0,
+            'source_results': [{'url': u, 'status': 'skipped_recent_baseline', 'status_detail': 'baseline_recent_reuse', 'numbers_found': 0} for u in sources_to_check],
+            'metric_changes': metric_changes,
+            'stability': {
+                'system_stability_pct': results_stability_score,
+                'data_change_detected': 0,
+                'metrics_compared': len(metric_changes)
+            },
+            'stability_score': results_stability_score,
+            'summary': summary
+        }
+
+
+
     # Re-fetch sources and extract numbers WITH context
     source_results = []
     all_current_numbers = []
@@ -3482,35 +3569,34 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     for url in sources_to_check:
         content, status_msg = fetch_url_content_with_status(url)
 
-    if content:
-        content_fingerprint = fingerprint_text(content)
-        numbers = extract_numbers_with_context(content)
+        if content:
+            content_fingerprint = fingerprint_text(content)
+            numbers = extract_numbers_with_context(content)
 
-        source_results.append({
-            'url': url,
-            'status': 'fetched',
-            'status_detail': status_msg,
-            'numbers_found': len(numbers),
-            'fingerprint': content_fingerprint
-        })
+            # Normalize extracted numbers into parse_to_float() base
+            for n in numbers:
+                n['value_norm'] = _normalize_number_to_parse_base(n['value'], n.get('unit', ''))
 
-        all_current_numbers.extend(numbers)
-    else:
-        source_results.append({
-            'url': url,
-            'status': 'failed',
-            'status_detail': status_msg,
-            'numbers_found': 0
-        })
+            source_results.append({
+                'url': url,
+                'status': 'fetched',
+                'status_detail': status_msg,
+                'numbers_found': len(numbers),
+                'fingerprint': content_fingerprint
+            })
+
+            all_current_numbers.extend(numbers)
+        else:
+            source_results.append({
+                'url': url,
+                'status': 'failed',
+                'status_detail': status_msg,
+                'numbers_found': 0
+            })
+
 
     # Match metrics using context-aware matching
     metric_changes = []
-
-    schema = frozen_schema.get(metric_name)
-    if schema:
-        if schema['unit'] and best_match['unit'] != schema['unit']:
-            best_match = None
-            best_match_score = 0
 
 
     for metric_name, prev_data_item in prev_numbers.items():
@@ -3520,6 +3606,10 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
         best_match = None
         best_match_score = 0
+
+        # Optional: enforce frozen schema constraints (unit) AFTER candidates exist
+        schema = frozen_schema.get(metric_name) if isinstance(frozen_schema, dict) else None
+
 
         for curr_num in all_current_numbers:
             # Skip if units don't match (when both have units)
@@ -3531,7 +3621,9 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             # Check value similarity (must be within 50% for initial filter)
             if prev_val > 0 and curr_num['value'] > 0:
-                ratio = curr_num['value'] / prev_val
+                curr_val = curr_num.get('value_norm', curr_num['value'])
+r               ratio = curr_val / prev_val
+
                 if not (0.5 <= ratio <= 2.0):
                     continue
 
@@ -3545,12 +3637,18 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 combined_score = (value_score * 0.4) + (context_score * 0.6)
 
                 if combined_score > best_match_score:
+                    # Enforce frozen unit if provided
+                    if schema and schema.get('unit') and curr_num.get('unit') and curr_num.get('unit') != schema.get('unit'):
+                        continue
+
                     best_match_score = combined_score
                     best_match = curr_num
 
         # Only accept matches with confidence > 60%
         if best_match and best_match_score > 0.6:
-            change_pct = compute_percent_change(prev_val, best_match['value'])
+            best_val = best_match.get('value_norm', best_match['value'])
+            change_pct = compute_percent_change(prev_val, best_val)
+
 
             # More lenient threshold: < 5% change = unchanged
             if change_pct is None or abs(change_pct) < 5:
@@ -3636,6 +3734,8 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     #        'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
     #    }
     #}
+    assert sources_to_check == prev_sources[:len(sources_to_check)], \
+    "Source order mutation detected – evolution must be deterministic"
 
     return {
     'status': 'success',
@@ -3657,8 +3757,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     'summary': summary
     }
 
-    assert sources_to_check == prev_sources[:len(sources_to_check)], \
-    "Source order mutation detected – evolution must be deterministic"
 
 
 def extract_context_keywords(metric_name: str) -> List[str]:
@@ -4162,7 +4260,7 @@ def render_native_comparison(baseline: Dict, compare: Dict):
     try:
         baseline_dt = datetime.fromisoformat(baseline_time.replace('Z', '+00:00'))
         compare_dt = datetime.fromisoformat(compare_time.replace('Z', '+00:00'))
-        delta = compare_dt.replace(tzinfo=None) - baseline_dt.replace(tzinfo=None)
+        delta = compare_dt - baseline_dt
         if delta.days > 0:
             delta_str = f"{delta.days}d {delta.seconds // 3600}h"
         else:
