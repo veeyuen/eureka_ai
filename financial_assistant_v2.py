@@ -3480,7 +3480,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     all_current_numbers = []
 
     for url in sources_to_check:
-        content, status_msg = fetch_url_content_with_status(url)
+    content, status_msg = fetch_url_content_with_status(url)
 
     if content:
         content_fingerprint = fingerprint_text(content)
@@ -3602,6 +3602,17 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         stability = (stable_count / found_count) * 100
     else:
         stability = 100  # No metrics found = can't determine instability
+
+    summary = {
+    'total_metrics': len(metric_changes),
+    'metrics_found': found_count,
+    'metrics_unchanged': unchanged_count,
+    'metrics_stable': stable_count,
+    'metrics_increased': sum(1 for m in metric_changes if m['change_type'] == 'increased'),
+    'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
+    'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
+}
+
 
     return {
         'status': 'success',
