@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.10
+# YUREEKA AI RESEARCH ASSISTANT v7.12
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -3468,30 +3468,170 @@ def _normalize_number_to_parse_base(value: float, unit: str) -> float:
     return value
 
 
+# =========================================================
+# ROBUST EVOLUTION HELPERS (DETERMINISTIC)
+# =========================================================
+
+NON_DATA_CONTEXT_HINTS = [
+    "table of contents", "cookie", "privacy", "terms", "copyright",
+    "subscribe", "newsletter", "login", "sign in", "nav", "footer"
+]
+
+def fingerprint_text(text: str) -> str:
+    """Stable short fingerprint for fetched content (deterministic)."""
+    if not text:
+        return ""
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
+
+def normalize_unit(unit: str) -> str:
+    """Normalize unit to one of: T/B/M/%/'' (deterministic)."""
+    if not unit:
+        return ""
+    u = unit.strip().upper().replace("USD", "").replace("$", "").replace(" ", "")
+    if u in ["TRILLION", "T"]:
+        return "T"
+    if u in ["BILLION", "B"]:
+        return "B"
+    if u in ["MILLION", "M"]:
+        return "M"
+    if u in ["PERCENT", "%"]:
+        return "%"
+    if u in ["K", "THOUSAND"]:
+        return "K"
+    return u
+
+def normalize_currency_prefix(raw: str) -> bool:
+    """True if looks like a currency number ($/USD)."""
+    if not raw:
+        return False
+    s = raw.strip().upper()
+    return s.startswith("$") or " USD" in s or s.startswith("USD")
+
+def is_likely_junk_context(context: str) -> bool:
+    """Reject contexts that are likely not data-bearing (deterministic)."""
+    if not context:
+        return False
+    c = context.lower()
+    return any(h in c for h in NON_DATA_CONTEXT_HINTS)
+
+def parse_human_number(value_str: str, unit: str) -> Optional[float]:
+    """
+    Parse number + unit into a comparable float scale.
+    - For T/B/M: returns value in billions (B) to compare apples-to-apples.
+    - For %: returns numeric percent.
+    """
+    if value_str is None:
+        return None
+
+    s = str(value_str).strip()
+    if not s:
+        return None
+
+    # remove currency symbols/commas/space
+    s = s.replace("$", "").replace(",", "").strip()
+
+    # handle parentheses for negatives e.g. (12.3)
+    if s.startswith("(") and s.endswith(")"):
+        s = "-" + s[1:-1].strip()
+
+    try:
+        v = float(s)
+    except Exception:
+        return None
+
+    u = normalize_unit(unit)
+
+    # Normalize magnitudes into BILLIONS for currency-like units
+    if u == "T":
+        return v * 1000.0
+    if u == "B":
+        return v
+    if u == "M":
+        return v / 1000.0
+    if u == "K":
+        return v / 1_000_000.0
+
+    # Percent: keep as percent number
+    if u == "%":
+        return v
+
+    # Unknown unit: leave as-is (still useful for ratio filtering)
+    return v
+
+def build_prev_numbers(prev_metrics: Dict) -> Dict[str, Dict]:
+    """
+    Build previous metric lookup keyed by *metric_name string*.
+    Stores parsed numeric value in comparable scale + unit + raw + keywords.
+    """
+    prev_numbers = {}
+    for key, metric in (prev_metrics or {}).items():
+        if not isinstance(metric, dict):
+            continue
+        metric_name = metric.get("name", key)
+        raw = str(metric.get("value", ""))
+        unit = metric.get("unit", "")
+        val = parse_human_number(raw, unit)
+        if val is None:
+            continue
+        prev_numbers[metric_name] = {
+            "value": val,
+            "unit": normalize_unit(unit),
+            "raw": raw,
+            "keywords": extract_context_keywords(metric_name)
+        }
+    return prev_numbers
+
+
+
 def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Re-fetch the SAME sources from previous analysis and extract current numbers.
-    Uses context-aware matching to reduce false positives.
+    Deterministic + context-aware matching.
+    Fixes:
+      - schema lookup (canonical_id vs display name mismatch)
+      - asserts before variable init
+      - baseline reuse ordering
     """
     prev_response = previous_data.get("primary_response", {}) or {}
     prev_sources = previous_data.get("web_sources", []) or prev_response.get("sources", []) or []
 
-    # Frozen schema (optional)
-    frozen_schema = (prev_response.get("metric_schema_frozen", {}) or {})
-
-    # Deterministic: lock which sources we check (top 5, in stored order)
+    # Always define this early (avoids undefined references in error paths)
     sources_to_check = prev_sources[:5]
 
-    if not sources_to_check:
-        # Deterministic behavior even on empty: nothing to mutate, safe return
+    frozen_schema = prev_response.get("metric_schema_frozen", {}) or {}
+
+    # --------- No sources: safe early return (no undefined vars) ----------
+    if not prev_sources:
         return {
             "status": "no_sources",
             "message": "No sources found in previous analysis. Please run a new analysis first.",
-            "metric_changes": [],
+            "sources_checked": 0,
+            "sources_fetched": 0,
             "source_results": [],
+            "metric_changes": [],
+            "stability": {
+                "system_stability_pct": 100.0,
+                "data_change_detected": 0,
+                "metrics_compared": 0
+            },
+            "stability_score": 100.0,
+            "summary": {
+                "total_metrics": 0,
+                "metrics_found": 0,
+                "metrics_unchanged": 0,
+                "metrics_stable": 0,
+                "metrics_increased": 0,
+                "metrics_decreased": 0,
+                "metrics_not_found": 0
+            }
         }
 
-    # ---- baseline recency gate (avoid false drift right after baseline saved) ----
+    # --------- Build previous metrics (must happen before baseline reuse) ----------
+    prev_metrics = prev_response.get("primary_metrics", {}) or {}
+    prev_numbers = build_prev_numbers(prev_metrics)
+
+    # --------- Baseline reuse gating ----------
     BASELINE_REUSE_HOURS = 24
     baseline_ts = None
     baseline_ts_raw = prev_response.get("timestamp") or previous_data.get("timestamp")
@@ -3502,42 +3642,21 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             baseline_ts = None
 
     baseline_is_recent = (
-        baseline_ts is not None
-        and (datetime.now() - baseline_ts).total_seconds() < BASELINE_REUSE_HOURS * 3600
+        baseline_ts is not None and
+        (datetime.now() - baseline_ts).total_seconds() < BASELINE_REUSE_HOURS * 3600
     )
 
-    # ---- Extract previous metrics with context keywords ----
-    prev_metrics = prev_response.get("primary_metrics", {}) or {}
-    prev_numbers: Dict[str, Dict] = {}
-
-    for key, metric in prev_metrics.items():
-        if not isinstance(metric, dict):
-            continue
-
-        metric_name = metric.get("name", key)
-        val = parse_to_float(metric.get("value"))
-        if val is None:
-            continue
-
-        prev_numbers[metric_name] = {
-            "value": val,
-            "unit": metric.get("unit", ""),
-            "raw": str(metric.get("value", "")),
-            "keywords": extract_context_keywords(metric_name),
-        }
-
-    # If baseline is very recent, reuse previous numbers as “current”
     if baseline_is_recent:
         metric_changes = []
-        for metric_name, prev_data_item in prev_numbers.items():
+        for metric_name, prev_item in prev_numbers.items():
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_data_item["raw"],
-                "current_value": prev_data_item["raw"],
+                "previous_value": prev_item["raw"],
+                "current_value": prev_item["raw"],
                 "change_pct": 0.0,
                 "change_type": "unchanged",
                 "match_confidence": 100.0,
-                "context_snippet": "baseline_recent_reuse",
+                "context_snippet": "baseline_recent_reuse"
             })
 
         summary = {
@@ -3549,13 +3668,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             "metrics_decreased": 0,
             "metrics_not_found": 0,
         }
-
-        results_stability_score = 100.0
-
-        # Determinism check (source order must not change)
-        assert sources_to_check == prev_sources[:len(sources_to_check)], \
-            "Source order mutation detected – evolution must be deterministic"
-
         return {
             "status": "success",
             "sources_checked": len(sources_to_check),
@@ -3566,17 +3678,17 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             ],
             "metric_changes": metric_changes,
             "stability": {
-                "system_stability_pct": results_stability_score,
+                "system_stability_pct": 100.0,
                 "data_change_detected": 0,
-                "metrics_compared": len(metric_changes),
+                "metrics_compared": len(metric_changes)
             },
-            "stability_score": results_stability_score,
-            "summary": summary,
+            "stability_score": 100.0,
+            "summary": summary
         }
 
-    # ---- Re-fetch sources and extract numbers WITH context ----
+    # --------- Re-fetch sources and extract numbers ----------
     source_results = []
-    all_current_numbers: List[Dict] = []
+    all_current_numbers = []
 
     for url in sources_to_check:
         content, status_msg = fetch_url_content_with_status(url)
@@ -3590,7 +3702,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 "status": "fetched",
                 "status_detail": status_msg,
                 "numbers_found": len(numbers),
-                "fingerprint": content_fingerprint,
+                "fingerprint": content_fingerprint
             })
             all_current_numbers.extend(numbers)
         else:
@@ -3598,57 +3710,74 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 "url": url,
                 "status": "failed",
                 "status_detail": status_msg,
-                "numbers_found": 0,
+                "numbers_found": 0
             })
 
-    # ---- Match metrics using context-aware + value-aware matching ----
+    # --------- Match metrics using context + value similarity ----------
     metric_changes = []
 
-    for metric_name, prev_data_item in prev_numbers.items():
-        prev_val = prev_data_item["value"]
-        prev_unit = prev_data_item["unit"]
-        prev_keywords = prev_data_item["keywords"]
+    # Optional: use canonicalization to enforce frozen schema units (correctly)
+    # frozen_schema keys are canonical_id (from freeze_metric_schema)
+    # We map metric_name -> canonical_id once for lookup.
+    metric_name_to_canonical = {}
+    try:
+        canon = canonicalize_metrics(prev_metrics)
+        for cid, m in canon.items():
+            # m["original_name"] is the original metric label
+            metric_name_to_canonical[m.get("name", m.get("original_name", cid))] = cid
+    except Exception:
+        metric_name_to_canonical = {}
+
+    for metric_name, prev_item in prev_numbers.items():
+        prev_val = prev_item["value"]
+        prev_unit = prev_item["unit"]
+        prev_keywords = prev_item["keywords"]
 
         best_match = None
-        best_match_score = 0.0
+        best_score = 0.0
 
-        # Optional schema (unit enforcement)
-        schema = frozen_schema.get(metric_name) if isinstance(frozen_schema, dict) else None
-        frozen_unit = (schema.get("unit") if isinstance(schema, dict) else None) or ""
-        frozen_unit_letter = unit_clean_first_letter(frozen_unit)
+        canonical_id = metric_name_to_canonical.get(metric_name)
+        schema = frozen_schema.get(canonical_id) if canonical_id else None
+        locked_unit = normalize_unit(schema.get("unit")) if isinstance(schema, dict) and schema.get("unit") else ""
 
-        prev_unit_letter = unit_clean_first_letter(prev_unit)
+        for curr in all_current_numbers:
+            curr_val = curr.get("value")
+            curr_unit = normalize_unit(curr.get("unit", ""))
 
-        for curr_num in all_current_numbers:
-            curr_unit_letter = unit_clean_first_letter(curr_num.get("unit", ""))
-
-            # Unit gating: schema unit > prev unit
-            if frozen_unit_letter and curr_unit_letter and curr_unit_letter != frozen_unit_letter:
-                continue
-            if (not frozen_unit_letter) and prev_unit_letter and curr_unit_letter and curr_unit_letter != prev_unit_letter:
+            if curr_val is None:
                 continue
 
-            # Value similarity gate: within 2x / 0.5x to avoid wild mismatches
-            if prev_val > 0 and curr_num.get("value", 0) > 0:
-                ratio = curr_num["value"] / prev_val
-                if not (0.5 <= ratio <= 2.0):
+            # Unit gating:
+            # - If we have a locked unit, require match.
+            # - Else if prev unit exists and current has unit, require compatible.
+            if locked_unit:
+                if curr_unit and curr_unit != locked_unit:
+                    continue
+            else:
+                if prev_unit and curr_unit and prev_unit != curr_unit:
                     continue
 
-                value_score = 1.0 / (1.0 + abs(ratio - 1.0))  # 1.0 is perfect
+            # Ratio filter (avoid far-off candidates)
+            if prev_val and curr_val:
+                ratio = curr_val / prev_val if prev_val != 0 else 0
+                if not (0.5 <= ratio <= 2.0):
+                    continue
+                value_score = 1.0 / (1.0 + abs(ratio - 1.0))
+            else:
+                continue
 
-                # Context match dominates
-                context_score = calculate_context_match(prev_keywords, curr_num.get("context", ""))
+            context_score = calculate_context_match(prev_keywords, curr.get("context", ""))
 
-                combined_score = (value_score * 0.4) + (context_score * 0.6)
+            # Combined score (deterministic weighting)
+            combined = (0.4 * value_score) + (0.6 * context_score)
 
-                if combined_score > best_match_score:
-                    best_match_score = combined_score
-                    best_match = curr_num
+            if combined > best_score:
+                best_score = combined
+                best_match = curr
 
-        if best_match and best_match_score > 0.6:
+        if best_match and best_score > 0.6:
             change_pct = compute_percent_change(prev_val, best_match["value"])
 
-            # <5% = unchanged
             if change_pct is None or abs(change_pct) < 5:
                 change_type = "unchanged"
             elif change_pct > 0:
@@ -3658,25 +3787,25 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_data_item["raw"],
+                "previous_value": prev_item["raw"],
                 "current_value": best_match.get("raw", ""),
                 "change_pct": change_pct,
                 "change_type": change_type,
-                "match_confidence": round(best_match_score * 100, 1),
-                "context_snippet": (best_match.get("context", "")[:100] if best_match.get("context") else ""),
+                "match_confidence": round(best_score * 100, 1),
+                "context_snippet": (best_match.get("context", "")[:100] if best_match.get("context") else "")
             })
         else:
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_data_item["raw"],
+                "previous_value": prev_item["raw"],
                 "current_value": "Not found (no confident match)",
                 "change_pct": None,
                 "change_type": "not_found",
-                "match_confidence": round(best_match_score * 100, 1) if best_match_score else 0.0,
-                "context_snippet": "",
+                "match_confidence": round(best_score * 100, 1) if best_match else 0.0,
+                "context_snippet": ""
             })
 
-    # ---- Stability calculation ----
+    # --------- Stability scoring ----------
     found_count = sum(1 for m in metric_changes if m["change_type"] != "not_found")
     unchanged_count = sum(1 for m in metric_changes if m["change_type"] == "unchanged")
     stable_count = sum(
@@ -3685,7 +3814,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     )
 
     if found_count > 0:
-        stability = (stable_count / found_count) * 100
+        stability = (stable_count / found_count) * 100.0
     else:
         stability = 100.0
 
@@ -3698,9 +3827,10 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         "metrics_decreased": sum(1 for m in metric_changes if m["change_type"] == "decreased"),
         "metrics_not_found": sum(1 for m in metric_changes if m["change_type"] == "not_found"),
     }
+
     results_stability_score = round(stability, 1)
 
-    # Determinism check (source order must not change)
+    # Determinism guard: source order must remain identical
     assert sources_to_check == prev_sources[:len(sources_to_check)], \
         "Source order mutation detected – evolution must be deterministic"
 
@@ -3710,15 +3840,18 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         "sources_fetched": sum(1 for s in source_results if s["status"] == "fetched"),
         "source_results": source_results,
         "metric_changes": metric_changes,
+
+        # structured stability
         "stability": {
             "system_stability_pct": results_stability_score,
             "data_change_detected": summary["metrics_increased"] + summary["metrics_decreased"],
-            "metrics_compared": found_count,
+            "metrics_compared": found_count
         },
-        "stability_score": results_stability_score,  # backward-compat
-        "summary": summary,
-    }
 
+        # backward compat
+        "stability_score": results_stability_score,
+        "summary": summary
+    }
 
 def extract_context_keywords(metric_name: str) -> List[str]:
     """Extract meaningful keywords from metric name for matching"""
@@ -3748,137 +3881,63 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 
 def extract_numbers_with_context(text: str) -> List[Dict]:
     """
-    Extract candidate metric numbers with surrounding context for matching.
-
-    Robustness improvements vs basic version:
-    - Filters years/dates and obvious non-metric integers
-    - Better unit recognition (USD, US$, bn/mn/tn, billion/million/trillion, %, T/B/M/K)
-    - Captures position index for optional proximity matching
-    - Deduplicates near-identical hits (same value+unit+overlapping context)
+    Extract numbers with surrounding context for matching.
+    Robust against commas, currency symbols, parentheses negatives,
+    and avoids many false positives (years, tiny integers, junk contexts).
     """
     if not text:
         return []
 
-    t = text
-    t_lower = t.lower()
+    numbers = []
 
-    numbers: List[Dict] = []
+    # Match:
+    #   $1,234.56  billion
+    #   12.3%
+    #   (45.6) M
+    pattern = r'(\(?\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?\d+(?:\.\d+)?\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K)?'
 
-    # ---------
-    # Helpers
-    # ---------
-    def normalize_unit(u: str) -> str:
-        u = (u or "").strip().lower()
-        unit_map = {
-            "trillion": "T", "tn": "T", "trn": "T",
-            "billion": "B", "bn": "B",
-            "million": "M", "mn": "M", "mm": "M",
-            "thousand": "K", "k": "K",
-            "%": "%",
-            "t": "T", "b": "B", "m": "M",
-        }
-        return unit_map.get(u, "")
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        raw_num = match.group(1) or ""
+        unit = (match.group(2) or "").strip()
 
-    def looks_like_year_or_date(ctx: str, raw_num: str) -> bool:
-        # Reject 4-digit years 1900-2099
-        try:
-            if raw_num.isdigit() and len(raw_num) == 4:
-                y = int(raw_num)
-                if 1900 <= y <= 2099:
-                    return True
-        except:
-            pass
+        # Context window
+        start = max(0, match.start() - 180)
+        end = min(len(text), match.end() + 180)
+        context = text[start:end].lower()
 
-        # Reject if context looks date-like (e.g., 2024-01-15, 01/15/2024)
-        if re.search(r"\b(19|20)\d{2}[-/\.](0?[1-9]|1[0-2])[-/\.](0?[1-9]|[12]\d|3[01])\b", ctx):
-            return True
-        if re.search(r"\b(0?[1-9]|1[0-2])[-/\.](0?[1-9]|[12]\d|3[01])[-/\.](19|20)\d{2}\b", ctx):
-            return True
-        return False
-
-    def context_window(start_i: int, end_i: int, win: int = 180) -> str:
-        s = max(0, start_i - win)
-        e = min(len(t_lower), end_i + win)
-        return t_lower[s:e]
-
-    # ---------
-    # Main regex
-    # ---------
-    pattern = re.compile(
-        r"""
-        (?P<curr>\b(?:usd|us\$)\b|\$)?\s*
-        (?P<num>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)\s*
-        (?P<unit>trillion|billion|million|thousand|tn|trn|bn|mn|mm|[TBMK%])?
-        """,
-        re.IGNORECASE | re.VERBOSE
-    )
-
-    for m in pattern.finditer(t):
-        num_raw = (m.group("num") or "").strip()
-        unit_raw = (m.group("unit") or "").strip()
-        curr_raw = (m.group("curr") or "").strip()
-
-        num_clean = num_raw.replace(",", "")
-        try:
-            value = float(num_clean)
-        except:
+        # Skip obvious junk contexts
+        if is_likely_junk_context(context):
             continue
 
-        if value == 0:
-            continue
-        if value > 10_000_000:
-            continue
-
-        ctx = context_window(m.start(), m.end(), win=180)
-
-        # Filter: years/dates
-        if looks_like_year_or_date(ctx, num_clean):
+        # Reject pure years (e.g., 2024) unless clearly a data value (has unit or currency)
+        num_clean_for_year = raw_num.replace("$", "").replace(",", "").strip()
+        if re.fullmatch(r"(19|20)\d{2}", num_clean_for_year) and not unit and "$" not in raw_num:
             continue
 
-        # Filter: obvious rank/list counts (top 10, #1, Q1, page/table)
-        if value.is_integer() and value <= 50:
-            if re.search(r"\b(top|rank|ranking|#|no\.|number)\b", ctx):
-                continue
-            if re.search(r"\b(q[1-4]|quarter|page|table|figure|fig\.|chapter)\b", ctx):
-                continue
+        # Parse numeric into comparable scale
+        parsed = parse_human_number(num_clean_for_year, unit)
+        if parsed is None:
+            continue
 
-        unit_norm = normalize_unit(unit_raw)
+        # Filter out tiny integers that often represent ranks, list counts, etc.
+        # Keep if it has % or currency-ish markers.
+        u_norm = normalize_unit(unit)
+        is_currency_like = ("$" in raw_num) or normalize_currency_prefix(context) or u_norm in ["T", "B", "M", "K"]
+        if not is_currency_like and u_norm != "%" and abs(parsed) < 3:
+            continue
 
-        has_currency_cue = bool(curr_raw) or bool(re.search(r"\b(?:usd|us\$|\$)\b", ctx))
-        has_unit_cue = unit_norm in {"T", "B", "M", "K", "%"} or bool(re.search(r"\b(trillion|billion|million|thousand|bn|mn|mm|tn|trn)\b", ctx))
-
-        # Plain number with no unit/currency: be stricter
-        if not has_currency_cue and not has_unit_cue:
-            if not (0 < value <= 100 and re.search(r"\b(cagr|growth|share|percent|%)\b", ctx)):
-                continue
-
-        raw_display = f"{num_clean}{unit_raw}".strip()
-
-        # Avoid ID-ish large integers without cues
-        if value.is_integer() and value >= 100000 and unit_norm == "" and not has_currency_cue:
+        # Filter extreme values that are unlikely in market metrics
+        if abs(parsed) > 10_000_000:  # in billions this is astronomically large
             continue
 
         numbers.append({
-            "value": value,
-            "unit": unit_norm,
-            "context": ctx,
-            "raw": raw_display,
-            "pos": m.start(),
+            "value": parsed,              # normalized comparable value (billions for currency-like units)
+            "unit": u_norm,               # normalized unit (T/B/M/%/K/..)
+            "context": context,
+            "raw": f"{raw_num}{unit}".strip()
         })
 
-    # Deduplicate near-identical hits
-    deduped: List[Dict] = []
-    seen = set()
-    for n in numbers:
-        key = (round(float(n["value"]), 4), n.get("unit", ""), n.get("raw", ""))
-        ctx_fp = hashlib.md5((n.get("context", "")[:120]).encode("utf-8")).hexdigest()[:10]
-        full_key = key + (ctx_fp,)
-        if full_key in seen:
-            continue
-        seen.add(full_key)
-        deduped.append(n)
-
-    return deduped
+    return numbers
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
     """Calculate how well keywords match the context (deterministic)."""
