@@ -3834,6 +3834,11 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     assert sources_to_check == prev_sources[:len(sources_to_check)], \
         "Source order mutation detected – evolution must be deterministic"
 
+    # 🔒 Ensure status_detail always exists
+    for src in source_results:
+        if 'status_detail' not in src:
+            src['status_detail'] = 'unknown'
+
     return {
         "status": "success",
         "sources_checked": len(sources_to_check),
