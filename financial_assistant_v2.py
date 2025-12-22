@@ -10,6 +10,7 @@
 # Saving of JSON output Files into Google Sheets
 # Canonical Metric Registry + Semantic Hashing of Findings
 # Removal of Evolution Decisions from LLM
+# Further Enhancements to Minimize Evolution Drift (Metric)
 # =========================================================
 
 import os
@@ -1063,12 +1064,18 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
     }
 
 def fingerprint_text(text: str) -> str:
+    """Stable short fingerprint for fetched content (for debugging + determinism checks)."""
     if not text:
         return ""
-    return hashlib.sha256(
-        re.sub(r'\s+', ' ', text.strip()).encode('utf-8')
-    ).hexdigest()
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
 
+def unit_clean_first_letter(unit: str) -> str:
+    """Normalize units to first letter (T/B/M/K/%), ignoring $ and spaces."""
+    if not unit:
+        return ""
+    u = unit.replace("$", "").replace(" ", "").strip().upper()
+    return u[0] if u else ""
 
 # =========================================================
 # 7. LLM QUERY FUNCTIONS
@@ -1833,7 +1840,7 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
         frozen[cid] = {
             "canonical_id": cid,
             "name": m.get("name"),
-            "unit": (m.get("unit") or "").upper().strip(),
+            "unit": unit_clean_first_letter((m.get("unit") or "").upper().strip()),
             "keywords": extract_context_keywords(m.get("name", "")),
         }
     return frozen
@@ -3466,105 +3473,110 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     Re-fetch the SAME sources from previous analysis and extract current numbers.
     Uses context-aware matching to reduce false positives.
     """
-    prev_response = previous_data.get('primary_response', {})
-    prev_sources = previous_data.get('web_sources', []) or prev_response.get('sources', [])
+    prev_response = previous_data.get("primary_response", {}) or {}
+    prev_sources = previous_data.get("web_sources", []) or prev_response.get("sources", []) or []
 
-    frozen_schema = previous_data.get(
-    'primary_response', {}
-    ).get('metric_schema_frozen', {})
+    # Frozen schema (optional)
+    frozen_schema = (prev_response.get("metric_schema_frozen", {}) or {})
 
-
-    BASELINE_REUSE_HOURS = 24
-
-    baseline_ts_raw = prev_response.get('timestamp') or previous_data.get('timestamp')
-    baseline_ts = _parse_iso_dt(baseline_ts_raw)
-    now_utc = datetime.now(timezone.utc)
-
-    baseline_is_recent = (
-    baseline_ts is not None and
-    (now_utc - baseline_ts).total_seconds() < BASELINE_REUSE_HOURS * 3600
-    )
-
-
-
-    if not prev_sources:
-
-
-        return {
-            'status': 'no_sources',
-            'message': 'No sources found in previous analysis. Please run a new analysis first.',
-            'metric_changes': [],
-            'source_results': []
-        }
-
+    # Deterministic: lock which sources we check (top 5, in stored order)
     sources_to_check = prev_sources[:5]
 
-    # Extract previous metrics with context keywords
-    prev_metrics = prev_response.get('primary_metrics', {})
-    prev_numbers = {}
+    if not sources_to_check:
+        # Deterministic behavior even on empty: nothing to mutate, safe return
+        return {
+            "status": "no_sources",
+            "message": "No sources found in previous analysis. Please run a new analysis first.",
+            "metric_changes": [],
+            "source_results": [],
+        }
+
+    # ---- baseline recency gate (avoid false drift right after baseline saved) ----
+    BASELINE_REUSE_HOURS = 24
+    baseline_ts = None
+    baseline_ts_raw = prev_response.get("timestamp") or previous_data.get("timestamp")
+    if baseline_ts_raw:
+        try:
+            baseline_ts = datetime.fromisoformat(str(baseline_ts_raw))
+        except Exception:
+            baseline_ts = None
+
+    baseline_is_recent = (
+        baseline_ts is not None
+        and (datetime.now() - baseline_ts).total_seconds() < BASELINE_REUSE_HOURS * 3600
+    )
+
+    # ---- Extract previous metrics with context keywords ----
+    prev_metrics = prev_response.get("primary_metrics", {}) or {}
+    prev_numbers: Dict[str, Dict] = {}
+
     for key, metric in prev_metrics.items():
-        if isinstance(metric, dict):
-            val = parse_to_float(metric.get('value'))
-            if val is not None:
-                metric_name = metric.get('name', key)
+        if not isinstance(metric, dict):
+            continue
 
-                # Extract context keywords from metric name
-                keywords = extract_context_keywords(metric_name)
+        metric_name = metric.get("name", key)
+        val = parse_to_float(metric.get("value"))
+        if val is None:
+            continue
 
-                prev_numbers[metric_name] = {
-                    'value': val,
-                    'unit': metric.get('unit', ''),
-                    'raw': str(metric.get('value', '')),
-                    'keywords': keywords
-                }
+        prev_numbers[metric_name] = {
+            "value": val,
+            "unit": metric.get("unit", ""),
+            "raw": str(metric.get("value", "")),
+            "keywords": extract_context_keywords(metric_name),
+        }
 
-
-    # If the baseline analysis is very recent, don't refetch sources (avoid false "drift")
+    # If baseline is very recent, reuse previous numbers as “current”
     if baseline_is_recent:
         metric_changes = []
         for metric_name, prev_data_item in prev_numbers.items():
             metric_changes.append({
-                'name': metric_name,
-                'previous_value': prev_data_item['raw'],
-                'current_value': prev_data_item['raw'],
-                'change_pct': 0.0,
-                'change_type': 'unchanged',
-                'match_confidence': 100.0,
-                'context_snippet': 'baseline_recent_reuse'
+                "name": metric_name,
+                "previous_value": prev_data_item["raw"],
+                "current_value": prev_data_item["raw"],
+                "change_pct": 0.0,
+                "change_type": "unchanged",
+                "match_confidence": 100.0,
+                "context_snippet": "baseline_recent_reuse",
             })
 
         summary = {
-            'total_metrics': len(metric_changes),
-            'metrics_found': len(metric_changes),
-            'metrics_unchanged': len(metric_changes),
-            'metrics_stable': len(metric_changes),
-            'metrics_increased': 0,
-            'metrics_decreased': 0,
-            'metrics_not_found': 0,
+            "total_metrics": len(metric_changes),
+            "metrics_found": len(metric_changes),
+            "metrics_unchanged": len(metric_changes),
+            "metrics_stable": len(metric_changes),
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_not_found": 0,
         }
+
         results_stability_score = 100.0
 
+        # Determinism check (source order must not change)
+        assert sources_to_check == prev_sources[:len(sources_to_check)], \
+            "Source order mutation detected – evolution must be deterministic"
 
         return {
-            'status': 'success',
-            'sources_checked': len(sources_to_check),
-            'sources_fetched': 0,
-            'source_results': [{'url': u, 'status': 'skipped_recent_baseline', 'status_detail': 'baseline_recent_reuse', 'numbers_found': 0} for u in sources_to_check],
-            'metric_changes': metric_changes,
-            'stability': {
-                'system_stability_pct': results_stability_score,
-                'data_change_detected': 0,
-                'metrics_compared': len(metric_changes)
+            "status": "success",
+            "sources_checked": len(sources_to_check),
+            "sources_fetched": 0,
+            "source_results": [
+                {"url": u, "status": "skipped_recent_baseline", "status_detail": "baseline_recent_reuse", "numbers_found": 0}
+                for u in sources_to_check
+            ],
+            "metric_changes": metric_changes,
+            "stability": {
+                "system_stability_pct": results_stability_score,
+                "data_change_detected": 0,
+                "metrics_compared": len(metric_changes),
             },
-            'stability_score': results_stability_score,
-            'summary': summary
+            "stability_score": results_stability_score,
+            "summary": summary,
         }
 
-
-
-    # Re-fetch sources and extract numbers WITH context
+    # ---- Re-fetch sources and extract numbers WITH context ----
     source_results = []
-    all_current_numbers = []
+    all_current_numbers: List[Dict] = []
 
     for url in sources_to_check:
         content, status_msg = fetch_url_content_with_status(url)
@@ -3573,190 +3585,139 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             content_fingerprint = fingerprint_text(content)
             numbers = extract_numbers_with_context(content)
 
-            # Normalize extracted numbers into parse_to_float() base
-            for n in numbers:
-                n['value_norm'] = _normalize_number_to_parse_base(n['value'], n.get('unit', ''))
-
             source_results.append({
-                'url': url,
-                'status': 'fetched',
-                'status_detail': status_msg,
-                'numbers_found': len(numbers),
-                'fingerprint': content_fingerprint
+                "url": url,
+                "status": "fetched",
+                "status_detail": status_msg,
+                "numbers_found": len(numbers),
+                "fingerprint": content_fingerprint,
             })
-
             all_current_numbers.extend(numbers)
         else:
             source_results.append({
-                'url': url,
-                'status': 'failed',
-                'status_detail': status_msg,
-                'numbers_found': 0
+                "url": url,
+                "status": "failed",
+                "status_detail": status_msg,
+                "numbers_found": 0,
             })
 
-
-    # Match metrics using context-aware matching
+    # ---- Match metrics using context-aware + value-aware matching ----
     metric_changes = []
 
-
     for metric_name, prev_data_item in prev_numbers.items():
-        prev_val = prev_data_item['value']
-        prev_unit = prev_data_item['unit']
-        prev_keywords = prev_data_item['keywords']
+        prev_val = prev_data_item["value"]
+        prev_unit = prev_data_item["unit"]
+        prev_keywords = prev_data_item["keywords"]
 
         best_match = None
-        best_match_score = 0
+        best_match_score = 0.0
 
-        # Optional: enforce frozen schema constraints (unit) AFTER candidates exist
+        # Optional schema (unit enforcement)
         schema = frozen_schema.get(metric_name) if isinstance(frozen_schema, dict) else None
+        frozen_unit = (schema.get("unit") if isinstance(schema, dict) else None) or ""
+        frozen_unit_letter = unit_clean_first_letter(frozen_unit)
 
+        prev_unit_letter = unit_clean_first_letter(prev_unit)
 
         for curr_num in all_current_numbers:
-            # Skip if units don't match (when both have units)
-            if prev_unit and curr_num['unit']:
-                prev_unit_clean = prev_unit.replace('$', '').replace(' ', '').upper()
-                curr_unit_clean = curr_num['unit'].upper()
-                if prev_unit_clean and curr_unit_clean and prev_unit_clean[0] != curr_unit_clean[0]:
-                    continue
+            curr_unit_letter = unit_clean_first_letter(curr_num.get("unit", ""))
 
-            # Check value similarity (must be within 50% for initial filter)
-            if prev_val > 0 and curr_num['value'] > 0:
-                curr_val = curr_num.get('value_norm', curr_num['value'])
-                ratio = curr_val / prev_val
+            # Unit gating: schema unit > prev unit
+            if frozen_unit_letter and curr_unit_letter and curr_unit_letter != frozen_unit_letter:
+                continue
+            if (not frozen_unit_letter) and prev_unit_letter and curr_unit_letter and curr_unit_letter != prev_unit_letter:
+                continue
 
+            # Value similarity gate: within 2x / 0.5x to avoid wild mismatches
+            if prev_val > 0 and curr_num.get("value", 0) > 0:
+                ratio = curr_num["value"] / prev_val
                 if not (0.5 <= ratio <= 2.0):
                     continue
 
-                # Base score from value similarity
-                value_score = 1 / (1 + abs(ratio - 1))
+                value_score = 1.0 / (1.0 + abs(ratio - 1.0))  # 1.0 is perfect
 
-                # Context keyword matching score
-                context_score = calculate_context_match(prev_keywords, curr_num['context'])
+                # Context match dominates
+                context_score = calculate_context_match(prev_keywords, curr_num.get("context", ""))
 
-                # Combined score: 40% value similarity, 60% context match
                 combined_score = (value_score * 0.4) + (context_score * 0.6)
 
                 if combined_score > best_match_score:
-                    # Enforce frozen unit if provided
-                    if schema and schema.get('unit') and curr_num.get('unit') and curr_num.get('unit') != schema.get('unit'):
-                        continue
-
                     best_match_score = combined_score
                     best_match = curr_num
 
-        # Only accept matches with confidence > 60%
         if best_match and best_match_score > 0.6:
-            best_val = best_match.get('value_norm', best_match['value'])
-            change_pct = compute_percent_change(prev_val, best_val)
+            change_pct = compute_percent_change(prev_val, best_match["value"])
 
-
-            # More lenient threshold: < 5% change = unchanged
+            # <5% = unchanged
             if change_pct is None or abs(change_pct) < 5:
-                change_type = 'unchanged'
+                change_type = "unchanged"
             elif change_pct > 0:
-                change_type = 'increased'
+                change_type = "increased"
             else:
-                change_type = 'decreased'
+                change_type = "decreased"
 
             metric_changes.append({
-                'name': metric_name,
-                'previous_value': prev_data_item['raw'],
-                'current_value': best_match['raw'],
-                'change_pct': change_pct,
-                'change_type': change_type,
-                'match_confidence': round(best_match_score * 100, 1),
-                'context_snippet': best_match['context'][:100]
+                "name": metric_name,
+                "previous_value": prev_data_item["raw"],
+                "current_value": best_match.get("raw", ""),
+                "change_pct": change_pct,
+                "change_type": change_type,
+                "match_confidence": round(best_match_score * 100, 1),
+                "context_snippet": (best_match.get("context", "")[:100] if best_match.get("context") else ""),
             })
         else:
             metric_changes.append({
-                'name': metric_name,
-                'previous_value': prev_data_item['raw'],
-                'current_value': 'Not found (no confident match)',
-                'change_pct': None,
-                'change_type': 'not_found',
-                'match_confidence': round(best_match_score * 100, 1) if best_match else 0,
-                'context_snippet': ''
+                "name": metric_name,
+                "previous_value": prev_data_item["raw"],
+                "current_value": "Not found (no confident match)",
+                "change_pct": None,
+                "change_type": "not_found",
+                "match_confidence": round(best_match_score * 100, 1) if best_match_score else 0.0,
+                "context_snippet": "",
             })
 
-    # Calculate stability - include small changes as "stable"
-   # found_count = sum(1 for m in metric_changes if m['change_type'] != 'not_found')
-   # stable_count = sum(1 for m in metric_changes if m['change_type'] in ['unchanged'] or
-    #                   (m['change_pct'] is not None and abs(m['change_pct']) < 10))
-
-   # stability = (stable_count / len(metric_changes)) * 100 if metric_changes else 100
-
-    # In compute_source_anchored_diff, replace stability calculation:
-
-    # Calculate stability - be more lenient
-    # "Stable" = unchanged OR small change (< 10%) OR not found (can't compare)
-    # Calculate stability - be more lenient
-    found_count = sum(1 for m in metric_changes if m['change_type'] != 'not_found')
-    unchanged_count = sum(1 for m in metric_changes if m['change_type'] == 'unchanged')
-    stable_count = sum(1 for m in metric_changes if
-                       m['change_type'] == 'unchanged' or
-                       (m['change_pct'] is not None and abs(m['change_pct']) < 10))
+    # ---- Stability calculation ----
+    found_count = sum(1 for m in metric_changes if m["change_type"] != "not_found")
+    unchanged_count = sum(1 for m in metric_changes if m["change_type"] == "unchanged")
+    stable_count = sum(
+        1 for m in metric_changes
+        if m["change_type"] == "unchanged" or (m["change_pct"] is not None and abs(m["change_pct"]) < 10)
+    )
 
     if found_count > 0:
         stability = (stable_count / found_count) * 100
     else:
-        stability = 100  # No metrics found = can't determine instability
+        stability = 100.0
 
     summary = {
-    'total_metrics': len(metric_changes),
-    'metrics_found': found_count,
-    'metrics_unchanged': unchanged_count,
-    'metrics_stable': stable_count,
-    'metrics_increased': sum(1 for m in metric_changes if m['change_type'] == 'increased'),
-    'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
-    'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
-}
+        "total_metrics": len(metric_changes),
+        "metrics_found": found_count,
+        "metrics_unchanged": unchanged_count,
+        "metrics_stable": stable_count,
+        "metrics_increased": sum(1 for m in metric_changes if m["change_type"] == "increased"),
+        "metrics_decreased": sum(1 for m in metric_changes if m["change_type"] == "decreased"),
+        "metrics_not_found": sum(1 for m in metric_changes if m["change_type"] == "not_found"),
+    }
     results_stability_score = round(stability, 1)
 
-
-    #return {
-    #    'status': 'success',
-    #    'sources_checked': len(sources_to_check),
-    #    'sources_fetched': sum(1 for s in source_results if s['status'] == 'fetched'),
-    #    'source_results': source_results,
-    #    'metric_changes': metric_changes,
-    #    'stability': {
-    #        'system_stability_pct': round(stability, 1),
-    #        'data_change_detected': summary['metrics_increased'] + summary['metrics_decreased'],
-    #        'metrics_compared': found_count
-    #    },
-    #    'summary': {
-    #        'total_metrics': len(metric_changes),
-    #        'metrics_found': found_count,
-    #        'metrics_unchanged': unchanged_count,
-    #        'metrics_stable': stable_count,
-    #        'metrics_increased': sum(1 for m in metric_changes if m['change_type'] == 'increased'),
-    #        'metrics_decreased': sum(1 for m in metric_changes if m['change_type'] == 'decreased'),
-    #        'metrics_not_found': sum(1 for m in metric_changes if m['change_type'] == 'not_found'),
-    #    }
-    #}
+    # Determinism check (source order must not change)
     assert sources_to_check == prev_sources[:len(sources_to_check)], \
-    "Source order mutation detected – evolution must be deterministic"
+        "Source order mutation detected – evolution must be deterministic"
 
     return {
-    'status': 'success',
-    'sources_checked': len(sources_to_check),
-    'sources_fetched': sum(1 for s in source_results if s['status'] == 'fetched'),
-    'source_results': source_results,
-    'metric_changes': metric_changes,
-
-    # 🔹 NEW structured stability
-    'stability': {
-        'system_stability_pct': results_stability_score,
-        'data_change_detected': summary['metrics_increased'] + summary['metrics_decreased'],
-        'metrics_compared': found_count
-    },
-
-    # 🔹 BACKWARD-COMPATIBILITY
-    'stability_score': results_stability_score,
-
-    'summary': summary
+        "status": "success",
+        "sources_checked": len(sources_to_check),
+        "sources_fetched": sum(1 for s in source_results if s["status"] == "fetched"),
+        "source_results": source_results,
+        "metric_changes": metric_changes,
+        "stability": {
+            "system_stability_pct": results_stability_score,
+            "data_change_detected": summary["metrics_increased"] + summary["metrics_decreased"],
+            "metrics_compared": found_count,
+        },
+        "stability_score": results_stability_score,  # backward-compat
+        "summary": summary,
     }
-
 
 
 def extract_context_keywords(metric_name: str) -> List[str]:
@@ -3786,71 +3747,169 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 
 
 def extract_numbers_with_context(text: str) -> List[Dict]:
-    """Extract numbers with surrounding context for better matching"""
+    """
+    Extract candidate metric numbers with surrounding context for matching.
+
+    Robustness improvements vs basic version:
+    - Filters years/dates and obvious non-metric integers
+    - Better unit recognition (USD, US$, bn/mn/tn, billion/million/trillion, %, T/B/M/K)
+    - Captures position index for optional proximity matching
+    - Deduplicates near-identical hits (same value+unit+overlapping context)
+    """
     if not text:
         return []
 
-    numbers = []
-    # Pattern to match numbers with optional currency/unit
-    pattern = r'(\$?\d+(?:\.\d+)?)\s*(trillion|billion|million|%|T|B|M)?'
+    t = text
+    t_lower = t.lower()
 
-    for match in re.finditer(pattern, text, re.IGNORECASE):
-        value_str = match.group(1).replace('$', '').replace(',', '')
-        unit = match.group(2) or ''
+    numbers: List[Dict] = []
 
+    # ---------
+    # Helpers
+    # ---------
+    def normalize_unit(u: str) -> str:
+        u = (u or "").strip().lower()
+        unit_map = {
+            "trillion": "T", "tn": "T", "trn": "T",
+            "billion": "B", "bn": "B",
+            "million": "M", "mn": "M", "mm": "M",
+            "thousand": "K", "k": "K",
+            "%": "%",
+            "t": "T", "b": "B", "m": "M",
+        }
+        return unit_map.get(u, "")
+
+    def looks_like_year_or_date(ctx: str, raw_num: str) -> bool:
+        # Reject 4-digit years 1900-2099
         try:
-            value = float(value_str)
+            if raw_num.isdigit() and len(raw_num) == 4:
+                y = int(raw_num)
+                if 1900 <= y <= 2099:
+                    return True
+        except:
+            pass
+
+        # Reject if context looks date-like (e.g., 2024-01-15, 01/15/2024)
+        if re.search(r"\b(19|20)\d{2}[-/\.](0?[1-9]|1[0-2])[-/\.](0?[1-9]|[12]\d|3[01])\b", ctx):
+            return True
+        if re.search(r"\b(0?[1-9]|1[0-2])[-/\.](0?[1-9]|[12]\d|3[01])[-/\.](19|20)\d{2}\b", ctx):
+            return True
+        return False
+
+    def context_window(start_i: int, end_i: int, win: int = 180) -> str:
+        s = max(0, start_i - win)
+        e = min(len(t_lower), end_i + win)
+        return t_lower[s:e]
+
+    # ---------
+    # Main regex
+    # ---------
+    pattern = re.compile(
+        r"""
+        (?P<curr>\b(?:usd|us\$)\b|\$)?\s*
+        (?P<num>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)\s*
+        (?P<unit>trillion|billion|million|thousand|tn|trn|bn|mn|mm|[TBMK%])?
+        """,
+        re.IGNORECASE | re.VERBOSE
+    )
+
+    for m in pattern.finditer(t):
+        num_raw = (m.group("num") or "").strip()
+        unit_raw = (m.group("unit") or "").strip()
+        curr_raw = (m.group("curr") or "").strip()
+
+        num_clean = num_raw.replace(",", "")
+        try:
+            value = float(num_clean)
         except:
             continue
 
-        # Skip unlikely values
-        if value == 0 or value > 10000000:
+        if value == 0:
+            continue
+        if value > 10_000_000:
             continue
 
-        # Get larger context window (150 chars before and after)
-        start = max(0, match.start() - 150)
-        end = min(len(text), match.end() + 150)
-        context = text[start:end].lower()
+        ctx = context_window(m.start(), m.end(), win=180)
 
-        # Normalize unit
-        unit_map = {'trillion': 'T', 't': 'T', 'billion': 'B', 'b': 'B', 'million': 'M', 'm': 'M', '%': '%'}
-        unit_norm = unit_map.get(unit.lower(), '') if unit else ''
+        # Filter: years/dates
+        if looks_like_year_or_date(ctx, num_clean):
+            continue
+
+        # Filter: obvious rank/list counts (top 10, #1, Q1, page/table)
+        if value.is_integer() and value <= 50:
+            if re.search(r"\b(top|rank|ranking|#|no\.|number)\b", ctx):
+                continue
+            if re.search(r"\b(q[1-4]|quarter|page|table|figure|fig\.|chapter)\b", ctx):
+                continue
+
+        unit_norm = normalize_unit(unit_raw)
+
+        has_currency_cue = bool(curr_raw) or bool(re.search(r"\b(?:usd|us\$|\$)\b", ctx))
+        has_unit_cue = unit_norm in {"T", "B", "M", "K", "%"} or bool(re.search(r"\b(trillion|billion|million|thousand|bn|mn|mm|tn|trn)\b", ctx))
+
+        # Plain number with no unit/currency: be stricter
+        if not has_currency_cue and not has_unit_cue:
+            if not (0 < value <= 100 and re.search(r"\b(cagr|growth|share|percent|%)\b", ctx)):
+                continue
+
+        raw_display = f"{num_clean}{unit_raw}".strip()
+
+        # Avoid ID-ish large integers without cues
+        if value.is_integer() and value >= 100000 and unit_norm == "" and not has_currency_cue:
+            continue
 
         numbers.append({
-            'value': value,
-            'unit': unit_norm,
-            'context': context,
-            'raw': f"{value_str}{unit}".strip()
+            "value": value,
+            "unit": unit_norm,
+            "context": ctx,
+            "raw": raw_display,
+            "pos": m.start(),
         })
 
-    return numbers
+    # Deduplicate near-identical hits
+    deduped: List[Dict] = []
+    seen = set()
+    for n in numbers:
+        key = (round(float(n["value"]), 4), n.get("unit", ""), n.get("raw", ""))
+        ctx_fp = hashlib.md5((n.get("context", "")[:120]).encode("utf-8")).hexdigest()[:10]
+        full_key = key + (ctx_fp,)
+        if full_key in seen:
+            continue
+        seen.add(full_key)
+        deduped.append(n)
 
+    return deduped
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
-    """Calculate how well keywords match the context"""
-    if not keywords or not context:
-        return 0.3  # Base score when no keywords
+    """Calculate how well keywords match the context (deterministic)."""
+    if not context:
+        return 0.0
 
     context_lower = context.lower()
 
-    # CRITICAL: Year keywords MUST match if present
-    year_keywords = [kw for kw in keywords if re.match(r'20\d{2}', kw)]
+    # If no keywords, give a small baseline (we'll rely more on value_score)
+    if not keywords:
+        return 0.25
+
+    # Year keywords MUST match if present
+    year_keywords = [kw for kw in keywords if re.fullmatch(r"20\d{2}", kw)]
     if year_keywords:
-        year_found = any(year in context_lower for year in year_keywords)
-        if not year_found:
-            return 0.0  # Reject match if year doesn't match
+        if not any(y in context_lower for y in year_keywords):
+            return 0.0
 
     matches = sum(1 for kw in keywords if kw.lower() in context_lower)
 
-    if len(keywords) == 0:
-        return 0.3
+    # Instead of hard "matches < 2 = reject", scale smoothly:
+    match_ratio = matches / max(len(keywords), 1)
 
-    match_ratio = matches / len(keywords)
-
-    # Scale: 0 matches = 0.1, all matches = 1.0
-    if matches < 2:
+    # If nothing matches, reject
+    if matches == 0:
         return 0.0
-    return 0.2 + (match_ratio * 0.8)
+
+    # Score between 0.35 and 1.0 depending on ratio
+    return 0.35 + (match_ratio * 0.65)
+
+
 
 def render_source_anchored_results(results: Dict, query: str):
     """Render source-anchored evolution results"""
