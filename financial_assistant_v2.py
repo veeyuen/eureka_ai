@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.12
+# YUREEKA AI RESEARCH ASSISTANT v7.13
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -12,6 +12,7 @@
 # Removal of Evolution Decisions from LLM
 # Further Enhancements to Minimize Evolution Drift (Metric)
 # Saving of extraction cache in JSON
+# Prioritize High Quality Sources
 # =========================================================
 
 import os
@@ -3691,6 +3692,31 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     source_results = []
     all_current_numbers = []
 
+    # Baseline cached content (optional) — stored from the original run
+    baseline_sources_cache = []
+    try:
+        baseline_sources_cache = (
+            previous_data.get("baseline_sources_cache")
+            or prev_response.get("baseline_sources_cache")
+            or []
+        )
+    except Exception:
+        baseline_sources_cache = []
+
+    # If someone stored this as a dict wrapper, normalize to a list
+    if isinstance(baseline_sources_cache, dict):
+        baseline_sources_cache = (
+            baseline_sources_cache.get("source_results")
+            or baseline_sources_cache.get("sources")
+            or baseline_sources_cache.get("items")
+            or []
+        )
+
+    if not isinstance(baseline_sources_cache, list):
+        baseline_sources_cache = []
+
+
+
     for url in sources_to_check:
         content, status_msg = fetch_url_content_with_status(url)
 
@@ -3723,59 +3749,44 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             all_current_numbers.extend(numbers)
 
-
         else:
-            # Attempt reuse of cached extracted numbers from previous_data, if available.
-            # This allows evolution diffs to run even if sources block re-fetching.
+
+            # baseline_sources_cache is normalized to a LIST of dicts
             cached_numbers = []
 
-            # Look for prior cached extractions in:
-            # 1) previous_data["source_results"]  (if you saved evolution outputs directly)
-            # 2) previous_data["results"]["source_results"] (if you saved evolution outputs nested)
-            baseline_sources_cache = previous_data.get("source_results", []) or []
-            try:
-                baseline_sources_cache = baseline_sources_cache or (previous_data.get("results", {}) or {}).get("source_results", []) or []
-            except Exception:
-                baseline_sources_cache = baseline_sources_cache or []
-
-            # Match by exact URL and reuse extracted_numbers if present
+            # Find cached extracted_numbers for this URL
             for s in baseline_sources_cache:
-                if s.get("url") == url and s.get("extracted_numbers"):
-                    for cn in s.get("extracted_numbers", []):
-                        cached_numbers.append({
-                            "value": cn.get("value"),
-                            "unit": cn.get("unit"),
-                            "raw": cn.get("raw"),
-                            # rebuild field name used later by matcher:
-                            "context": (cn.get("context_snippet") or "").lower()
-                        })
+                if not isinstance(s, dict):
+                    continue
+                if s.get("url") != url:
+                    continue
+
+                extracted = s.get("extracted_numbers") or []
+                if isinstance(extracted, list):
+                    cached_numbers.extend(extracted)
 
             if cached_numbers:
-                all_current_numbers.extend(cached_numbers)
+                # Cache contains already-extracted numbers in the same shape as extract_numbers_with_context()
                 source_results.append({
                     "url": url,
                     "status": "failed_but_reused_cache",
-                    "status_detail": status_msg,
+                    "status_detail": f"{status_msg} (reused baseline cache)",
                     "numbers_found": len(cached_numbers),
                     "fingerprint": None,
                     "fetched_at": datetime.now().isoformat(),
-                    "extracted_numbers": [
-                        {
-                            "value": n.get("value"),
-                            "unit": n.get("unit"),
-                            "raw": n.get("raw"),
-                            "context_snippet": (n.get("context") or "")[:200]
-                        }
-                        for n in cached_numbers
-                    ]
+                    "extracted_numbers": cached_numbers
                 })
+                all_current_numbers.extend(cached_numbers)
             else:
                 source_results.append({
                     "url": url,
                     "status": "failed",
                     "status_detail": status_msg,
-                    "numbers_found": 0
+                    "numbers_found": 0,
+                    "fetched_at": datetime.now().isoformat()
                 })
+
+
 
 
     # --------- Match metrics using context + value similarity ----------
@@ -4773,8 +4784,42 @@ def main():
                 "primary_response": primary_data,
                 "final_confidence": final_conf,
                 "veracity_scores": veracity_scores,
-                "web_sources": web_context.get("sources", [])
+                "web_sources": web_context.get("sources", []),
+                # Optional baseline cache for evolution fallback if sources become blocked later
+                "baseline_sources_cache": web_context.get("scraped_content", {}) or {}
             }
+
+            # -----------------------------
+            # Baseline source cache (optional, but enables evolution reuse when refetch fails)
+            # -----------------------------
+            baseline_sources_cache = []
+            try:
+                scraped = web_context.get("scraped_content") or {}
+                for url, content in scraped.items():
+                    if not content:
+                        continue
+                    nums = extract_numbers_with_context(content)
+                    baseline_sources_cache.append({
+                        "url": url,
+                        "fetched_at": datetime.now().isoformat(),
+                        "fingerprint": fingerprint_text(content),
+                        "extracted_numbers": [
+                            {
+                                "value": n.get("value"),
+                                "unit": n.get("unit"),
+                                "raw": n.get("raw"),
+                                "context_snippet": (n.get("context") or "")[:200]
+                            }
+                            for n in nums
+                        ]
+                    })
+            except Exception:
+                baseline_sources_cache = []
+
+            # Store only if non-empty (keeps JSON smaller)
+            if baseline_sources_cache:
+                output["baseline_sources_cache"] = baseline_sources_cache
+
 
             # AUTO-SAVE TO GOOGLE SHEETS
             with st.spinner("💾 Saving to history..."):
@@ -4822,7 +4867,7 @@ def main():
     # =====================
     with tab2:
         st.markdown("""
-        ### 📈 Track how data has changed over time using **deterministic source-anchored analysis**.
+        ### 📈 Track the evolution of key metrics over time using **deterministic source-anchored analysis**.
 
         **How it works:**
         - Select a baseline from your history (stored in Google Sheets)
