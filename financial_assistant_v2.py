@@ -11,6 +11,7 @@
 # Canonical Metric Registry + Semantic Hashing of Findings
 # Removal of Evolution Decisions from LLM
 # Further Enhancements to Minimize Evolution Drift (Metric)
+# Saving of extraction cache in JSON
 # =========================================================
 
 import os
@@ -3697,21 +3698,85 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             content_fingerprint = fingerprint_text(content)
             numbers = extract_numbers_with_context(content)
 
+            # Compact cache: store extracted numbers + short context snippets (avoid storing full content)
+
+
+            numbers_compact = [
+            {
+                "value": n.get("value"),
+                "unit": n.get("unit"),
+                "raw": n.get("raw"),
+                "context_snippet": (n.get("context") or "")[:200]
+            }
+            for n in numbers
+        ]
+
             source_results.append({
                 "url": url,
                 "status": "fetched",
                 "status_detail": status_msg,
                 "numbers_found": len(numbers),
-                "fingerprint": content_fingerprint
+                "fingerprint": content_fingerprint,
+                "fetched_at": datetime.now().isoformat(),
+                "extracted_numbers": numbers_compact
             })
+
             all_current_numbers.extend(numbers)
+
+
         else:
-            source_results.append({
-                "url": url,
-                "status": "failed",
-                "status_detail": status_msg,
-                "numbers_found": 0
-            })
+            # Attempt reuse of cached extracted numbers from previous_data, if available.
+            # This allows evolution diffs to run even if sources block re-fetching.
+            cached_numbers = []
+
+            # Look for prior cached extractions in:
+            # 1) previous_data["source_results"]  (if you saved evolution outputs directly)
+            # 2) previous_data["results"]["source_results"] (if you saved evolution outputs nested)
+            baseline_sources_cache = previous_data.get("source_results", []) or []
+            try:
+                baseline_sources_cache = baseline_sources_cache or (previous_data.get("results", {}) or {}).get("source_results", []) or []
+            except Exception:
+                baseline_sources_cache = baseline_sources_cache or []
+
+            # Match by exact URL and reuse extracted_numbers if present
+            for s in baseline_sources_cache:
+                if s.get("url") == url and s.get("extracted_numbers"):
+                    for cn in s.get("extracted_numbers", []):
+                        cached_numbers.append({
+                            "value": cn.get("value"),
+                            "unit": cn.get("unit"),
+                            "raw": cn.get("raw"),
+                            # rebuild field name used later by matcher:
+                            "context": (cn.get("context_snippet") or "").lower()
+                        })
+
+            if cached_numbers:
+                all_current_numbers.extend(cached_numbers)
+                source_results.append({
+                    "url": url,
+                    "status": "failed_but_reused_cache",
+                    "status_detail": status_msg,
+                    "numbers_found": len(cached_numbers),
+                    "fingerprint": None,
+                    "fetched_at": datetime.now().isoformat(),
+                    "extracted_numbers": [
+                        {
+                            "value": n.get("value"),
+                            "unit": n.get("unit"),
+                            "raw": n.get("raw"),
+                            "context_snippet": (n.get("context") or "")[:200]
+                        }
+                        for n in cached_numbers
+                    ]
+                })
+            else:
+                source_results.append({
+                    "url": url,
+                    "status": "failed",
+                    "status_detail": status_msg,
+                    "numbers_found": 0
+                })
+
 
     # --------- Match metrics using context + value similarity ----------
     metric_changes = []
