@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.13
+# YUREEKA AI RESEARCH ASSISTANT v7.14
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -13,6 +13,7 @@
 # Further Enhancements to Minimize Evolution Drift (Metric)
 # Saving of extraction cache in JSON
 # Prioritize High Quality Sources
+# Timestamps = Timezone Naive
 # =========================================================
 
 import os
@@ -3455,6 +3456,11 @@ def _parse_iso_dt(ts: Optional[str]) -> Optional[datetime]:
     except Exception:
         return None
 
+def now_utc() -> datetime:
+    """Timezone-aware UTC now (prevents naive/aware datetime bugs)."""
+    return datetime.now(timezone.utc)
+
+
 def _normalize_number_to_parse_base(value: float, unit: str) -> float:
     u = (unit or "").strip().upper()
     if u == "T":
@@ -3636,17 +3642,15 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     # --------- Baseline reuse gating ----------
     BASELINE_REUSE_HOURS = 24
     baseline_ts = None
+
     baseline_ts_raw = prev_response.get("timestamp") or previous_data.get("timestamp")
-    if baseline_ts_raw:
-        try:
-            baseline_ts = datetime.fromisoformat(str(baseline_ts_raw))
-        except Exception:
-            baseline_ts = None
+    baseline_ts = _parse_iso_dt(str(baseline_ts_raw)) if baseline_ts_raw else None
 
     baseline_is_recent = (
         baseline_ts is not None and
-        (datetime.now() - baseline_ts).total_seconds() < BASELINE_REUSE_HOURS * 3600
+        (now_utc() - baseline_ts).total_seconds() < BASELINE_REUSE_HOURS * 3600
     )
+
 
     if baseline_is_recent:
         metric_changes = []
@@ -3743,7 +3747,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 "status_detail": status_msg,
                 "numbers_found": len(numbers),
                 "fingerprint": content_fingerprint,
-                "fetched_at": datetime.now().isoformat(),
+                "fetched_at": now_utc().isoformat(),
                 "extracted_numbers": numbers_compact
             })
 
@@ -3773,7 +3777,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     "status_detail": f"{status_msg} (reused baseline cache)",
                     "numbers_found": len(cached_numbers),
                     "fingerprint": None,
-                    "fetched_at": datetime.now().isoformat(),
+                    "fetched_at": now_utc().isoformat(),
                     "extracted_numbers": cached_numbers
                 })
                 all_current_numbers.extend(cached_numbers)
@@ -3783,7 +3787,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     "status": "failed",
                     "status_detail": status_msg,
                     "numbers_found": 0,
-                    "fetched_at": datetime.now().isoformat()
+                    "fetched_at": now_utc().isoformat(),
                 })
 
 
@@ -3907,8 +3911,28 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     results_stability_score = round(stability, 1)
 
     # Determinism guard: source order must remain identical
-    assert sources_to_check == prev_sources[:len(sources_to_check)], \
-        "Source order mutation detected – evolution must be deterministic"
+    # Uncomment the 2 lines below for old method
+  #  assert sources_to_check == prev_sources[:len(sources_to_check)], \
+  #      "Source order mutation detected – evolution must be deterministic"
+    if sources_to_check != prev_sources[:len(sources_to_check)]:
+        st.error(
+            "❌ Source order mutation detected.\n\n"
+            "Evolution analysis requires the exact same sources in the same order "
+            "to remain deterministic.\n\n"
+            "Please rerun the baseline analysis."
+        )
+        return {
+            "status": "error",
+            "message": "Source order mutation detected – determinism violated",
+            "sources_checked": len(sources_to_check),
+            "sources_fetched": 0,
+            "source_results": [],
+            "metric_changes": [],
+            "stability_score": 0.0,
+            "summary": {}
+        }
+
+
 
     # 🔒 Ensure status_detail always exists
     for src in source_results:
@@ -4780,7 +4804,7 @@ def main():
             # Build output
             output = {
                 "question": query,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now_utc().isoformat(),
                 "primary_response": primary_data,
                 "final_confidence": final_conf,
                 "veracity_scores": veracity_scores,
@@ -4801,7 +4825,7 @@ def main():
                     nums = extract_numbers_with_context(content)
                     baseline_sources_cache.append({
                         "url": url,
-                        "fetched_at": datetime.now().isoformat(),
+                        "fetched_at": now_utc().isoformat(),
                         "fingerprint": fingerprint_text(content),
                         "extracted_numbers": [
                             {
