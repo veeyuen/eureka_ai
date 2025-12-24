@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.15
+# YUREEKA AI RESEARCH ASSISTANT v7.16
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -16,6 +16,7 @@
 # Timestamps = Timezone Naive
 # Improved Stability of Handling of Duplicate Canonicalized IDs
 # Deterministic Main and Side Topic Extractor
+# Drift change monitoring from question framing or data changes
 # =========================================================
 
 import os
@@ -4590,6 +4591,16 @@ def render_source_anchored_results(results: Dict, query: str):
     st.header("📈 Source-Anchored Evolution Analysis")
     st.markdown(f"**Query:** {query}")
 
+    # Deterministic question profile (for context)
+    try:
+        qp = categorize_question_signals(query)
+    except Exception:
+        qp = {"category": "unknown", "signals": {}}
+
+    if qp and isinstance(qp, dict):
+        st.caption(f"**Detected category:** {qp.get('category', 'unknown')}")
+
+
     if results['status'] != 'success':
         st.error(f"❌ {results.get('message', 'Analysis failed')}")
         return
@@ -5394,6 +5405,21 @@ def main():
                 st.code(primary_response[:1000])
                 return
 
+            # -----------------------------
+            # Question-derived signals (deterministic)
+            # Make them available inside primary_response so render_dashboard() can use them.
+            # -----------------------------
+            try:
+                question_profile = categorize_question_signals(query)  # returns {"category": ..., "signals": {...}}
+            except Exception:
+                question_profile = {"category": "unknown", "signals": {}}
+
+            # Store inside primary_data (NOT just the outer output wrapper)
+            primary_data["question_profile"] = question_profile
+            primary_data["question_category"] = question_profile.get("category", "unknown")
+            primary_data["question_signals"] = question_profile.get("signals", {}) or {}
+
+
             # Evidence-based veracity scoring (single call)
             with st.spinner("✅ Verifying evidence quality..."):
                 veracity_scores = evidence_based_veracity(primary_data, web_context)
@@ -5429,6 +5455,9 @@ def main():
                             'semantic_hash': compute_semantic_hash(finding)
                         })
                 primary_data['key_findings_hashed'] = findings_with_hash
+
+            # Ensure primary_response string reflects all deterministic enrichments
+            primary_response = json.dumps(primary_data, ensure_ascii=False)
 
             # Build output
             output = {
