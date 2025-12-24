@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.14
+# YUREEKA AI RESEARCH ASSISTANT v7.15
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -12,8 +12,10 @@
 # Removal of Evolution Decisions from LLM
 # Further Enhancements to Minimize Evolution Drift (Metric)
 # Saving of extraction cache in JSON
-# Prioritize High Quality Sources
+# Prioritize High Quality Sources With Source Freshness Tracking
 # Timestamps = Timezone Naive
+# Improved Stability of Handling of Duplicate Canonicalized IDs
+# Deterministic Main and Side Topic Extractor
 # =========================================================
 
 import os
@@ -1084,7 +1086,7 @@ def unit_clean_first_letter(unit: str) -> str:
 # 7. LLM QUERY FUNCTIONS
 # =========================================================
 
-def query_perplexity(query: str, web_context: Dict, temperature: float = 0.0) -> str:
+def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Query Perplexity API with web context - deterministic settings"""
 
     # Check LLM cache first
@@ -1097,12 +1099,16 @@ def query_perplexity(query: str, web_context: Dict, temperature: float = 0.0) ->
 
     # Build enhanced prompt
     if not web_context.get("summary") or search_count < 2:
+        structure_txt = format_query_structure_for_prompt(query_structure)
         enhanced_query = (
             f"{SYSTEM_PROMPT}\n\n"
             f"User Question: {query}\n\n"
+            f"{structure_txt}\n\n"
             f"Web search returned {search_count} results. "
-            f"Use your knowledge to provide complete analysis with all required fields."
+            f"Use the structured question to ensure coverage of the main question AND side questions."
+            f"Provide complete analysis with all required fields."
         )
+
     else:
         context_section = (
             "LATEST WEB RESEARCH:\n"
@@ -1114,6 +1120,7 @@ def query_perplexity(query: str, web_context: Dict, temperature: float = 0.0) ->
             for url, content in list(web_context['scraped_content'].items())[:2]:
                 context_section += f"\n{url}:\n{content[:800]}...\n"
 
+        structure_txt = format_query_structure_for_prompt(query_structure)
         enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
 
     # API request
@@ -1801,38 +1808,106 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
     return (fallback_id, metric_name)
 
 
+#def canonicalize_metrics(metrics: Dict) -> Dict:
+    """
+#    Convert all metrics to use canonical IDs.
+
+#    Input: {"metric1": {"name": "2024 Market Size", "value": 100, "unit": "B"}}
+#    Output: {"market_size_2024": {"name": "Market Size (2024)", "value": 100, "unit": "B",
+#             "canonical_id": "market_size_2024", "original_name": "2024 Market Size"}}
+#    """
+#    canonicalized = {}
+
+#    for key, metric in metrics.items():
+#        if not isinstance(metric, dict):
+#            continue
+
+#        original_name = metric.get('name', key)
+#        canonical_id, canonical_name = get_canonical_metric_id(original_name)
+
+#        # Handle duplicate canonical IDs by appending suffix
+#        final_id = canonical_id
+#        suffix = 1
+#        while final_id in canonicalized:
+#            final_id = f"{canonical_id}_{suffix}"
+#            suffix += 1
+
+#        canonicalized[final_id] = {
+#            **metric,
+#            "name": canonical_name,
+#            "canonical_id": final_id,
+#            "original_name": original_name
+#        }
+
+#    return canonicalized
+
 def canonicalize_metrics(metrics: Dict) -> Dict:
     """
-    Convert all metrics to use canonical IDs.
-
-    Input: {"metric1": {"name": "2024 Market Size", "value": 100, "unit": "B"}}
-    Output: {"market_size_2024": {"name": "Market Size (2024)", "value": 100, "unit": "B",
-             "canonical_id": "market_size_2024", "original_name": "2024 Market Size"}}
+    Convert all metrics to use canonical IDs (deterministic even with duplicates).
     """
-    canonicalized = {}
+    if not isinstance(metrics, dict):
+        return {}
 
+    items = []
     for key, metric in metrics.items():
         if not isinstance(metric, dict):
             continue
 
-        original_name = metric.get('name', key)
+        original_name = metric.get("name", key)
         canonical_id, canonical_name = get_canonical_metric_id(original_name)
 
-        # Handle duplicate canonical IDs by appending suffix
-        final_id = canonical_id
-        suffix = 1
-        while final_id in canonicalized:
-            final_id = f"{canonical_id}_{suffix}"
-            suffix += 1
+        # Build a stable signature for tie-breaking duplicates
+        raw_val = metric.get("value", "")
+        unit = (metric.get("unit") or "").upper().strip()
 
-        canonicalized[final_id] = {
-            **metric,
-            "name": canonical_name,
-            "canonical_id": final_id,
-            "original_name": original_name
-        }
+        # Use parsed numeric if available, else raw string
+        parsed_val = parse_to_float(raw_val)
+        value_for_sort = parsed_val if parsed_val is not None else str(raw_val)
+
+        stable_sort_key = (
+            str(original_name).lower().strip(),
+            unit,
+            str(value_for_sort),
+            str(key)  # fallback stabilizer
+        )
+
+        items.append({
+            "input_key": key,
+            "metric": metric,
+            "original_name": original_name,
+            "canonical_base": canonical_id,
+            "canonical_name": canonical_name,
+            "stable_sort_key": stable_sort_key,
+        })
+
+    # Group by canonical_base
+    groups: Dict[str, List[Dict]] = {}
+    for it in items:
+        groups.setdefault(it["canonical_base"], []).append(it)
+
+    canonicalized = {}
+
+    # Deterministic processing order of groups as well
+    for base_id in sorted(groups.keys()):
+        group = groups[base_id]
+
+        # Deterministic order within duplicates
+        group.sort(key=lambda x: x["stable_sort_key"])
+
+        for idx, it in enumerate(group):
+            final_id = base_id if idx == 0 else f"{base_id}__dup{idx}"  # stable suffix
+
+            m = it["metric"]
+            canonicalized[final_id] = {
+                **m,
+                "name": it["canonical_name"],
+                "canonical_id": final_id,
+                "original_name": it["original_name"],
+                "input_key": it["input_key"],  # optional but useful for debugging
+            }
 
     return canonicalized
+
 
 def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
     """
@@ -2424,6 +2499,314 @@ def find_best_match(name: str, candidates: List[str], threshold: float = 0.7) ->
             best_score = score
             best_match = candidate
     return best_match
+
+# =========================================================
+# DETERMINISTIC QUERY STRUCTURE EXTRACTION
+# - Classify query into a known category (country / industry / etc.)
+# - Extract main question + "side questions" deterministically
+# - Optional: spaCy dependency parse (if installed)
+# - Optional: embedding similarity (if sentence-transformers/sklearn installed)
+# =========================================================
+
+SIDE_CONNECTOR_PATTERNS = [
+    r"\bimpact of\b",
+    r"\beffect of\b",
+    r"\binfluence of\b",
+    r"\brole of\b",
+    r"\bdriven by\b",
+    r"\bcaused by\b",
+    r"\bdue to\b",
+    r"\bincluding\b",
+    r"\bincluding but not limited to\b",
+    r"\bwith a focus on\b",
+    r"\bespecially\b",
+    r"\bnotably\b",
+    r"\bplus\b",
+    r"\bas well as\b",
+    r"\band also\b",
+    r"\bvs\b",
+    r"\bversus\b",
+]
+
+QUESTION_CATEGORIES = {
+    "country": {
+        "signals": [
+            "gdp", "gdp per capita", "population", "inflation", "interest rate",
+            "exports", "imports", "trade balance", "currency", "fx", "central bank",
+            "unemployment", "fiscal", "budget", "debt", "sovereign", "country"
+        ],
+        "template_sections": [
+            "GDP & GDP per capita", "Growth rates", "Population & demographics",
+            "Key industries", "Exports & imports", "Currency & FX trends",
+            "Interest rates & inflation", "Risks & outlook"
+        ],
+    },
+    "industry": {
+        "signals": [
+            "market size", "tam", "cagr", "industry", "sector", "market",
+            "key players", "competitive landscape", "drivers", "challenges",
+            "regulation", "technology trends", "forecast"
+        ],
+        "template_sections": [
+            "Total Addressable Market (TAM) / Market size", "Growth rates (CAGR/YoY)",
+            "Key players", "Key drivers", "Challenges & risks",
+            "Technology trends", "Regulatory / environmental factors", "Outlook"
+        ],
+    },
+    "company": {
+        "signals": [
+            "revenue", "earnings", "profit", "margins", "guidance",
+            "business model", "segments", "customers", "competitors",
+            "valuation", "multiple", "pe ratio", "cash flow"
+        ],
+        "template_sections": [
+            "Business overview", "Revenue / profitability", "Segments",
+            "Competitive position", "Key risks", "Guidance / outlook"
+        ],
+    },
+    "unknown": {
+        "signals": [],
+        "template_sections": [],
+    }
+}
+
+def _normalize_q(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+def _cleanup_clause(text: str) -> str:
+    t = _normalize_q(text)
+    t = re.sub(r"^[,;:\-\s]+", "", t)
+    t = re.sub(r"[,;:\-\s]+$", "", t)
+    return t
+
+def detect_query_category(query: str) -> Dict[str, Any]:
+    """
+    Deterministically classify query category using keyword signals.
+    Returns: {"category": "...", "confidence": 0-1, "matched_signals": [...]}
+    """
+    q = (query or "").lower()
+    best_cat = "unknown"
+    best_hits = 0
+    best_matched = []
+
+    for cat, cfg in QUESTION_CATEGORIES.items():
+        if cat == "unknown":
+            continue
+        matched = [s for s in cfg["signals"] if s in q]
+        hits = len(matched)
+        if hits > best_hits:
+            best_hits = hits
+            best_cat = cat
+            best_matched = matched
+
+    # simple confidence: saturate after ~6 hits
+    conf = min(best_hits / 6.0, 1.0) if best_hits > 0 else 0.0
+    return {"category": best_cat, "confidence": round(conf, 2), "matched_signals": best_matched[:8]}
+
+def _split_side_candidates(query: str) -> List[str]:
+    """
+    Deterministic splitting into clause candidates.
+    We keep it conservative to avoid over-splitting.
+    """
+    q = _normalize_q(query)
+    # Pull quoted strings as strong side-topic candidates
+    quoted = re.findall(r"['\"]([^'\"]{2,80})['\"]", q)
+    q_wo_quotes = re.sub(r"['\"][^'\"]{2,80}['\"]", " ", q)
+
+    # Split on major separators
+    parts = re.split(r"[;]|(?:\s+-\s+)|(?:\s+—\s+)", q_wo_quotes)
+    parts = [p for p in (_cleanup_clause(x) for x in parts) if p]
+
+    # Further split on side connectors
+    connector_re = "(" + "|".join(SIDE_CONNECTOR_PATTERNS) + ")"
+    expanded = []
+    for p in parts:
+        # break into chunks but keep connector words in-place by splitting into sentences first
+        sub = re.split(r"\.\s+|\?\s+|\!\s+", p)
+        for s in sub:
+            s = _cleanup_clause(s)
+            if not s:
+                continue
+            # if contains connector, split into [before, after...] using first connector
+            m = re.search(connector_re, s.lower())
+            if m:
+                idx = m.start()
+                before = _cleanup_clause(s[:idx])
+                after = _cleanup_clause(s[idx:])
+                if before:
+                    expanded.append(before)
+                if after:
+                    expanded.append(after)
+            else:
+                expanded.append(s)
+
+    # Add quoted items as standalone candidates (often side topics)
+    for qitem in quoted:
+        cleaned = _cleanup_clause(qitem)
+        if cleaned:
+            expanded.append(cleaned)
+
+    # De-dupe while preserving order (deterministic)
+    seen = set()
+    out = []
+    for x in expanded:
+        k = x.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(x)
+    return out
+
+def _extract_spacy_side_topics(query: str) -> List[str]:
+    """
+    Optional: use spaCy dependency parse if available.
+    Extracts objects of 'impact/effect/role/influence' patterns.
+    """
+    try:
+        import spacy  # type: ignore
+        try:
+            nlp = spacy.load("en_core_web_sm")  # type: ignore
+        except Exception:
+            return []
+    except Exception:
+        return []
+
+    doc = nlp(query)
+    side = []
+
+    triggers = {"impact", "effect", "influence", "role"}
+    for token in doc:
+        if token.lemma_.lower() in triggers:
+            # Look for "of X" attached to trigger
+            for child in token.children:
+                if child.dep_ == "prep" and child.text.lower() == "of":
+                    pobj = next((c for c in child.children if c.dep_ in ("pobj", "dobj", "obj")), None)
+                    if pobj is not None:
+                        # take subtree as phrase
+                        phrase = " ".join(t.text for t in pobj.subtree)
+                        phrase = _cleanup_clause(phrase)
+                        if phrase and phrase.lower() not in (s.lower() for s in side):
+                            side.append(phrase)
+    return side[:5]
+
+def _embedding_similarity(a: str, b: str) -> Optional[float]:
+    """
+    Optional: compute cosine similarity using:
+      - sentence-transformers (preferred) OR
+      - sklearn TF-IDF fallback
+    Returns None if unavailable.
+    """
+    a = _normalize_q(a)
+    b = _normalize_q(b)
+    if not a or not b:
+        return None
+
+    # 1) sentence-transformers (if installed)
+    try:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+        import numpy as np  # type: ignore
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        emb = model.encode([a, b], normalize_embeddings=True)
+        sim = float(np.dot(emb[0], emb[1]))
+        return max(min(sim, 1.0), -1.0)
+    except Exception:
+        pass
+
+    # 2) sklearn TF-IDF cosine similarity (deterministic)
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
+        from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+        vec = TfidfVectorizer(stop_words="english")
+        X = vec.fit_transform([a, b])
+        sim = float(cosine_similarity(X[0], X[1])[0, 0])
+        return max(min(sim, 1.0), -1.0)
+    except Exception:
+        return None
+
+def extract_query_structure(query: str) -> Dict[str, Any]:
+    """
+    Deterministic extractor:
+      - category classification
+      - main clause + side questions/topics
+      - optional NLP parse + embedding similarity to reduce false side topics
+    """
+    query = _normalize_q(query)
+    cat = detect_query_category(query)
+
+    candidates = _split_side_candidates(query)
+    if not candidates:
+        return {
+            "category": cat["category"],
+            "category_confidence": cat["confidence"],
+            "main": query,
+            "side": [],
+            "template_sections": QUESTION_CATEGORIES.get(cat["category"], QUESTION_CATEGORIES["unknown"]).get("template_sections", []),
+        }
+
+    # Heuristic: main = first candidate that contains the "core subject" words (market/country/etc.)
+    # fallback: first candidate
+    main = candidates[0]
+    ql = query.lower()
+    for c in candidates:
+        cl = c.lower()
+        if ("market" in ql and "market" in cl) or ("industry" in ql and "industry" in cl) or ("country" in ql and "country" in cl):
+            main = c
+            break
+
+    # Side candidates = the rest
+    side = [c for c in candidates if c.lower() != main.lower()]
+
+    # Add spaCy-derived side topics (if available)
+    for s in _extract_spacy_side_topics(query):
+        if s and s.lower() != main.lower() and s.lower() not in (x.lower() for x in side):
+            side.append(s)
+
+    # If embedding similarity is available, drop side items that are basically the same as main
+    pruned = []
+    for s in side:
+        sim = _embedding_similarity(main, s)
+        # If similarity is extremely high, treat as redundant
+        if sim is not None and sim >= 0.85:
+            continue
+        pruned.append(s)
+
+    # Convert side *topics* into explicit side *questions* if they are fragments
+    side_questions = []
+    for s in pruned[:5]:
+        sl = s.lower()
+        if any(k in sl for k in ["impact of", "effect of", "influence of", "role of"]):
+            # already question-like
+            side_questions.append(_cleanup_clause(s))
+        else:
+            # turn into a consistent pattern
+            side_questions.append(_cleanup_clause(f"What is the impact of {s} on {main}?"))
+
+    return {
+        "category": cat["category"],
+        "category_confidence": cat["confidence"],
+        "main": main,
+        "side": side_questions,
+        "template_sections": QUESTION_CATEGORIES.get(cat["category"], QUESTION_CATEGORIES["unknown"]).get("template_sections", []),
+    }
+
+def format_query_structure_for_prompt(qs: Optional[Dict[str, Any]]) -> str:
+    if not qs or not isinstance(qs, dict):
+        return ""
+    parts = []
+    parts.append("STRUCTURED QUESTION (DETERMINISTIC):")
+    parts.append(f"- Category: {qs.get('category','unknown')} (conf {qs.get('category_confidence','')})")
+    parts.append(f"- Main: {qs.get('main','')}")
+    side = qs.get("side") or []
+    if side:
+        parts.append("- Side questions:")
+        for s in side[:5]:
+            parts.append(f"  - {s}")
+    tmpl = qs.get("template_sections") or []
+    if tmpl:
+        parts.append("- Recommended response sections:")
+        for t in tmpl[:10]:
+            parts.append(f"  - {t}")
+    return "\n".join(parts).strip()
+
 
 # ------------------------------------
 # METRIC DIFF COMPUTATION
@@ -4732,6 +5115,9 @@ def main():
                 return
 
             query = query.strip()[:500]  # Limit length
+            # Deterministic: extract category + main/side questions
+            query_structure = extract_query_structure(query)
+
 
             # Web search
             web_context = {}
@@ -4751,7 +5137,7 @@ def main():
 
             # Primary model query
             with st.spinner("🤖 Analyzing with primary model..."):
-                primary_response = query_perplexity(query, web_context)
+                primary_response = query_perplexity(query, web_context, query_structure=query_structure)
 
             if not primary_response:
                 st.error("❌ Primary model failed to respond")
@@ -4810,6 +5196,7 @@ def main():
                 "veracity_scores": veracity_scores,
                 "web_sources": web_context.get("sources", []),
                 # Optional baseline cache for evolution fallback if sources become blocked later
+                "query_structure": query_structure,
                 "baseline_sources_cache": web_context.get("scraped_content", {}) or {}
             }
 
