@@ -1718,11 +1718,134 @@ METRIC_REGISTRY = {
         ],
         "unit_type": "currency",
         "category": "pricing"
+    },
+    # -------------------------
+    # Country / Macro metrics
+    # -------------------------
+    "gdp": {
+        "canonical_name": "GDP",
+        "aliases": ["gdp", "gross domestic product", "economic output"],
+        "unit_type": "currency",
+        "category": "macro"
+    },
+    "gdp_per_capita": {
+        "canonical_name": "GDP per Capita",
+        "aliases": ["gdp per capita", "gdp/capita", "income per person", "per capita gdp"],
+        "unit_type": "currency",
+        "category": "macro"
+    },
+    "gdp_growth": {
+        "canonical_name": "GDP Growth",
+        "aliases": ["gdp growth", "economic growth", "growth rate of gdp", "real gdp growth"],
+        "unit_type": "percentage",
+        "category": "macro"
+    },
+    "population": {
+        "canonical_name": "Population",
+        "aliases": ["population", "population size", "number of people"],
+        "unit_type": "count",
+        "category": "macro"
+    },
+    "exports": {
+        "canonical_name": "Exports",
+        "aliases": ["exports", "export value", "total exports"],
+        "unit_type": "currency",
+        "category": "trade"
+    },
+    "imports": {
+        "canonical_name": "Imports",
+        "aliases": ["imports", "import value", "total imports"],
+        "unit_type": "currency",
+        "category": "trade"
+    },
+    "inflation": {
+        "canonical_name": "Inflation",
+        "aliases": ["inflation", "cpi", "consumer price index", "inflation rate"],
+        "unit_type": "percentage",
+        "category": "macro"
+    },
+    "interest_rate": {
+        "canonical_name": "Interest Rate",
+        "aliases": ["interest rate", "policy rate", "benchmark rate", "central bank rate"],
+        "unit_type": "percentage",
+        "category": "macro"
     }
+
 }
 
 # Year extraction pattern
 YEAR_PATTERN = re.compile(r'(20\d{2})')
+
+# ------------------------------------
+# DETERMINISTIC QUESTION SIGNALS
+# Drives metric table templates (no LLM)
+# ------------------------------------
+
+QUESTION_CATEGORY_TEMPLATES = {
+    "country": [
+        "gdp",
+        "gdp_per_capita",
+        "gdp_growth",
+        "population",
+        "exports",
+        "imports",
+        "inflation",
+        "interest_rate",
+    ],
+    "industry": [
+        "market_size_current",
+        "market_size_projected",
+        "cagr",
+        "revenue",
+        "market_share",
+        "units_sold",
+        "average_price",
+    ],
+}
+
+def classify_question_signals(query: str) -> Dict[str, Any]:
+    """
+    Deterministically classify query and return:
+      - category: 'country' | 'industry' | 'generic'
+      - expected_metric_ids: list[str] (canonical metric ids)
+      - signals: list[str] (debuggable reasons)
+    """
+    q = (query or "").lower().strip()
+    signals = []
+
+    if not q:
+        return {"category": "generic", "expected_metric_ids": [], "signals": ["empty_query"]}
+
+    country_kw = [
+        "gdp", "per capita", "population", "exports", "imports",
+        "inflation", "cpi", "interest rate", "policy rate", "central bank",
+        "currency", "exchange rate"
+    ]
+    industry_kw = [
+        "market", "industry", "sector", "tam", "total addressable market",
+        "cagr", "market size", "market share", "key players", "competitors",
+        "pricing", "revenue", "forecast"
+    ]
+
+    country_hits = [k for k in country_kw if k in q]
+    industry_hits = [k for k in industry_kw if k in q]
+
+    if country_hits and not industry_hits:
+        category = "country"
+        signals.append(f"country_keywords:{','.join(country_hits[:5])}")
+    elif industry_hits and not country_hits:
+        category = "industry"
+        signals.append(f"industry_keywords:{','.join(industry_hits[:5])}")
+    elif industry_hits and country_hits:
+        # tie-break: prefer industry unless query is explicitly macro-heavy
+        category = "industry"
+        signals.append("mixed_signals_default_to_industry")
+    else:
+        category = "generic"
+        signals.append("no_template_keywords")
+
+    expected = QUESTION_CATEGORY_TEMPLATES.get(category, [])
+    return {"category": category, "expected_metric_ids": expected, "signals": signals}
 
 
 def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
@@ -3572,6 +3695,9 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
     st.subheader("💰 Metric Changes")
     if diff.metric_diffs:
         metric_rows = []
+
+
+
         for m in diff.metric_diffs:
             icon = {
                 'increased': '📈', 'decreased': '📉', 'unchanged': '➡️',
@@ -4635,6 +4761,65 @@ def detect_y_label_dynamic(values: list) -> str:
     else:
         return "Units"
 
+# =========================================================
+# 3A. QUESTION CATEGORIZATION + SIGNALS (DETERMINISTIC)
+# =========================================================
+
+def categorize_question_signals(question: str) -> Dict[str, Any]:
+    """
+    Deterministic categorizer + signals extractor.
+    Keeps this lightweight and stable (no LLM dependency).
+    """
+    if not question:
+        return {"category": "unknown", "signals": {}, "side_questions": []}
+
+    q = question.strip()
+    ql = q.lower()
+
+    # --- category heuristic (deterministic) ---
+    is_country = any(k in ql for k in ["gdp", "gdp per capita", "population", "exports", "imports", "currency", "interest rate", "inflation"])
+    is_industry = any(k in ql for k in ["market", "industry", "tam", "total addressable", "cagr", "market size", "key players", "competitive landscape"])
+
+    if is_country and not is_industry:
+        category = "country"
+    elif is_industry and not is_country:
+        category = "industry"
+    elif is_country and is_industry:
+        category = "mixed"
+    else:
+        category = "general"
+
+    # --- signals (deterministic) ---
+    years = re.findall(r"\b(20\d{2})\b", q)
+    regions = [r for r in ["asia", "apac", "europe", "north america", "latin america", "middle east", "africa", "china", "india", "japan", "usa", "uk"] if r in ql]
+
+    # naive "side question" split: keep it deterministic
+    # examples: "... and the impact of sneaker drops", "... including X"
+    side_markers = ["impact of", "effect of", "including", "along with", "as well as", "and also"]
+    side_questions = []
+    for m in side_markers:
+        if m in ql:
+            parts = q.split(m, 1)
+            if len(parts) == 2:
+                candidate = parts[1].strip(" .,:;")
+                if candidate and len(candidate) >= 4:
+                    side_questions.append(candidate)
+            break
+
+    signals = {
+        "years": sorted(list(set(years))),
+        "regions": sorted(list(set(regions))),
+        "contains_country_indicators": bool(is_country),
+        "contains_industry_indicators": bool(is_industry),
+    }
+
+    return {
+        "category": category,
+        "signals": signals,
+        "side_questions": side_questions
+    }
+
+
 def render_dashboard(
     primary_json: str,
     final_conf: float,
@@ -4675,23 +4860,77 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # Key Metrics
+        # Key Metrics (template-driven when available)
     st.subheader("💰 Key Metrics")
-    metrics = data.get('primary_metrics', {})
+    metrics = data.get("primary_metrics", {}) or {}
+    # 3B: Pull question signals/category into the same table output
+    question_category = data.get("question_category") or data.get("question_profile", {}).get("category")
+    question_signals = data.get("question_signals") or data.get("question_profile", {}).get("signals", {})
+    side_questions = data.get("side_questions") or data.get("question_profile", {}).get("side_questions", [])
 
-    if metrics and isinstance(metrics, dict):
-        metric_rows = []
-        for key, detail in list(metrics.items())[:6]:
-            if isinstance(detail, dict):
+
+    expected_ids = data.get("expected_metric_ids") or (
+        (data.get("question_signals") or {}).get("expected_metric_ids") or []
+    )
+
+    metric_rows = []
+
+    # Prepend question-derived signals (if present) into the same Key Metrics table
+    if question_category:
+        metric_rows.append({"Metric": "Question Category", "Value": str(question_category)})
+
+    if isinstance(question_signals, dict):
+        years = question_signals.get("years")
+        regions = question_signals.get("regions")
+        if years:
+            metric_rows.append({"Metric": "Question Years (detected)", "Value": ", ".join(map(str, years))})
+        if regions:
+            metric_rows.append({"Metric": "Regions (detected)", "Value": ", ".join(map(str, regions))})
+
+    if side_questions:
+        metric_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(map(str, side_questions))})
+
+
+    if isinstance(metrics, dict) and metrics:
+        # Canonicalize to stabilize lookups, regardless of how primary_metrics keys are named
+        canon = canonicalize_metrics(metrics)
+
+        # Build lookup by base canonical id (strip year suffixes etc.)
+        by_base = {}
+        for cid, m in canon.items():
+            base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
+            if base not in by_base:
+                by_base[base] = []
+            by_base[base].append(m)
+
+        # If we have an expected template, render in that order first
+        if expected_ids:
+            for base_id in expected_ids:
+                candidates = by_base.get(base_id, [])
+                if candidates:
+                    # pick first deterministic candidate
+                    m = candidates[0]
+                    metric_rows.append({
+                        "Metric": m.get("name", base_id),
+                        "Value": f"{m.get('value', 'N/A')} {m.get('unit', '')}".strip()
+                    })
+                else:
+                    # placeholder row so the table follows the template
+                    display = METRIC_REGISTRY.get(base_id, {}).get("canonical_name", base_id.replace("_", " ").title())
+                    metric_rows.append({"Metric": display, "Value": "N/A"})
+        else:
+            # No template → fall back to first 6 as before, but still stable via canonicalization
+            for cid, m in list(canon.items())[:6]:
                 metric_rows.append({
-                    "Metric": detail.get("name", key),
-                    "Value": f"{detail.get('value', 'N/A')} {detail.get('unit', '')}".strip()
+                    "Metric": m.get("name", cid),
+                    "Value": f"{m.get('value', 'N/A')} {m.get('unit', '')}".strip()
                 })
 
-        if metric_rows:
-            st.table(pd.DataFrame(metric_rows))
+    if metric_rows:
+        st.table(pd.DataFrame(metric_rows))
     else:
         st.info("No metrics available")
+
 
     st.markdown("---")
 
@@ -5115,6 +5354,10 @@ def main():
                 return
 
             query = query.strip()[:500]  # Limit length
+            # 3A: Deterministic question categorization/signals for structured reporting
+            question_profile = categorize_question_signals(query)
+            # Deterministic question signals (no LLM)
+            question_signals = classify_question_signals(query)
             # Deterministic: extract category + main/side questions
             query_structure = extract_query_structure(query)
 
@@ -5136,7 +5379,7 @@ def main():
                 }
 
             # Primary model query
-            with st.spinner("🤖 Analyzing with primary model..."):
+            with st.spinner("🤖 Analyzing query..."):
                 primary_response = query_perplexity(query, web_context, query_structure=query_structure)
 
             if not primary_response:
@@ -5190,6 +5433,10 @@ def main():
             # Build output
             output = {
                 "question": query,
+                "question_profile": question_profile,
+                "question_category": question_profile.get("category"),
+                "question_signals": question_profile.get("signals", {}),
+                "side_questions": question_profile.get("side_questions", []),
                 "timestamp": now_utc().isoformat(),
                 "primary_response": primary_data,
                 "final_confidence": final_conf,
