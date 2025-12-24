@@ -17,6 +17,7 @@
 # Improved Stability of Handling of Duplicate Canonicalized IDs
 # Deterministic Main and Side Topic Extractor
 # Drift change monitoring from question framing or data changes
+# Separation of local, regional and global metrics
 # =========================================================
 
 import os
@@ -4776,59 +4777,218 @@ def detect_y_label_dynamic(values: list) -> str:
 # 3A. QUESTION CATEGORIZATION + SIGNALS (DETERMINISTIC)
 # =========================================================
 
-def categorize_question_signals(question: str) -> Dict[str, Any]:
+def categorize_question_and_signals(question: str) -> Dict:
     """
-    Deterministic categorizer + signals extractor.
-    Keeps this lightweight and stable (no LLM dependency).
+    Deterministic question categorisation + extraction of signals + side questions.
+
+    Outputs:
+      {
+        "category": "industry" | "country" | "company" | "macro" | "other",
+        "signals": {
+            "regions": [...],
+            "local_terms": [...],      # e.g. ["singapore"]
+            "geo_phrases": [...],      # raw extracted geo phrases
+        },
+        "side_questions": [...]
+      }
     """
-    if not question:
-        return {"category": "unknown", "signals": {}, "side_questions": []}
+    q = (question or "").strip()
+    q_lower = q.lower()
 
-    q = question.strip()
-    ql = q.lower()
+    # ---------------------------
+    # 1) Side-question extraction
+    # ---------------------------
+    # Split on "and", "also", "plus", commas, semicolons, question marks.
+    # Keep determinism by simple regex (no LLM).
+    parts = [p.strip() for p in re.split(r"\b(?:and|also|plus)\b|[;,?]", q_lower) if p.strip()]
+    main_part = parts[0] if parts else q_lower
+    side_parts = parts[1:] if len(parts) > 1 else []
 
-    # --- category heuristic (deterministic) ---
-    is_country = any(k in ql for k in ["gdp", "gdp per capita", "population", "exports", "imports", "currency", "interest rate", "inflation"])
-    is_industry = any(k in ql for k in ["market", "industry", "tam", "total addressable", "cagr", "market size", "key players", "competitive landscape"])
-
-    if is_country and not is_industry:
-        category = "country"
-    elif is_industry and not is_country:
-        category = "industry"
-    elif is_country and is_industry:
-        category = "mixed"
-    else:
-        category = "general"
-
-    # --- signals (deterministic) ---
-    years = re.findall(r"\b(20\d{2})\b", q)
-    regions = [r for r in ["asia", "apac", "europe", "north america", "latin america", "middle east", "africa", "china", "india", "japan", "usa", "uk"] if r in ql]
-
-    # naive "side question" split: keep it deterministic
-    # examples: "... and the impact of sneaker drops", "... including X"
-    side_markers = ["impact of", "effect of", "including", "along with", "as well as", "and also"]
+    # Side question heuristic: contains cue words, or is short add-on topic
+    side_cues = ["impact", "effect", "influence", "driver", "risk", "why", "how", "trend", "future", "regulation"]
     side_questions = []
-    for m in side_markers:
-        if m in ql:
-            parts = q.split(m, 1)
-            if len(parts) == 2:
-                candidate = parts[1].strip(" .,:;")
-                if candidate and len(candidate) >= 4:
-                    side_questions.append(candidate)
-            break
+    for sp in side_parts:
+        if any(c in sp for c in side_cues) or len(sp.split()) <= 8:
+            side_questions.append(sp)
+
+    # ---------------------------
+    # 2) Category classification
+    # ---------------------------
+    industry_terms = [
+        "market size", "tam", "industry", "sector", "market", "growth", "cagr",
+        "players", "competition", "supply chain", "demand", "pricing", "share"
+    ]
+    country_terms = [
+        "gdp", "gdp per capita", "inflation", "population", "unemployment",
+        "trade", "exports", "imports", "currency", "interest rate", "central bank"
+    ]
+    company_terms = [
+        "revenue", "earnings", "profit", "margin", "guidance",
+        "market cap", "valuation", "p/e", "balance sheet"
+    ]
+
+    score_industry = sum(1 for t in industry_terms if t in q_lower)
+    score_country = sum(1 for t in country_terms if t in q_lower)
+    score_company = sum(1 for t in company_terms if t in q_lower)
+
+    # Additional simple cue: presence of "in <place>" often indicates geography/country framing
+    if re.search(r"\b(gdp|inflation|population|currency)\b", q_lower):
+        score_country += 2
+
+    if score_industry >= max(score_country, score_company, 1):
+        category = "industry"
+    elif score_country >= max(score_industry, score_company, 1):
+        category = "country"
+    elif score_company >= max(score_industry, score_country, 1):
+        category = "company"
+    else:
+        category = "other"
+
+    # ---------------------------
+    # 3) Geo signals (local/regional hints)
+    # ---------------------------
+    region_keywords = [
+        "asia", "apac", "asean", "southeast asia", "south asia", "east asia",
+        "europe", "emea", "middle east", "africa", "latin america", "latam",
+        "north america", "global", "worldwide"
+    ]
+    regions = sorted({rk for rk in region_keywords if rk in q_lower})
+
+    # Extract geo phrases after in/within/across/for (e.g., "in singapore", "across southeast asia")
+    geo_phrases = []
+    for m in re.finditer(r"\b(?:in|within|across|for)\s+([a-z][a-z\s\-]{2,40})", q_lower):
+        phrase = m.group(1).strip()
+        # stop at common clause words
+        phrase = re.split(r"\b(?:and|with|without|that|which|who|where|when|because)\b", phrase)[0].strip()
+        # trim trailing punctuation-like tokens
+        phrase = phrase.strip(" .,:;!?")
+        if phrase and len(phrase.split()) <= 4:
+            geo_phrases.append(phrase)
+
+    # local terms: pick the most specific geo phrases that are NOT just "asia"/"global"/etc.
+    non_local_blocklist = set(region_keywords)
+    local_terms = []
+    for gp in geo_phrases:
+        if gp not in non_local_blocklist and gp not in regions:
+            local_terms.append(gp)
+
+    # Deduplicate deterministically (stable order)
+    def _stable_unique(seq):
+        seen = set()
+        out = []
+        for x in seq:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
 
     signals = {
-        "years": sorted(list(set(years))),
-        "regions": sorted(list(set(regions))),
-        "contains_country_indicators": bool(is_country),
-        "contains_industry_indicators": bool(is_industry),
+        "regions": _stable_unique(regions),
+        "local_terms": _stable_unique(local_terms),
+        "geo_phrases": _stable_unique(geo_phrases),
     }
 
     return {
         "category": category,
         "signals": signals,
-        "side_questions": side_questions
+        "side_questions": _stable_unique(side_questions),
     }
+
+def infer_metric_scope(metric_name: str, question_signals: Dict) -> str:
+    """
+    Deterministically classify a metric as local / regional / global
+    using metric_name + question geo signals.
+    """
+    name = (metric_name or "").lower()
+
+    # Strong explicit cues in the metric itself
+    if "global" in name or "worldwide" in name:
+        return "global"
+
+    # Pull geo hints from question
+    signals = question_signals or {}
+    local_terms = [t.lower() for t in (signals.get("local_terms") or []) if isinstance(t, str)]
+    regions = [r.lower() for r in (signals.get("regions") or []) if isinstance(r, str)]
+
+    # Local match: any local term appears in metric name
+    if any(lt and lt in name for lt in local_terms):
+        return "local"
+
+    # Regional match: any region keyword appears in metric name
+    if any(rg and rg in name for rg in regions):
+        return "regional"
+
+    # Regional cues even if question didn't explicitly list it
+    regional_keywords = [
+        "asia", "apac", "asean", "southeast asia", "south asia", "east asia",
+        "europe", "emea", "latam", "latin america", "north america", "middle east", "africa"
+    ]
+    if any(rk in name for rk in regional_keywords):
+        return "regional"
+
+    # Default (if question is local-focused but metric doesn't say, treat as global unless proven otherwise)
+    return "global"
+
+
+def split_metrics_by_scope(metrics: Dict, question_signals: Dict) -> Dict[str, Dict]:
+    """
+    Partition metrics dict into {local, regional, global} buckets.
+    Keeps deterministic ordering based on existing insertion order.
+    """
+    buckets = {"local": {}, "regional": {}, "global": {}}
+    if not isinstance(metrics, dict):
+        return buckets
+
+    for k, m in metrics.items():
+        if not isinstance(m, dict):
+            continue
+        metric_name = m.get("name", k)
+        scope = infer_metric_scope(metric_name, question_signals)
+        buckets[scope][k] = m
+
+    return buckets
+
+
+def detect_market_size_inconsistencies(metrics: Dict) -> List[str]:
+    """
+    Lightweight deterministic sanity checks to surface 'weird output'
+    (e.g., projected 2025 > projected 2033 under positive CAGR).
+    Returns warnings (strings) for UI display.
+    """
+    warnings = []
+    if not isinstance(metrics, dict):
+        return warnings
+
+    # Collect year-tagged market size / projected size values
+    year_val = []  # (year, name, value_float, raw)
+    for k, m in metrics.items():
+        if not isinstance(m, dict):
+            continue
+        name = (m.get("name") or str(k))
+        val = parse_to_float(m.get("value"))
+        if val is None:
+            continue
+        years = re.findall(r"(20\d{2})", name)
+        if years:
+            try:
+                year = int(years[0])
+                year_val.append((year, name, val, str(m.get("value"))))
+            except:
+                pass
+
+    year_val.sort(key=lambda x: x[0])
+
+    # If multiple years exist, check monotonicity when CAGR appears positive (best-effort)
+    # This is not "blocking", just warns.
+    if len(year_val) >= 2:
+        # check if it goes wildly up/down
+        for (y1, n1, v1, r1), (y2, n2, v2, r2) in zip(year_val, year_val[1:]):
+            if y2 > y1 and v2 < v1 * 0.6:
+                warnings.append(f"Possible inconsistency: {y2} value looks much lower than {y1} ({n1}={r1} vs {n2}={r2}).")
+            if y2 > y1 and v2 > v1 * 1.8:
+                warnings.append(f"Possible inconsistency: {y2} value looks much higher than {y1} ({n1}={r1} vs {n2}={r2}).")
+
+    return warnings
 
 
 def render_dashboard(
@@ -4865,82 +5025,63 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # Executive Summary
-    st.subheader("📋 Executive Summary")
-    st.markdown(f"**{data.get('executive_summary', 'No summary available')}**")
 
-    st.markdown("---")
-
-        # Key Metrics (template-driven when available)
+    # Key Metrics (redesigned: Local / Regional / Global)
     st.subheader("💰 Key Metrics")
-    metrics = data.get("primary_metrics", {}) or {}
-    # 3B: Pull question signals/category into the same table output
-    question_category = data.get("question_category") or data.get("question_profile", {}).get("category")
-    question_signals = data.get("question_signals") or data.get("question_profile", {}).get("signals", {})
-    side_questions = data.get("side_questions") or data.get("question_profile", {}).get("side_questions", [])
 
+    metrics = data.get("primary_metrics", {})
+    question_profile = categorize_question_and_signals(user_question)
+    q_signals = (question_profile or {}).get("signals", {}) or {}
 
-    expected_ids = data.get("expected_metric_ids") or (
-        (data.get("question_signals") or {}).get("expected_metric_ids") or []
-    )
+    # Show deterministic sanity warnings for "weird output"
+    warnings = detect_market_size_inconsistencies(metrics)
+    if warnings:
+        st.warning("⚠️ Possible metric inconsistencies detected:\n- " + "\n- ".join(warnings))
 
-    metric_rows = []
+    # Always show category + side questions as a separate mini-table (metadata)
+    meta_rows = []
+    meta_rows.append({"Metric": "Question Category", "Value": question_profile.get("category", "other")})
 
-    # Prepend question-derived signals (if present) into the same Key Metrics table
-    if question_category:
-        metric_rows.append({"Metric": "Question Category", "Value": str(question_category)})
+    side_qs = question_profile.get("side_questions") or []
+    if side_qs:
+        meta_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(side_qs)})
 
-    if isinstance(question_signals, dict):
-        years = question_signals.get("years")
-        regions = question_signals.get("regions")
-        if years:
-            metric_rows.append({"Metric": "Question Years (detected)", "Value": ", ".join(map(str, years))})
-        if regions:
-            metric_rows.append({"Metric": "Regions (detected)", "Value": ", ".join(map(str, regions))})
+    # Optional: show geo hints
+    local_terms = q_signals.get("local_terms") or []
+    regions = q_signals.get("regions") or []
+    if local_terms:
+        meta_rows.append({"Metric": "Local Focus", "Value": ", ".join(local_terms)})
+    if regions:
+        meta_rows.append({"Metric": "Regional Focus", "Value": ", ".join(regions)})
 
-    if side_questions:
-        metric_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(map(str, side_questions))})
+    st.table(pd.DataFrame(meta_rows))
 
+    # Now split actual metrics by scope
+    buckets = split_metrics_by_scope(metrics, q_signals)
 
-    if isinstance(metrics, dict) and metrics:
-        # Canonicalize to stabilize lookups, regardless of how primary_metrics keys are named
-        canon = canonicalize_metrics(metrics)
-
-        # Build lookup by base canonical id (strip year suffixes etc.)
-        by_base = {}
-        for cid, m in canon.items():
-            base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
-            if base not in by_base:
-                by_base[base] = []
-            by_base[base].append(m)
-
-        # If we have an expected template, render in that order first
-        if expected_ids:
-            for base_id in expected_ids:
-                candidates = by_base.get(base_id, [])
-                if candidates:
-                    # pick first deterministic candidate
-                    m = candidates[0]
-                    metric_rows.append({
-                        "Metric": m.get("name", base_id),
-                        "Value": f"{m.get('value', 'N/A')} {m.get('unit', '')}".strip()
-                    })
-                else:
-                    # placeholder row so the table follows the template
-                    display = METRIC_REGISTRY.get(base_id, {}).get("canonical_name", base_id.replace("_", " ").title())
-                    metric_rows.append({"Metric": display, "Value": "N/A"})
-        else:
-            # No template → fall back to first 6 as before, but still stable via canonicalization
-            for cid, m in list(canon.items())[:6]:
-                metric_rows.append({
-                    "Metric": m.get("name", cid),
-                    "Value": f"{m.get('value', 'N/A')} {m.get('unit', '')}".strip()
+    def _render_metric_bucket(title: str, bucket: Dict):
+        if not bucket:
+            st.info(f"No {title.lower()} metrics found.")
+            return
+        rows = []
+        for key, detail in list(bucket.items())[:12]:
+            if isinstance(detail, dict):
+                rows.append({
+                    "Metric": detail.get("name", key),
+                    "Value": f"{detail.get('value', 'N/A')} {detail.get('unit', '')}".strip()
                 })
+        if rows:
+            st.table(pd.DataFrame(rows))
 
-    if metric_rows:
-        st.table(pd.DataFrame(metric_rows))
-    else:
-        st.info("No metrics available")
+    st.markdown("### 🇸🇬 Local (country/city-specific)")
+    _render_metric_bucket("Local", buckets.get("local", {}))
+
+    st.markdown("### 🌏 Regional")
+    _render_metric_bucket("Regional", buckets.get("regional", {}))
+
+    st.markdown("### 🌍 Global")
+    _render_metric_bucket("Global", buckets.get("global", {}))
+
 
 
     st.markdown("---")
