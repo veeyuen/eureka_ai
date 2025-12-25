@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.16
+# YUREEKA AI RESEARCH ASSISTANT v7.17
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -17,6 +17,7 @@
 # Improved Stability of Handling of Duplicate Canonicalized IDs
 # Deterministic Main and Side Topic Extractor
 # Range Aware Canonical Metrics
+# Range + Source Attribution
 # =========================================================
 
 import os
@@ -2080,6 +2081,258 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
             "keywords": extract_context_keywords(m.get("name", "")),
         }
     return frozen
+
+# =========================================================
+# RANGE + SOURCE ATTRIBUTION (DETERMINISTIC, NO LLM)
+# =========================================================
+
+def normalize_unit_tag(u: str) -> str:
+    """
+    Normalize unit to a compact tag for matching:
+    - Currency magnitudes: T/B/M
+    - Percent: %
+    - Unknown: ""
+    """
+    if not u:
+        return ""
+    ul = str(u).strip().lower()
+    if "%" in ul:
+        return "%"
+
+    # common currency magnitude patterns
+    if "trillion" in ul or ul.endswith("t"):
+        return "T"
+    if "billion" in ul or ul.endswith("b"):
+        return "B"
+    if "million" in ul or ul.endswith("m"):
+        return "M"
+
+    # if you store units like "billion USD"
+    if ul.startswith("t"):
+        return "T"
+    if ul.startswith("b"):
+        return "B"
+    if ul.startswith("m"):
+        return "M"
+
+    return ""
+
+
+def to_billions(value: float, unit_tag: str) -> Optional[float]:
+    """Convert T/B/M tagged values into billions. Leaves % unchanged (returns None for % here)."""
+    try:
+        v = float(value)
+    except Exception:
+        return None
+
+    if unit_tag == "T":
+        return v * 1000.0
+    if unit_tag == "B":
+        return v
+    if unit_tag == "M":
+        return v / 1000.0
+    return None
+
+
+def build_metric_keywords(metric_name: str) -> List[str]:
+    """Reuse your existing keyword extractor, but ensure we always have something."""
+    kws = extract_context_keywords(metric_name) or []
+    # Add simple fallback tokens (deterministic)
+    for t in re.findall(r"[a-zA-Z]{4,}", str(metric_name).lower()):
+        if t not in kws:
+            kws.append(t)
+    return kws[:25]
+
+
+def extract_numbers_from_scraped_sources(
+    scraped_content: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """
+    Deterministically extract numeric candidates from all scraped source texts.
+    Returns list of {url, value, unit_tag, raw, context}.
+    """
+    candidates: List[Dict[str, Any]] = []
+    if not isinstance(scraped_content, dict):
+        return candidates
+
+    for url, content in scraped_content.items():
+        if not content or not isinstance(content, str) or len(content) < 200:
+            continue
+
+        nums = extract_numbers_with_context(content)  # you already have this function
+        for n in nums:
+            unit_tag = normalize_unit_tag(n.get("unit", ""))
+            candidates.append({
+                "url": url,
+                "value": n.get("value"),
+                "unit_tag": unit_tag,
+                "raw": n.get("raw", ""),
+                "context": (n.get("context") or ""),
+            })
+
+    return candidates
+
+
+def attribute_span_to_sources(
+    metric_name: str,
+    metric_unit: str,
+    scraped_content: Dict[str, str],
+    rel_tol: float = 0.08,
+) -> Dict[str, Any]:
+    """
+    Build a deterministic span (min/mid/max) for a metric, and attribute min/max to sources.
+    Uses only scraped content + regex extractions (NO LLM).
+    """
+    unit_tag_hint = normalize_unit_tag(metric_unit)
+    keywords = build_metric_keywords(metric_name)
+
+    all_candidates = extract_numbers_from_scraped_sources(scraped_content)
+
+    filtered: List[Dict[str, Any]] = []
+
+    for c in all_candidates:
+        ctx = c.get("context", "")
+        if not ctx:
+            continue
+
+        # Context match gate
+        ctx_score = calculate_context_match(keywords, ctx)
+        if ctx_score <= 0.0:
+            continue
+
+        # Unit gate:
+        # If metric is %, require %.
+        if unit_tag_hint == "%":
+            if c.get("unit_tag") != "%":
+                continue
+            # keep as-is, no scaling
+            val_norm = c.get("value")
+        else:
+            # currency magnitude matching: allow T/B/M and convert to billions
+            # if candidate unit_tag missing, skip (too risky)
+            if c.get("unit_tag") not in ("T", "B", "M"):
+                continue
+            val_norm = to_billions(c.get("value"), c.get("unit_tag"))
+            if val_norm is None:
+                continue
+
+        filtered.append({
+            **c,
+            "value_norm": val_norm,
+            "ctx_score": float(ctx_score),
+        })
+
+    if not filtered:
+        return {
+            "span": None,
+            "source_attribution": None,
+            "evidence": []
+        }
+
+    # Choose min/max deterministically:
+    # - primary key: numeric value_norm
+    # - tie-breaker: higher ctx_score
+    # - final tie-breaker: url lexicographic
+    def min_key(x):
+        return (x["value_norm"], -x["ctx_score"], str(x.get("url", "")))
+
+    def max_key(x):
+        return (-x["value_norm"], -x["ctx_score"], str(x.get("url", "")))
+
+    min_item = sorted(filtered, key=min_key)[0]
+    max_item = sorted(filtered, key=max_key)[0]
+
+    vmin = float(min_item["value_norm"])
+    vmax = float(max_item["value_norm"])
+    vmid = (vmin + vmax) / 2.0
+
+    # For % metrics, keep % in the same numeric scale; for currency, we standardize to "billion USD"
+    if unit_tag_hint == "%":
+        unit_out = "%"
+    else:
+        unit_out = "billion USD"
+
+    evidence = []
+    for it in sorted(filtered, key=lambda x: (-x["ctx_score"], str(x.get("url", ""))))[:12]:
+        evidence.append({
+            "url": it.get("url"),
+            "raw": it.get("raw"),
+            "unit_tag": it.get("unit_tag"),
+            "value_norm": it.get("value_norm"),
+            "context_snippet": (it.get("context") or "")[:220],
+            "context_score": round(float(it.get("ctx_score", 0.0)) * 100, 1),
+        })
+
+    return {
+        "span": {
+            "min": round(vmin, 4),
+            "mid": round(vmid, 4),
+            "max": round(vmax, 4),
+            "unit": unit_out
+        },
+        "source_attribution": {
+            "min": {
+                "url": min_item.get("url"),
+                "raw": min_item.get("raw"),
+                "value_norm": min_item.get("value_norm"),
+                "context_snippet": (min_item.get("context") or "")[:220],
+                "context_score": round(float(min_item.get("ctx_score", 0.0)) * 100, 1),
+            },
+            "max": {
+                "url": max_item.get("url"),
+                "raw": max_item.get("raw"),
+                "value_norm": max_item.get("value_norm"),
+                "context_snippet": (max_item.get("context") or "")[:220],
+                "context_score": round(float(max_item.get("ctx_score", 0.0)) * 100, 1),
+            }
+        },
+        "evidence": evidence
+    }
+
+
+def add_range_and_source_attribution_to_canonical_metrics(
+    canonical_metrics: Dict[str, Dict[str, Any]],
+    web_context: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Enrich canonical metrics with:
+      - value_span (min/mid/max)
+      - source_attribution (min/max)
+      - evidence list (top candidates)
+    Deterministic + no LLM.
+    """
+    if not isinstance(canonical_metrics, dict):
+        return {}
+
+    scraped = {}
+    try:
+        scraped = (web_context or {}).get("scraped_content", {}) or {}
+    except Exception:
+        scraped = {}
+
+    enriched = {}
+    for cid, m in canonical_metrics.items():
+        metric_name = m.get("name") or m.get("original_name") or cid
+        metric_unit = m.get("unit") or ""
+
+        span_pack = attribute_span_to_sources(
+            metric_name=metric_name,
+            metric_unit=metric_unit,
+            scraped_content=scraped
+        )
+
+        mm = dict(m)
+        if span_pack.get("span"):
+            mm["value_span"] = span_pack["span"]
+        if span_pack.get("source_attribution"):
+            mm["source_attribution"] = span_pack["source_attribution"]
+        if span_pack.get("evidence"):
+            mm["evidence"] = span_pack["evidence"]
+
+        enriched[cid] = mm
+
+    return enriched
+
 
 
 
@@ -5063,8 +5316,21 @@ def render_dashboard(
                     m = candidates[0]
                     metric_rows.append({
                         "Metric": m.get("name", base_id),
-                        "Value": f"{m.get('value', 'N/A')} {m.get('unit', '')}".strip()
-                    })
+                        span = detail.get("value_span")
+                        if isinstance(span, dict) and span.get("min") is not None and span.get("max") is not None:
+                            # show min–max if it’s actually a range
+                            if float(span["min"]) != float(span["max"]):
+                                value_str = f"{span['min']}–{span['max']} {span.get('unit','')}".strip()
+                            else:
+                                value_str = f"{span.get('mid', detail.get('value','N/A'))} {span.get('unit', detail.get('unit',''))}".strip()
+                        else:
+                            value_str = f"{detail.get('value', 'N/A')} {detail.get('unit', '')}".strip()
+
+                        metric_rows.append({
+                            "Metric": detail.get("name", key),
+                            "Value": value_str
+                        })
+
                 else:
                     # placeholder row so the table follows the template
                     display = METRIC_REGISTRY.get(base_id, {}).get("canonical_name", base_id.replace("_", " ").title())
@@ -5559,14 +5825,22 @@ def main():
             )
 
 
-            # Canonicalize metrics before saving for stable future comparisons
             if primary_data.get('primary_metrics'):
                 primary_data['primary_metrics_canonical'] = canonicalize_metrics(
                     primary_data.get('primary_metrics', {})
                 )
+
+            # NEW: deterministic range + per-bound source attribution (no LLM)
+            if primary_data.get('primary_metrics_canonical'):
+                primary_data['primary_metrics_canonical'] = add_range_and_source_attribution_to_canonical_metrics(
+                    primary_data.get('primary_metrics_canonical', {}),
+                    web_context
+                )
+
+            # Freeze after enrichment so schema can lock unit/keywords, while attribution stays as data
             if primary_data.get('primary_metrics_canonical'):
                 primary_data['metric_schema_frozen'] = freeze_metric_schema(
-                primary_data['primary_metrics_canonical']
+                    primary_data['primary_metrics_canonical']
                 )
 
 
