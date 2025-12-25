@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.17
+# YUREEKA AI RESEARCH ASSISTANT v7.18
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -11,13 +11,14 @@
 # Canonical Metric Registry + Semantic Hashing of Findings
 # Removal of Evolution Decisions from LLM
 # Further Enhancements to Minimize Evolution Drift (Metric)
-# Saving of extraction cache in JSON
+# Saving of Extraction Cache in JSON
 # Prioritize High Quality Sources With Source Freshness Tracking
 # Timestamps = Timezone Naive
 # Improved Stability of Handling of Duplicate Canonicalized IDs
 # Deterministic Main and Side Topic Extractor
 # Range Aware Canonical Metrics
 # Range + Source Attribution
+# Proxy Labeler + Geo Tagging
 # =========================================================
 
 import os
@@ -1932,35 +1933,253 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
 
     return (fallback_id, metric_name)
 
+# ------------------------------------
+# GEO + PROXY TAGGING (DETERMINISTIC)
+# ------------------------------------
 
-def canonicalize_metrics(metrics: Dict, merge_duplicates_to_range: bool = True) -> Dict:
+import re
+from typing import Dict, Any, Tuple, List, Optional
+
+REGION_KEYWORDS = {
+    "APAC": ["apac", "asia pacific", "asia-pacific"],
+    "SOUTHEAST_ASIA": ["southeast asia", "asean", "sea "],  # note space to reduce false matches
+    "ASIA": ["asia"],
+    "EUROPE": ["europe", "eu", "emea"],
+    "NORTH_AMERICA": ["north america"],
+    "LATAM": ["latin america", "latam"],
+    "MIDDLE_EAST": ["middle east", "mena"],
+    "AFRICA": ["africa"],
+    "OCEANIA": ["oceania", "australia", "new zealand"],
+}
+
+GLOBAL_KEYWORDS = ["global", "worldwide", "world", "international", "across the world"]
+
+# Minimal country map (expand deterministically over time)
+COUNTRY_KEYWORDS = {
+    "Singapore": ["singapore", "sg"],
+    "United States": ["united states", "usa", "u.s.", "us"],
+    "United Kingdom": ["united kingdom", "uk", "u.k.", "britain", "england"],
+    "China": ["china", "prc"],
+    "Japan": ["japan"],
+    "India": ["india"],
+    "Indonesia": ["indonesia"],
+    "Malaysia": ["malaysia"],
+    "Thailand": ["thailand"],
+    "Vietnam": ["vietnam"],
+    "Philippines": ["philippines"],
+}
+
+def infer_geo_scope(*texts: str) -> Dict[str, str]:
+    """
+    Deterministically infer geography from text.
+    Returns {"geo_scope": "local|regional|global|unknown", "geo_name": "<name or ''>"}.
+    Priority: country > region > global.
+    """
+    combined = " ".join([t for t in texts if isinstance(t, str) and t.strip()]).lower()
+    if not combined:
+        return {"geo_scope": "unknown", "geo_name": ""}
+
+    # 1) Country/local (most specific)
+    for country, kws in COUNTRY_KEYWORDS.items():
+        for kw in kws:
+            if kw in combined:
+                return {"geo_scope": "local", "geo_name": country}
+
+    # 2) Region
+    for region_name, kws in REGION_KEYWORDS.items():
+        for kw in kws:
+            if kw in combined:
+                pretty = region_name.replace("_", " ").title()
+                return {"geo_scope": "regional", "geo_name": pretty}
+
+    # 3) Global
+    for kw in GLOBAL_KEYWORDS:
+        if kw in combined:
+            return {"geo_scope": "global", "geo_name": "Global"}
+
+    return {"geo_scope": "unknown", "geo_name": ""}
+
+
+# ---- Proxy labeling ----
+# "Proxy" = adjacent metric that can help approximate the target but isn't the target definition.
+# You can expand these sets deterministically.
+
+PROXY_PATTERNS = [
+    # (pattern, proxy_type, reason_template)
+    (r"\bapparel\b|\bfashion\b|\bclothing\b", "adjacent_category", "Uses apparel/fashion as an adjacent proxy for streetwear."),
+    (r"\bfootwear\b|\bsneaker\b|\bshoes\b", "subsegment", "Uses footwear/sneakers as a subsegment proxy for the broader market."),
+    (r"\bresale\b|\bsecondary market\b", "channel_proxy", "Uses resale/secondary-market measures as a channel proxy."),
+    (r"\be-?commerce\b|\bonline sales\b|\bsocial commerce\b", "channel_proxy", "Uses e-commerce indicators as a channel proxy."),
+    (r"\btourism\b|\bvisitor\b|\btravel retail\b", "demand_driver", "Uses tourism indicators as a demand-driver proxy."),
+    (r"\bsearch interest\b|\bgoogle trends\b|\bweb traffic\b", "interest_proxy", "Uses interest/attention measures as a proxy."),
+]
+
+# These are words that signal "core market size" style metrics (usually non-proxy if they match the user topic).
+CORE_MARKET_PATTERNS = [
+    r"\bmarket size\b",
+    r"\bmarket value\b",
+    r"\brevenue\b",
+    r"\bsales\b",
+    r"\bcagr\b",
+    r"\bgrowth\b",
+    r"\bprojected\b|\bforecast\b",
+]
+
+def infer_proxy_label(
+    metric_name: str,
+    question_text: str = "",
+    category_hint: str = "",
+    *extra_context: str
+) -> Dict[str, Any]:
+    """
+    Deterministically label a metric as proxy/non-proxy.
+
+    Returns fields:
+      is_proxy: bool
+      proxy_type: str
+      proxy_reason: str
+      proxy_confidence: float (0-1)
+      proxy_target: str (best-guess target topic)
+    """
+    name = (metric_name or "").lower().strip()
+    q = (question_text or "").lower().strip()
+    ctx = " ".join([c for c in extra_context if isinstance(c, str)]).lower()
+
+    combined = " ".join([name, q, ctx]).strip()
+
+    # Default: not proxy
+    out = {
+        "is_proxy": False,
+        "proxy_type": "",
+        "proxy_reason": "",
+        "proxy_confidence": 0.0,
+        "proxy_target": ""
+    }
+
+    if not combined:
+        return out
+
+    # Best-effort target topic extraction (very light heuristic)
+    # If you already have question signals elsewhere, you can pass them in category_hint/question_text.
+    # Here we just keep a short phrase if present.
+    proxy_target = ""
+    if "streetwear" in q:
+        proxy_target = "streetwear"
+    elif "semiconductor" in q:
+        proxy_target = "semiconductors"
+    elif "battery" in q:
+        proxy_target = "batteries"
+    out["proxy_target"] = proxy_target
+
+    # If metric name itself looks like core market patterns AND includes the target keyword, treat as non-proxy.
+    # (prevents incorrectly labeling "Singapore streetwear market size" as proxy)
+    core_like = any(re.search(p, name) for p in CORE_MARKET_PATTERNS)
+    if core_like:
+        # If it explicitly contains the topic keyword, strongly non-proxy
+        if proxy_target and proxy_target in name:
+            return out
+        # If it says "streetwear market" in name, non-proxy even if target not detected
+        if "streetwear" in name:
+            return out
+
+    # Detect proxies using patterns.
+    for pat, ptype, reason in PROXY_PATTERNS:
+        if re.search(pat, combined):
+            out["is_proxy"] = True
+            out["proxy_type"] = ptype
+            out["proxy_reason"] = reason
+            # Confidence: stronger if pattern appears in metric name; weaker if only in context.
+            if re.search(pat, name):
+                out["proxy_confidence"] = 0.9
+            elif re.search(pat, ctx):
+                out["proxy_confidence"] = 0.7
+            else:
+                out["proxy_confidence"] = 0.6
+            return out
+
+    return out
+
+
+def merge_group_geo(group: List[Dict[str, Any]]) -> Tuple[str, str]:
+    """
+    Choose the most frequent geo tag within a merged group deterministically.
+    Returns (geo_scope, geo_name).
+    """
+    items = []
+    for g in group:
+        s = g.get("geo_scope", "unknown")
+        n = g.get("geo_name", "")
+        if s and s != "unknown":
+            items.append((s, n))
+
+    if not items:
+        return "unknown", ""
+
+    counts: Dict[str, int] = {}
+    for s, n in items:
+        k = f"{s}|{n}"
+        counts[k] = counts.get(k, 0) + 1
+
+    best_k = max(counts.items(), key=lambda kv: kv[1])[0]  # deterministic tie via insertion order after stable sort
+    s, n = best_k.split("|", 1)
+    return s, n
+
+
+def merge_group_proxy(group: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Merge proxy labels for duplicates deterministically.
+    If ANY member is proxy -> merged metric is proxy.
+    Choose the highest-confidence proxy candidate.
+    """
+    best = None
+    best_conf = -1.0
+
+    for g in group:
+        is_proxy = bool(g.get("is_proxy", False))
+        conf = float(g.get("proxy_confidence", 0.0) or 0.0)
+        if is_proxy and conf > best_conf:
+            best_conf = conf
+            best = g
+
+    if best is None:
+        return {
+            "is_proxy": False,
+            "proxy_type": "",
+            "proxy_reason": "",
+            "proxy_confidence": 0.0,
+            "proxy_target": "",
+        }
+
+    return {
+        "is_proxy": True,
+        "proxy_type": best.get("proxy_type", ""),
+        "proxy_reason": best.get("proxy_reason", ""),
+        "proxy_confidence": float(best.get("proxy_confidence", 0.0) or 0.0),
+        "proxy_target": best.get("proxy_target", ""),
+    }
+
+def canonicalize_metrics(
+    metrics: Dict,
+    merge_duplicates_to_range: bool = True,
+    question_text: str = "",
+    category_hint: str = ""
+) -> Dict:
     """
     Convert metrics to canonical IDs.
-    Range-aware mode merges duplicates (same canonical_id) into a single metric
-    with a numeric span (min/max) to preserve multi-source disagreement without
-    breaking cross-run matching.
 
-    Input:
-      {"metric1": {"name": "2024 Market Size", "value": 100, "unit": "B"}}
+    Enhancements:
+      - Range-aware mode merges duplicates (same canonical_id) into a single metric span.
+      - Deterministic geo tagging: geo_scope + geo_name.
+      - Deterministic proxy labeling: is_proxy + proxy_type + proxy_reason (+ confidence).
 
-    Output (single):
-      {"market_size_2024": {"name": "Market Size (2024)", "value": 100, "unit": "B", ...}}
-
-    Output (merged range):
-      {"market_size_2024": {
-         "name": "Market Size (2024)",
-         "value": 1.42,                 # representative (median)
-         "unit": "BILLION USD",
-         "range": {"min": 1.01, "max": 1.83, "candidates": [1.01, 1.83], "n": 2},
-         "original_names": [...],
-         "canonical_id": "market_size_2024"
-      }}
+    NOTE: extra fields added here persist into JSON as long as you save primary_metrics_canonical.
     """
     if not isinstance(metrics, dict):
         return {}
 
-    # ---- Collect candidates (deterministic ordering) ----
     candidates = []
+
+    # ---- Collect candidates (deterministic ordering) ----
     for key, metric in metrics.items():
         if not isinstance(metric, dict):
             continue
@@ -1971,11 +2190,6 @@ def canonicalize_metrics(metrics: Dict, merge_duplicates_to_range: bool = True) 
         raw_unit = (metric.get("unit") or "").strip()
         unit = raw_unit.upper()
 
-        # For stable sorting across runs:
-        # - normalized name
-        # - unit
-        # - numeric value (if parseable)
-        # - original key as final stabilizer
         parsed_val = parse_to_float(metric.get("value"))
         value_for_sort = parsed_val if parsed_val is not None else str(metric.get("value", ""))
 
@@ -1983,7 +2197,25 @@ def canonicalize_metrics(metrics: Dict, merge_duplicates_to_range: bool = True) 
             str(original_name).lower().strip(),
             unit,
             str(value_for_sort),
-            str(key),
+            str(key),  # fallback stabilizer
+        )
+
+        # GEO inference: use metric context if present
+        geo = infer_geo_scope(
+            str(original_name),
+            str(metric.get("context_snippet", "")),
+            str(metric.get("source", "")),
+            str(metric.get("source_url", "")),
+        )
+
+        # PROXY inference: use question_text + optional context
+        proxy = infer_proxy_label(
+            metric_name=str(original_name),
+            question_text=str(question_text),
+            category_hint=str(category_hint),
+            str(metric.get("context_snippet", "")),
+            str(metric.get("source", "")),
+            str(metric.get("source_url", "")),
         )
 
         candidates.append({
@@ -1994,6 +2226,13 @@ def canonicalize_metrics(metrics: Dict, merge_duplicates_to_range: bool = True) 
             "unit": unit,
             "parsed_val": parsed_val,
             "stable_sort_key": stable_sort_key,
+
+            # NEW: geo
+            "geo_scope": geo["geo_scope"],
+            "geo_name": geo["geo_name"],
+
+            # NEW: proxy
+            **proxy,
         })
 
     candidates.sort(key=lambda x: x["stable_sort_key"])
@@ -2001,14 +2240,12 @@ def canonicalize_metrics(metrics: Dict, merge_duplicates_to_range: bool = True) 
     # ---- Group by canonical_id ----
     grouped: Dict[str, List[Dict]] = {}
     for c in candidates:
-        cid = c["canonical_id"]
-        grouped.setdefault(cid, []).append(c)
+        grouped.setdefault(c["canonical_id"], []).append(c)
 
-    # ---- Build canonicalized output ----
     canonicalized: Dict[str, Dict] = {}
 
     for cid, group in grouped.items():
-        # Single metric → keep as-is (with canonical_id/original_name)
+        # Single metric → keep as-is
         if len(group) == 1 or not merge_duplicates_to_range:
             g = group[0]
             m = g["metric"]
@@ -2016,23 +2253,42 @@ def canonicalize_metrics(metrics: Dict, merge_duplicates_to_range: bool = True) 
                 **m,
                 "name": g["canonical_name"],
                 "canonical_id": cid,
-                "original_name": g["original_name"]
+                "original_name": g["original_name"],
+
+                # NEW: geo
+                "geo_scope": g.get("geo_scope", "unknown"),
+                "geo_name": g.get("geo_name", ""),
+
+                # NEW: proxy
+                "is_proxy": bool(g.get("is_proxy", False)),
+                "proxy_type": g.get("proxy_type", ""),
+                "proxy_reason": g.get("proxy_reason", ""),
+                "proxy_confidence": float(g.get("proxy_confidence", 0.0) or 0.0),
+                "proxy_target": g.get("proxy_target", ""),
             }
             continue
 
         # Merge duplicates → range-aware metric
-        # Choose base fields from the first (deterministic after stable sort)
         base = group[0]
         base_metric = dict(base["metric"])  # copy
         base_metric["name"] = base["canonical_name"]
         base_metric["canonical_id"] = cid
+
+        # Merge GEO deterministically
+        geo_scope, geo_name = merge_group_geo(group)
+        base_metric["geo_scope"] = geo_scope
+        base_metric["geo_name"] = geo_name
+
+        # Merge PROXY deterministically
+        merged_proxy = merge_group_proxy(group)
+        base_metric.update(merged_proxy)
 
         # Collect numeric candidates
         vals = [g["parsed_val"] for g in group if g["parsed_val"] is not None]
         raw_vals = [str(g["metric"].get("value", "")) for g in group]
         orig_names = [g["original_name"] for g in group]
 
-        # Unit handling: if units disagree, keep the base unit but preserve info
+        # Unit handling: if units disagree, keep base unit but preserve info
         units = [g["unit"] for g in group if g["unit"]]
         unit_base = units[0] if units else (base_metric.get("unit") or "")
         base_metric["unit"] = unit_base
@@ -2053,18 +2309,11 @@ def canonicalize_metrics(metrics: Dict, merge_duplicates_to_range: bool = True) 
                 "n": len(vals_sorted),
             }
         else:
-            # Non-numeric duplicates: keep base value but flag
-            base_metric["range"] = {
-                "min": None,
-                "max": None,
-                "candidates": [],
-                "n": 0,
-            }
+            base_metric["range"] = {"min": None, "max": None, "candidates": [], "n": 0}
 
         canonicalized[cid] = base_metric
 
     return canonicalized
-
 
 
 
@@ -5827,7 +6076,10 @@ def main():
 
             if primary_data.get('primary_metrics'):
                 primary_data['primary_metrics_canonical'] = canonicalize_metrics(
-                    primary_data.get('primary_metrics', {})
+                    primary_data.get('primary_metrics', {}),
+                    merge_duplicates_to_range=True,
+                    question_text=query,                       # <-- your user question variable
+                    category_hint=str(primary_data.get("question_category", ""))  # optional if you store it
                 )
 
             # NEW: deterministic range + per-bound source attribution (no LLM)
