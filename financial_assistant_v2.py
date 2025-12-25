@@ -2481,7 +2481,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
                 change_type = "decreased"
 
 
-            diffs.append(MetricDiff(
+        diffs.append(MetricDiff(
                 name=old_name,
                 old_value=old_val,
                 new_value=new_val,
