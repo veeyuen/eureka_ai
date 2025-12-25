@@ -2443,10 +2443,10 @@ def compute_component_similarity(comp1: Dict, comp2: Dict) -> float:
 def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List[MetricDiff]:
     """
     Compute metric diffs using canonical IDs for stable matching.
+    Range-aware via get_metric_value_span + spans_overlap.
     """
-    diffs = []
+    diffs: List[MetricDiff] = []
 
-    # Canonicalize both metric sets
     old_canonical = canonicalize_metrics(old_metrics)
     new_canonical = canonicalize_metrics(new_metrics)
 
@@ -2455,30 +2455,29 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
     # Match by canonical ID
     for old_id, old_m in old_canonical.items():
         old_name = old_m.get("name", old_id)
+
         old_span = get_metric_value_span(old_m)
         old_raw = str(old_m.get("value", ""))
         old_unit = old_span.get("unit") or old_m.get("unit", "")
         old_val = old_span.get("mid")
 
-                # Direct canonical ID match
+        # -------------------------
+        # Direct canonical ID match
+        # -------------------------
         if old_id in new_canonical:
             new_m = new_canonical[old_id]
             matched_new_ids.add(old_id)
 
-            new_raw = str(new_m.get('value', ''))
-            new_val = parse_to_float(new_m.get('value'))
-            new_unit = new_m.get('unit', old_unit)
-
-            # Range-aware / span-aware equality (your newer robustness logic)
-            old_span = get_metric_value_span(old_m)
+            new_raw = str(new_m.get("value", ""))
             new_span = get_metric_value_span(new_m)
+            new_val = new_span.get("mid")
+            new_unit = new_span.get("unit") or new_m.get("unit", old_unit)
 
             if spans_overlap(old_span, new_span, rel_tol=0.05):
                 change_pct = 0.0
                 change_type = "unchanged"
             else:
                 change_pct = compute_percent_change(old_val, new_val)
-
                 if change_pct is None or abs(change_pct) < 0.5:
                     change_type = "unchanged"
                 elif change_pct > 0:
@@ -2496,91 +2495,87 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
                 change_pct=change_pct,
                 change_type=change_type
             ))
+            continue  # important: don't fall into base-ID matching
 
-        else:
-            # Try base ID match (without year suffix)
+        # -------------------------
+        # Base ID match (strip years)
+        # -------------------------
+        base_id = re.sub(r'_\d{4}(?:_\d{4})*$', '', old_id)
+        found = False
 
-            base_id = re.sub(r'_\d{4}(?:_\d{4})*$', '', old_id)
-            found = False
+        for new_id, new_m in new_canonical.items():
+            if new_id in matched_new_ids:
+                continue
 
-            for new_id, new_m in new_canonical.items():
-                if new_id in matched_new_ids:
-                    continue
-                new_base_id = re.sub(r'_\d{4}(?:_\d{4})*$', '', new_id)
+            new_base_id = re.sub(r'_\d{4}(?:_\d{4})*$', '', new_id)
+            if base_id != new_base_id:
+                continue
 
-                if base_id == new_base_id:
-                    matched_new_ids.add(new_id)
-                    found = True
+            matched_new_ids.add(new_id)
+            found = True
 
-                    new_raw = str(new_m.get("value", ""))
-                    new_span = get_metric_value_span(new_m)
-                    new_val = new_span.get("mid")
-                    new_unit = new_span.get("unit") or new_m.get("unit", old_unit)
+            new_raw = str(new_m.get("value", ""))
+            new_span = get_metric_value_span(new_m)
+            new_val = new_span.get("mid")
+            new_unit = new_span.get("unit") or new_m.get("unit", old_unit)
 
-                    if spans_overlap(old_span, new_span, rel_tol=0.05):
-                        change_pct = 0.0
-                        change_type = "unchanged"
-                    else:
-                        change_pct = compute_percent_change(old_val, new_val)
-
-                        if change_pct is None or abs(change_pct) < 0.5:
-                            change_type = "unchanged"
-                        elif change_pct > 0:
-                            change_type = "increased"
-                        else:
-                            change_type = "decreased"
-
-
-                    if change_pct is None or abs(change_pct) < 0.5:
-                        change_type = 'unchanged'
-                    elif change_pct > 0:
-                        change_type = 'increased'
-                    else:
-                        change_type = 'decreased'
-
-                    diffs.append(MetricDiff(
-                        name=old_name,
-                        old_value=old_val,
-                        new_value=new_val,
-                        old_raw=old_raw,
-                        new_raw=new_raw,
-                        unit=new_unit or old_unit,
-                        change_pct=change_pct,
-                        change_type=change_type
-                    ))
-                    break
-
-            if not found:
-                # Metric removed
-                diffs.append(MetricDiff(
-                    name=old_name,
-                    old_value=old_val,
-                    new_value=None,
-                    old_raw=old_raw,
-                    new_raw='',
-                    unit=old_unit,
-                    change_pct=None,
-                    change_type='removed'
-                ))
-
-    # Find added metrics
-    for new_id, new_m in new_canonical.items():
-        if new_id not in matched_new_ids:
-            new_name = new_m.get('name', new_id)
-            new_raw = str(new_m.get('value', ''))
-            new_val = get_metric_value_span(new_m).get("mid")
-            new_unit = new_m.get('unit', '')
+            if spans_overlap(old_span, new_span, rel_tol=0.05):
+                change_pct = 0.0
+                change_type = "unchanged"
+            else:
+                change_pct = compute_percent_change(old_val, new_val)
+                if change_pct is None or abs(change_pct) < 0.5:
+                    change_type = "unchanged"
+                elif change_pct > 0:
+                    change_type = "increased"
+                else:
+                    change_type = "decreased"
 
             diffs.append(MetricDiff(
-                name=new_name,
-                old_value=None,
+                name=old_name,
+                old_value=old_val,
                 new_value=new_val,
-                old_raw='',
+                old_raw=old_raw,
                 new_raw=new_raw,
-                unit=new_unit,
-                change_pct=None,
-                change_type='added'
+                unit=new_unit or old_unit,
+                change_pct=change_pct,
+                change_type=change_type
             ))
+            break
+
+        if not found:
+            diffs.append(MetricDiff(
+                name=old_name,
+                old_value=old_val,
+                new_value=None,
+                old_raw=old_raw,
+                new_raw="",
+                unit=old_unit,
+                change_pct=None,
+                change_type="removed"
+            ))
+
+    # Added metrics
+    for new_id, new_m in new_canonical.items():
+        if new_id in matched_new_ids:
+            continue
+
+        new_name = new_m.get("name", new_id)
+        new_raw = str(new_m.get("value", ""))
+        new_span = get_metric_value_span(new_m)
+        new_val = new_span.get("mid")
+        new_unit = new_span.get("unit") or new_m.get("unit", "")
+
+        diffs.append(MetricDiff(
+            name=new_name,
+            old_value=None,
+            new_value=new_val,
+            old_raw="",
+            new_raw=new_raw,
+            unit=new_unit,
+            change_pct=None,
+            change_type="added"
+        ))
 
     return diffs
 
