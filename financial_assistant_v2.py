@@ -2579,6 +2579,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
 
     return diffs
 
+
 # ------------------------------------
 # NUMERIC PARSING (DETERMINISTIC)
 # ------------------------------------
