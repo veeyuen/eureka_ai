@@ -4894,7 +4894,7 @@ def categorize_question_and_signals(question: str) -> Dict:
         "side_questions": _stable_unique(side_questions),
     }
 
-def infer_metric_scope(metric_name: str, question_signals: Dict) -> str:
+def categorize_question_signals(query: str) -> Dict:
     """
     Deterministically classify a metric as local / regional / global
     using metric_name + question geo signals.
@@ -4927,7 +4927,8 @@ def infer_metric_scope(metric_name: str, question_signals: Dict) -> str:
         return "regional"
 
     # Default (if question is local-focused but metric doesn't say, treat as global unless proven otherwise)
-    return "global"
+    return categorize_question_and_signals(query)
+
 
 
 def split_metrics_by_scope(metrics: Dict, question_signals: Dict) -> Dict[str, Dict]:
