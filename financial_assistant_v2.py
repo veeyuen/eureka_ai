@@ -1,5 +1,5 @@
 # =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.15
+# YUREEKA AI RESEARCH ASSISTANT v7.16
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -16,6 +16,7 @@
 # Timestamps = Timezone Naive
 # Improved Stability of Handling of Duplicate Canonicalized IDs
 # Deterministic Main and Side Topic Extractor
+# Range Aware Canonical Metrics
 # =========================================================
 
 import os
@@ -1931,47 +1932,34 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
     return (fallback_id, metric_name)
 
 
-#def canonicalize_metrics(metrics: Dict) -> Dict:
+def canonicalize_metrics(metrics: Dict, merge_duplicates_to_range: bool = True) -> Dict:
     """
-#    Convert all metrics to use canonical IDs.
+    Convert metrics to canonical IDs.
+    Range-aware mode merges duplicates (same canonical_id) into a single metric
+    with a numeric span (min/max) to preserve multi-source disagreement without
+    breaking cross-run matching.
 
-#    Input: {"metric1": {"name": "2024 Market Size", "value": 100, "unit": "B"}}
-#    Output: {"market_size_2024": {"name": "Market Size (2024)", "value": 100, "unit": "B",
-#             "canonical_id": "market_size_2024", "original_name": "2024 Market Size"}}
-#    """
-#    canonicalized = {}
+    Input:
+      {"metric1": {"name": "2024 Market Size", "value": 100, "unit": "B"}}
 
-#    for key, metric in metrics.items():
-#        if not isinstance(metric, dict):
-#            continue
+    Output (single):
+      {"market_size_2024": {"name": "Market Size (2024)", "value": 100, "unit": "B", ...}}
 
-#        original_name = metric.get('name', key)
-#        canonical_id, canonical_name = get_canonical_metric_id(original_name)
-
-#        # Handle duplicate canonical IDs by appending suffix
-#        final_id = canonical_id
-#        suffix = 1
-#        while final_id in canonicalized:
-#            final_id = f"{canonical_id}_{suffix}"
-#            suffix += 1
-
-#        canonicalized[final_id] = {
-#            **metric,
-#            "name": canonical_name,
-#            "canonical_id": final_id,
-#            "original_name": original_name
-#        }
-
-#    return canonicalized
-
-def canonicalize_metrics(metrics: Dict) -> Dict:
-    """
-    Convert all metrics to use canonical IDs (deterministic even with duplicates).
+    Output (merged range):
+      {"market_size_2024": {
+         "name": "Market Size (2024)",
+         "value": 1.42,                 # representative (median)
+         "unit": "BILLION USD",
+         "range": {"min": 1.01, "max": 1.83, "candidates": [1.01, 1.83], "n": 2},
+         "original_names": [...],
+         "canonical_id": "market_size_2024"
+      }}
     """
     if not isinstance(metrics, dict):
         return {}
 
-    items = []
+    # ---- Collect candidates (deterministic ordering) ----
+    candidates = []
     for key, metric in metrics.items():
         if not isinstance(metric, dict):
             continue
@@ -1979,57 +1967,104 @@ def canonicalize_metrics(metrics: Dict) -> Dict:
         original_name = metric.get("name", key)
         canonical_id, canonical_name = get_canonical_metric_id(original_name)
 
-        # Build a stable signature for tie-breaking duplicates
-        raw_val = metric.get("value", "")
-        unit = (metric.get("unit") or "").upper().strip()
+        raw_unit = (metric.get("unit") or "").strip()
+        unit = raw_unit.upper()
 
-        # Use parsed numeric if available, else raw string
-        parsed_val = parse_to_float(raw_val)
-        value_for_sort = parsed_val if parsed_val is not None else str(raw_val)
+        # For stable sorting across runs:
+        # - normalized name
+        # - unit
+        # - numeric value (if parseable)
+        # - original key as final stabilizer
+        parsed_val = parse_to_float(metric.get("value"))
+        value_for_sort = parsed_val if parsed_val is not None else str(metric.get("value", ""))
 
         stable_sort_key = (
             str(original_name).lower().strip(),
             unit,
             str(value_for_sort),
-            str(key)  # fallback stabilizer
+            str(key),
         )
 
-        items.append({
-            "input_key": key,
-            "metric": metric,
-            "original_name": original_name,
-            "canonical_base": canonical_id,
+        candidates.append({
+            "canonical_id": canonical_id,
             "canonical_name": canonical_name,
+            "original_name": original_name,
+            "metric": metric,
+            "unit": unit,
+            "parsed_val": parsed_val,
             "stable_sort_key": stable_sort_key,
         })
 
-    # Group by canonical_base
-    groups: Dict[str, List[Dict]] = {}
-    for it in items:
-        groups.setdefault(it["canonical_base"], []).append(it)
+    candidates.sort(key=lambda x: x["stable_sort_key"])
 
-    canonicalized = {}
+    # ---- Group by canonical_id ----
+    grouped: Dict[str, List[Dict]] = {}
+    for c in candidates:
+        cid = c["canonical_id"]
+        grouped.setdefault(cid, []).append(c)
 
-    # Deterministic processing order of groups as well
-    for base_id in sorted(groups.keys()):
-        group = groups[base_id]
+    # ---- Build canonicalized output ----
+    canonicalized: Dict[str, Dict] = {}
 
-        # Deterministic order within duplicates
-        group.sort(key=lambda x: x["stable_sort_key"])
-
-        for idx, it in enumerate(group):
-            final_id = base_id if idx == 0 else f"{base_id}__dup{idx}"  # stable suffix
-
-            m = it["metric"]
-            canonicalized[final_id] = {
+    for cid, group in grouped.items():
+        # Single metric → keep as-is (with canonical_id/original_name)
+        if len(group) == 1 or not merge_duplicates_to_range:
+            g = group[0]
+            m = g["metric"]
+            canonicalized[cid] = {
                 **m,
-                "name": it["canonical_name"],
-                "canonical_id": final_id,
-                "original_name": it["original_name"],
-                "input_key": it["input_key"],  # optional but useful for debugging
+                "name": g["canonical_name"],
+                "canonical_id": cid,
+                "original_name": g["original_name"]
+            }
+            continue
+
+        # Merge duplicates → range-aware metric
+        # Choose base fields from the first (deterministic after stable sort)
+        base = group[0]
+        base_metric = dict(base["metric"])  # copy
+        base_metric["name"] = base["canonical_name"]
+        base_metric["canonical_id"] = cid
+
+        # Collect numeric candidates
+        vals = [g["parsed_val"] for g in group if g["parsed_val"] is not None]
+        raw_vals = [str(g["metric"].get("value", "")) for g in group]
+        orig_names = [g["original_name"] for g in group]
+
+        # Unit handling: if units disagree, keep the base unit but preserve info
+        units = [g["unit"] for g in group if g["unit"]]
+        unit_base = units[0] if units else (base_metric.get("unit") or "")
+        base_metric["unit"] = unit_base
+
+        base_metric["original_names"] = orig_names
+        base_metric["raw_values"] = raw_vals
+
+        if vals:
+            vals_sorted = sorted(vals)
+            vmin, vmax = vals_sorted[0], vals_sorted[-1]
+            vmed = vals_sorted[len(vals_sorted) // 2]
+
+            base_metric["value"] = vmed
+            base_metric["range"] = {
+                "min": vmin,
+                "max": vmax,
+                "candidates": vals_sorted,
+                "n": len(vals_sorted),
+            }
+        else:
+            # Non-numeric duplicates: keep base value but flag
+            base_metric["range"] = {
+                "min": None,
+                "max": None,
+                "candidates": [],
+                "n": 0,
             }
 
+        canonicalized[cid] = base_metric
+
     return canonicalized
+
+
 
 
 def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
@@ -2419,28 +2454,32 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
 
     # Match by canonical ID
     for old_id, old_m in old_canonical.items():
-        old_name = old_m.get('name', old_id)
-        old_raw = str(old_m.get('value', ''))
-        old_unit = old_m.get('unit', '')
-        old_val = parse_to_float(old_m.get('value'))
+        old_name = old_m.get("name", old_id)
+        old_span = get_metric_value_span(old_m)
+        old_raw = str(old_m.get("value", ""))
+        old_unit = old_span.get("unit") or old_m.get("unit", "")
+        old_val = old_span.get("mid")
 
-        # Direct canonical ID match
-        if old_id in new_canonical:
-            new_m = new_canonical[old_id]
-            matched_new_ids.add(old_id)
+        ...
+        new_raw = str(new_m.get("value", ""))
+        new_span = get_metric_value_span(new_m)
+        new_unit = new_span.get("unit") or new_m.get("unit", old_unit)
+        new_val = new_span.get("mid")
 
-            new_raw = str(new_m.get('value', ''))
-            new_val = parse_to_float(new_m.get('value'))
-            new_unit = new_m.get('unit', old_unit)
-
+        # Range-aware stability: if spans overlap, treat as unchanged
+        if spans_overlap(old_span, new_span, rel_tol=0.05):
+            change_pct = 0.0
+            change_type = "unchanged"
+        else:
             change_pct = compute_percent_change(old_val, new_val)
 
             if change_pct is None or abs(change_pct) < 0.5:
-                change_type = 'unchanged'
+                change_type = "unchanged"
             elif change_pct > 0:
-                change_type = 'increased'
+                change_type = "increased"
             else:
-                change_type = 'decreased'
+                change_type = "decreased"
+
 
             diffs.append(MetricDiff(
                 name=old_name,
@@ -2466,11 +2505,24 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
                     matched_new_ids.add(new_id)
                     found = True
 
-                    new_raw = str(new_m.get('value', ''))
-                    new_val = parse_to_float(new_m.get('value'))
-                    new_unit = new_m.get('unit', old_unit)
+                    new_raw = str(new_m.get("value", ""))
+                    new_span = get_metric_value_span(new_m)
+                    new_val = new_span.get("mid")
+                    new_unit = new_span.get("unit") or new_m.get("unit", old_unit)
 
-                    change_pct = compute_percent_change(old_val, new_val)
+                    if spans_overlap(old_span, new_span, rel_tol=0.05):
+                        change_pct = 0.0
+                        change_type = "unchanged"
+                    else:
+                        change_pct = compute_percent_change(old_val, new_val)
+
+                        if change_pct is None or abs(change_pct) < 0.5:
+                            change_type = "unchanged"
+                        elif change_pct > 0:
+                            change_type = "increased"
+                        else:
+                            change_type = "decreased"
+
 
                     if change_pct is None or abs(change_pct) < 0.5:
                         change_type = 'unchanged'
@@ -2509,7 +2561,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
         if new_id not in matched_new_ids:
             new_name = new_m.get('name', new_id)
             new_raw = str(new_m.get('value', ''))
-            new_val = parse_to_float(new_m.get('value'))
+            new_val = get_metric_value_span(new_m).get("mid")
             new_unit = new_m.get('unit', '')
 
             diffs.append(MetricDiff(
@@ -2574,6 +2626,102 @@ def parse_to_float(value: Any) -> Optional[float]:
         return float(cleaned.strip()) * multiplier
     except (ValueError, TypeError):
         return None
+
+def get_metric_value_span(metric: Dict) -> Dict[str, Any]:
+    """
+    Return a numeric span for a metric to support range-aware canonical metrics.
+
+    Output:
+      {
+        "min": float|None,
+        "max": float|None,
+        "mid": float|None,   # representative value (median if range, else parsed value)
+        "unit": str,         # normalized (upper/stripped), preserves %/$ units if present
+        "is_range": bool
+      }
+    """
+    if not isinstance(metric, dict):
+        return {"min": None, "max": None, "mid": None, "unit": "", "is_range": False}
+
+    unit = (metric.get("unit") or "").strip()
+
+    # If metric already has a range object, prefer it
+    r = metric.get("range")
+    if isinstance(r, dict):
+        vmin = r.get("min")
+        vmax = r.get("max")
+        # ensure numeric
+        try:
+            vmin = float(vmin) if vmin is not None else None
+        except Exception:
+            vmin = None
+        try:
+            vmax = float(vmax) if vmax is not None else None
+        except Exception:
+            vmax = None
+
+        # Representative = median of candidates if provided, else midpoint of min/max
+        candidates = r.get("candidates")
+        nums = []
+        if isinstance(candidates, list):
+            for c in candidates:
+                try:
+                    nums.append(float(c))
+                except Exception:
+                    pass
+        if nums:
+            nums_sorted = sorted(nums)
+            mid = nums_sorted[len(nums_sorted) // 2]
+        else:
+            mid = None
+            if vmin is not None and vmax is not None:
+                mid = (vmin + vmax) / 2.0
+            elif vmin is not None:
+                mid = vmin
+            elif vmax is not None:
+                mid = vmax
+
+        return {
+            "min": vmin,
+            "max": vmax,
+            "mid": mid,
+            "unit": unit,
+            "is_range": True
+        }
+
+    # Non-range metric: parse single numeric value
+    val = parse_to_float(metric.get("value"))
+    return {
+        "min": val,
+        "max": val,
+        "mid": val,
+        "unit": unit,
+        "is_range": False
+    }
+
+
+def spans_overlap(a: Dict[str, Any], b: Dict[str, Any], rel_tol: float = 0.05) -> bool:
+    """
+    Decide whether two spans overlap "enough" to be considered stable.
+    rel_tol provides a small widening to avoid false drift from rounding.
+    """
+    if not a or not b:
+        return False
+    a_min, a_max = a.get("min"), a.get("max")
+    b_min, b_max = b.get("min"), b.get("max")
+
+    if a_min is None or a_max is None or b_min is None or b_max is None:
+        return False
+
+    # Widen spans slightly
+    a_pad = max(abs(a_max), abs(a_min), 1.0) * rel_tol
+    b_pad = max(abs(b_max), abs(b_min), 1.0) * rel_tol
+
+    a_min2, a_max2 = a_min - a_pad, a_max + a_pad
+    b_min2, b_max2 = b_min - b_pad, b_max + b_pad
+
+    return not (a_max2 < b_min2 or b_max2 < a_min2)
+
 
 def compute_percent_change(old_val: Optional[float], new_val: Optional[float]) -> Optional[float]:
     """
