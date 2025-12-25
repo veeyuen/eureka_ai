@@ -2460,28 +2460,33 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
         old_unit = old_span.get("unit") or old_m.get("unit", "")
         old_val = old_span.get("mid")
 
-        ...
-        new_raw = str(new_m.get("value", ""))
-        new_span = get_metric_value_span(new_m)
-        new_unit = new_span.get("unit") or new_m.get("unit", old_unit)
-        new_val = new_span.get("mid")
+                # Direct canonical ID match
+        if old_id in new_canonical:
+            new_m = new_canonical[old_id]
+            matched_new_ids.add(old_id)
 
-        # Range-aware stability: if spans overlap, treat as unchanged
-        if spans_overlap(old_span, new_span, rel_tol=0.05):
-            change_pct = 0.0
-            change_type = "unchanged"
-        else:
-            change_pct = compute_percent_change(old_val, new_val)
+            new_raw = str(new_m.get('value', ''))
+            new_val = parse_to_float(new_m.get('value'))
+            new_unit = new_m.get('unit', old_unit)
 
-            if change_pct is None or abs(change_pct) < 0.5:
+            # Range-aware / span-aware equality (your newer robustness logic)
+            old_span = get_metric_value_span(old_m)
+            new_span = get_metric_value_span(new_m)
+
+            if spans_overlap(old_span, new_span, rel_tol=0.05):
+                change_pct = 0.0
                 change_type = "unchanged"
-            elif change_pct > 0:
-                change_type = "increased"
             else:
-                change_type = "decreased"
+                change_pct = compute_percent_change(old_val, new_val)
 
+                if change_pct is None or abs(change_pct) < 0.5:
+                    change_type = "unchanged"
+                elif change_pct > 0:
+                    change_type = "increased"
+                else:
+                    change_type = "decreased"
 
-        diffs.append(MetricDiff(
+            diffs.append(MetricDiff(
                 name=old_name,
                 old_value=old_val,
                 new_value=new_val,
@@ -2491,8 +2496,10 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
                 change_pct=change_pct,
                 change_type=change_type
             ))
+
         else:
             # Try base ID match (without year suffix)
+
             base_id = re.sub(r'_\d{4}(?:_\d{4})*$', '', old_id)
             found = False
 
