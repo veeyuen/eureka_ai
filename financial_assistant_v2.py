@@ -2207,17 +2207,19 @@ def canonicalize_metrics(
             str(metric.get("context_snippet", "")),
             str(metric.get("source", "")),
             str(metric.get("source_url", "")),
-            )
+        )
 
         # PROXY inference: use question_text + optional context
-        proxy = infer_proxy_label(
-            metric_name=str(original_name),
-            question_text=str(question_text),
-            category_hint=str(category_hint),
-            str(metric.get("context_snippet", "")),
-            str(metric.get("source", "")),
-            str(metric.get("source_url", "")),
+
+            proxy = infer_proxy_label(
+                str(original_name),
+                str(question_text),
+                str(category_hint),
+                str(metric.get("context_snippet", "")),
+                str(metric.get("source", "")),
+                str(metric.get("source_url", "")),
             )
+
 
         candidates.append({
             "canonical_id": canonical_id,
