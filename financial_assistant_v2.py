@@ -1,5 +1,5 @@
-# =========================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.18
+# ===============================================================================
+# YUREEKA AI RESEARCH ASSISTANT v7.19
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -19,7 +19,8 @@
 # Range Aware Canonical Metrics
 # Range + Source Attribution
 # Proxy Labeler + Geo Tagging
-# =========================================================
+# Improved Main Topic + Side Topic Extractor Using Deterministic-->NLP-->LLM layer
+# ================================================================================
 
 import os
 import re
@@ -3379,6 +3380,200 @@ def detect_query_category(query: str) -> Dict[str, Any]:
     conf = min(best_hits / 6.0, 1.0) if best_hits > 0 else 0.0
     return {"category": best_cat, "confidence": round(conf, 2), "matched_signals": best_matched[:8]}
 
+# =========================================================
+# 3A+. LAYERED QUERY STRUCTURE PARSER (Deterministic -> NLP -> Embeddings -> LLM fallback)
+# =========================================================
+
+_QUERY_SPLIT_PATTERNS = [
+    r"\bas well as\b",
+    r"\balong with\b",
+    r"\bin addition to\b",
+    r"\band\b",
+    r"\bplus\b",
+    r"\bvs\.?\b",
+    r"\bversus\b",
+    r",",
+    r";",
+]
+
+_COUNTRY_OVERVIEW_SIGNALS = [
+    "in general", "overview", "tell me about", "general", "profile", "facts about",
+    "economy", "population", "gdp", "currency", "exports", "imports",
+]
+
+def _normalize_q(q: str) -> str:
+    q = (q or "").strip()
+    q = re.sub(r"\s+", " ", q)
+    return q
+
+def _split_clauses_deterministic(query: str) -> List[str]:
+    """
+    Split query into candidate clauses deterministically using conservative separators.
+    We do NOT try to be 'smart' here; smartness is added in later layers.
+    """
+    q = _normalize_q(query).lower()
+    if not q:
+        return []
+
+    # Prefer multi-word separators first by replacing with a hard delimiter.
+    tmp = q
+    for pat in _QUERY_SPLIT_PATTERNS:
+        tmp = re.sub(pat, "|||", tmp, flags=re.IGNORECASE)
+
+    parts = [p.strip(" .?!)(").strip() for p in tmp.split("|||")]
+    parts = [p for p in parts if p and len(p) > 2]
+    return parts[:10]
+
+def _dedupe_clauses(clauses: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for c in clauses:
+        c2 = c.strip().lower()
+        if not c2 or c2 in seen:
+            continue
+        seen.add(c2)
+        out.append(c.strip())
+    return out
+
+def _choose_main_and_side(clauses: List[str]) -> Tuple[str, List[str]]:
+    """
+    Pick 'main' as the first clause; side = remainder.
+    Deterministic, stable across runs.
+    """
+    clauses = _dedupe_clauses(clauses)
+    if not clauses:
+        return "", []
+    main = clauses[0]
+    side = clauses[1:]
+    return main, side
+
+def _try_spacy_nlp():
+    """
+    Optional NLP layer. If spaCy is installed, use it; otherwise return None.
+    """
+    try:
+        import spacy  # type: ignore
+        # Avoid heavy model loading; prefer blank model with sentencizer if no model available.
+        try:
+            nlp = spacy.load("en_core_web_sm")  # common if installed
+        except Exception:
+            nlp = spacy.blank("en")
+            if "sentencizer" not in nlp.pipe_names:
+                nlp.add_pipe("sentencizer")
+        return nlp
+    except Exception:
+        return None
+
+def _nlp_refine_clauses(query: str, clauses: List[str]) -> Dict[str, Any]:
+    """
+    Use dependency/NER cues to:
+      - detect country-overview questions
+      - improve main-vs-side decision (coordination / 'as well as' patterns)
+    Returns partial overrides: {"main":..., "side":[...], "hints":{...}}
+    """
+    nlp = _try_spacy_nlp()
+    if not nlp:
+        return {"hints": {"nlp_used": False}}
+
+    doc = nlp(_normalize_q(query))
+    # Named entities that look like places
+    gpes = [ent.text for ent in getattr(doc, "ents", []) if ent.label_ in ("GPE", "LOC")]
+    gpes_norm = [g.strip() for g in gpes if g and len(g.strip()) > 1]
+
+    # Coordination hint: if query has "as well as" or "and", keep deterministic split,
+    # but try to pick the more "general" clause as main when overview signals exist.
+    overview_hit = any(sig in (query or "").lower() for sig in _COUNTRY_OVERVIEW_SIGNALS)
+    hints = {
+        "nlp_used": True,
+        "gpe_entities": gpes_norm[:5],
+        "overview_signal_hit": bool(overview_hit),
+    }
+
+    main, side = _choose_main_and_side(clauses)
+
+    # If overview signals + place entity present, bias main to the overview clause
+    if overview_hit and gpes_norm:
+        # choose clause with strongest overview signal density
+        def score_clause(c: str) -> int:
+            c = c.lower()
+            return sum(1 for sig in _COUNTRY_OVERVIEW_SIGNALS if sig in c)
+        scored = sorted([(score_clause(c), c) for c in clauses], key=lambda x: (-x[0], x[1]))
+        if scored and scored[0][0] > 0:
+            main = scored[0][1]
+            side = [c for c in clauses if c != main]
+
+    return {"main": main, "side": side, "hints": hints}
+
+def _embedding_category_vote(query: str) -> Dict[str, Any]:
+    """
+    Deterministic 'embedding-like' similarity using TF-IDF (no external model downloads).
+    Produces a category suggestion + confidence based on similarity to category descriptors.
+    """
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
+        from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+    except Exception:
+        return {"category": "unknown", "confidence": 0.0, "method": "tfidf_unavailable"}
+
+    q = _normalize_q(query).lower()
+    if not q:
+        return {"category": "unknown", "confidence": 0.0, "method": "tfidf_empty"}
+
+    # Build deterministic descriptors from your registry
+    cat_texts = []
+    cat_names = []
+    for cat, cfg in (QUESTION_CATEGORIES or {}).items():
+        if not isinstance(cfg, dict) or cat == "unknown":
+            continue
+        signals = " ".join(cfg.get("signals", [])[:50])
+        sections = " ".join((cfg.get("template_sections", []) or [])[:50])
+        descriptor = f"{cat} {signals} {sections}".strip()
+        if descriptor:
+            cat_names.append(cat)
+            cat_texts.append(descriptor)
+
+    if not cat_texts:
+        return {"category": "unknown", "confidence": 0.0, "method": "tfidf_no_registry"}
+
+    vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1, max_features=8000)
+    X = vec.fit_transform(cat_texts + [q])
+    sims = cosine_similarity(X[-1], X[:-1]).flatten()
+
+    best_idx = int(sims.argmax()) if sims.size else 0
+    best_sim = float(sims[best_idx]) if sims.size else 0.0
+    best_cat = cat_names[best_idx] if cat_names else "unknown"
+
+    # Map cosine similarity (~0-1) into a conservative confidence
+    conf = max(0.0, min(best_sim / 0.35, 1.0))  # 0.35 sim ~= "high"
+    return {"category": best_cat, "confidence": round(conf, 2), "method": "tfidf"}
+
+def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
+    """
+    Last resort: ask your existing LLM endpoint to return JSON only.
+    Temperature 0 keeps it as stable as possible.
+    """
+    try:
+        prompt = (
+            "Extract a query structure.\n"
+            "Return ONLY valid JSON with keys:\n"
+            "  category: one of [country, industry, company, finance, market, unknown]\n"
+            "  category_confidence: number 0-1\n"
+            "  main: string (the main question/topic)\n"
+            "  side: array of strings (side questions)\n"
+            "No extra keys, no commentary.\n\n"
+            f"Query: {query}"
+        )
+        # Use your existing function; keep web_context optional
+        wc = web_context or {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
+        raw = query_perplexity(prompt, wc)
+        parsed = parse_json_safely(raw, "LLM Query Structure")
+        if isinstance(parsed, dict) and parsed.get("main") is not None:
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
 def _split_side_candidates(query: str) -> List[str]:
     """
     Deterministic splitting into clause candidates.
@@ -3500,69 +3695,95 @@ def _embedding_similarity(a: str, b: str) -> Optional[float]:
 
 def extract_query_structure(query: str) -> Dict[str, Any]:
     """
-    Deterministic extractor:
-      - category classification
-      - main clause + side questions/topics
-      - optional NLP parse + embedding similarity to reduce false side topics
+    Layered query structure extraction:
+      1) Deterministic clause split -> main/side
+      2) Deterministic category from keyword signals (detect_query_category)
+      3) Optional NLP refinement (spaCy if available)
+      4) Deterministic similarity vote (TF-IDF)
+      5) LLM fallback ONLY if confidence remains low
+
+    Output schema:
+      {"category": "...", "category_confidence": 0-1, "main": "...", "side": [...], "debug": {...}}
     """
-    query = _normalize_q(query)
-    cat = detect_query_category(query)
+    q = _normalize_q(query)
+    clauses = _split_clauses_deterministic(q)
+    main, side = _choose_main_and_side(clauses)
 
-    candidates = _split_side_candidates(query)
-    if not candidates:
-        return {
-            "category": cat["category"],
-            "category_confidence": cat["confidence"],
-            "main": query,
-            "side": [],
-            "template_sections": QUESTION_CATEGORIES.get(cat["category"], QUESTION_CATEGORIES["unknown"]).get("template_sections", []),
+    # --- Layer 1: deterministic keyword category ---
+    det_cat = detect_query_category(q)
+    category = det_cat.get("category", "unknown")
+    cat_conf = float(det_cat.get("confidence", 0.0))
+
+    debug = {
+        "deterministic": {
+            "clauses": clauses,
+            "main": main,
+            "side": side,
+            "category": category,
+            "confidence": cat_conf,
+            "matched_signals": det_cat.get("matched_signals", []),
         }
+    }
 
-    # Heuristic: main = first candidate that contains the "core subject" words (market/country/etc.)
-    # fallback: first candidate
-    main = candidates[0]
-    ql = query.lower()
-    for c in candidates:
-        cl = c.lower()
-        if ("market" in ql and "market" in cl) or ("industry" in ql and "industry" in cl) or ("country" in ql and "country" in cl):
-            main = c
-            break
+    # --- Layer 2: NLP refinement (optional) ---
+    nlp_out = _nlp_refine_clauses(q, clauses)
+    if isinstance(nlp_out, dict):
+        hints = nlp_out.get("hints", {})
+        debug["nlp"] = hints or {"nlp_used": False}
 
-    # Side candidates = the rest
-    side = [c for c in candidates if c.lower() != main.lower()]
+        # Override main/side if NLP produced them
+        if nlp_out.get("main"):
+            main = nlp_out["main"]
+        if isinstance(nlp_out.get("side"), list):
+            side = nlp_out["side"]
 
-    # Add spaCy-derived side topics (if available)
-    for s in _extract_spacy_side_topics(query):
-        if s and s.lower() != main.lower() and s.lower() not in (x.lower() for x in side):
-            side.append(s)
+        # If NLP detects a place + overview cue, bias to "country"
+        gpes = (hints or {}).get("gpe_entities", []) if isinstance(hints, dict) else []
+        overview_hit = (hints or {}).get("overview_signal_hit", False) if isinstance(hints, dict) else False
+        if overview_hit and gpes:
+            # Only override if deterministic confidence is weak
+            if cat_conf < 0.45:
+                category = "country"
+                cat_conf = max(cat_conf, 0.55)
 
-    # If embedding similarity is available, drop side items that are basically the same as main
-    pruned = []
-    for s in side:
-        sim = _embedding_similarity(main, s)
-        # If similarity is extremely high, treat as redundant
-        if sim is not None and sim >= 0.85:
-            continue
-        pruned.append(s)
+    # --- Layer 3: embedding-style category vote (TF-IDF cosine) ---
+    emb_vote = _embedding_category_vote(q)
+    debug["similarity_vote"] = emb_vote
 
-    # Convert side *topics* into explicit side *questions* if they are fragments
-    side_questions = []
-    for s in pruned[:5]:
-        sl = s.lower()
-        if any(k in sl for k in ["impact of", "effect of", "influence of", "role of"]):
-            # already question-like
-            side_questions.append(_cleanup_clause(s))
-        else:
-            # turn into a consistent pattern
-            side_questions.append(_cleanup_clause(f"What is the impact of {s} on {main}?"))
+    emb_cat = emb_vote.get("category", "unknown")
+    emb_conf = float(emb_vote.get("confidence", 0.0))
+
+    # If deterministic confidence is low, adopt embedding suggestion
+    if cat_conf < 0.40 and emb_cat and emb_cat != "unknown" and emb_conf >= 0.45:
+        category = emb_cat
+        cat_conf = max(cat_conf, min(0.75, emb_conf))
+
+    # --- Layer 4: LLM fallback if still ambiguous ---
+    if cat_conf < 0.30:
+        llm = _llm_fallback_query_structure(q)
+        debug["llm_fallback_used"] = bool(llm)
+
+        if isinstance(llm, dict):
+            category = llm.get("category", category) or category
+            try:
+                cat_conf = float(llm.get("category_confidence", cat_conf))
+            except Exception:
+                pass
+            main = llm.get("main", main) or main
+            side = llm.get("side", side) if isinstance(llm.get("side"), list) else side
+
+    # clean side
+    side = _dedupe_clauses([s.strip() for s in (side or []) if isinstance(s, str) and s.strip()])
 
     return {
-        "category": cat["category"],
-        "category_confidence": cat["confidence"],
-        "main": main,
-        "side": side_questions,
-        "template_sections": QUESTION_CATEGORIES.get(cat["category"], QUESTION_CATEGORIES["unknown"]).get("template_sections", []),
+        "category": category or "unknown",
+        "category_confidence": round(max(0.0, min(cat_conf, 1.0)), 2),
+        "main": (main or "").strip(),
+        "side": side,
+        "debug": debug,
     }
+
+
 
 def format_query_structure_for_prompt(qs: Optional[Dict[str, Any]]) -> str:
     if not qs or not isinstance(qs, dict):
