@@ -700,6 +700,7 @@ def preclean_json(raw: str) -> str:
 
     return text
 
+
 def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
     """
     Parse JSON with aggressive error recovery:
@@ -708,7 +709,12 @@ def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
     3. Fix common issues (trailing commas, unquoted keys)
     4. Iterative quote repair for unterminated strings
     """
-    if not json_str:
+    if json_str is None:
+        return {}
+    if not isinstance(json_str, str):
+        json_str = str(json_str)
+
+    if not json_str.strip():
         return {}
 
     cleaned = preclean_json(json_str)
@@ -1242,6 +1248,29 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
     except Exception as e:
         st.error(f"❌ Perplexity API error: {e}")
         return create_fallback_response(query, search_count, web_context)
+
+def query_perplexity_raw(prompt: str, max_tokens: int = 400, timeout: int = 30) -> str:
+    """
+    Raw Perplexity call that returns text only.
+    IMPORTANT: Does NOT attempt to validate as LLMResponse.
+    """
+    headers = {
+        "Authorization": f"Bearer {PERPLEXITY_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "sonar",
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    resp = requests.post(PERPLEXITY_URL, headers=headers, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    return (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
 
 
 def create_fallback_response(query: str, search_count: int, web_context: Dict) -> str:
@@ -3607,9 +3636,8 @@ def _embedding_category_vote(query: str) -> Dict[str, Any]:
 
 def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
     """
-    Last resort: ask your existing LLM endpoint to return JSON only.
-    Temperature 0 keeps it as stable as possible.
-    Always returns a usable dict (or None only if the request itself fails).
+    Last resort: ask LLM to output ONLY a small JSON query-structure object.
+    This path must NOT validate against LLMResponse.
     """
     try:
         prompt = (
@@ -3622,15 +3650,26 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
             "No extra keys, no commentary.\n\n"
             f"Query: {query}"
         )
-        wc = web_context or {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
-        raw = query_perplexity(prompt, wc)
 
-        # ✅ Guaranteed safe parse + deterministic fallback
-        parsed = parse_query_structure_safe(raw, query)
-        return parsed
+        raw = query_perplexity_raw(prompt, max_tokens=250, timeout=30)
+
+        # If upstream ever returns dict-like accidentally, accept it
+        if isinstance(raw, dict):
+            parsed = raw
+        else:
+            if raw is None:
+                raw = ""
+            if not isinstance(raw, str):
+                raw = str(raw)
+            parsed = parse_json_safely(raw, "LLM Query Structure")
+
+        if isinstance(parsed, dict) and parsed.get("main") is not None:
+            return parsed
 
     except Exception:
         return None
+
+    return None
 
 
 def _split_side_candidates(query: str) -> List[str]:
