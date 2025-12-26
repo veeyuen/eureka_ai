@@ -764,6 +764,62 @@ def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
     st.error(f"❌ Failed to parse JSON from {context} after {max_attempts} attempts")
     return {}
 
+def parse_query_structure_safe(json_str: str, user_question: str) -> Dict:
+    """
+    Parse LLM-derived query structure with guaranteed deterministic fallback.
+    Never raises, never returns empty dict.
+    """
+    parsed = parse_json_safely(json_str, context="LLM Query Structure")
+
+    if isinstance(parsed, dict) and parsed:
+        # Minimal schema validation
+        if "main" in parsed or "category" in parsed:
+            return parsed
+
+    # 🔒 Deterministic fallback (NO LLM)
+    return {
+        "category": "unknown",
+        "category_confidence": 0.0,
+        "main": user_question,
+        "side": []
+    }
+
+
+def extract_json_object(text: str) -> Optional[Dict]:
+    """
+    Best-effort extraction of the first JSON object from a string.
+    Returns dict or None.
+    """
+    if not text or not isinstance(text, str):
+        return None
+
+    # Common cleanup
+    cleaned = text.strip()
+    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
+    # Fast path
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # Regex: first {...} block (non-greedy)
+    try:
+        m = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not m:
+            return None
+        candidate = m.group(0)
+        obj = json.loads(candidate)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        return None
+
+    return None
+
+
 # =========================================================
 # 6. WEB SEARCH FUNCTIONS
 #   SERPAPI STABILITY CONFIGURATION
@@ -3553,6 +3609,7 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
     """
     Last resort: ask your existing LLM endpoint to return JSON only.
     Temperature 0 keeps it as stable as possible.
+    Always returns a usable dict (or None only if the request itself fails).
     """
     try:
         prompt = (
@@ -3565,15 +3622,15 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
             "No extra keys, no commentary.\n\n"
             f"Query: {query}"
         )
-        # Use your existing function; keep web_context optional
         wc = web_context or {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
         raw = query_perplexity(prompt, wc)
-        parsed = parse_json_safely(raw, "LLM Query Structure")
-        if isinstance(parsed, dict) and parsed.get("main") is not None:
-            return parsed
+
+        # ✅ Guaranteed safe parse + deterministic fallback
+        parsed = parse_query_structure_safe(raw, query)
+        return parsed
+
     except Exception:
         return None
-    return None
 
 
 def _split_side_candidates(query: str) -> List[str]:
@@ -5882,7 +5939,7 @@ def render_dashboard(
                     "Growth": ent.get("growth", "N/A")
                 })
         if entity_data:
-            st.dataframe(pd.DataFrame(entity_data), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(entity_data), hide_index=True, width="stretch")
 
     # Trends Forecast
     trends = data.get("trends_forecast", [])
@@ -5934,7 +5991,7 @@ def render_dashboard(
                     xaxis=dict(tickangle=-45) if len(labels) > 5 else {}
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)  # keep unless Streamlit warns for this too
 
             except Exception as e:
                 st.info(f"⚠️ Chart rendering failed: {e}")
@@ -5955,7 +6012,7 @@ def render_dashboard(
                     df_comp, x="Category", y="Value",
                     title=comp.get("title", "Comparison"), text_auto=True
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)  # keep unless Streamlit warns for this too
             except Exception:
                 pass
 
