@@ -2217,7 +2217,7 @@ def canonicalize_metrics(
             str(metric.get("context_snippet", "")),
             str(metric.get("source", "")),
             str(metric.get("source_url", "")),
-        )
+            )
 
         candidates.append({
             "canonical_id": canonical_id,
