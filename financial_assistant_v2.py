@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.20
+# YUREEKA AI RESEARCH ASSISTANT v7.19
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -20,7 +20,6 @@
 # Range + Source Attribution
 # Proxy Labeler + Geo Tagging
 # Improved Main Topic + Side Topic Extractor Using Deterministic-->NLP-->LLM layer
-# Expanded Output In Metrics/Findings/Entities With Toggle
 # ================================================================================
 
 import os
@@ -4614,119 +4613,160 @@ def get_llm_explanation(diff: EvolutionDiff, query: str) -> Dict:
 # 8B. EVOLUTION DASHBOARD RENDERING
 # =========================================================
 
-def render_evolution_results(results: Dict, query: str):
-    """Render evolution results with show-all + filter controls"""
+def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str):
+    """Render deterministic evolution results"""
 
-    st.header("📈 Evolution Analysis Results")
+    st.header("📈 Evolution Analysis")
     st.markdown(f"**Query:** {query}")
 
-    if not isinstance(results, dict) or results.get("status") != "success":
-        st.error(f"❌ {results.get('message', 'Analysis failed') if isinstance(results, dict) else 'Analysis failed'}")
-        return
-
-    def _filter_df(df: pd.DataFrame, q: str) -> pd.DataFrame:
-        if not q:
-            return df
-        ql = q.lower().strip()
-        if not ql:
-            return df
-
-        def row_match(row) -> bool:
-            for v in row.values:
-                try:
-                    if ql in str(v).lower():
-                        return True
-                except Exception:
-                    continue
-            return False
-
-        mask = df.apply(row_match, axis=1)
-        return df[mask]
-
-    def _render_df(title: str, rows: List[Dict[str, Any]], key_prefix: str, default_limit: int = 10):
-        st.subheader(title)
-        if not rows:
-            st.info("No data available")
-            return
-
-        df = pd.DataFrame(rows)
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            q = st.text_input("Filter", value="", key=f"{key_prefix}_filter")
-        with c2:
-            show_all = st.checkbox("Show all", value=False, key=f"{key_prefix}_showall")
-
-        df = _filter_df(df, q)
-        if not show_all:
-            df = df.head(default_limit)
-
-        st.dataframe(df, hide_index=True, width="stretch")
-        st.caption(f"Showing {len(df)} row(s){' (filtered)' if q else ''}.")
-
-    # Overview
+    # Overview metrics
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Sources Checked", results.get("sources_checked", 0))
-    col2.metric("Sources Fetched", results.get("sources_fetched", 0))
-    col3.metric("Stability", f"{float(results.get('stability_score', 0)):.0f}%")
 
-    summary = results.get("summary", {}) or {}
-    if summary.get("metrics_increased", 0) > summary.get("metrics_decreased", 0):
-        col4.success("📈 Trending Up")
-    elif summary.get("metrics_decreased", 0) > summary.get("metrics_increased", 0):
-        col4.error("📉 Trending Down")
+    if diff.time_delta_hours:
+        if diff.time_delta_hours < 24:
+            time_str = f"{diff.time_delta_hours:.1f}h"
+        else:
+            time_str = f"{diff.time_delta_hours/24:.1f}d"
+        col1.metric("Time Elapsed", time_str)
     else:
-        col4.info("➡️ Stable")
+        col1.metric("Time Elapsed", "Unknown")
+
+    col2.metric("Stability", f"{diff.stability_score:.0f}%")
+
+    trend = explanation.get('trend', 'stable')
+    trend_icon = {'improving': '📈', 'declining': '📉', 'stable': '➡️'}.get(trend, '➡️')
+    col3.metric("Trend", f"{trend_icon} {trend.title()}")
+
+    # Stability indicator
+    if diff.stability_score >= 80:
+        col4.success("🟢 Highly Stable")
+    elif diff.stability_score >= 60:
+        col4.warning("🟡 Moderate Changes")
+    else:
+        col4.error("🔴 Significant Drift")
+
+    # Headline
+    st.info(f"**{explanation.get('headline', 'Analysis complete')}**")
 
     st.markdown("---")
 
-    # Source Verification (expanded + filter)
-    src_rows = []
-    for s in results.get("source_results", []) or []:
-        if isinstance(s, dict):
-            src_rows.append({
-                "URL": s.get("url", ""),
-                "Status": s.get("status", ""),
-                "Detail": s.get("status_detail", ""),
-                "Numbers Found": s.get("numbers_found", 0),
-                "Fingerprint": s.get("fingerprint", ""),
-                "Fetched At": s.get("fetched_at", ""),
-            })
-    _render_df("🔗 Source Verification", src_rows, key_prefix="evo_sources", default_limit=10)
+    # Interpretation
+    st.subheader("📋 Interpretation")
+    st.markdown(explanation.get('interpretation', 'No interpretation available'))
+
+    # Watch items
+    watch_items = explanation.get('watch_items', [])
+    if watch_items:
+        st.markdown("**🔔 Watch Items:**")
+        for item in watch_items:
+            st.markdown(f"- {item}")
 
     st.markdown("---")
 
-    # Metric Changes (expanded + filter)
-    change_rows = []
-    for m in results.get("metric_changes", []) or []:
-        if isinstance(m, dict):
+    # Metric Changes Table
+    st.subheader("💰 Metric Changes")
+    if diff.metric_diffs:
+        metric_rows = []
+
+
+
+        for m in diff.metric_diffs:
             icon = {
-                "increased": "📈",
-                "decreased": "📉",
-                "unchanged": "➡️",
-                "not_found": "❓"
-            }.get(m.get("change_type"), "•")
-            cp = m.get("change_pct")
-            cp_str = f"{cp:+.1f}%" if isinstance(cp, (int, float)) else "-"
-            change_rows.append({
+                'increased': '📈', 'decreased': '📉', 'unchanged': '➡️',
+                'added': '🆕', 'removed': '❌'
+            }.get(m.change_type, '•')
+
+            change_str = f"{m.change_pct:+.1f}%" if m.change_pct is not None else "-"
+
+            metric_rows.append({
                 "": icon,
-                "Metric": m.get("name", ""),
-                "Previous": m.get("previous_value", ""),
-                "Current": m.get("current_value", ""),
-                "Δ": cp_str,
-                "Confidence": f"{float(m.get('match_confidence', 0)):.0f}%",
-                "Context": m.get("context_snippet", ""),
+                "Metric": m.name,
+                "Previous": m.old_raw or "-",
+                "Current": m.new_raw or "-",
+                "Change": change_str,
+                "Status": m.change_type.replace('_', ' ').title()
             })
-    _render_df("💰 Metric Changes", change_rows, key_prefix="evo_changes", default_limit=12)
+        st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No metrics to compare")
 
     st.markdown("---")
 
-    # Summary
-    st.subheader("📊 Summary")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total", summary.get("total_metrics", 0))
-    col2.metric("Found", summary.get("metrics_found", 0))
-    col3.metric("📈 Up", summary.get("metrics_increased", 0))
-    col4.metric("📉 Down", summary.get("metrics_decreased", 0))
+    # Entity Changes Table
+    st.subheader("🏢 Entity Ranking Changes")
+    if diff.entity_diffs:
+        entity_rows = []
+        for e in diff.entity_diffs:
+            icon = {
+                'moved_up': '⬆️', 'moved_down': '⬇️', 'unchanged': '➡️',
+                'added': '🆕', 'removed': '❌'
+            }.get(e.change_type, '•')
+
+            rank_str = f"{e.rank_change:+d}" if e.rank_change else "-"
+
+            entity_rows.append({
+                "": icon,
+                "Entity": e.name,
+                "Old Rank": e.old_rank or "-",
+                "New Rank": e.new_rank or "-",
+                "Rank Δ": rank_str,
+                "Old Share": e.old_share or "-",
+                "New Share": e.new_share or "-"
+            })
+        st.dataframe(pd.DataFrame(entity_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No entities to compare")
+
+    st.markdown("---")
+
+    # Finding Changes
+    st.subheader("🔍 Finding Changes")
+    if diff.finding_diffs:
+        added = [f for f in diff.finding_diffs if f.change_type == 'added']
+        removed = [f for f in diff.finding_diffs if f.change_type == 'removed']
+        modified = [f for f in diff.finding_diffs if f.change_type == 'modified']
+
+        if added:
+            st.markdown("**🆕 New Findings:**")
+            for f in added:
+                st.success(f"• {f.new_text}")
+
+        if removed:
+            st.markdown("**❌ Removed Findings:**")
+            for f in removed:
+                st.error(f"• ~~{f.old_text}~~")
+
+        if modified:
+            st.markdown("**✏️ Modified Findings:**")
+            for f in modified:
+                st.warning(f"• {f.new_text} *(similarity: {f.similarity:.0f}%)*")
+    else:
+        st.info("No findings to compare")
+
+    st.markdown("---")
+
+    # Summary Stats
+    st.subheader("📊 Change Summary")
+    stats = diff.summary_stats
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**Metrics:**")
+        st.write(f"📈 {stats['metrics_increased']} increased")
+        st.write(f"📉 {stats['metrics_decreased']} decreased")
+        st.write(f"➡️ {stats['metrics_unchanged']} unchanged")
+
+    with col2:
+        st.markdown("**Entities:**")
+        st.write(f"⬆️ {stats['entities_moved_up']} moved up")
+        st.write(f"⬇️ {stats['entities_moved_down']} moved down")
+        st.write(f"🆕 {stats['entities_added']} new")
+
+    with col3:
+        st.markdown("**Findings:**")
+        st.write(f"✅ {stats['findings_retained']} retained")
+        st.write(f"✏️ {stats['findings_modified']} modified")
+        st.write(f"🆕 {stats['findings_added']} new")
 
 
 # =========================================================
@@ -5760,7 +5800,6 @@ def render_dashboard(
     user_question: str,
     veracity_scores: Optional[Dict] = None,
     source_reliability: Optional[List[str]] = None,
-    key_root: str = "dash",
 ):
     """Render the analysis dashboard"""
 
@@ -5773,17 +5812,24 @@ def render_dashboard(
         return
 
     # -------------------------
-    # Helpers
+    # Small local helper: robust metric value formatting (range-aware)
     # -------------------------
     def _format_metric_value(m: Dict) -> str:
-        """Range-aware formatting; falls back to value+unit."""
         if not isinstance(m, dict):
             return "N/A"
 
+        # Prefer deterministic span/range if available
+        span = None
+        try:
+            span = get_metric_value_span(m)
+        except Exception:
+            span = None
+
+        # If the metric already has a merged range structure, prefer that
+        rng = m.get("range") if isinstance(m, dict) else None
         unit = (m.get("unit") or "").strip()
 
-        # Case 1: explicit merged "range" dict (from canonicalize_metrics merge)
-        rng = m.get("range") if isinstance(m, dict) else None
+        # Case 1: explicit "range" dict (from canonicalize_metrics merge)
         if isinstance(rng, dict) and rng.get("min") is not None and rng.get("max") is not None:
             try:
                 vmin = float(rng["min"])
@@ -5791,14 +5837,10 @@ def render_dashboard(
                 if vmin != vmax:
                     return f"{rng['min']}–{rng['max']} {unit}".strip()
             except Exception:
+                # fall through
                 pass
 
-        # Case 2: span from get_metric_value_span
-        try:
-            span = get_metric_value_span(m)
-        except Exception:
-            span = None
-
+        # Case 2: value_span from get_metric_value_span
         if isinstance(span, dict) and span.get("min") is not None and span.get("max") is not None:
             try:
                 vmin = float(span["min"])
@@ -5806,74 +5848,17 @@ def render_dashboard(
                 u = (span.get("unit") or unit or "").strip()
                 if vmin != vmax:
                     return f"{span['min']}–{span['max']} {u}".strip()
+                # equal bounds -> show mid if present
                 mid = span.get("mid")
                 if mid is not None:
                     return f"{mid} {u}".strip()
             except Exception:
                 pass
 
+        # Default
         return f"{m.get('value', 'N/A')} {unit}".strip()
 
-    def _filter_df(df: pd.DataFrame, q: str) -> pd.DataFrame:
-        """Simple contains-filter across all cells."""
-        if not q:
-            return df
-        ql = q.lower().strip()
-        if not ql:
-            return df
-
-        def row_match(row) -> bool:
-            for v in row.values:
-                try:
-                    if ql in str(v).lower():
-                        return True
-                except Exception:
-                    continue
-            return False
-
-        mask = df.apply(row_match, axis=1)
-        return df[mask]
-
-    def _render_table_with_controls(
-        title: str,
-        rows: List[Dict[str, Any]],
-        key_prefix: str,
-        default_limit: int = 8,
-        prefer_dataframe_threshold: int = 12,
-    ):
-        """Show search + Show all; uses st.dataframe for large lists."""
-        st.subheader(title)
-
-        if not rows:
-            st.info("No data available")
-            return
-
-        df = pd.DataFrame(rows)
-
-        # Controls
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            q = st.text_input("Filter", value="", key=f"{key_prefix}_filter")
-        with c2:
-            show_all = st.checkbox("Show all", value=False, key=f"{key_prefix}_showall")
-
-        df = _filter_df(df, q)
-
-        if not show_all:
-            df = df.head(default_limit)
-
-        # Use dataframe for long lists; also fine for short lists (consistent UI)
-        if len(df) >= prefer_dataframe_threshold:
-            st.dataframe(df, hide_index=True, width="stretch")
-        else:
-            st.dataframe(df, hide_index=True, width="stretch")
-
-        # Optional: show count info
-        st.caption(f"Showing {len(df)} row(s){' (filtered)' if q else ''}.")
-
-    # -------------------------
     # Header
-    # -------------------------
     st.header("📊 Yureeka Market Report")
     st.markdown(f"**Question:** {user_question}")
 
@@ -5894,11 +5879,13 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # -------------------------
-    # Key Metrics (expanded)
-    # -------------------------
+    # =========================
+    # Key Metrics (template-driven when available)
+    # =========================
+    st.subheader("💰 Key Metrics")
     metrics = data.get("primary_metrics", {}) or {}
 
+    # 3B: Pull question signals/category into the same table output
     question_category = data.get("question_category") or (data.get("question_profile", {}) or {}).get("category")
     question_signals = data.get("question_signals") or (data.get("question_profile", {}) or {}).get("signals", {})
     side_questions = data.get("side_questions") or (data.get("question_profile", {}) or {}).get("side_questions", [])
@@ -5907,9 +5894,9 @@ def render_dashboard(
         (data.get("question_signals") or {}).get("expected_metric_ids") or []
     )
 
-    metric_rows: List[Dict[str, Any]] = []
+    metric_rows: List[Dict[str, str]] = []
 
-    # Add question-derived signals up top (if present)
+    # Prepend question-derived signals (if present)
     if question_category:
         metric_rows.append({"Metric": "Question Category", "Value": str(question_category)})
 
@@ -5925,98 +5912,92 @@ def render_dashboard(
         metric_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(map(str, side_questions))})
 
     if isinstance(metrics, dict) and metrics:
-        # Canonicalize metrics for stability and range-aware merging if you enabled it
+        # Canonicalize to stabilize lookups
         try:
             canon = canonicalize_metrics(metrics)
         except Exception:
-            canon = metrics
+            canon = metrics  # fallback (worst-case)
 
-        # Build lookup by base canonical id
+        # Build lookup by base canonical id (strip year suffixes etc.)
         by_base: Dict[str, List[Dict]] = {}
         if isinstance(canon, dict):
             for cid, m in canon.items():
                 base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
                 by_base.setdefault(base, []).append(m)
 
-        # If a template exists, output in template order first
+        # If template expected_ids exists, render in that order
         if expected_ids and isinstance(by_base, dict):
             for base_id in expected_ids:
                 candidates = by_base.get(base_id, [])
                 if candidates:
+                    # deterministic pick (canonicalize_metrics already sorts deterministically)
                     m = candidates[0]
-                    metric_rows.append({"Metric": m.get("name", base_id), "Value": _format_metric_value(m)})
+                    metric_rows.append({
+                        "Metric": m.get("name", base_id),
+                        "Value": _format_metric_value(m)
+                    })
                 else:
-                    metric_rows.append({"Metric": str(base_id).replace("_", " ").title(), "Value": "N/A"})
-
-            # Then append any remaining metrics not covered by expected_ids
-            expected_set = set(expected_ids)
-            if isinstance(canon, dict):
-                for cid, m in canon.items():
-                    base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
-                    if base in expected_set:
-                        continue
-                    metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
+                    # placeholder row (avoid hard dependency on METRIC_REGISTRY)
+                    display = str(base_id).replace("_", " ").title()
+                    metric_rows.append({"Metric": display, "Value": "N/A"})
         else:
-            # No template → show ALL available metrics (not just first 6)
+            # No template → show first 6 canonicalized metrics
             if isinstance(canon, dict):
-                for cid, m in canon.items():
-                    metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
+                for cid, m in list(canon.items())[:6]:
+                    metric_rows.append({
+                        "Metric": m.get("name", cid),
+                        "Value": _format_metric_value(m)
+                    })
 
-    #_render_table_with_controls("💰 Key Metrics", metric_rows, key_prefix="dash_metrics", default_limit=10)
-    _render_table_with_controls("💰 Key Metrics", metric_rows, key_prefix=f"{key_root}_metrics", default_limit=10)
-
-    st.markdown("---")
-
-    # -------------------------
-    # Key Findings (expanded)
-    # -------------------------
-    findings = data.get("key_findings", []) or []
-    finding_rows = [{"#": i + 1, "Finding": f} for i, f in enumerate(findings) if f]
-    #_render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix="dash_findings", default_limit=10)
-    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_findings", default_limit=10)
-
+    if metric_rows:
+        st.table(pd.DataFrame(metric_rows))
+    else:
+        st.info("No metrics available")
 
     st.markdown("---")
 
-    # -------------------------
-    # Top Entities (expanded)
-    # -------------------------
-    entities = data.get("top_entities", []) or []
-    entity_rows = []
-    for ent in entities:
-        if isinstance(ent, dict):
-            entity_rows.append({
-                "Entity": ent.get("name", "N/A"),
-                "Share": ent.get("share", "N/A"),
-                "Growth": ent.get("growth", "N/A"),
-            })
-    #_render_table_with_controls("🏢 Top Market Players", entity_rows, key_prefix="dash_entities", default_limit=10)
-    _render_table_with_controls("🏢 Top Market Players", entity_rows, key_prefix=f"{key_root}_entities", default_limit=10)
-
+    # Key Findings
+    st.subheader("🔍 Key Findings")
+    findings = data.get("key_findings", [])
+    for i, finding in enumerate(findings[:8], 1):
+        if finding:
+            st.markdown(f"**{i}.** {finding}")
 
     st.markdown("---")
 
-    # -------------------------
-    # Trends Forecast (expanded)
-    # -------------------------
-    trends = data.get("trends_forecast", []) or []
-    trend_rows = []
-    for t in trends:
-        if isinstance(t, dict):
-            trend_rows.append({
-                "Trend": t.get("trend", "N/A"),
-                "Direction": t.get("direction", "→"),
-                "Timeline": t.get("timeline", "N/A"),
-            })
-    #_render_table_with_controls("📈 Trends & Forecast", trend_rows, key_prefix="dash_trends", default_limit=10)
-    _render_table_with_controls("📈 Trends & Forecast", trend_rows, key_prefix=f"{key_root}_trends", default_limit=10)
+    # Top Entities
+    entities = data.get("top_entities", [])
+    if entities:
+        st.subheader("🏢 Top Market Players")
+        entity_data = []
+        for ent in entities:
+            if isinstance(ent, dict):
+                entity_data.append({
+                    "Entity": ent.get("name", "N/A"),
+                    "Share": ent.get("share", "N/A"),
+                    "Growth": ent.get("growth", "N/A")
+                })
+        if entity_data:
+            st.dataframe(pd.DataFrame(entity_data), hide_index=True, width="stretch")
 
+    # Trends Forecast
+    trends = data.get("trends_forecast", [])
+    if trends:
+        st.subheader("📈 Trends & Forecast")
+        trend_data = []
+        for trend in trends:
+            if isinstance(trend, dict):
+                trend_data.append({
+                    "Trend": trend.get("trend", "N/A"),
+                    "Direction": trend.get("direction", "→"),
+                    "Timeline": trend.get("timeline", "N/A")
+                })
+        if trend_data:
+            st.table(pd.DataFrame(trend_data))
 
     st.markdown("---")
 
-    # -------------------------
-    # Visualization (leave as-is; not list heavy)
-    # -------------------------
+    # Visualization
     st.subheader("📊 Data Visualization")
     viz = data.get("visualization_data")
 
@@ -6029,6 +6010,8 @@ def render_dashboard(
         if labels and values and len(labels) == len(values):
             try:
                 numeric_values = [float(v) for v in values[:10]]
+
+                # Detect axis labels
                 x_label = viz.get("x_axis_label") or detect_x_label_dynamic(labels)
                 y_label = viz.get("y_axis_label") or detect_y_label_dynamic(numeric_values)
 
@@ -6047,7 +6030,8 @@ def render_dashboard(
                     xaxis=dict(tickangle=-45) if len(labels) > 5 else {}
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)  # keep unless Streamlit warns for this too
+
             except Exception as e:
                 st.info(f"⚠️ Chart rendering failed: {e}")
         else:
@@ -6055,7 +6039,7 @@ def render_dashboard(
     else:
         st.info("📊 No visualization data available")
 
-    # Comparison Bars (leave as-is)
+    # Comparison Bars
     comp = data.get("comparison_bars")
     if comp and isinstance(comp, dict):
         cats = comp.get("categories", [])
@@ -6067,23 +6051,33 @@ def render_dashboard(
                     df_comp, x="Category", y="Value",
                     title=comp.get("title", "Comparison"), text_auto=True
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)  # keep unless Streamlit warns for this too
             except Exception:
                 pass
 
     st.markdown("---")
 
-    # -------------------------
-    # Sources (expanded + filter)
-    # -------------------------
+    # Sources
+    st.subheader("🔗 Sources & Reliability")
     all_sources = data.get("sources", []) or (web_context.get("sources", []) if isinstance(web_context, dict) else [])
-    source_rows = [{"#": i + 1, "Source": s, "Reliability": classify_source_reliability(str(s))} for i, s in enumerate(all_sources)]
-    #_render_table_with_controls("🔗 Sources & Reliability", source_rows, key_prefix="dash_sources", default_limit=10)
-    _render_table_with_controls("🔗 Sources & Reliability", source_rows, key_prefix=f"{key_root}_sources", default_limit=10)
 
+    if not all_sources:
+        st.info("No sources found")
+    else:
+        st.success(f"📊 Found {len(all_sources)} sources")
+
+    cols = st.columns(2)
+    for i, src in enumerate(all_sources[:10], 1):
+        col = cols[(i - 1) % 2]
+        short_url = src[:60] + "..." if len(src) > 60 else src
+        reliability = classify_source_reliability(str(src))
+        col.markdown(
+            f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
+            unsafe_allow_html=True
+        )
 
     # Metadata
-    col_fresh, _ = st.columns(2)
+    col_fresh, col_action = st.columns(2)
     with col_fresh:
         freshness = data.get("freshness", "Current")
         st.metric("Data Freshness", freshness)
@@ -6104,24 +6098,15 @@ def render_dashboard(
         for i, (label, key) in enumerate(metrics_display):
             cols[i].metric(label, f"{veracity_scores.get(key, 0):.0f}%")
 
-    # Web Context (expanded list; still optional)
+    # Web Context
     if isinstance(web_context, dict) and web_context.get("search_results"):
-        with st.expander("🌐 Web Search Details (filterable)", expanded=False):
-            sr = web_context.get("search_results", []) or []
-            sr_rows = []
-            for i, r in enumerate(sr):
-                if isinstance(r, dict):
-                    sr_rows.append({
-                        "#": i + 1,
-                        "Title": r.get("title", ""),
-                        "Source": r.get("source", ""),
-                        "Date": r.get("date", ""),
-                        "Snippet": r.get("snippet", ""),
-                        "Link": r.get("link", ""),
-                    })
-            #_render_table_with_controls("Search Results", sr_rows, key_prefix="dash_search_results", default_limit=10)
-            _render_table_with_controls("Search Results", sr_rows, key_prefix=f"{key_root}_search_results", default_limit=10)
-
+        with st.expander("🌐 Web Search Details"):
+            for i, result in enumerate(web_context["search_results"][:5]):
+                st.markdown(f"**{i+1}. {result.get('title')}**")
+                st.caption(f"{result.get('source')} - {result.get('date')}")
+                st.write(result.get("snippet", ""))
+                st.caption(f"[{result.get('link')}]({result.get('link')})")
+                st.markdown("---")
 
 
 def render_native_comparison(baseline: Dict, compare: Dict):
@@ -6376,28 +6361,22 @@ def main():
                 disabled=not SERPAPI_KEY
             )
 
-                # -------------------------------
-        # Persisted analysis output (prevents reset-on-rerun)
-        # -------------------------------
-        if "last_analysis" not in st.session_state:
-            st.session_state["last_analysis"] = None
-
         # Analysis button
-        if st.button("🔍 Analyze", type="primary", key="analyze_btn") and query:
+        if st.button("🔍 Analyze", type="primary") and query:
 
             # Validate query
             if len(query.strip()) < 5:
                 st.error("❌ Please enter a question with at least 5 characters")
-                st.stop()
+                return
 
             query = query.strip()[:500]  # Limit length
-            analysis_id = hashlib.md5(f"{query}|{datetime.now().isoformat()}".encode("utf-8")).hexdigest()[:10]
-
-
             # 3A: Deterministic question categorization/signals for structured reporting
             question_profile = categorize_question_signals(query)
             # Deterministic question signals (no LLM)
             question_signals = classify_question_signals(query)
+            # Deterministic: extract category + main/side questions
+            query_structure = extract_query_structure(query)
+
 
             # Web search
             web_context = {}
@@ -6416,12 +6395,12 @@ def main():
                 }
 
             # Primary model query
-            with st.spinner("🤖 Analyzing with primary model..."):
-                primary_response = query_perplexity(query, web_context)
+            with st.spinner("🤖 Analyzing query..."):
+                primary_response = query_perplexity(query, web_context, query_structure=query_structure)
 
             if not primary_response:
                 st.error("❌ Primary model failed to respond")
-                st.stop()
+                return
 
             # Parse primary response
             try:
@@ -6429,7 +6408,7 @@ def main():
             except Exception as e:
                 st.error(f"❌ Failed to parse primary response: {e}")
                 st.code(primary_response[:1000])
-                st.stop()
+                return
 
             # Evidence-based veracity scoring (single call)
             with st.spinner("✅ Verifying evidence quality..."):
@@ -6444,51 +6423,88 @@ def main():
                 veracity_scores["overall"]
             )
 
-            # Canonicalize metrics before saving for stable future comparisons
-            if primary_data.get("primary_metrics"):
-                primary_data["primary_metrics_canonical"] = canonicalize_metrics(
-                    primary_data.get("primary_metrics", {})
+
+            if primary_data.get('primary_metrics'):
+                primary_data['primary_metrics_canonical'] = canonicalize_metrics(
+                    primary_data.get('primary_metrics', {}),
+                    merge_duplicates_to_range=True,
+                    question_text=query,                       # <-- your user question variable
+                    category_hint=str(primary_data.get("question_category", ""))  # optional if you store it
                 )
-            if primary_data.get("primary_metrics_canonical"):
-                primary_data["metric_schema_frozen"] = freeze_metric_schema(
-                    primary_data["primary_metrics_canonical"]
+
+            # NEW: deterministic range + per-bound source attribution (no LLM)
+            if primary_data.get('primary_metrics_canonical'):
+                primary_data['primary_metrics_canonical'] = add_range_and_source_attribution_to_canonical_metrics(
+                    primary_data.get('primary_metrics_canonical', {}),
+                    web_context
                 )
+
+            # Freeze after enrichment so schema can lock unit/keywords, while attribution stays as data
+            if primary_data.get('primary_metrics_canonical'):
+                primary_data['metric_schema_frozen'] = freeze_metric_schema(
+                    primary_data['primary_metrics_canonical']
+                )
+
 
             # Compute semantic hashes for findings
-            if primary_data.get("key_findings"):
+            if primary_data.get('key_findings'):
                 findings_with_hash = []
-                for finding in primary_data.get("key_findings", []):
+                for finding in primary_data.get('key_findings', []):
                     if finding:
                         findings_with_hash.append({
-                            "text": finding,
-                            "semantic_hash": compute_semantic_hash(finding)
+                            'text': finding,
+                            'semantic_hash': compute_semantic_hash(finding)
                         })
-                primary_data["key_findings_hashed"] = findings_with_hash
+                primary_data['key_findings_hashed'] = findings_with_hash
 
-            # Attach deterministic question metadata into the primary output (so dashboard + JSON can use it)
-            primary_data["question_profile"] = question_profile or {}
-            primary_data["question_signals"] = question_signals or {}
-
-            # Re-serialize primary_data AFTER injecting deterministic fields,
-            # so the dashboard sees the same structure as what you save.
-            primary_json = json.dumps(primary_data, ensure_ascii=False)
-
-
-            # -------------------------------
-            # Build output (SAVE FULL WEB CONTEXT)
-            # -------------------------------
+            # Build output
             output = {
                 "question": query,
-                "timestamp": datetime.now().isoformat(),
+                "question_profile": question_profile,
+                "question_category": question_profile.get("category"),
+                "question_signals": question_profile.get("signals", {}),
+                "side_questions": question_profile.get("side_questions", []),
+                "timestamp": now_utc().isoformat(),
                 "primary_response": primary_data,
                 "final_confidence": final_conf,
                 "veracity_scores": veracity_scores,
-
-                # ✅ FULL web context + reliability (what you asked for)
-                "web_context": web_context,
                 "web_sources": web_context.get("sources", []),
-                "source_reliability": web_context.get("source_reliability", []),
+                # Optional baseline cache for evolution fallback if sources become blocked later
+                "query_structure": query_structure,
+                "baseline_sources_cache": web_context.get("scraped_content", {}) or {}
             }
+
+            # -----------------------------
+            # Baseline source cache (optional, but enables evolution reuse when refetch fails)
+            # -----------------------------
+            baseline_sources_cache = []
+            try:
+                scraped = web_context.get("scraped_content") or {}
+                for url, content in scraped.items():
+                    if not content:
+                        continue
+                    nums = extract_numbers_with_context(content)
+                    baseline_sources_cache.append({
+                        "url": url,
+                        "fetched_at": now_utc().isoformat(),
+                        "fingerprint": fingerprint_text(content),
+                        "extracted_numbers": [
+                            {
+                                "value": n.get("value"),
+                                "unit": n.get("unit"),
+                                "raw": n.get("raw"),
+                                "context_snippet": (n.get("context") or "")[:200]
+                            }
+                            for n in nums
+                        ]
+                    })
+            except Exception:
+                baseline_sources_cache = []
+
+            # Store only if non-empty (keeps JSON smaller)
+            if baseline_sources_cache:
+                output["baseline_sources_cache"] = baseline_sources_cache
+
 
             # AUTO-SAVE TO GOOGLE SHEETS
             with st.spinner("💾 Saving to history..."):
@@ -6497,91 +6513,38 @@ def main():
                 else:
                     st.warning("⚠️ Saved to session only (Google Sheets unavailable)")
 
-            # Persist so UI widgets won't clear the page on rerun
-            st.session_state["last_analysis"] = {
-                "primary_json": primary_json,   # ✅ updated JSON (includes question_profile/signals)
-                "final_conf": final_conf,
-                "web_context": web_context,
-                "base_conf": base_conf,
-                "query": query,
-                "veracity_scores": veracity_scores,
-                "source_reliability": web_context.get("source_reliability", []),
-                "output": output,
-            }
-
-
-            # ✅ Always re-render the last analysis on rerun (so toggles/filters don't wipe output)
-            last = st.session_state.get("last_analysis")
-            if isinstance(last, dict) and last.get("primary_json"):
-                render_dashboard(
-                    last["primary_json"],
-                    last["final_conf"],
-                    last["web_context"],
-                    last["base_conf"],
-                    last["query"],
-                    last.get("veracity_scores"),
-                    (last.get("web_context") or {}).get("source_reliability", []),
-                    key_root=f"dash_{last.get('analysis_id','na')}",
-                )
-
-
-        # -------------------------------
-        # Re-render last analysis on every rerun
-        # (so toggles like "Show all" don't wipe the page)
-        # -------------------------------
-        last = st.session_state.get("last_analysis")
-        if last and isinstance(last, dict) and last.get("primary_json"):
-            render_dashboard(
-                last["primary_json"],
-                float(last.get("final_conf", 0.0)),
-                last.get("web_context", {}) or {},
-                float(last.get("base_conf", 0.0)),
-                str(last.get("query", "")),
-                last.get("veracity_scores"),
-                last.get("source_reliability"),
-            )
-
-
-
-        # -------------------------------
-        # Always render last output (survives reruns)
-        # -------------------------------
-        if st.session_state.get("last_analysis"):
-            la = st.session_state["last_analysis"]
-
-            # Download always available after reruns
-            json_bytes = json.dumps(la["output"], indent=2, ensure_ascii=False).encode("utf-8")
+            json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8')
             filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
             st.download_button(
                 label="💾 Download Analysis JSON",
                 data=json_bytes,
                 file_name=filename,
-                mime="application/json",
-                key="download_analysis_json"
+                mime="application/json"
             )
 
             # Render dashboard
             render_dashboard(
-                la["primary_json"],
-                la["final_conf"],
-                la["web_context"],
-                la["base_conf"],
-                la["query"],
-                la["veracity_scores"],
-                la["web_context"].get("source_reliability", [])
+                primary_response,
+                final_conf,
+                web_context,
+                base_conf,
+                query,
+                veracity_scores,
+                web_context.get("source_reliability", [])
             )
 
-            # Debug info (optional)
+            # Debug info
             with st.expander("🔧 Debug Information"):
                 st.write("**Confidence Breakdown:**")
                 st.json({
-                    "base_confidence": la["base_conf"],
-                    "evidence_score": la["veracity_scores"].get("overall", 0),
-                    "final_confidence": la["final_conf"],
-                    "veracity_breakdown": la["veracity_scores"]
+                    "base_confidence": base_conf,
+                    "evidence_score": veracity_scores["overall"],
+                    "final_confidence": final_conf,
+                    "veracity_breakdown": veracity_scores
                 })
                 st.write("**Primary Model Response:**")
-                st.json(la["primary_data"])
+                st.json(primary_data)
 
 
     # =====================
