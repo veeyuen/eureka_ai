@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.19
+# YUREEKA AI RESEARCH ASSISTANT v7.20
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -20,6 +20,7 @@
 # Range + Source Attribution
 # Proxy Labeler + Geo Tagging
 # Improved Main Topic + Side Topic Extractor Using Deterministic-->NLP-->LLM layer
+# Improved Interpretation of Main + Side Question
 # ================================================================================
 
 import os
@@ -1167,13 +1168,16 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
     if not web_context.get("summary") or search_count < 2:
         structure_txt = format_query_structure_for_prompt(query_structure)
         enhanced_query = (
+            f"{context_section}\n"
             f"{SYSTEM_PROMPT}\n\n"
-            f"User Question: {query}\n\n"
             f"{structure_txt}\n\n"
-            f"Web search returned {search_count} results. "
-            f"Use the structured question to ensure coverage of the main question AND side questions."
-            f"Provide complete analysis with all required fields."
+            f"IMPORTANT INSTRUCTIONS:\n"
+            f"1) Answer the MAIN question/topic first.\n"
+            f"2) Then answer SIDE questions after, clearly separated.\n"
+            f"3) Do NOT treat a side question as the main focus.\n\n"
+            f"User Question: {query}"
         )
+
 
     else:
         context_section = (
@@ -3884,24 +3888,57 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
 
 
 def format_query_structure_for_prompt(qs: Optional[Dict[str, Any]]) -> str:
+    """
+    Deterministic structure hint injected into the LLM prompt.
+    Key goal: force MAIN-first ordering and treat SIDE as secondary.
+    """
     if not qs or not isinstance(qs, dict):
         return ""
-    parts = []
-    parts.append("STRUCTURED QUESTION (DETERMINISTIC):")
-    parts.append(f"- Category: {qs.get('category','unknown')} (conf {qs.get('category_confidence','')})")
-    parts.append(f"- Main: {qs.get('main','')}")
-    side = qs.get("side") or []
-    if side:
-        parts.append("- Side questions:")
-        for s in side[:5]:
-            parts.append(f"  - {s}")
-    tmpl = qs.get("template_sections") or []
-    if tmpl:
-        parts.append("- Recommended response sections:")
-        for t in tmpl[:10]:
-            parts.append(f"  - {t}")
-    return "\n".join(parts).strip()
 
+    category = (qs.get("category") or "unknown").strip()
+    conf = qs.get("category_confidence", "")
+    main = (qs.get("main") or "").strip()
+    side = qs.get("side") or []
+    if not isinstance(side, list):
+        side = []
+
+    parts: List[str] = []
+    parts.append("STRUCTURED QUESTION (DETERMINISTIC):")
+    parts.append(f"- Category: {category} (conf {conf})")
+    parts.append(f"- MAIN (answer first): {main}")
+
+    if side:
+        parts.append("- SIDE (answer after main, in order):")
+        for s in side[:8]:
+            if isinstance(s, str) and s.strip():
+                parts.append(f"  - {s.strip()}")
+
+    # Hard ordering rule (very explicit)
+    parts.append("")
+    parts.append("ANSWER ORDER RULE (MUST FOLLOW):")
+    parts.append("1) Cover MAIN first and give it the majority of the executive summary.")
+    parts.append("2) Only after MAIN, address SIDE questions in separate subsections.")
+    parts.append("3) Do not merge SIDE into MAIN or swap their priority.")
+
+    # If this is a country-style overview question, force a general primer first
+    # (this directly matches your 'tell me about Singapore in general...' expectation)
+    if category == "country":
+        parts.append("")
+        parts.append("COUNTRY OVERVIEW REQUIREMENT (FOR MAIN):")
+        parts.append("- Start with a general country primer before any industry deep-dive.")
+        parts.append("- Include (as available): population, GDP/GDP per capita, growth, inflation, currency, "
+                     "key industries, trade (exports/imports), and major attractions/context.")
+
+    # Keep any template sections if present
+    tmpl = qs.get("template_sections") or []
+    if isinstance(tmpl, list) and tmpl:
+        parts.append("")
+        parts.append("RECOMMENDED RESPONSE SECTIONS:")
+        for t in tmpl[:12]:
+            if isinstance(t, str) and t.strip():
+                parts.append(f"- {t.strip()}")
+
+    return "\n".join(parts).strip()
 
 # ------------------------------------
 # METRIC DIFF COMPUTATION
