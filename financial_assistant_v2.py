@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.19
+# YUREEKA AI RESEARCH ASSISTANT v7.20
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -20,6 +20,7 @@
 # Range + Source Attribution
 # Proxy Labeler + Geo Tagging
 # Improved Main Topic + Side Topic Extractor Using Deterministic-->NLP-->LLM layer
+# Expanded Output In Metrics/Findings/Entities With Toggle
 # ================================================================================
 
 import os
@@ -4613,160 +4614,119 @@ def get_llm_explanation(diff: EvolutionDiff, query: str) -> Dict:
 # 8B. EVOLUTION DASHBOARD RENDERING
 # =========================================================
 
-def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str):
-    """Render deterministic evolution results"""
+def render_evolution_results(results: Dict, query: str):
+    """Render evolution results with show-all + filter controls"""
 
-    st.header("📈 Evolution Analysis")
+    st.header("📈 Evolution Analysis Results")
     st.markdown(f"**Query:** {query}")
 
-    # Overview metrics
+    if not isinstance(results, dict) or results.get("status") != "success":
+        st.error(f"❌ {results.get('message', 'Analysis failed') if isinstance(results, dict) else 'Analysis failed'}")
+        return
+
+    def _filter_df(df: pd.DataFrame, q: str) -> pd.DataFrame:
+        if not q:
+            return df
+        ql = q.lower().strip()
+        if not ql:
+            return df
+
+        def row_match(row) -> bool:
+            for v in row.values:
+                try:
+                    if ql in str(v).lower():
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        mask = df.apply(row_match, axis=1)
+        return df[mask]
+
+    def _render_df(title: str, rows: List[Dict[str, Any]], key_prefix: str, default_limit: int = 10):
+        st.subheader(title)
+        if not rows:
+            st.info("No data available")
+            return
+
+        df = pd.DataFrame(rows)
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            q = st.text_input("Filter", value="", key=f"{key_prefix}_filter")
+        with c2:
+            show_all = st.checkbox("Show all", value=False, key=f"{key_prefix}_showall")
+
+        df = _filter_df(df, q)
+        if not show_all:
+            df = df.head(default_limit)
+
+        st.dataframe(df, hide_index=True, width="stretch")
+        st.caption(f"Showing {len(df)} row(s){' (filtered)' if q else ''}.")
+
+    # Overview
     col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Sources Checked", results.get("sources_checked", 0))
+    col2.metric("Sources Fetched", results.get("sources_fetched", 0))
+    col3.metric("Stability", f"{float(results.get('stability_score', 0)):.0f}%")
 
-    if diff.time_delta_hours:
-        if diff.time_delta_hours < 24:
-            time_str = f"{diff.time_delta_hours:.1f}h"
-        else:
-            time_str = f"{diff.time_delta_hours/24:.1f}d"
-        col1.metric("Time Elapsed", time_str)
+    summary = results.get("summary", {}) or {}
+    if summary.get("metrics_increased", 0) > summary.get("metrics_decreased", 0):
+        col4.success("📈 Trending Up")
+    elif summary.get("metrics_decreased", 0) > summary.get("metrics_increased", 0):
+        col4.error("📉 Trending Down")
     else:
-        col1.metric("Time Elapsed", "Unknown")
-
-    col2.metric("Stability", f"{diff.stability_score:.0f}%")
-
-    trend = explanation.get('trend', 'stable')
-    trend_icon = {'improving': '📈', 'declining': '📉', 'stable': '➡️'}.get(trend, '➡️')
-    col3.metric("Trend", f"{trend_icon} {trend.title()}")
-
-    # Stability indicator
-    if diff.stability_score >= 80:
-        col4.success("🟢 Highly Stable")
-    elif diff.stability_score >= 60:
-        col4.warning("🟡 Moderate Changes")
-    else:
-        col4.error("🔴 Significant Drift")
-
-    # Headline
-    st.info(f"**{explanation.get('headline', 'Analysis complete')}**")
+        col4.info("➡️ Stable")
 
     st.markdown("---")
 
-    # Interpretation
-    st.subheader("📋 Interpretation")
-    st.markdown(explanation.get('interpretation', 'No interpretation available'))
-
-    # Watch items
-    watch_items = explanation.get('watch_items', [])
-    if watch_items:
-        st.markdown("**🔔 Watch Items:**")
-        for item in watch_items:
-            st.markdown(f"- {item}")
-
-    st.markdown("---")
-
-    # Metric Changes Table
-    st.subheader("💰 Metric Changes")
-    if diff.metric_diffs:
-        metric_rows = []
-
-
-
-        for m in diff.metric_diffs:
-            icon = {
-                'increased': '📈', 'decreased': '📉', 'unchanged': '➡️',
-                'added': '🆕', 'removed': '❌'
-            }.get(m.change_type, '•')
-
-            change_str = f"{m.change_pct:+.1f}%" if m.change_pct is not None else "-"
-
-            metric_rows.append({
-                "": icon,
-                "Metric": m.name,
-                "Previous": m.old_raw or "-",
-                "Current": m.new_raw or "-",
-                "Change": change_str,
-                "Status": m.change_type.replace('_', ' ').title()
+    # Source Verification (expanded + filter)
+    src_rows = []
+    for s in results.get("source_results", []) or []:
+        if isinstance(s, dict):
+            src_rows.append({
+                "URL": s.get("url", ""),
+                "Status": s.get("status", ""),
+                "Detail": s.get("status_detail", ""),
+                "Numbers Found": s.get("numbers_found", 0),
+                "Fingerprint": s.get("fingerprint", ""),
+                "Fetched At": s.get("fetched_at", ""),
             })
-        st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
-    else:
-        st.info("No metrics to compare")
+    _render_df("🔗 Source Verification", src_rows, key_prefix="evo_sources", default_limit=10)
 
     st.markdown("---")
 
-    # Entity Changes Table
-    st.subheader("🏢 Entity Ranking Changes")
-    if diff.entity_diffs:
-        entity_rows = []
-        for e in diff.entity_diffs:
+    # Metric Changes (expanded + filter)
+    change_rows = []
+    for m in results.get("metric_changes", []) or []:
+        if isinstance(m, dict):
             icon = {
-                'moved_up': '⬆️', 'moved_down': '⬇️', 'unchanged': '➡️',
-                'added': '🆕', 'removed': '❌'
-            }.get(e.change_type, '•')
-
-            rank_str = f"{e.rank_change:+d}" if e.rank_change else "-"
-
-            entity_rows.append({
+                "increased": "📈",
+                "decreased": "📉",
+                "unchanged": "➡️",
+                "not_found": "❓"
+            }.get(m.get("change_type"), "•")
+            cp = m.get("change_pct")
+            cp_str = f"{cp:+.1f}%" if isinstance(cp, (int, float)) else "-"
+            change_rows.append({
                 "": icon,
-                "Entity": e.name,
-                "Old Rank": e.old_rank or "-",
-                "New Rank": e.new_rank or "-",
-                "Rank Δ": rank_str,
-                "Old Share": e.old_share or "-",
-                "New Share": e.new_share or "-"
+                "Metric": m.get("name", ""),
+                "Previous": m.get("previous_value", ""),
+                "Current": m.get("current_value", ""),
+                "Δ": cp_str,
+                "Confidence": f"{float(m.get('match_confidence', 0)):.0f}%",
+                "Context": m.get("context_snippet", ""),
             })
-        st.dataframe(pd.DataFrame(entity_rows), hide_index=True, use_container_width=True)
-    else:
-        st.info("No entities to compare")
+    _render_df("💰 Metric Changes", change_rows, key_prefix="evo_changes", default_limit=12)
 
     st.markdown("---")
 
-    # Finding Changes
-    st.subheader("🔍 Finding Changes")
-    if diff.finding_diffs:
-        added = [f for f in diff.finding_diffs if f.change_type == 'added']
-        removed = [f for f in diff.finding_diffs if f.change_type == 'removed']
-        modified = [f for f in diff.finding_diffs if f.change_type == 'modified']
-
-        if added:
-            st.markdown("**🆕 New Findings:**")
-            for f in added:
-                st.success(f"• {f.new_text}")
-
-        if removed:
-            st.markdown("**❌ Removed Findings:**")
-            for f in removed:
-                st.error(f"• ~~{f.old_text}~~")
-
-        if modified:
-            st.markdown("**✏️ Modified Findings:**")
-            for f in modified:
-                st.warning(f"• {f.new_text} *(similarity: {f.similarity:.0f}%)*")
-    else:
-        st.info("No findings to compare")
-
-    st.markdown("---")
-
-    # Summary Stats
-    st.subheader("📊 Change Summary")
-    stats = diff.summary_stats
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("**Metrics:**")
-        st.write(f"📈 {stats['metrics_increased']} increased")
-        st.write(f"📉 {stats['metrics_decreased']} decreased")
-        st.write(f"➡️ {stats['metrics_unchanged']} unchanged")
-
-    with col2:
-        st.markdown("**Entities:**")
-        st.write(f"⬆️ {stats['entities_moved_up']} moved up")
-        st.write(f"⬇️ {stats['entities_moved_down']} moved down")
-        st.write(f"🆕 {stats['entities_added']} new")
-
-    with col3:
-        st.markdown("**Findings:**")
-        st.write(f"✅ {stats['findings_retained']} retained")
-        st.write(f"✏️ {stats['findings_modified']} modified")
-        st.write(f"🆕 {stats['findings_added']} new")
+    # Summary
+    st.subheader("📊 Summary")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total", summary.get("total_metrics", 0))
+    col2.metric("Found", summary.get("metrics_found", 0))
+    col3.metric("📈 Up", summary.get("metrics_increased", 0))
+    col4.metric("📉 Down", summary.get("metrics_decreased", 0))
 
 
 # =========================================================
@@ -5812,24 +5772,17 @@ def render_dashboard(
         return
 
     # -------------------------
-    # Small local helper: robust metric value formatting (range-aware)
+    # Helpers
     # -------------------------
     def _format_metric_value(m: Dict) -> str:
+        """Range-aware formatting; falls back to value+unit."""
         if not isinstance(m, dict):
             return "N/A"
 
-        # Prefer deterministic span/range if available
-        span = None
-        try:
-            span = get_metric_value_span(m)
-        except Exception:
-            span = None
-
-        # If the metric already has a merged range structure, prefer that
-        rng = m.get("range") if isinstance(m, dict) else None
         unit = (m.get("unit") or "").strip()
 
-        # Case 1: explicit "range" dict (from canonicalize_metrics merge)
+        # Case 1: explicit merged "range" dict (from canonicalize_metrics merge)
+        rng = m.get("range") if isinstance(m, dict) else None
         if isinstance(rng, dict) and rng.get("min") is not None and rng.get("max") is not None:
             try:
                 vmin = float(rng["min"])
@@ -5837,10 +5790,14 @@ def render_dashboard(
                 if vmin != vmax:
                     return f"{rng['min']}–{rng['max']} {unit}".strip()
             except Exception:
-                # fall through
                 pass
 
-        # Case 2: value_span from get_metric_value_span
+        # Case 2: span from get_metric_value_span
+        try:
+            span = get_metric_value_span(m)
+        except Exception:
+            span = None
+
         if isinstance(span, dict) and span.get("min") is not None and span.get("max") is not None:
             try:
                 vmin = float(span["min"])
@@ -5848,17 +5805,74 @@ def render_dashboard(
                 u = (span.get("unit") or unit or "").strip()
                 if vmin != vmax:
                     return f"{span['min']}–{span['max']} {u}".strip()
-                # equal bounds -> show mid if present
                 mid = span.get("mid")
                 if mid is not None:
                     return f"{mid} {u}".strip()
             except Exception:
                 pass
 
-        # Default
         return f"{m.get('value', 'N/A')} {unit}".strip()
 
+    def _filter_df(df: pd.DataFrame, q: str) -> pd.DataFrame:
+        """Simple contains-filter across all cells."""
+        if not q:
+            return df
+        ql = q.lower().strip()
+        if not ql:
+            return df
+
+        def row_match(row) -> bool:
+            for v in row.values:
+                try:
+                    if ql in str(v).lower():
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        mask = df.apply(row_match, axis=1)
+        return df[mask]
+
+    def _render_table_with_controls(
+        title: str,
+        rows: List[Dict[str, Any]],
+        key_prefix: str,
+        default_limit: int = 8,
+        prefer_dataframe_threshold: int = 12,
+    ):
+        """Show search + Show all; uses st.dataframe for large lists."""
+        st.subheader(title)
+
+        if not rows:
+            st.info("No data available")
+            return
+
+        df = pd.DataFrame(rows)
+
+        # Controls
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            q = st.text_input("Filter", value="", key=f"{key_prefix}_filter")
+        with c2:
+            show_all = st.checkbox("Show all", value=False, key=f"{key_prefix}_showall")
+
+        df = _filter_df(df, q)
+
+        if not show_all:
+            df = df.head(default_limit)
+
+        # Use dataframe for long lists; also fine for short lists (consistent UI)
+        if len(df) >= prefer_dataframe_threshold:
+            st.dataframe(df, hide_index=True, width="stretch")
+        else:
+            st.dataframe(df, hide_index=True, width="stretch")
+
+        # Optional: show count info
+        st.caption(f"Showing {len(df)} row(s){' (filtered)' if q else ''}.")
+
+    # -------------------------
     # Header
+    # -------------------------
     st.header("📊 Yureeka Market Report")
     st.markdown(f"**Question:** {user_question}")
 
@@ -5879,13 +5893,11 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # =========================
-    # Key Metrics (template-driven when available)
-    # =========================
-    st.subheader("💰 Key Metrics")
+    # -------------------------
+    # Key Metrics (expanded)
+    # -------------------------
     metrics = data.get("primary_metrics", {}) or {}
 
-    # 3B: Pull question signals/category into the same table output
     question_category = data.get("question_category") or (data.get("question_profile", {}) or {}).get("category")
     question_signals = data.get("question_signals") or (data.get("question_profile", {}) or {}).get("signals", {})
     side_questions = data.get("side_questions") or (data.get("question_profile", {}) or {}).get("side_questions", [])
@@ -5894,9 +5906,9 @@ def render_dashboard(
         (data.get("question_signals") or {}).get("expected_metric_ids") or []
     )
 
-    metric_rows: List[Dict[str, str]] = []
+    metric_rows: List[Dict[str, Any]] = []
 
-    # Prepend question-derived signals (if present)
+    # Add question-derived signals up top (if present)
     if question_category:
         metric_rows.append({"Metric": "Question Category", "Value": str(question_category)})
 
@@ -5912,92 +5924,91 @@ def render_dashboard(
         metric_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(map(str, side_questions))})
 
     if isinstance(metrics, dict) and metrics:
-        # Canonicalize to stabilize lookups
+        # Canonicalize metrics for stability and range-aware merging if you enabled it
         try:
             canon = canonicalize_metrics(metrics)
         except Exception:
-            canon = metrics  # fallback (worst-case)
+            canon = metrics
 
-        # Build lookup by base canonical id (strip year suffixes etc.)
+        # Build lookup by base canonical id
         by_base: Dict[str, List[Dict]] = {}
         if isinstance(canon, dict):
             for cid, m in canon.items():
                 base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
                 by_base.setdefault(base, []).append(m)
 
-        # If template expected_ids exists, render in that order
+        # If a template exists, output in template order first
         if expected_ids and isinstance(by_base, dict):
             for base_id in expected_ids:
                 candidates = by_base.get(base_id, [])
                 if candidates:
-                    # deterministic pick (canonicalize_metrics already sorts deterministically)
                     m = candidates[0]
-                    metric_rows.append({
-                        "Metric": m.get("name", base_id),
-                        "Value": _format_metric_value(m)
-                    })
+                    metric_rows.append({"Metric": m.get("name", base_id), "Value": _format_metric_value(m)})
                 else:
-                    # placeholder row (avoid hard dependency on METRIC_REGISTRY)
-                    display = str(base_id).replace("_", " ").title()
-                    metric_rows.append({"Metric": display, "Value": "N/A"})
-        else:
-            # No template → show first 6 canonicalized metrics
+                    metric_rows.append({"Metric": str(base_id).replace("_", " ").title(), "Value": "N/A"})
+
+            # Then append any remaining metrics not covered by expected_ids
+            expected_set = set(expected_ids)
             if isinstance(canon, dict):
-                for cid, m in list(canon.items())[:6]:
-                    metric_rows.append({
-                        "Metric": m.get("name", cid),
-                        "Value": _format_metric_value(m)
-                    })
+                for cid, m in canon.items():
+                    base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
+                    if base in expected_set:
+                        continue
+                    metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
+        else:
+            # No template → show ALL available metrics (not just first 6)
+            if isinstance(canon, dict):
+                for cid, m in canon.items():
+                    metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
 
-    if metric_rows:
-        st.table(pd.DataFrame(metric_rows))
-    else:
-        st.info("No metrics available")
-
-    st.markdown("---")
-
-    # Key Findings
-    st.subheader("🔍 Key Findings")
-    findings = data.get("key_findings", [])
-    for i, finding in enumerate(findings[:8], 1):
-        if finding:
-            st.markdown(f"**{i}.** {finding}")
+    _render_table_with_controls("💰 Key Metrics", metric_rows, key_prefix="dash_metrics", default_limit=10)
 
     st.markdown("---")
 
-    # Top Entities
-    entities = data.get("top_entities", [])
-    if entities:
-        st.subheader("🏢 Top Market Players")
-        entity_data = []
-        for ent in entities:
-            if isinstance(ent, dict):
-                entity_data.append({
-                    "Entity": ent.get("name", "N/A"),
-                    "Share": ent.get("share", "N/A"),
-                    "Growth": ent.get("growth", "N/A")
-                })
-        if entity_data:
-            st.dataframe(pd.DataFrame(entity_data), hide_index=True, width="stretch")
-
-    # Trends Forecast
-    trends = data.get("trends_forecast", [])
-    if trends:
-        st.subheader("📈 Trends & Forecast")
-        trend_data = []
-        for trend in trends:
-            if isinstance(trend, dict):
-                trend_data.append({
-                    "Trend": trend.get("trend", "N/A"),
-                    "Direction": trend.get("direction", "→"),
-                    "Timeline": trend.get("timeline", "N/A")
-                })
-        if trend_data:
-            st.table(pd.DataFrame(trend_data))
+    # -------------------------
+    # Key Findings (expanded)
+    # -------------------------
+    findings = data.get("key_findings", []) or []
+    finding_rows = [{"#": i + 1, "Finding": f} for i, f in enumerate(findings) if f]
+    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix="dash_findings", default_limit=10)
 
     st.markdown("---")
 
-    # Visualization
+    # -------------------------
+    # Top Entities (expanded)
+    # -------------------------
+    entities = data.get("top_entities", []) or []
+    entity_rows = []
+    for ent in entities:
+        if isinstance(ent, dict):
+            entity_rows.append({
+                "Entity": ent.get("name", "N/A"),
+                "Share": ent.get("share", "N/A"),
+                "Growth": ent.get("growth", "N/A"),
+            })
+    _render_table_with_controls("🏢 Top Market Players", entity_rows, key_prefix="dash_entities", default_limit=10)
+
+    st.markdown("---")
+
+    # -------------------------
+    # Trends Forecast (expanded)
+    # -------------------------
+    trends = data.get("trends_forecast", []) or []
+    trend_rows = []
+    for t in trends:
+        if isinstance(t, dict):
+            trend_rows.append({
+                "Trend": t.get("trend", "N/A"),
+                "Direction": t.get("direction", "→"),
+                "Timeline": t.get("timeline", "N/A"),
+            })
+    _render_table_with_controls("📈 Trends & Forecast", trend_rows, key_prefix="dash_trends", default_limit=10)
+
+    st.markdown("---")
+
+    # -------------------------
+    # Visualization (leave as-is; not list heavy)
+    # -------------------------
     st.subheader("📊 Data Visualization")
     viz = data.get("visualization_data")
 
@@ -6010,8 +6021,6 @@ def render_dashboard(
         if labels and values and len(labels) == len(values):
             try:
                 numeric_values = [float(v) for v in values[:10]]
-
-                # Detect axis labels
                 x_label = viz.get("x_axis_label") or detect_x_label_dynamic(labels)
                 y_label = viz.get("y_axis_label") or detect_y_label_dynamic(numeric_values)
 
@@ -6030,8 +6039,7 @@ def render_dashboard(
                     xaxis=dict(tickangle=-45) if len(labels) > 5 else {}
                 )
 
-                st.plotly_chart(fig, use_container_width=True)  # keep unless Streamlit warns for this too
-
+                st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
                 st.info(f"⚠️ Chart rendering failed: {e}")
         else:
@@ -6039,7 +6047,7 @@ def render_dashboard(
     else:
         st.info("📊 No visualization data available")
 
-    # Comparison Bars
+    # Comparison Bars (leave as-is)
     comp = data.get("comparison_bars")
     if comp and isinstance(comp, dict):
         cats = comp.get("categories", [])
@@ -6051,33 +6059,21 @@ def render_dashboard(
                     df_comp, x="Category", y="Value",
                     title=comp.get("title", "Comparison"), text_auto=True
                 )
-                st.plotly_chart(fig, use_container_width=True)  # keep unless Streamlit warns for this too
+                st.plotly_chart(fig, use_container_width=True)
             except Exception:
                 pass
 
     st.markdown("---")
 
-    # Sources
-    st.subheader("🔗 Sources & Reliability")
+    # -------------------------
+    # Sources (expanded + filter)
+    # -------------------------
     all_sources = data.get("sources", []) or (web_context.get("sources", []) if isinstance(web_context, dict) else [])
-
-    if not all_sources:
-        st.info("No sources found")
-    else:
-        st.success(f"📊 Found {len(all_sources)} sources")
-
-    cols = st.columns(2)
-    for i, src in enumerate(all_sources[:10], 1):
-        col = cols[(i - 1) % 2]
-        short_url = src[:60] + "..." if len(src) > 60 else src
-        reliability = classify_source_reliability(str(src))
-        col.markdown(
-            f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
-            unsafe_allow_html=True
-        )
+    source_rows = [{"#": i + 1, "Source": s, "Reliability": classify_source_reliability(str(s))} for i, s in enumerate(all_sources)]
+    _render_table_with_controls("🔗 Sources & Reliability", source_rows, key_prefix="dash_sources", default_limit=10)
 
     # Metadata
-    col_fresh, col_action = st.columns(2)
+    col_fresh, _ = st.columns(2)
     with col_fresh:
         freshness = data.get("freshness", "Current")
         st.metric("Data Freshness", freshness)
@@ -6098,15 +6094,22 @@ def render_dashboard(
         for i, (label, key) in enumerate(metrics_display):
             cols[i].metric(label, f"{veracity_scores.get(key, 0):.0f}%")
 
-    # Web Context
+    # Web Context (expanded list; still optional)
     if isinstance(web_context, dict) and web_context.get("search_results"):
-        with st.expander("🌐 Web Search Details"):
-            for i, result in enumerate(web_context["search_results"][:5]):
-                st.markdown(f"**{i+1}. {result.get('title')}**")
-                st.caption(f"{result.get('source')} - {result.get('date')}")
-                st.write(result.get("snippet", ""))
-                st.caption(f"[{result.get('link')}]({result.get('link')})")
-                st.markdown("---")
+        with st.expander("🌐 Web Search Details (filterable)", expanded=False):
+            sr = web_context.get("search_results", []) or []
+            sr_rows = []
+            for i, r in enumerate(sr):
+                if isinstance(r, dict):
+                    sr_rows.append({
+                        "#": i + 1,
+                        "Title": r.get("title", ""),
+                        "Source": r.get("source", ""),
+                        "Date": r.get("date", ""),
+                        "Snippet": r.get("snippet", ""),
+                        "Link": r.get("link", ""),
+                    })
+            _render_table_with_controls("Search Results", sr_rows, key_prefix="dash_search_results", default_limit=10)
 
 
 def render_native_comparison(baseline: Dict, compare: Dict):
