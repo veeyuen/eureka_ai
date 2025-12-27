@@ -3830,7 +3830,7 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         hints = nlp_out.get("hints", {})
         debug["nlp"] = hints or {"nlp_used": False}
 
-         Override main/side if NLP produced them (guard against fragment-y mains)
+        Override main/side if NLP produced them (guard against fragment-y mains)
         nlp_main = (nlp_out.get("main") or "").strip()
         if nlp_main:
             bad_prefixes = ("as well as", "as well", "and ", "also ", "plus ", "as for ")
