@@ -3800,9 +3800,6 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
       3) Optional NLP refinement (spaCy if available)
       4) Deterministic similarity vote (TF-IDF)
       5) LLM fallback ONLY if confidence remains low
-
-    Output schema:
-      {"category": "...", "category_confidence": 0-1, "main": "...", "side": [...], "debug": {...}}
     """
     q = _normalize_q(query)
     clauses = _split_clauses_deterministic(q)
@@ -3843,21 +3840,18 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         # If NLP detects a place + overview cue, bias to "country"
         gpes = (hints or {}).get("gpe_entities", []) if isinstance(hints, dict) else []
         overview_hit = (hints or {}).get("overview_signal_hit", False) if isinstance(hints, dict) else False
-        if overview_hit and gpes:
-            # Only override if deterministic confidence is weak
-            if cat_conf < 0.45:
-                category = "country"
-                cat_conf = max(cat_conf, 0.55)
+        if overview_hit and gpes and cat_conf < 0.45:
+            category = "country"
+            cat_conf = max(cat_conf, 0.55)
 
-    # --- Layer 3: embedding-style category vote (TF-IDF cosine) ---
+    # --- Layer 3: embedding-style category vote ---
     emb_vote = _embedding_category_vote(q)
     debug["similarity_vote"] = emb_vote
 
     emb_cat = emb_vote.get("category", "unknown")
     emb_conf = float(emb_vote.get("confidence", 0.0))
 
-    # If deterministic confidence is low, adopt embedding suggestion
-    if cat_conf < 0.40 and emb_cat and emb_cat != "unknown" and emb_conf >= 0.45:
+    if cat_conf < 0.40 and emb_cat != "unknown" and emb_conf >= 0.45:
         category = emb_cat
         cat_conf = max(cat_conf, min(0.75, emb_conf))
 
@@ -3866,8 +3860,7 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         llm = _llm_fallback_query_structure(q)
         debug["llm_fallback_used"] = bool(llm)
 
-            if isinstance(llm, dict):
-            # Category can be adopted when deterministic remains weak
+        if isinstance(llm, dict):
             category = llm.get("category", category) or category
             try:
                 cat_conf = float(llm.get("category_confidence", cat_conf))
@@ -3883,57 +3876,36 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
             def _overview_score(s: str) -> int:
                 if not s:
                     return 0
-                s2 = s.lower().strip()
+                s2 = s.lower()
                 signals = [
-                    "in general", "overview", "background", "basic facts", "at a glance",
-                    "general facts", "tell me about", "describe", "introduction"
+                    "in general", "overview", "background", "basic facts",
+                    "at a glance", "tell me about", "describe", "introduction"
                 ]
                 return sum(1 for sig in signals if sig in s2)
 
             def _is_bad_main(s: str) -> bool:
-                if not s:
+                if not s or len(s) < 8:
                     return True
-                s2 = s.strip().lower()
-                if len(s2) < 8:
-                    return True
-                bad_prefixes = ("as well as", "as well", "and ", "also ", "plus ", "as for ")
-                return any(s2.startswith(p) for p in bad_prefixes)
+                return s.lower().startswith(
+                    ("as well as", "as well", "and ", "also ", "plus ", "as for ")
+                )
 
-            # Merge side questions deterministically: deterministic first, then LLM additions
             merged_side = []
-            for s in (det_side + llm_side):
-                if not s:
-                    continue
-                s_clean = str(s).strip()
-                if not s_clean:
-                    continue
-                if s_clean not in merged_side:
-                    merged_side.append(s_clean)
+            for s in det_side + llm_side:
+                s = str(s).strip()
+                if s and s not in merged_side:
+                    merged_side.append(s)
 
-            # Decide whether to accept LLM main (don't let fragments steal "main")
             det_score = _overview_score(det_main)
             llm_score = _overview_score(llm_main)
 
-            accept_llm_main = False
             if llm_main and not _is_bad_main(llm_main):
-                # If deterministic has stronger overview cues, keep it
-                if det_score > llm_score:
-                    accept_llm_main = False
-                else:
-                    # If deterministic is empty/weak, or LLM is better, accept LLM
-                    if not det_main or det_score == 0:
-                        accept_llm_main = True
-                    elif llm_score > det_score:
-                        accept_llm_main = True
+                if not det_main or llm_score > det_score:
+                    main = llm_main
 
-            if accept_llm_main:
-                main = llm_main
-
-            # Always keep merged side
             side = merged_side
 
-    # clean side
-    side = _dedupe_clauses([s.strip() for s in (side or []) if isinstance(s, str) and s.strip()])
+    side = _dedupe_clauses([s.strip() for s in (side or []) if s.strip()])
 
     return {
         "category": category or "unknown",
@@ -3942,7 +3914,6 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         "side": side,
         "debug": debug,
     }
-
 
 
 def format_query_structure_for_prompt(qs: Optional[Dict[str, Any]]) -> str:
