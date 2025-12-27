@@ -5760,6 +5760,7 @@ def render_dashboard(
     user_question: str,
     veracity_scores: Optional[Dict] = None,
     source_reliability: Optional[List[str]] = None,
+    key_root: str = "dash",
 ):
     """Render the analysis dashboard"""
 
@@ -5961,7 +5962,8 @@ def render_dashboard(
                 for cid, m in canon.items():
                     metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
 
-    _render_table_with_controls("💰 Key Metrics", metric_rows, key_prefix="dash_metrics", default_limit=10)
+    #_render_table_with_controls("💰 Key Metrics", metric_rows, key_prefix="dash_metrics", default_limit=10)
+    _render_table_with_controls("💰 Key Metrics", metric_rows, key_prefix=f"{key_root}_metrics", default_limit=10)
 
     st.markdown("---")
 
@@ -5970,7 +5972,9 @@ def render_dashboard(
     # -------------------------
     findings = data.get("key_findings", []) or []
     finding_rows = [{"#": i + 1, "Finding": f} for i, f in enumerate(findings) if f]
-    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix="dash_findings", default_limit=10)
+    #_render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix="dash_findings", default_limit=10)
+    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_findings", default_limit=10)
+
 
     st.markdown("---")
 
@@ -5986,7 +5990,8 @@ def render_dashboard(
                 "Share": ent.get("share", "N/A"),
                 "Growth": ent.get("growth", "N/A"),
             })
-    _render_table_with_controls("🏢 Top Market Players", entity_rows, key_prefix="dash_entities", default_limit=10)
+    #_render_table_with_controls("🏢 Top Market Players", entity_rows, key_prefix="dash_entities", default_limit=10)
+    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_entities", default_limit=10)
 
     st.markdown("---")
 
@@ -6002,7 +6007,9 @@ def render_dashboard(
                 "Direction": t.get("direction", "→"),
                 "Timeline": t.get("timeline", "N/A"),
             })
-    _render_table_with_controls("📈 Trends & Forecast", trend_rows, key_prefix="dash_trends", default_limit=10)
+    #_render_table_with_controls("📈 Trends & Forecast", trend_rows, key_prefix="dash_trends", default_limit=10)
+    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_trends", default_limit=10)
+
 
     st.markdown("---")
 
@@ -6070,7 +6077,9 @@ def render_dashboard(
     # -------------------------
     all_sources = data.get("sources", []) or (web_context.get("sources", []) if isinstance(web_context, dict) else [])
     source_rows = [{"#": i + 1, "Source": s, "Reliability": classify_source_reliability(str(s))} for i, s in enumerate(all_sources)]
-    _render_table_with_controls("🔗 Sources & Reliability", source_rows, key_prefix="dash_sources", default_limit=10)
+    #_render_table_with_controls("🔗 Sources & Reliability", source_rows, key_prefix="dash_sources", default_limit=10)
+    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_sources", default_limit=10)
+
 
     # Metadata
     col_fresh, _ = st.columns(2)
@@ -6109,7 +6118,8 @@ def render_dashboard(
                         "Snippet": r.get("snippet", ""),
                         "Link": r.get("link", ""),
                     })
-            _render_table_with_controls("Search Results", sr_rows, key_prefix="dash_search_results", default_limit=10)
+            #_render_table_with_controls("Search Results", sr_rows, key_prefix="dash_search_results", default_limit=10)
+            _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_search_results", default_limit=10)
 
 
 def render_native_comparison(baseline: Dict, compare: Dict):
@@ -6379,6 +6389,8 @@ def main():
                 st.stop()
 
             query = query.strip()[:500]  # Limit length
+            analysis_id = hashlib.md5(f"{query}|{datetime.now().isoformat()}".encode("utf-8")).hexdigest()[:10]
+
 
             # 3A: Deterministic question categorization/signals for structured reporting
             question_profile = categorize_question_signals(query)
@@ -6494,6 +6506,22 @@ def main():
                 "source_reliability": web_context.get("source_reliability", []),
                 "output": output,
             }
+
+
+            # ✅ Always re-render the last analysis on rerun (so toggles/filters don't wipe output)
+            last = st.session_state.get("last_analysis")
+            if isinstance(last, dict) and last.get("primary_json"):
+                render_dashboard(
+                    last["primary_json"],
+                    last["final_conf"],
+                    last["web_context"],
+                    last["base_conf"],
+                    last["query"],
+                    last.get("veracity_scores"),
+                    (last.get("web_context") or {}).get("source_reliability", []),
+                    key_root=f"dash_{last.get('analysis_id','na')}",
+                )
+
 
         # -------------------------------
         # Re-render last analysis on every rerun
