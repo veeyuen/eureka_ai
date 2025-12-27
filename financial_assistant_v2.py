@@ -1160,11 +1160,7 @@ def unit_clean_first_letter(unit: str) -> str:
 # 7. LLM QUERY FUNCTIONS
 # =========================================================
 
-def query_perplexity(
-    query: str,
-    web_context: Dict,
-    query_structure: Optional[Dict[str, Any]] = None
-) -> Optional[str]:
+def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Query Perplexity API with web context - deterministic settings"""
 
     # Check LLM cache first
@@ -1173,55 +1169,49 @@ def query_perplexity(
         st.info("📦 Using cached LLM response (identical sources)")
         return cached_response
 
-    search_count = len(web_context.get("search_results", []) or [])
+    search_count = len(web_context.get("search_results", []))
 
-    # -------------------------------
-    # Build query structure text SAFELY
-    # (and ensure it is ALWAYS injected into the prompt)
-    # -------------------------------
-    structure_txt = ""
-    try:
-        if query_structure and isinstance(query_structure, dict):
-            structure_txt = format_query_structure_for_prompt(query_structure) or ""
-    except Exception:
-        structure_txt = ""
+    # Always include structured guidance if available
+    structure_txt = format_query_structure_for_prompt(query_structure)
 
-    # -------------------------------
     # Build enhanced prompt
-    # -------------------------------
     if not web_context.get("summary") or search_count < 2:
-        # Low web context: still include structure so "main then side" is enforced
         enhanced_query = (
             f"{SYSTEM_PROMPT}\n\n"
-            + (f"{structure_txt}\n\n" if structure_txt else "")
-            + f"User Question: {query}\n\n"
-            f"Web search returned {search_count} results. "
-            f"Use the structured question to ensure coverage of the MAIN question first, then SIDE questions."
-            f"Provide complete analysis with all required fields."
+            f"User Question: {query}\n\n"
+            f"{structure_txt}\n\n"
+            "INSTRUCTIONS (IMPORTANT):\n"
+            "1) Answer the MAIN question/topic FIRST with a short general overview (facts, context, baseline).\n"
+            "2) Then answer EACH SIDE question in order.\n"
+            "3) Do NOT let a SIDE question dominate the executive summary.\n"
+            "4) Use web search results where available for BOTH main and side.\n\n"
+            f"Web search returned {search_count} results.\n"
+            "Provide complete analysis with all required fields."
         )
     else:
-        # Rich web context: include summary + structure + question
         context_section = (
             "LATEST WEB RESEARCH:\n"
-            f"{web_context.get('summary', '')}\n\n"
+            f"{web_context.get('summary','')}\n\n"
         )
 
-        if web_context.get("scraped_content"):
+        if web_context.get('scraped_content'):
             context_section += "\nDETAILED CONTENT:\n"
-            for url, content in list((web_context.get("scraped_content") or {}).items())[:2]:
+            for url, content in list(web_context['scraped_content'].items())[:2]:
                 context_section += f"\n{url}:\n{str(content)[:800]}...\n"
 
         enhanced_query = (
             f"{context_section}\n"
             f"{SYSTEM_PROMPT}\n\n"
-            + (f"{structure_txt}\n\n" if structure_txt else "")
-            + f"User Question: {query}\n\n"
-            "Use the structured question to ensure coverage of the MAIN question first, then SIDE questions."
+            f"User Question: {query}\n\n"
+            f"{structure_txt}\n\n"
+            "INSTRUCTIONS (IMPORTANT):\n"
+            "1) Answer the MAIN question/topic FIRST with a short general overview (facts, context, baseline).\n"
+            "2) Then answer EACH SIDE question in order.\n"
+            "3) Do NOT let a SIDE question dominate the executive summary.\n"
+            "4) Use web context for BOTH main and side.\n"
         )
 
-    # -------------------------------
     # API request
-    # -------------------------------
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}",
         "Content-Type": "application/json"
@@ -1229,9 +1219,9 @@ def query_perplexity(
 
     payload = {
         "model": "sonar",
-        "temperature": 0.0,      # DETERMINISTIC: No randomness
+        "temperature": 0.0,
         "max_tokens": 2000,
-        "top_p": 1.0,            # DETERMINISTIC: No nucleus sampling
+        "top_p": 1.0,
         "messages": [{"role": "user", "content": enhanced_query}]
     }
 
@@ -5803,13 +5793,16 @@ def detect_y_label_dynamic(values: list) -> str:
 # 3A. QUESTION CATEGORIZATION + SIGNALS (DETERMINISTIC)
 # =========================================================
 
-def categorize_question_signals(query: str) -> Dict[str, Any]:
+def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Single source of truth wrapper.
     Uses extract_query_structure() for main/side + category,
     then attaches deterministic signals for the dashboard/JSON.
+
+    If qs is provided, it will be used (precomputed query_structure) to avoid drift.
     """
-    qs = extract_query_structure(query) or {}
+    qs = (qs if isinstance(qs, dict) else None) or (extract_query_structure(query) or {})
+
     category = qs.get("category", "unknown")
     main = (qs.get("main") or "").strip()
     side = qs.get("side") if isinstance(qs.get("side"), list) else []
@@ -5831,7 +5824,6 @@ def categorize_question_signals(query: str) -> Dict[str, Any]:
         # helpful for debugging, optional:
         "debug_query_structure": qs.get("debug", {})
     }
-
 
 
 def render_dashboard(
@@ -6412,15 +6404,15 @@ def main():
                 return
 
             query = query.strip()[:500]  # Limit length
-            # 3A: Deterministic question categorization/signals for structured reporting
-            question_profile = categorize_question_signals(query)
+
+            # 3A: Deterministic/NLP/LLM query structure (single source of truth)
             query_structure = extract_query_structure(query) or {}
 
-            # Deterministic question signals (no LLM)
-            question_signals = classify_question_signals(query)
-            # Deterministic: extract category + main/side questions
-            query_structure = extract_query_structure(query)
+            # Build question_profile FROM query_structure to avoid drift
+            question_profile = categorize_question_signals(query, qs=query_structure)
 
+            # Deterministic question signals (optional; keep if you still use it elsewhere)
+            question_signals = classify_question_signals(query)
 
             # Web search
             web_context = {}
