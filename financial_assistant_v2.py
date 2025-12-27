@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.19
+# YUREEKA AI RESEARCH ASSISTANT v7.20
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -20,6 +20,7 @@
 # Range + Source Attribution
 # Proxy Labeler + Geo Tagging
 # Improved Main Topic + Side Topic Extractor Using Deterministic-->NLP-->LLM layer
+# Guardrails For Main + Side Topic Handling
 # ================================================================================
 
 import os
@@ -3829,9 +3830,13 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         hints = nlp_out.get("hints", {})
         debug["nlp"] = hints or {"nlp_used": False}
 
-        # Override main/side if NLP produced them
-        if nlp_out.get("main"):
-            main = nlp_out["main"]
+         Override main/side if NLP produced them (guard against fragment-y mains)
+        nlp_main = (nlp_out.get("main") or "").strip()
+        if nlp_main:
+            bad_prefixes = ("as well as", "as well", "and ", "also ", "plus ", "as for ")
+            if not any(nlp_main.lower().startswith(p) for p in bad_prefixes):
+                main = nlp_main
+
         if isinstance(nlp_out.get("side"), list):
             side = nlp_out["side"]
 
@@ -3861,14 +3866,71 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         llm = _llm_fallback_query_structure(q)
         debug["llm_fallback_used"] = bool(llm)
 
-        if isinstance(llm, dict):
+                if isinstance(llm, dict):
+            # Category can be adopted when deterministic remains weak
             category = llm.get("category", category) or category
             try:
                 cat_conf = float(llm.get("category_confidence", cat_conf))
             except Exception:
                 pass
-            main = llm.get("main", main) or main
-            side = llm.get("side", side) if isinstance(llm.get("side"), list) else side
+
+            llm_main = (llm.get("main") or "").strip()
+            llm_side = llm.get("side") if isinstance(llm.get("side"), list) else []
+
+            det_main = (main or "").strip()
+            det_side = side or []
+
+            def _overview_score(s: str) -> int:
+                if not s:
+                    return 0
+                s2 = s.lower().strip()
+                signals = [
+                    "in general", "overview", "background", "basic facts", "at a glance",
+                    "general facts", "tell me about", "describe", "introduction"
+                ]
+                return sum(1 for sig in signals if sig in s2)
+
+            def _is_bad_main(s: str) -> bool:
+                if not s:
+                    return True
+                s2 = s.strip().lower()
+                if len(s2) < 8:
+                    return True
+                bad_prefixes = ("as well as", "as well", "and ", "also ", "plus ", "as for ")
+                return any(s2.startswith(p) for p in bad_prefixes)
+
+            # Merge side questions deterministically: deterministic first, then LLM additions
+            merged_side = []
+            for s in (det_side + llm_side):
+                if not s:
+                    continue
+                s_clean = str(s).strip()
+                if not s_clean:
+                    continue
+                if s_clean not in merged_side:
+                    merged_side.append(s_clean)
+
+            # Decide whether to accept LLM main (don't let fragments steal "main")
+            det_score = _overview_score(det_main)
+            llm_score = _overview_score(llm_main)
+
+            accept_llm_main = False
+            if llm_main and not _is_bad_main(llm_main):
+                # If deterministic has stronger overview cues, keep it
+                if det_score > llm_score:
+                    accept_llm_main = False
+                else:
+                    # If deterministic is empty/weak, or LLM is better, accept LLM
+                    if not det_main or det_score == 0:
+                        accept_llm_main = True
+                    elif llm_score > det_score:
+                        accept_llm_main = True
+
+            if accept_llm_main:
+                main = llm_main
+
+            # Always keep merged side
+            side = merged_side
 
     # clean side
     side = _dedupe_clauses([s.strip() for s in (side or []) if isinstance(s, str) and s.strip()])
