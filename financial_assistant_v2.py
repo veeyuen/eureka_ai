@@ -404,6 +404,8 @@ RESPONSE_TEMPLATE = """
 }
 """
 
+
+
 SYSTEM_PROMPT = f"""You are a professional market research analyst.
 
 CRITICAL RULES:
@@ -1090,7 +1092,7 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
     "high_quality": sum(1 for r in search_results if "✅" in classify_source_reliability(r.get("link", ""))),
     "used_for_scraping": min(num_sources, len(search_results))
     }
-    st.info(f"🔍 SerpAPI: **{source_counts['total']} total** | **{source_counts['high_quality']} high-quality** | Scraping **{source_counts['used_for_scraping']}**")
+    st.info(f"🔍 Sources Found: **{source_counts['total']} total** | **{source_counts['high_quality']} high-quality** | Scraping **{source_counts['used_for_scraping']}**")
 
 
     if not search_results:
@@ -1558,6 +1560,108 @@ def numeric_consistency_with_sources(primary_data: dict, web_context: dict) -> f
     agreement_pct = 30.0 + (agreement_ratio * 65.0)
     return min(agreement_pct, 95.0)
 
+def numeric_consistency_with_sources_v2(primary_data: dict, web_context: dict) -> float:
+    """
+    More stable numeric consistency:
+    - checks BOTH scraped_content and web_context summary
+    - downweights/ignores proxy metrics (is_proxy=True) when present
+    - tolerates formatting differences (commas, currency symbols, unit words)
+    Returns 0-100.
+    """
+    try:
+        metrics = primary_data.get("primary_metrics_canonical") or primary_data.get("primary_metrics") or {}
+        if not isinstance(metrics, dict) or not metrics:
+            return 50.0  # neutral when nothing to verify
+
+        # Combine all text we have available
+        texts = []
+        summary = (web_context or {}).get("summary") or ""
+        if isinstance(summary, str) and summary.strip():
+            texts.append(summary)
+
+        scraped = (web_context or {}).get("scraped_content") or {}
+        if isinstance(scraped, dict):
+            for _, content in scraped.items():
+                if isinstance(content, str) and content.strip():
+                    texts.append(content)
+
+        haystack = "\n".join(texts).lower()
+        if not haystack.strip():
+            # No evidence text stored -> don't crash score; be conservative but not fatal
+            return 45.0
+
+        def _norm_num_str(x) -> str:
+            s = str(x)
+            s = s.replace(",", "").strip().lower()
+            # strip common currency symbols
+            s = s.replace("s$", "").replace("$", "").replace("usd", "").replace("sgd", "")
+            return s
+
+        def _num_variants(v) -> list:
+            # generate a few representations for matching
+            try:
+                f = float(v)
+            except Exception:
+                return [_norm_num_str(v)]
+            return list(dict.fromkeys([
+                _norm_num_str(v),
+                _norm_num_str(round(f, 4)),
+                _norm_num_str(round(f, 2)),
+                _norm_num_str(int(round(f)))
+            ]))
+
+        # Decide which metrics to verify and how much weight to give them
+        checks = []
+        for _, m in metrics.items():
+            if not isinstance(m, dict):
+                continue
+
+            val = m.get("value")
+            if val is None or val == "":
+                continue
+
+            # If range exists, check both bounds + mid
+            candidates = []
+            rng = m.get("range") if isinstance(m.get("range"), dict) else None
+            if rng and rng.get("min") is not None and rng.get("max") is not None:
+                candidates.extend([rng.get("min"), rng.get("max")])
+            candidates.append(val)
+
+            # Weight proxies lower (or ignore entirely if you want)
+            is_proxy = bool(m.get("is_proxy"))
+            weight = 0.5 if is_proxy else 1.0
+
+            checks.append({"candidates": candidates, "weight": weight})
+
+        if not checks:
+            return 50.0
+
+        supported_w = 0.0
+        total_w = 0.0
+
+        for chk in checks:
+            total_w += chk["weight"]
+
+            # supported if ANY candidate variant appears in haystack
+            ok = False
+            for cand in chk["candidates"]:
+                for variant in _num_variants(cand):
+                    if variant and variant in haystack:
+                        ok = True
+                        break
+                if ok:
+                    break
+
+            if ok:
+                supported_w += chk["weight"]
+
+        ratio = supported_w / max(total_w, 1e-9)
+        # map ratio -> 0..100 with a mild floor (don’t nuke score for partial evidence)
+        return max(20.0, min(100.0, ratio * 100.0))
+    except Exception:
+        return 45.0
+
+
 def source_consensus(web_context: dict) -> float:
     """
     Calculate source consensus based on proportion of high-quality sources.
@@ -1598,7 +1702,7 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     breakdown["source_quality"] = round(src_score, 1)
 
     # 2. NUMERIC CONSISTENCY (30% weight)
-    num_score = numeric_consistency_with_sources(primary_data, web_context)
+    num_score = numeric_consistency_with_sources_v2(primary_data, web_context)
     breakdown["numeric_consistency"] = round(num_score, 1)
 
     # 3. CITATION DENSITY (20% weight)
@@ -5858,6 +5962,31 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     signals = classify_question_signals(q) or {}
     # Force signals category to match query_structure category
     signals["category"] = category
+
+    # --- keep raw hits, but don't let contradictory keyword hits pollute the "active" signals ---
+    raw_hits = list(signals.get("signals") or [])
+    signals["raw_signals"] = raw_hits
+
+    def _signal_consistent_with_category(sig: str, cat: str) -> bool:
+        s = (sig or "").lower()
+        c = (cat or "").lower()
+        if not s:
+            return False
+
+        # If final category is country, drop industry/company/market category-hit strings
+        if c == "country":
+            if s.startswith("industry_keywords:") or s.startswith("company_keywords:") or s.startswith("market_keywords:"):
+                return False
+
+        # If final category is industry, drop country-hit strings
+        if c == "industry":
+            if s.startswith("country_keywords:") or s.startswith("country_overview:"):
+                return False
+
+        return True
+
+    signals["signals"] = [s for s in raw_hits if _signal_consistent_with_category(s, category)]
+
 
     # Choose expected metric template based on category (not signals)
     expected_metric_ids = []
