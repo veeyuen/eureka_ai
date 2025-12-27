@@ -1172,46 +1172,76 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
         st.info("📦 Using cached LLM response (identical sources)")
         return cached_response
 
-    search_count = len(web_context.get("search_results", []))
+    search_count = len((web_context or {}).get("search_results", []) or [])
 
-    # Always include structured guidance if available
+    # -------------------------------
+    # Build structured guidance block (ALWAYS included)
+    # -------------------------------
     structure_txt = format_query_structure_for_prompt(query_structure)
 
+    # Strong ordering instruction: MAIN first, then SIDE(s)
+    main_q = ""
+    side_qs: List[str] = []
+    if isinstance(query_structure, dict):
+        main_q = (query_structure.get("main") or "").strip()
+        side_qs = query_structure.get("side") if isinstance(query_structure.get("side"), list) else []
+        side_qs = [str(s).strip() for s in side_qs if isinstance(s, (str, int, float)) and str(s).strip()]
+
+    ordering_instructions = (
+        "ANSWER ORDER (MANDATORY):\n"
+        f"1) Answer the MAIN question first: {main_q or '[use best interpretation of the user question]'}\n"
+    )
+    if side_qs:
+        ordering_instructions += "2) Then answer SIDE questions in the given order:\n"
+        for i, s in enumerate(side_qs, 1):
+            ordering_instructions += f"   {i}. {s}\n"
+    else:
+        ordering_instructions += "2) If there are side questions, answer them after the main.\n"
+
+    anti_fragment_instruction = (
+        "IMPORTANT GUARDRAIL:\n"
+        "- Do NOT treat fragment clauses starting with 'as well as', 'also', 'and', 'plus', etc. as the MAIN.\n"
+        "- If the query asks for an overview (e.g. 'in general'), provide general context first (facts, overview), "
+        "then move to the side topic(s).\n"
+    )
+
+    # -------------------------------
     # Build enhanced prompt
-    if not web_context.get("summary") or search_count < 2:
+    # -------------------------------
+    if not (web_context or {}).get("summary") or search_count < 2:
         enhanced_query = (
             f"{SYSTEM_PROMPT}\n\n"
             f"User Question: {query}\n\n"
             f"{structure_txt}\n\n"
-            "INSTRUCTIONS (IMPORTANT):\n"
-            "1) Answer the MAIN question/topic FIRST with a short general overview (facts, context, baseline).\n"
-            "2) Then answer EACH SIDE question in order.\n"
-            "3) Do NOT let a SIDE question dominate the executive summary.\n"
-            "4) Use web search results where available for BOTH main and side.\n\n"
-            f"Web search returned {search_count} results.\n"
-            "Provide complete analysis with all required fields."
+            f"{ordering_instructions}\n"
+            f"{anti_fragment_instruction}\n"
+            f"Web search returned {search_count} results. "
+            f"Use the structured question to ensure coverage of the MAIN question AND all SIDE questions.\n"
+            f"Provide complete analysis with all required fields.\n"
+            f"Return ONLY valid JSON.\n"
         )
     else:
         context_section = (
             "LATEST WEB RESEARCH:\n"
-            f"{web_context.get('summary','')}\n\n"
+            f"{(web_context or {}).get('summary','')}\n\n"
         )
 
-        if web_context.get('scraped_content'):
+        scraped = (web_context or {}).get("scraped_content") or {}
+        if isinstance(scraped, dict) and scraped:
             context_section += "\nDETAILED CONTENT:\n"
-            for url, content in list(web_context['scraped_content'].items())[:2]:
+            for url, content in list(scraped.items())[:2]:
                 context_section += f"\n{url}:\n{str(content)[:800]}...\n"
 
+        # NOTE: structure_txt MUST be included here too (previously it was computed but not used)
         enhanced_query = (
             f"{context_section}\n"
             f"{SYSTEM_PROMPT}\n\n"
             f"User Question: {query}\n\n"
             f"{structure_txt}\n\n"
-            "INSTRUCTIONS (IMPORTANT):\n"
-            "1) Answer the MAIN question/topic FIRST with a short general overview (facts, context, baseline).\n"
-            "2) Then answer EACH SIDE question in order.\n"
-            "3) Do NOT let a SIDE question dominate the executive summary.\n"
-            "4) Use web context for BOTH main and side.\n"
+            f"{ordering_instructions}\n"
+            f"{anti_fragment_instruction}\n"
+            f"Use the web research above for citations and numeric support.\n"
+            f"Return ONLY valid JSON.\n"
         )
 
     # API request
@@ -1222,9 +1252,9 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
 
     payload = {
         "model": "sonar",
-        "temperature": 0.0,
+        "temperature": 0.0,      # DETERMINISTIC: No randomness
         "max_tokens": 2000,
-        "top_p": 1.0,
+        "top_p": 1.0,            # DETERMINISTIC: No nucleus sampling
         "messages": [{"role": "user", "content": enhanced_query}]
     }
 
@@ -1255,17 +1285,16 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
             llm_obj = LLMResponse.model_validate(repaired)
 
             # Merge web sources
-            if web_context.get("sources"):
+            if (web_context or {}).get("sources"):
                 existing = llm_obj.sources or []
-                merged = list(dict.fromkeys(existing + web_context["sources"]))
+                merged = list(dict.fromkeys(existing + (web_context or {})["sources"]))
                 llm_obj.sources = merged[:10]
                 llm_obj.freshness = "Current (web-enhanced)"
 
-            result = llm_obj.model_dump_json()
-
-            # Cache the successful response
-            cache_llm_response(query, web_context, result)
-            return result
+                result = llm_obj.model_dump_json()
+                # Cache the successful response
+                cache_llm_response(query, web_context, result)
+                return result
 
         except ValidationError as e:
             st.warning(f"⚠️ Pydantic validation failed: {e}")
