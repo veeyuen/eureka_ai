@@ -6364,22 +6364,26 @@ def main():
                 disabled=not SERPAPI_KEY
             )
 
+                # -------------------------------
+        # Persisted analysis output (prevents reset-on-rerun)
+        # -------------------------------
+        if "last_analysis" not in st.session_state:
+            st.session_state["last_analysis"] = None
+
         # Analysis button
-        if st.button("🔍 Analyze", type="primary") and query:
+        if st.button("🔍 Analyze", type="primary", key="analyze_btn") and query:
 
             # Validate query
             if len(query.strip()) < 5:
                 st.error("❌ Please enter a question with at least 5 characters")
-                return
+                st.stop()
 
             query = query.strip()[:500]  # Limit length
+
             # 3A: Deterministic question categorization/signals for structured reporting
             question_profile = categorize_question_signals(query)
             # Deterministic question signals (no LLM)
             question_signals = classify_question_signals(query)
-            # Deterministic: extract category + main/side questions
-            query_structure = extract_query_structure(query)
-
 
             # Web search
             web_context = {}
@@ -6398,12 +6402,12 @@ def main():
                 }
 
             # Primary model query
-            with st.spinner("🤖 Analyzing query..."):
-                primary_response = query_perplexity(query, web_context, query_structure=query_structure)
+            with st.spinner("🤖 Analyzing with primary model..."):
+                primary_response = query_perplexity(query, web_context)
 
             if not primary_response:
                 st.error("❌ Primary model failed to respond")
-                return
+                st.stop()
 
             # Parse primary response
             try:
@@ -6411,7 +6415,7 @@ def main():
             except Exception as e:
                 st.error(f"❌ Failed to parse primary response: {e}")
                 st.code(primary_response[:1000])
-                return
+                st.stop()
 
             # Evidence-based veracity scoring (single call)
             with st.spinner("✅ Verifying evidence quality..."):
@@ -6426,88 +6430,51 @@ def main():
                 veracity_scores["overall"]
             )
 
-
-            if primary_data.get('primary_metrics'):
-                primary_data['primary_metrics_canonical'] = canonicalize_metrics(
-                    primary_data.get('primary_metrics', {}),
-                    merge_duplicates_to_range=True,
-                    question_text=query,                       # <-- your user question variable
-                    category_hint=str(primary_data.get("question_category", ""))  # optional if you store it
+            # Canonicalize metrics before saving for stable future comparisons
+            if primary_data.get("primary_metrics"):
+                primary_data["primary_metrics_canonical"] = canonicalize_metrics(
+                    primary_data.get("primary_metrics", {})
                 )
-
-            # NEW: deterministic range + per-bound source attribution (no LLM)
-            if primary_data.get('primary_metrics_canonical'):
-                primary_data['primary_metrics_canonical'] = add_range_and_source_attribution_to_canonical_metrics(
-                    primary_data.get('primary_metrics_canonical', {}),
-                    web_context
+            if primary_data.get("primary_metrics_canonical"):
+                primary_data["metric_schema_frozen"] = freeze_metric_schema(
+                    primary_data["primary_metrics_canonical"]
                 )
-
-            # Freeze after enrichment so schema can lock unit/keywords, while attribution stays as data
-            if primary_data.get('primary_metrics_canonical'):
-                primary_data['metric_schema_frozen'] = freeze_metric_schema(
-                    primary_data['primary_metrics_canonical']
-                )
-
 
             # Compute semantic hashes for findings
-            if primary_data.get('key_findings'):
+            if primary_data.get("key_findings"):
                 findings_with_hash = []
-                for finding in primary_data.get('key_findings', []):
+                for finding in primary_data.get("key_findings", []):
                     if finding:
                         findings_with_hash.append({
-                            'text': finding,
-                            'semantic_hash': compute_semantic_hash(finding)
+                            "text": finding,
+                            "semantic_hash": compute_semantic_hash(finding)
                         })
-                primary_data['key_findings_hashed'] = findings_with_hash
+                primary_data["key_findings_hashed"] = findings_with_hash
 
-            # Build output
+            # Attach deterministic question metadata into the primary output (so dashboard + JSON can use it)
+            primary_data["question_profile"] = question_profile or {}
+            primary_data["question_signals"] = question_signals or {}
+
+            # Re-serialize primary_data AFTER injecting deterministic fields,
+            # so the dashboard sees the same structure as what you save.
+            primary_json = json.dumps(primary_data, ensure_ascii=False)
+
+
+            # -------------------------------
+            # Build output (SAVE FULL WEB CONTEXT)
+            # -------------------------------
             output = {
                 "question": query,
-                "question_profile": question_profile,
-                "question_category": question_profile.get("category"),
-                "question_signals": question_profile.get("signals", {}),
-                "side_questions": question_profile.get("side_questions", []),
-                "timestamp": now_utc().isoformat(),
+                "timestamp": datetime.now().isoformat(),
                 "primary_response": primary_data,
                 "final_confidence": final_conf,
                 "veracity_scores": veracity_scores,
+
+                # ✅ FULL web context + reliability (what you asked for)
+                "web_context": web_context,
                 "web_sources": web_context.get("sources", []),
-                # Optional baseline cache for evolution fallback if sources become blocked later
-                "query_structure": query_structure,
-                "baseline_sources_cache": web_context.get("scraped_content", {}) or {}
+                "source_reliability": web_context.get("source_reliability", []),
             }
-
-            # -----------------------------
-            # Baseline source cache (optional, but enables evolution reuse when refetch fails)
-            # -----------------------------
-            baseline_sources_cache = []
-            try:
-                scraped = web_context.get("scraped_content") or {}
-                for url, content in scraped.items():
-                    if not content:
-                        continue
-                    nums = extract_numbers_with_context(content)
-                    baseline_sources_cache.append({
-                        "url": url,
-                        "fetched_at": now_utc().isoformat(),
-                        "fingerprint": fingerprint_text(content),
-                        "extracted_numbers": [
-                            {
-                                "value": n.get("value"),
-                                "unit": n.get("unit"),
-                                "raw": n.get("raw"),
-                                "context_snippet": (n.get("context") or "")[:200]
-                            }
-                            for n in nums
-                        ]
-                    })
-            except Exception:
-                baseline_sources_cache = []
-
-            # Store only if non-empty (keeps JSON smaller)
-            if baseline_sources_cache:
-                output["baseline_sources_cache"] = baseline_sources_cache
-
 
             # AUTO-SAVE TO GOOGLE SHEETS
             with st.spinner("💾 Saving to history..."):
@@ -6516,38 +6483,75 @@ def main():
                 else:
                     st.warning("⚠️ Saved to session only (Google Sheets unavailable)")
 
-            json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8')
-            filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            # Persist so UI widgets won't clear the page on rerun
+            st.session_state["last_analysis"] = {
+                "primary_json": primary_json,   # ✅ updated JSON (includes question_profile/signals)
+                "final_conf": final_conf,
+                "web_context": web_context,
+                "base_conf": base_conf,
+                "query": query,
+                "veracity_scores": veracity_scores,
+                "source_reliability": web_context.get("source_reliability", []),
+                "output": output,
+            }
 
+        # -------------------------------
+        # Re-render last analysis on every rerun
+        # (so toggles like "Show all" don't wipe the page)
+        # -------------------------------
+        last = st.session_state.get("last_analysis")
+        if last and isinstance(last, dict) and last.get("primary_json"):
+            render_dashboard(
+                last["primary_json"],
+                float(last.get("final_conf", 0.0)),
+                last.get("web_context", {}) or {},
+                float(last.get("base_conf", 0.0)),
+                str(last.get("query", "")),
+                last.get("veracity_scores"),
+                last.get("source_reliability"),
+            )
+
+
+
+        # -------------------------------
+        # Always render last output (survives reruns)
+        # -------------------------------
+        if st.session_state.get("last_analysis"):
+            la = st.session_state["last_analysis"]
+
+            # Download always available after reruns
+            json_bytes = json.dumps(la["output"], indent=2, ensure_ascii=False).encode("utf-8")
+            filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             st.download_button(
                 label="💾 Download Analysis JSON",
                 data=json_bytes,
                 file_name=filename,
-                mime="application/json"
+                mime="application/json",
+                key="download_analysis_json"
             )
 
             # Render dashboard
             render_dashboard(
-                primary_response,
-                final_conf,
-                web_context,
-                base_conf,
-                query,
-                veracity_scores,
-                web_context.get("source_reliability", [])
+                la["primary_json"],
+                la["final_conf"],
+                la["web_context"],
+                la["base_conf"],
+                la["query"],
+                la["veracity_scores"],
+                la["web_context"].get("source_reliability", [])
             )
 
-            # Debug info
+            # Debug info (optional)
             with st.expander("🔧 Debug Information"):
                 st.write("**Confidence Breakdown:**")
                 st.json({
-                    "base_confidence": base_conf,
-                    "evidence_score": veracity_scores["overall"],
-                    "final_confidence": final_conf,
-                    "veracity_breakdown": veracity_scores
+                    "base_confidence": la["base_conf"],
+                    "evidence_score": la["veracity_scores"].get("overall", 0),
+                    "final_confidence": la["final_conf"],
+                    "veracity_breakdown": la["veracity_scores"]
                 })
                 st.write("**Primary Model Response:**")
-                st.json(primary_data)
+                st.json(la["primary_data"])
 
 
     # =====================
