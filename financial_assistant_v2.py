@@ -364,7 +364,7 @@ class LLMResponse(BaseModel):
 
 RESPONSE_TEMPLATE = """
 {
-  "executive_summary": "1-2 sentence high-level answer",
+  "executive_summary": "3-4 sentence high-level answer",
   "primary_metrics": {
     "metric_1": {"name": "Key Metric 1", "value": 25.5, "unit": "%"},
     "metric_2": {"name": "Key Metric 2", "value": 623, "unit": "$B"}
@@ -412,6 +412,12 @@ CRITICAL RULES:
 3. Use double quotes for all keys and string values.
 4. NO trailing commas in arrays or objects.
 5. Escape internal quotes with backslash.
+6. If the prompt includes "Query Structure", you MUST follow it:
+   - Treat "MAIN QUESTION" as the primary topic and address it FIRST.
+   - Treat "SIDE QUESTIONS" as secondary topics and address them AFTER the main topic.
+   - Do NOT let a side question replace the main question just because it is more specific.
+   - In executive_summary, clearly separate: "Main:" then "Side:" when side questions exist.
+
 
 NUMERIC FIELD RULES (IMPORTANT):
 - In benchmark_table: value_1 and value_2 MUST be numbers (never "N/A", "null", or text)
@@ -477,6 +483,7 @@ CRITICAL RULES:
 3. Keep the SAME metric names as previous analysis for easy comparison
 4. If a metric is no longer available, mark it as "discontinued"
 5. If there's a NEW important metric, add it with status "new"
+
 
 REQUIRED OUTPUT FORMAT:
 {{
@@ -1153,7 +1160,11 @@ def unit_clean_first_letter(unit: str) -> str:
 # 7. LLM QUERY FUNCTIONS
 # =========================================================
 
-def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def query_perplexity(
+    query: str,
+    web_context: Dict,
+    query_structure: Optional[Dict[str, Any]] = None
+) -> Optional[str]:
     """Query Perplexity API with web context - deterministic settings"""
 
     # Check LLM cache first
@@ -1162,35 +1173,55 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
         st.info("📦 Using cached LLM response (identical sources)")
         return cached_response
 
-    search_count = len(web_context.get("search_results", []))
+    search_count = len(web_context.get("search_results", []) or [])
 
+    # -------------------------------
+    # Build query structure text SAFELY
+    # (and ensure it is ALWAYS injected into the prompt)
+    # -------------------------------
+    structure_txt = ""
+    try:
+        if query_structure and isinstance(query_structure, dict):
+            structure_txt = format_query_structure_for_prompt(query_structure) or ""
+    except Exception:
+        structure_txt = ""
+
+    # -------------------------------
     # Build enhanced prompt
+    # -------------------------------
     if not web_context.get("summary") or search_count < 2:
-        structure_txt = format_query_structure_for_prompt(query_structure)
+        # Low web context: still include structure so "main then side" is enforced
         enhanced_query = (
             f"{SYSTEM_PROMPT}\n\n"
-            f"User Question: {query}\n\n"
-            f"{structure_txt}\n\n"
+            + (f"{structure_txt}\n\n" if structure_txt else "")
+            + f"User Question: {query}\n\n"
             f"Web search returned {search_count} results. "
-            f"Use the structured question to ensure coverage of the main question AND side questions."
+            f"Use the structured question to ensure coverage of the MAIN question first, then SIDE questions."
             f"Provide complete analysis with all required fields."
         )
-
     else:
+        # Rich web context: include summary + structure + question
         context_section = (
             "LATEST WEB RESEARCH:\n"
-            f"{web_context['summary']}\n\n"
+            f"{web_context.get('summary', '')}\n\n"
         )
 
-        if web_context.get('scraped_content'):
+        if web_context.get("scraped_content"):
             context_section += "\nDETAILED CONTENT:\n"
-            for url, content in list(web_context['scraped_content'].items())[:2]:
-                context_section += f"\n{url}:\n{content[:800]}...\n"
+            for url, content in list((web_context.get("scraped_content") or {}).items())[:2]:
+                context_section += f"\n{url}:\n{str(content)[:800]}...\n"
 
-        structure_txt = format_query_structure_for_prompt(query_structure)
-        enhanced_query = f"{context_section}\n{SYSTEM_PROMPT}\n\nUser Question: {query}"
+        enhanced_query = (
+            f"{context_section}\n"
+            f"{SYSTEM_PROMPT}\n\n"
+            + (f"{structure_txt}\n\n" if structure_txt else "")
+            + f"User Question: {query}\n\n"
+            "Use the structured question to ensure coverage of the MAIN question first, then SIDE questions."
+        )
 
+    # -------------------------------
     # API request
+    # -------------------------------
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}",
         "Content-Type": "application/json"
@@ -1237,10 +1268,11 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
                 llm_obj.sources = merged[:10]
                 llm_obj.freshness = "Current (web-enhanced)"
 
-                result = llm_obj.model_dump_json()
-                # Cache the successful response
-                cache_llm_response(query, web_context, result)
-                return result
+            result = llm_obj.model_dump_json()
+
+            # Cache the successful response
+            cache_llm_response(query, web_context, result)
+            return result
 
         except ValidationError as e:
             st.warning(f"⚠️ Pydantic validation failed: {e}")
@@ -1249,6 +1281,7 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
     except Exception as e:
         st.error(f"❌ Perplexity API error: {e}")
         return create_fallback_response(query, search_count, web_context)
+
 
 def query_perplexity_raw(prompt: str, max_tokens: int = 400, timeout: int = 30) -> str:
     """
@@ -5770,59 +5803,35 @@ def detect_y_label_dynamic(values: list) -> str:
 # 3A. QUESTION CATEGORIZATION + SIGNALS (DETERMINISTIC)
 # =========================================================
 
-def categorize_question_signals(question: str) -> Dict[str, Any]:
+def categorize_question_signals(query: str) -> Dict[str, Any]:
     """
-    Deterministic categorizer + signals extractor.
-    Keeps this lightweight and stable (no LLM dependency).
+    Single source of truth wrapper.
+    Uses extract_query_structure() for main/side + category,
+    then attaches deterministic signals for the dashboard/JSON.
     """
-    if not question:
-        return {"category": "unknown", "signals": {}, "side_questions": []}
+    qs = extract_query_structure(query) or {}
+    category = qs.get("category", "unknown")
+    main = (qs.get("main") or "").strip()
+    side = qs.get("side") if isinstance(qs.get("side"), list) else []
 
-    q = question.strip()
-    ql = q.lower()
+    # Keep your existing deterministic signals (years/regions/etc)
+    signals = classify_question_signals(query) or {}
+    if not isinstance(signals, dict):
+        signals = {}
 
-    # --- category heuristic (deterministic) ---
-    is_country = any(k in ql for k in ["gdp", "gdp per capita", "population", "exports", "imports", "currency", "interest rate", "inflation"])
-    is_industry = any(k in ql for k in ["market", "industry", "tam", "total addressable", "cagr", "market size", "key players", "competitive landscape"])
-
-    if is_country and not is_industry:
-        category = "country"
-    elif is_industry and not is_country:
-        category = "industry"
-    elif is_country and is_industry:
-        category = "mixed"
-    else:
-        category = "general"
-
-    # --- signals (deterministic) ---
-    years = re.findall(r"\b(20\d{2})\b", q)
-    regions = [r for r in ["asia", "apac", "europe", "north america", "latin america", "middle east", "africa", "china", "india", "japan", "usa", "uk"] if r in ql]
-
-    # naive "side question" split: keep it deterministic
-    # examples: "... and the impact of sneaker drops", "... including X"
-    side_markers = ["impact of", "effect of", "including", "along with", "as well as", "and also"]
-    side_questions = []
-    for m in side_markers:
-        if m in ql:
-            parts = q.split(m, 1)
-            if len(parts) == 2:
-                candidate = parts[1].strip(" .,:;")
-                if candidate and len(candidate) >= 4:
-                    side_questions.append(candidate)
-            break
-
-    signals = {
-        "years": sorted(list(set(years))),
-        "regions": sorted(list(set(regions))),
-        "contains_country_indicators": bool(is_country),
-        "contains_industry_indicators": bool(is_industry),
-    }
+    # If query_structure decided "country", enforce country indicators
+    if category == "country":
+        signals["contains_country_indicators"] = True
 
     return {
         "category": category,
         "signals": signals,
-        "side_questions": side_questions
+        "main_question": main,
+        "side_questions": side,
+        # helpful for debugging, optional:
+        "debug_query_structure": qs.get("debug", {})
     }
+
 
 
 def render_dashboard(
@@ -6405,6 +6414,8 @@ def main():
             query = query.strip()[:500]  # Limit length
             # 3A: Deterministic question categorization/signals for structured reporting
             question_profile = categorize_question_signals(query)
+            query_structure = extract_query_structure(query) or {}
+
             # Deterministic question signals (no LLM)
             question_signals = classify_question_signals(query)
             # Deterministic: extract category + main/side questions
