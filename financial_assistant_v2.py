@@ -21,6 +21,7 @@
 # Proxy Labeler + Geo Tagging
 # Improved Main Topic + Side Topic Extractor Using Deterministic-->NLP-->LLM layer
 # Guardrails For Main + Side Topic Handling
+# Numeric Consistency Scores
 # ================================================================================
 
 import os
@@ -1488,29 +1489,92 @@ def create_anchored_fallback(query: str, previous_data: Dict, web_context: Dict)
 
 
 def parse_number_with_unit(val_str: str) -> float:
-    """Parse numbers like '58.3B', '$123M', '1,234' to base unit (millions)"""
-    if not val_str:
+    """
+    Parse a numeric string into a comparable base scale.
+    Returns a float in "millions" for currency/volume-like values.
+    Percentages are returned as their numeric value (e.g., "9.8%" -> 9.8).
+
+    Handles:
+      - $58.3B, 58.3B, S$29.8B, 29.8 S$B, USD 21.18 B
+      - 58.3 billion, 58.3 bn, 58.3 million, 58.3 mn, 570 thousand
+      - 570,000 (interpreted as an absolute count -> converted to millions)
+      - 9.8% (kept as 9.8)
+    """
+    if val_str is None:
         return 0.0
 
-    # Clean and extract
-    val_str = str(val_str).replace('$', '').replace(',', '').strip()
+    s = str(val_str).strip()
+    if not s:
+        return 0.0
 
-    # Check for unit suffix
-    multiplier = 1.0  # Base = millions
-    if val_str.endswith('B') or val_str.endswith('b'):
-        multiplier = 1000.0  # Billions to millions
-        val_str = val_str[:-1]
-    elif val_str.endswith('M') or val_str.endswith('m'):
-        multiplier = 1.0
-        val_str = val_str[:-1]
-    elif val_str.endswith('K') or val_str.endswith('k'):
-        multiplier = 0.001  # Thousands to millions
-        val_str = val_str[:-1]
+    s_low = s.lower()
+
+    # If it's a percentage, return the raw percent number (not millions)
+    if "%" in s_low:
+        m = re.search(r'(-?\d+(?:\.\d+)?)', s_low)
+        if not m:
+            return 0.0
+        try:
+            return float(m.group(1))
+        except Exception:
+            return 0.0
+
+    # Normalize: remove commas and common currency tokens/symbols
+    # (keep letters because we need bn/mn/b/m/k detection)
+    s_low = s_low.replace(",", " ")
+    for token in ["s$", "usd", "sgd", "us$", "$", "€", "£", "aud", "cad"]:
+        s_low = s_low.replace(token, " ")
+
+    # Collapse whitespace
+    s_low = re.sub(r"\s+", " ", s_low).strip()
+
+    # Extract the first number
+    m = re.search(r'(-?\d+(?:\.\d+)?)', s_low)
+    if not m:
+        return 0.0
 
     try:
-        return float(val_str) * multiplier
-    except (ValueError, TypeError):
+        num = float(m.group(1))
+    except Exception:
         return 0.0
+
+    # Look at the remaining text after the number for unit words/suffix
+    tail = s_low[m.end():].strip()
+
+    # Decide multiplier (base = millions)
+    # billions -> *1000, millions -> *1, thousands -> *0.001
+    multiplier = 1.0
+
+    # Word-based units
+    if re.search(r'\b(trillion|tn)\b', tail):
+        multiplier = 1_000_000.0  # trillion -> million
+    elif re.search(r'\b(billion|bn)\b', tail):
+        multiplier = 1000.0
+    elif re.search(r'\b(million|mn)\b', tail):
+        multiplier = 1.0
+    elif re.search(r'\b(thousand|k)\b', tail):
+        multiplier = 0.001
+    else:
+        # Suffix-style units (possibly with spaces), e.g. "29.8 b", "21.18 b", "58.3m"
+        # We only look at the very first letter-ish token in tail.
+        t0 = tail[:4].strip()  # enough to catch "b", "m", "k"
+        if t0.startswith("b"):
+            multiplier = 1000.0
+        elif t0.startswith("m"):
+            multiplier = 1.0
+        elif t0.startswith("k"):
+            multiplier = 0.001
+        else:
+            # No unit detected. If it's a big integer like 570000 (jobs, people),
+            # interpret as an absolute count and convert to millions.
+            # (570000 -> 0.57 million)
+            if abs(num) >= 10000 and float(num).is_integer():
+                multiplier = 1.0 / 1_000_000.0
+            else:
+                multiplier = 1.0
+
+    return num * multiplier
+
 
 def numeric_consistency_with_sources(primary_data: dict, web_context: dict) -> float:
     """Compare primary numbers vs source numbers"""
@@ -1562,104 +1626,160 @@ def numeric_consistency_with_sources(primary_data: dict, web_context: dict) -> f
 
 def numeric_consistency_with_sources_v2(primary_data: dict, web_context: dict) -> float:
     """
-    More stable numeric consistency:
-    - checks BOTH scraped_content and web_context summary
-    - downweights/ignores proxy metrics (is_proxy=True) when present
-    - tolerates formatting differences (commas, currency symbols, unit words)
-    Returns 0-100.
+    Stable numeric consistency (0-100):
+    - Evidence text: search_results snippets + web_context summary + scraped_content
+    - Unit-aware parsing via parse_number_with_unit()
+    - Range-aware (supports min/max if metric has a 'range' dict)
+    - Downweights proxy metrics (is_proxy=True) so they don't tank the score
     """
+
     try:
+        # Prefer canonical metrics if available (has is_proxy, range, etc.)
         metrics = primary_data.get("primary_metrics_canonical") or primary_data.get("primary_metrics") or {}
         if not isinstance(metrics, dict) or not metrics:
-            return 50.0  # neutral when nothing to verify
+            return 50.0
 
-        # Combine all text we have available
+        # -----------------------------
+        # Build evidence text corpus
+        # -----------------------------
         texts = []
+
+        # 1) snippets
+        sr = (web_context or {}).get("search_results") or []
+        if isinstance(sr, list):
+            for r in sr:
+                if isinstance(r, dict):
+                    snip = r.get("snippet", "")
+                    if isinstance(snip, str) and snip.strip():
+                        texts.append(snip)
+
+        # 2) summary
         summary = (web_context or {}).get("summary") or ""
         if isinstance(summary, str) and summary.strip():
             texts.append(summary)
 
+        # 3) scraped_content
         scraped = (web_context or {}).get("scraped_content") or {}
         if isinstance(scraped, dict):
             for _, content in scraped.items():
                 if isinstance(content, str) and content.strip():
                     texts.append(content)
 
-        haystack = "\n".join(texts).lower()
-        if not haystack.strip():
-            # No evidence text stored -> don't crash score; be conservative but not fatal
-            return 45.0
+        evidence_text = "\n".join(texts)
+        if not evidence_text.strip():
+            return 45.0  # no evidence stored
 
-        def _norm_num_str(x) -> str:
-            s = str(x)
-            s = s.replace(",", "").strip().lower()
-            # strip common currency symbols
-            s = s.replace("s$", "").replace("$", "").replace("usd", "").replace("sgd", "")
-            return s
+        # -----------------------------
+        # Extract numeric candidates from evidence text
+        # -----------------------------
+        # Keep this broad; parse_number_with_unit will normalize.
+        patterns = [
+            r'\$?\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*[BbMmKk]\b',                 # 29.8B, 570K, 1.2M
+            r'\$?\s?\d+(?:\.\d+)?\s*(?:billion|million|thousand|bn|mn)\b',      # 29.8 billion, 29.8 bn
+            r'\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b',                               # 570,000
+            r'\b\d+(?:\.\d+)?\s*%\b',                                          # 9.8%
+        ]
 
-        def _num_variants(v) -> list:
-            # generate a few representations for matching
-            try:
-                f = float(v)
-            except Exception:
-                return [_norm_num_str(v)]
-            return list(dict.fromkeys([
-                _norm_num_str(v),
-                _norm_num_str(round(f, 4)),
-                _norm_num_str(round(f, 2)),
-                _norm_num_str(int(round(f)))
-            ]))
+        evidence_numbers = []
+        lowered = evidence_text.lower()
 
-        # Decide which metrics to verify and how much weight to give them
-        checks = []
-        for _, m in metrics.items():
-            if not isinstance(m, dict):
-                continue
+        for pat in patterns:
+            for m in re.findall(pat, lowered, flags=re.IGNORECASE):
+                n = parse_number_with_unit(str(m))
+                if n and n > 0:
+                    evidence_numbers.append(n)
 
-            val = m.get("value")
-            if val is None or val == "":
-                continue
-
-            # If range exists, check both bounds + mid
-            candidates = []
-            rng = m.get("range") if isinstance(m.get("range"), dict) else None
-            if rng and rng.get("min") is not None and rng.get("max") is not None:
-                candidates.extend([rng.get("min"), rng.get("max")])
-            candidates.append(val)
-
-            # Weight proxies lower (or ignore entirely if you want)
-            is_proxy = bool(m.get("is_proxy"))
-            weight = 0.5 if is_proxy else 1.0
-
-            checks.append({"candidates": candidates, "weight": weight})
-
-        if not checks:
+        # If nothing extracted, don’t penalize too hard
+        if not evidence_numbers:
             return 50.0
+
+        # -----------------------------
+        # Verify each metric against evidence numbers (tolerance match)
+        # -----------------------------
+        def _metric_candidates(m: dict) -> list:
+            """Return list of candidate numeric values for a metric (range-aware)."""
+            out = []
+            if not isinstance(m, dict):
+                return out
+
+            # Range support: check min/max if present
+            rng = m.get("range") if isinstance(m.get("range"), dict) else None
+            if rng:
+                if rng.get("min") is not None:
+                    out.append(rng.get("min"))
+                if rng.get("max") is not None:
+                    out.append(rng.get("max"))
+
+            # Also check main value
+            if m.get("value") is not None:
+                out.append(m.get("value"))
+
+            return out
+
+        def _parse_metric_num(val, unit_hint: str = "") -> float:
+            # build a value+unit string so parse_number_with_unit has a chance
+            if val is None:
+                return 0.0
+            s = str(val)
+            if unit_hint and unit_hint.lower() not in s.lower():
+                s = f"{s} {unit_hint}"
+            return parse_number_with_unit(s)
+
+        def _is_supported(target: float, evidence_nums: list, rel_tol: float = 0.25) -> bool:
+            # same tolerance approach as v1 (25%)
+            if not target or target <= 0:
+                return False
+            for e in evidence_nums:
+                if e <= 0:
+                    continue
+                if abs(target - e) / max(target, e, 1) < rel_tol:
+                    return True
+            return False
 
         supported_w = 0.0
         total_w = 0.0
 
-        for chk in checks:
-            total_w += chk["weight"]
+        for _, m in metrics.items():
+            if not isinstance(m, dict):
+                continue
 
-            # supported if ANY candidate variant appears in haystack
-            ok = False
-            for cand in chk["candidates"]:
-                for variant in _num_variants(cand):
-                    if variant and variant in haystack:
-                        ok = True
-                        break
-                if ok:
-                    break
+            unit = str(m.get("unit") or "").strip()
 
-            if ok:
-                supported_w += chk["weight"]
+            # proxy weighting
+            is_proxy = bool(m.get("is_proxy"))
+            w = 0.5 if is_proxy else 1.0
 
-        ratio = supported_w / max(total_w, 1e-9)
-        # map ratio -> 0..100 with a mild floor (don’t nuke score for partial evidence)
-        return max(20.0, min(100.0, ratio * 100.0))
+            cands = _metric_candidates(m)
+            if not cands:
+                continue
+
+            # parse candidates into numeric values
+            parsed_targets = []
+            for c in cands:
+                n = _parse_metric_num(c, unit_hint=unit)
+                if n and n > 0:
+                    parsed_targets.append(n)
+
+            if not parsed_targets:
+                continue
+
+            total_w += w
+
+            # supported if ANY candidate matches evidence
+            if any(_is_supported(t, evidence_numbers, rel_tol=0.25) for t in parsed_targets):
+                supported_w += w
+
+        if total_w <= 0:
+            return 50.0
+
+        ratio = supported_w / total_w
+        # Map: keep a soft floor so one miss doesn't tank the whole run
+        score = 30.0 + (ratio * 65.0)  # same scale as v1 (30..95)
+        return min(max(score, 20.0), 95.0)
+
     except Exception:
         return 45.0
+
 
 
 def source_consensus(web_context: dict) -> float:
