@@ -5991,7 +5991,8 @@ def render_dashboard(
                 "Growth": ent.get("growth", "N/A"),
             })
     #_render_table_with_controls("🏢 Top Market Players", entity_rows, key_prefix="dash_entities", default_limit=10)
-    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_entities", default_limit=10)
+    _render_table_with_controls("🏢 Top Market Players", entity_rows, key_prefix=f"{key_root}_entities", default_limit=10)
+
 
     st.markdown("---")
 
@@ -6008,7 +6009,7 @@ def render_dashboard(
                 "Timeline": t.get("timeline", "N/A"),
             })
     #_render_table_with_controls("📈 Trends & Forecast", trend_rows, key_prefix="dash_trends", default_limit=10)
-    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_trends", default_limit=10)
+    _render_table_with_controls("📈 Trends & Forecast", trend_rows, key_prefix=f"{key_root}_trends", default_limit=10)
 
 
     st.markdown("---")
@@ -6078,7 +6079,7 @@ def render_dashboard(
     all_sources = data.get("sources", []) or (web_context.get("sources", []) if isinstance(web_context, dict) else [])
     source_rows = [{"#": i + 1, "Source": s, "Reliability": classify_source_reliability(str(s))} for i, s in enumerate(all_sources)]
     #_render_table_with_controls("🔗 Sources & Reliability", source_rows, key_prefix="dash_sources", default_limit=10)
-    _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_sources", default_limit=10)
+    _render_table_with_controls("🔗 Sources & Reliability", source_rows, key_prefix=f"{key_root}_sources", default_limit=10)
 
 
     # Metadata
@@ -6119,7 +6120,8 @@ def render_dashboard(
                         "Link": r.get("link", ""),
                     })
             #_render_table_with_controls("Search Results", sr_rows, key_prefix="dash_search_results", default_limit=10)
-            _render_table_with_controls("🔍 Key Findings", finding_rows, key_prefix=f"{key_root}_search_results", default_limit=10)
+            _render_table_with_controls("Search Results", sr_rows, key_prefix=f"{key_root}_search_results", default_limit=10)
+
 
 
 def render_native_comparison(baseline: Dict, compare: Dict):
