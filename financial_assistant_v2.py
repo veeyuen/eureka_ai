@@ -1916,6 +1916,54 @@ QUESTION_CATEGORY_TEMPLATES = {
     ],
 }
 
+def get_expected_metric_ids_for_category(category: str) -> List[str]:
+    """
+    Map a query category -> template metric IDs.
+    Keep this deterministic and minimal.
+    """
+    c = (category or "unknown").lower().strip()
+
+    if c == "country":
+        return [
+            "population",
+            "gdp_nominal",
+            "gdp_per_capita",
+            "gdp_growth",
+            "inflation",
+            "currency",
+            "interest_rate",
+            "unemployment",
+            "top_industries",
+            "exports",
+            "imports",
+        ]
+
+    if c == "industry":
+        return [
+            "market_size_current",
+            "market_size_projected",
+            "cagr",
+            "revenue",
+            "market_share",
+            "units_sold",
+            "average_price",
+        ]
+
+    if c == "company":
+        return [
+            "revenue",
+            "growth",
+            "gross_margin",
+            "operating_margin",
+            "net_income",
+            "market_cap",
+            "valuation_multiple",
+        ]
+
+    # fallback
+    return []
+
+
 def classify_question_signals(query: str) -> Dict[str, Any]:
     """
     Deterministically classify query and return:
@@ -5795,35 +5843,44 @@ def detect_y_label_dynamic(values: list) -> str:
 
 def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Single source of truth wrapper.
-    Uses extract_query_structure() for main/side + category,
-    then attaches deterministic signals for the dashboard/JSON.
-
-    If qs is provided, it will be used (precomputed query_structure) to avoid drift.
+    Build a question_profile used for structured reporting.
+    IMPORTANT: category must follow query_structure if provided (single source of truth).
     """
-    qs = (qs if isinstance(qs, dict) else None) or (extract_query_structure(query) or {})
+    qs = qs or {}
+    q = (query or "").strip()
 
-    category = qs.get("category", "unknown")
-    main = (qs.get("main") or "").strip()
-    side = qs.get("side") if isinstance(qs.get("side"), list) else []
+    # Prefer category/main/side from query_structure when available
+    category = (qs.get("category") or "").strip() or "unknown"
+    main_q = (qs.get("main") or "").strip() or q
+    side_qs = qs.get("side") if isinstance(qs.get("side"), list) else []
 
-    # Keep your existing deterministic signals (years/regions/etc)
-    signals = classify_question_signals(query) or {}
-    if not isinstance(signals, dict):
-        signals = {}
+    # Deterministic signals (can still be useful), BUT do not override category
+    signals = classify_question_signals(q) or {}
+    # Force signals category to match query_structure category
+    signals["category"] = category
 
-    # If query_structure decided "country", enforce country indicators
-    if category == "country":
-        signals["contains_country_indicators"] = True
+    # Choose expected metric template based on category (not signals)
+    expected_metric_ids = []
+    try:
+        expected_metric_ids = get_expected_metric_ids_for_category(category)
+    except Exception:
+        expected_metric_ids = []
 
-    return {
+    # Store expected_metric_ids inside signals (consistent place)
+    signals["expected_metric_ids"] = expected_metric_ids
+
+    profile = {
         "category": category,
         "signals": signals,
-        "main_question": main,
-        "side_questions": side,
-        # helpful for debugging, optional:
-        "debug_query_structure": qs.get("debug", {})
+        "main_question": main_q,
+        "side_questions": side_qs,
     }
+
+    # Keep debug for traceability
+    if qs.get("debug") is not None:
+        profile["debug_query_structure"] = qs.get("debug")
+
+    return profile
 
 
 def render_dashboard(
@@ -6405,14 +6462,13 @@ def main():
 
             query = query.strip()[:500]  # Limit length
 
-            # 3A: Deterministic/NLP/LLM query structure (single source of truth)
             query_structure = extract_query_structure(query) or {}
 
-            # Build question_profile FROM query_structure to avoid drift
+            # Build profile + signals consistent with query_structure.category
             question_profile = categorize_question_signals(query, qs=query_structure)
 
-            # Deterministic question signals (optional; keep if you still use it elsewhere)
-            question_signals = classify_question_signals(query)
+            # If you still want question_signals separately, take them from the profile (consistent)
+            question_signals = question_profile.get("signals", {}) or {}
 
             # Web search
             web_context = {}
