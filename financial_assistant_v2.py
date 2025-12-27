@@ -3830,7 +3830,7 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         hints = nlp_out.get("hints", {})
         debug["nlp"] = hints or {"nlp_used": False}
 
-        Override main/side if NLP produced them (guard against fragment-y mains)
+        # Override main/side if NLP produced them (guard against fragment-y mains)
         nlp_main = (nlp_out.get("main") or "").strip()
         if nlp_main:
             bad_prefixes = ("as well as", "as well", "and ", "also ", "plus ", "as for ")
@@ -3866,7 +3866,7 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         llm = _llm_fallback_query_structure(q)
         debug["llm_fallback_used"] = bool(llm)
 
-                if isinstance(llm, dict):
+            if isinstance(llm, dict):
             # Category can be adopted when deterministic remains weak
             category = llm.get("category", category) or category
             try:
