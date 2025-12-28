@@ -1345,10 +1345,11 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
             TrendForecastDetail(trend="Schema validation used fallback", direction="⚠️", timeline="Now")
         ],
         visualization_data=VisualizationData(
-            chart_labels=["Attempt"],
-            chart_values=[search_count],
-            chart_title="Search Results"
+        title="Search Results",
+        data_series_label="Attempt",
+        data_values=[search_count],
         ),
+
         sources=web_context.get("sources", []),
         confidence=60,
         freshness="Current (fallback)"
@@ -6448,10 +6449,12 @@ def render_dashboard(
     # -------------------------
 
 def _format_metric_value(m: Dict) -> str:
-    #Format metric values cleanly:
-    #- Currency before number: $204.7B, S$29.8B
-    #- Compact units (B, M, K)
-    #- Proper thousands separators
+    """
+    Format metric values cleanly:
+    - Currency before number: $204.7B, S$29.8B
+    - Compact units (B, M, K)
+    - Proper thousands separators
+    """
     if not isinstance(m, dict):
         return "N/A"
 
