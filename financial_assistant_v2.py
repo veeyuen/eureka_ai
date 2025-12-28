@@ -24,7 +24,7 @@
 # Numeric Consistency Scores
 # Multi-Side Enumerations
 # Show More Detail in Dashboard
-# Improved Evolution Metrics + Unit Handling
+# Dashboard Unit Presentation Fixes
 # ================================================================================
 
 import os
@@ -407,39 +407,6 @@ RESPONSE_TEMPLATE = """
   }
 }
 """
-
-class Metric(BaseModel):
-    name: str
-    value: float
-    unit: str
-
-class Entity(BaseModel):
-    name: str
-    share: str
-    growth: str
-
-class Trend(BaseModel):
-    trend: str
-    direction: str
-    timeline: str
-
-class VisualizationData(BaseModel):
-    title: str
-    chart_labels: List[str]
-    data_series_label: str
-    data_values: List[float]
-
-class LLMResponse(BaseModel):
-    executive_summary: str
-    primary_metrics: Dict[str, Metric]
-    key_findings: List[str]
-    top_entities: List[Entity]
-    trends_forecast: List[Trend]
-    visualization_data: VisualizationData
-    confidence_score: Optional[int] = Field(None, ge=0, le=100)
-    data_freshness: Optional[str]
-    sources: Optional[List[str]]
-
 
 
 
@@ -1345,11 +1312,10 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
             TrendForecastDetail(trend="Schema validation used fallback", direction="⚠️", timeline="Now")
         ],
         visualization_data=VisualizationData(
-            title="Search Results",
-            data_series_label="Attempt",
-            data_values=[search_count],
+            chart_labels=["Attempt"],
+            chart_values=[search_count],
+            chart_title="Search Results"
         ),
-
         sources=web_context.get("sources", []),
         confidence=60,
         freshness="Current (fallback)"
@@ -5583,72 +5549,29 @@ def parse_human_number(value_str: str, unit: str) -> Optional[float]:
     # Unknown unit: leave as-is (still useful for ratio filtering)
     return v
 
-def build_prev_numbers(prev_metrics: Dict, frozen_schema: Optional[Dict] = None) -> Dict[str, Dict]:
+def build_prev_numbers(prev_metrics: Dict) -> Dict[str, Dict]:
     """
-    Build previous metric lookup keyed by metric display name.
-    Fixes:
-      - If baseline metric has no unit, pull it from frozen schema.
-      - Store both normalized comparable numeric value and a display string that includes units.
+    Build previous metric lookup keyed by *metric_name string*.
+    Stores parsed numeric value in comparable scale + unit + raw + keywords.
     """
-    prev_numbers: Dict[str, Dict] = {}
-    frozen_schema = frozen_schema or {}
-
-    # Build helper lookup from schema: name -> unit (best-effort)
-    schema_name_to_unit = {}
-    schema_id_to_unit = {}
-
-    for sid, sdef in frozen_schema.items():
-        if not isinstance(sdef, dict):
-            continue
-        u = (sdef.get("unit") or "").strip()
-        nm = (sdef.get("name") or sdef.get("display_name") or "").strip()
-        if u:
-            schema_id_to_unit[str(sid)] = u
-            if nm:
-                schema_name_to_unit[nm] = u
-
-    schema_names = list(schema_name_to_unit.keys())
-
+    prev_numbers = {}
     for key, metric in (prev_metrics or {}).items():
         if not isinstance(metric, dict):
             continue
-
-        metric_name = (metric.get("name") or key or "").strip()
-        raw_val = str(metric.get("value", "")).strip()
-
-        # 1) unit from metric (if provided)
-        unit = (metric.get("unit") or "").strip()
-
-        # 2) if missing, try schema by id/key
-        if not unit and str(key) in schema_id_to_unit:
-            unit = schema_id_to_unit[str(key)]
-
-        # 3) if still missing, fuzzy match metric name to schema name
-        if not unit and metric_name and schema_names:
-            best = find_best_match(metric_name, schema_names, threshold=0.75)
-            if best:
-                unit = schema_name_to_unit.get(best, "")
-
-        # Build display string that preserves the unit for human visibility + later debug
-        u_norm = normalize_unit(unit)
-        display = raw_val
-        if u_norm and u_norm not in raw_val.upper():
-            # "1.01" + "B" -> "1.01B"
-            display = f"{raw_val}{u_norm}"
-
-        val = parse_human_number(raw_val, u_norm)
+        metric_name = metric.get("name", key)
+        raw = str(metric.get("value", ""))
+        unit = metric.get("unit", "")
+        val = parse_human_number(raw, unit)
         if val is None:
             continue
-
         prev_numbers[metric_name] = {
-            "value": val,                 # normalized comparable value (BILLIONS for currency-like)
-            "unit": normalize_unit(u_norm),
-            "raw": raw_val,               # original raw numeric string
-            "display": display,           # IMPORTANT: includes unit so it won’t be lost
-            "keywords": extract_context_keywords(metric_name),
+            "value": val,
+            "unit": normalize_unit(unit),
+            "raw": raw,
+            "keywords": extract_context_keywords(metric_name)
         }
-
     return prev_numbers
+
 
 
 def compute_source_anchored_diff(previous_data: Dict) -> Dict:
@@ -5696,8 +5619,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     # --------- Build previous metrics (must happen before baseline reuse) ----------
     prev_metrics = prev_response.get("primary_metrics", {}) or {}
-    frozen_schema = prev_response.get("metric_schema_frozen", {}) or {}
-    prev_numbers = build_prev_numbers(prev_metrics, frozen_schema=frozen_schema)
+    prev_numbers = build_prev_numbers(prev_metrics)
 
     # --------- Baseline reuse gating ----------
     BASELINE_REUSE_HOURS = 24
@@ -5717,7 +5639,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         for metric_name, prev_item in prev_numbers.items():
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_item.get("display", prev_item["raw"]),
+                "previous_value": prev_item["raw"],
                 "current_value": prev_item["raw"],
                 "change_pct": 0.0,
                 "change_type": "unchanged",
@@ -5898,17 +5820,11 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     continue
 
             # Ratio filter (avoid far-off candidates)
-            # Ratio filter (avoid far-off candidates)
             if prev_val and curr_val:
                 ratio = curr_val / prev_val if prev_val != 0 else 0
-
-                # Tight tolerance for "same metric, rounded differently"
-                if 0.95 <= ratio <= 1.05:
-                    value_score = 1.0
-                else:
-                    if not (0.5 <= ratio <= 2.0):
-                        continue
-                    value_score = 1.0 / (1.0 + abs(ratio - 1.0))
+                if not (0.5 <= ratio <= 2.0):
+                    continue
+                value_score = 1.0 / (1.0 + abs(ratio - 1.0))
             else:
                 continue
 
@@ -5933,7 +5849,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_item.get("display", prev_item["raw"]),
+                "previous_value": prev_item["raw"],
                 "current_value": best_match.get("raw", ""),
                 "change_pct": change_pct,
                 "change_type": change_type,
@@ -5943,7 +5859,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         else:
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_item.get("display", prev_item["raw"]),
+                "previous_value": prev_item["raw"],
                 "current_value": "Not found (no confident match)",
                 "change_pct": None,
                 "change_type": "not_found",
@@ -6049,102 +5965,66 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 
     return keywords
 
+
 def extract_numbers_with_context(text: str) -> List[Dict]:
     """
     Extract numbers with surrounding context for matching.
-
-    Upgrades:
-    - Avoid matching digits inside longer digit runs (prevents partial-year fragments).
-    - Prevent single-letter unit being stolen from normal words (e.g., '5t' in '5 through').
-    - Stronger junk filtering (reading time, pure years, tiny integers without metric context).
-    - Values returned are normalized via parse_human_number() into BILLIONS for currency-like units.
+    Robust against commas, currency symbols, parentheses negatives,
+    and avoids many false positives (years, tiny integers, junk contexts).
     """
     if not text:
         return []
 
-    # Keywords that indicate "real" market metrics nearby
-    metric_hints = [
-        "market", "size", "valued", "valuation", "worth",
-        "revenue", "sales", "forecast", "projected", "estimate", "estimated",
-        "growth", "cagr", "yoy", "usd", "sgd", "$", "%"
-    ]
-
     numbers = []
 
-    # (?!\d) and (?<!\d) prevent partial matches inside longer digit sequences.
-    # Unit group:
-    # - words: trillion|billion|million|thousand|%
-    # - single-letter: T/B/M/K ONLY if it's a boundary token (B\b) and NOT followed by letters.
-    pattern = re.compile(
-        r"""
-        (?<!\d)
-        (\(?\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?\d+(?:\.\d+)?\)?)
-        \s*
-        (trillion|billion|million|thousand|%|[TBMK]\b)?
-        (?!\d)
-        """,
-        re.IGNORECASE | re.VERBOSE
-    )
+    # Match:
+    #   $1,234.56  billion
+    #   12.3%
+    #   (45.6) M
+    pattern = r'(\(?\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?\d+(?:\.\d+)?\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K)?'
 
-    for m in pattern.finditer(text):
-        raw_num = (m.group(1) or "").strip()
-        unit = (m.group(2) or "").strip()
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        raw_num = match.group(1) or ""
+        unit = (match.group(2) or "").strip()
 
         # Context window
-        start = max(0, m.start() - 180)
-        end = min(len(text), m.end() + 180)
-        context = text[start:end]
-        context_low = context.lower()
+        start = max(0, match.start() - 180)
+        end = min(len(text), match.end() + 180)
+        context = text[start:end].lower()
 
-        # Skip obvious junk contexts (your existing helper)
-        if is_likely_junk_context(context_low):
+        # Skip obvious junk contexts
+        if is_likely_junk_context(context):
             continue
 
-        # Drop "19 min read" style numbers
-        if re.search(r"\b\d+\s*(min|mins|minute|minutes)\b", context_low):
+        # Reject pure years (e.g., 2024) unless clearly a data value (has unit or currency)
+        num_clean_for_year = raw_num.replace("$", "").replace(",", "").strip()
+        if re.fullmatch(r"(19|20)\d{2}", num_clean_for_year) and not unit and "$" not in raw_num:
             continue
 
-        # Reject pure years if no unit/currency
-        num_clean = raw_num.replace("$", "").replace(",", "").strip()
-        if re.fullmatch(r"(19|20)\d{2}", num_clean) and not unit and "$" not in raw_num:
-            continue
-
-        u_norm = normalize_unit(unit)
-
-        # Prevent cases like "5t" where 't' is actually from a word like "through"
-        # If unit is single-letter and next char is alphabetic, reject.
-        if u_norm in ["T", "B", "M", "K"]:
-            after_idx = m.end()
-            if after_idx < len(text) and text[after_idx].isalpha():
-                continue
-
-        parsed = parse_human_number(num_clean, u_norm)
+        # Parse numeric into comparable scale
+        parsed = parse_human_number(num_clean_for_year, unit)
         if parsed is None:
             continue
 
-        # Tiny integers are usually junk unless context strongly indicates metric
-        if u_norm not in ["%", "T", "B", "M", "K"] and "$" not in raw_num and abs(parsed) < 3:
-            if not any(h in context_low for h in metric_hints):
-                continue
-
-        # If there are no hints at all and no unit/currency, drop it
-        if not u_norm and "$" not in raw_num and not any(h in context_low for h in metric_hints):
+        # Filter out tiny integers that often represent ranks, list counts, etc.
+        # Keep if it has % or currency-ish markers.
+        u_norm = normalize_unit(unit)
+        is_currency_like = ("$" in raw_num) or normalize_currency_prefix(context) or u_norm in ["T", "B", "M", "K"]
+        if not is_currency_like and u_norm != "%" and abs(parsed) < 3:
             continue
 
-        # Filter astronomically large values (in billions)
-        if u_norm in ["T", "B", "M", "K"] and abs(parsed) > 10_000_000:
+        # Filter extreme values that are unlikely in market metrics
+        if abs(parsed) > 10_000_000:  # in billions this is astronomically large
             continue
 
         numbers.append({
-            "value": parsed,                 # normalized comparable value (BILLIONS)
-            "unit": u_norm,                  # normalized unit
-            "context": context_low,
-            "raw": f"{raw_num}{u_norm}".strip()
+            "value": parsed,              # normalized comparable value (billions for currency-like units)
+            "unit": u_norm,               # normalized unit (T/B/M/%/K/..)
+            "context": context,
+            "raw": f"{raw_num}{unit}".strip()
         })
 
     return numbers
-
-
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
     """Calculate how well keywords match the context (deterministic)."""
@@ -6436,7 +6316,9 @@ def render_dashboard(
 ):
     """Render the analysis dashboard"""
 
+    # -------------------------
     # Parse primary response
+    # -------------------------
     try:
         data = json.loads(primary_json)
     except Exception as e:
@@ -6445,412 +6327,274 @@ def render_dashboard(
         return
 
     # -------------------------
-    # Small local helper: robust metric value formatting (range-aware)
+    # Local helper: metric formatting (unit-safe)
     # -------------------------
+    def _format_metric_value(m: Dict) -> str:
+        """
+        Format metric values cleanly:
+        - Currency before number: $204.7B, S$29.8B
+        - Compact units (B, M, K)
+        - Proper separators
+        """
+        if not isinstance(m, dict):
+            return "N/A"
 
-def _format_metric_value(m: Dict) -> str:
-    """
-    Format metric values cleanly:
-    - Currency before number: $204.7B, S$29.8B
-    - Compact units (B, M, K)
-    - Proper thousands separators
-    """
-    if not isinstance(m, dict):
-        return "N/A"
+        val = m.get("value")
+        unit = (m.get("unit") or "").strip()
 
-    val = m.get("value")
-    unit = (m.get("unit") or "").strip()
+        if val is None or val == "":
+            return "N/A"
 
-    if val is None or val == "":
-        return "N/A"
+        try:
+            num = float(str(val).replace(",", ""))
+        except Exception:
+            return f"{val}{unit}".strip()
 
-    # Normalize numeric
-    try:
-        num = float(str(val).replace(",", ""))
-    except Exception:
-        return f"{val}{unit}".strip()
+        unit = unit.replace(" ", "")
+        currency_prefix = ""
 
-    # Normalize unit spacing
-    unit = unit.replace(" ", "")
+        if unit.upper().startswith("S$"):
+            currency_prefix = "S$"
+            unit = unit[2:]
+        elif unit.upper().startswith("$"):
+            currency_prefix = "$"
+            unit = unit[1:]
+        elif unit.upper().startswith("USD"):
+            currency_prefix = "$"
+            unit = unit.replace("USD", "")
+        elif unit.upper().startswith("SGD"):
+            currency_prefix = "S$"
+            unit = unit.replace("SGD", "")
 
-    # ---- Currency handling ----
-    currency_prefix = ""
-    if unit.upper().startswith("S$"):
-        currency_prefix = "S$"
-        unit = unit[2:]
-    elif unit.upper().startswith("$"):
-        currency_prefix = "$"
-        unit = unit[1:]
-    elif unit.upper().startswith("USD"):
-        currency_prefix = "$"
-        unit = unit.replace("USD", "")
-    elif unit.upper().startswith("SGD"):
-        currency_prefix = "S$"
-        unit = unit.replace("SGD", "")
-
-    # ---- Compact number formatting ----
-    if unit.upper() == "B":
-        formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "B"
-    elif unit.upper() == "M":
-        formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "M"
-    elif unit.upper() == "K":
-        formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "K"
-    elif unit == "%":
-        return f"{num:.1f}%"
-    else:
-        # Plain number
-        if abs(num) >= 1000:
-            formatted = f"{int(num):,}"
+        if unit.upper() == "B":
+            formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "B"
+        elif unit.upper() == "M":
+            formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "M"
+        elif unit.upper() == "K":
+            formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "K"
+        elif unit == "%":
+            return f"{num:.1f}%"
         else:
-            formatted = f"{num:g}"
+            formatted = f"{int(num):,}" if abs(num) >= 1000 else f"{num:g}"
+            if unit:
+                formatted = f"{formatted} {unit}"
 
-        if unit:
-            formatted = f"{formatted} {unit}"
+        return f"{currency_prefix}{formatted}".strip()
 
-    return f"{currency_prefix}{formatted}".strip()
-
-
-    # Header
+    # -------------------------
+    # Header & confidence
+    # -------------------------
     st.header("📊 Yureeka Market Report")
     st.markdown(f"**Question:** {user_question}")
 
-    # Confidence row
     col1, col2, col3 = st.columns(3)
     col1.metric("Final Confidence", f"{final_conf:.1f}%")
     col2.metric("Base Model", f"{base_conf:.1f}%")
-    if veracity_scores:
-        col3.metric("Evidence", f"{veracity_scores.get('overall', 0):.1f}%")
-    else:
-        col3.metric("Evidence", "N/A")
+    col3.metric(
+        "Evidence",
+        f"{veracity_scores.get('overall', 0):.1f}%" if veracity_scores else "N/A"
+    )
 
     st.markdown("---")
 
+    # -------------------------
     # Executive Summary
+    # -------------------------
     st.subheader("📋 Executive Summary")
     st.markdown(f"**{data.get('executive_summary', 'No summary available')}**")
-
     st.markdown("---")
 
-    # =========================
-    # Key Metrics (simple + "show more")
-    # =========================
+    # -------------------------
+    # Key Metrics
+    # -------------------------
     st.subheader("💰 Key Metrics")
-    metrics = data.get("primary_metrics", {}) or {}
+    metrics = data.get("primary_metrics") or {}
 
     question_category = data.get("question_category") or (data.get("question_profile", {}) or {}).get("category")
     question_signals = data.get("question_signals") or (data.get("question_profile", {}) or {}).get("signals", {})
     side_questions = data.get("side_questions") or (data.get("question_profile", {}) or {}).get("side_questions", [])
+    expected_ids = data.get("expected_metric_ids") or question_signals.get("expected_metric_ids", [])
 
-    expected_ids = data.get("expected_metric_ids") or (
-        (data.get("question_signals") or {}).get("expected_metric_ids") or []
-    )
+    rows: List[Dict[str, str]] = []
 
-    metric_rows: List[Dict[str, str]] = []
-
-    # Prepend question-derived signals (if present)
     if question_category:
-        metric_rows.append({"Metric": "Question Category", "Value": str(question_category)})
+        rows.append({"Metric": "Question Category", "Value": str(question_category)})
 
     if isinstance(question_signals, dict):
-        years = question_signals.get("years")
-        regions = question_signals.get("regions")
-        if years:
-            metric_rows.append({"Metric": "Question Years (detected)", "Value": ", ".join(map(str, years))})
-        if regions:
-            metric_rows.append({"Metric": "Regions (detected)", "Value": ", ".join(map(str, regions))})
+        if question_signals.get("years"):
+            rows.append({"Metric": "Years (detected)", "Value": ", ".join(map(str, question_signals["years"]))})
+        if question_signals.get("regions"):
+            rows.append({"Metric": "Regions (detected)", "Value": ", ".join(map(str, question_signals["regions"]))})
 
     if side_questions:
-        metric_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(map(str, side_questions))})
+        rows.append({"Metric": "Side Questions", "Value": "; ".join(map(str, side_questions))})
 
-    if isinstance(metrics, dict) and metrics:
-        try:
-            canon = canonicalize_metrics(metrics)
-        except Exception:
-            canon = metrics
+    try:
+        canon = canonicalize_metrics(metrics) if isinstance(metrics, dict) else {}
+    except Exception:
+        canon = metrics or {}
 
-        by_base: Dict[str, List[Dict]] = {}
-        if isinstance(canon, dict):
-            for cid, m in canon.items():
-                base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
-                by_base.setdefault(base, []).append(m)
+    by_base: Dict[str, List[Dict]] = {}
+    for cid, m in (canon or {}).items():
+        base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
+        by_base.setdefault(base, []).append(m)
 
-        if expected_ids and isinstance(by_base, dict):
-            for base_id in expected_ids:
-                candidates = by_base.get(base_id, [])
-                if candidates:
-                    m = candidates[0]
-                    metric_rows.append({"Metric": m.get("name", base_id), "Value": _format_metric_value(m)})
-                else:
-                    metric_rows.append({"Metric": str(base_id).replace("_", " ").title(), "Value": "N/A"})
+    if expected_ids:
+        for base_id in expected_ids:
+            mlist = by_base.get(base_id)
+            if mlist:
+                rows.append({"Metric": mlist[0].get("name", base_id), "Value": _format_metric_value(mlist[0])})
+            else:
+                rows.append({"Metric": base_id.replace("_", " ").title(), "Value": "N/A"})
 
-            # Append remaining metrics after the expected/template ones
-            expected_set = set(expected_ids)
-            if isinstance(canon, dict):
-                for cid, m in canon.items():
-                    base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
-                    if base in expected_set:
-                        continue
-                    metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
+    for cid, m in (canon or {}).items():
+        base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
+        if expected_ids and base in expected_ids:
+            continue
+        rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
 
-        else:
-            if isinstance(canon, dict):
-                for cid, m in canon.items():
-                    metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
-
-    if metric_rows:
-        default = 10
-        st.table(pd.DataFrame(metric_rows[:default]))
-
-        if len(metric_rows) > default:
-            with st.expander(f"Show all key metrics ({len(metric_rows)})"):
-                st.dataframe(pd.DataFrame(metric_rows), hide_index=True, width="stretch")
+    if rows:
+        st.table(pd.DataFrame(rows[:10]))
+        if len(rows) > 10:
+            with st.expander(f"Show all key metrics ({len(rows)})"):
+                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     else:
         st.info("No metrics available")
 
     st.markdown("---")
 
+    # -------------------------
     # Key Findings
+    # -------------------------
     st.subheader("🔍 Key Findings")
-    findings = data.get("key_findings", []) or []
-    default = 8
+    findings = data.get("key_findings") or []
+    for i, f in enumerate(findings[:8], 1):
+        if f:
+            st.markdown(f"**{i}.** {f}")
 
-    for i, finding in enumerate(findings[:default], 1):
-        if finding:
-            st.markdown(f"**{i}.** {finding}")
-
-    if len(findings) > default:
+    if len(findings) > 8:
         with st.expander(f"Show all key findings ({len(findings)})"):
-            for i, finding in enumerate(findings, 1):
-                if finding:
-                    st.markdown(f"**{i}.** {finding}")
+            for i, f in enumerate(findings, 1):
+                if f:
+                    st.markdown(f"**{i}.** {f}")
 
     st.markdown("---")
 
-
+    # -------------------------
     # Top Entities
-    entities = data.get("top_entities", []) or []
+    # -------------------------
+    entities = data.get("top_entities") or []
     if entities:
         st.subheader("🏢 Top Market Players")
+        df_ent = pd.DataFrame([
+            {
+                "Entity": e.get("name", "N/A"),
+                "Share": e.get("share", "N/A"),
+                "Growth": e.get("growth", "N/A"),
+            }
+            for e in entities if isinstance(e, dict)
+        ])
 
-        entity_data = []
-        for ent in entities:
-            if isinstance(ent, dict):
-                entity_data.append({
-                    "Entity": ent.get("name", "N/A"),
-                    "Share": ent.get("share", "N/A"),
-                    "Growth": ent.get("growth", "N/A"),
-                })
-
-        if entity_data:
-            default = 8
-            st.dataframe(pd.DataFrame(entity_data[:default]), hide_index=True, width="stretch")
-
-            if len(entity_data) > default:
-                with st.expander(f"Show all market players ({len(entity_data)})"):
-                    st.dataframe(pd.DataFrame(entity_data), hide_index=True, width="stretch")
-
-                if len(df_ent) > default_n:
-                    with st.expander(f"Show {len(df_ent) - default_n} more players"):
-                        st.dataframe(df_ent.iloc[default_n:], hide_index=True, width="stretch")
-
-    # Trends Forecast (compact + expandable overflow)
-
-    # Trends Forecast
-    trends = data.get("trends_forecast", []) or []
-    if trends:
-        st.subheader("📈 Trends & Forecast")
-
-        trend_data = []
-        for trend in trends:
-            if isinstance(trend, dict):
-                trend_data.append({
-                    "Trend": trend.get("trend", "N/A"),
-                    "Direction": trend.get("direction", "→"),
-                    "Timeline": trend.get("timeline", "N/A"),
-                })
-
-        if trend_data:
-            default = 8
-            st.table(pd.DataFrame(trend_data[:default]))
-
-            if len(trend_data) > default:
-                with st.expander(f"Show all trends ({len(trend_data)})"):
-                    st.dataframe(pd.DataFrame(trend_data), hide_index=True, width="stretch")
+        if not df_ent.empty:
+            st.dataframe(df_ent.head(8), hide_index=True, width="stretch")
+            if len(df_ent) > 8:
+                with st.expander(f"Show all market players ({len(df_ent)})"):
+                    st.dataframe(df_ent, hide_index=True, width="stretch")
 
     st.markdown("---")
 
+    # -------------------------
+    # Trends & Forecast
+    # -------------------------
+    trends = data.get("trends_forecast") or []
+    if trends:
+        st.subheader("📈 Trends & Forecast")
+        df_trends = pd.DataFrame([
+            {
+                "Trend": t.get("trend", "N/A"),
+                "Direction": t.get("direction", "→"),
+                "Timeline": t.get("timeline", "N/A"),
+            }
+            for t in trends if isinstance(t, dict)
+        ])
+        st.table(df_trends.head(8))
+        if len(df_trends) > 8:
+            with st.expander(f"Show all trends ({len(df_trends)})"):
+                st.dataframe(df_trends, hide_index=True, width="stretch")
 
+    st.markdown("---")
+
+    # -------------------------
     # Visualization
+    # -------------------------
     st.subheader("📊 Data Visualization")
     viz = data.get("visualization_data")
 
-    if viz and isinstance(viz, dict):
-        labels = viz.get("chart_labels", [])
-        values = viz.get("chart_values", [])
+    if isinstance(viz, dict):
+        labels = viz.get("chart_labels") or []
+        values = viz.get("chart_values") or []
         title = viz.get("chart_title", "Trend Analysis")
         chart_type = viz.get("chart_type", "line")
 
         if labels and values and len(labels) == len(values):
             try:
-                numeric_values = [float(v) for v in values[:10]]
-
-                # Detect axis labels
-                x_label = viz.get("x_axis_label") or detect_x_label_dynamic(labels)
-                y_label = viz.get("y_axis_label") or detect_y_label_dynamic(numeric_values)
-
-                df_viz = pd.DataFrame({"x": labels[:10], "y": numeric_values})
-
-                if chart_type == "bar":
-                    fig = px.bar(df_viz, x="x", y="y", title=title)
-                else:
-                    fig = px.line(df_viz, x="x", y="y", title=title, markers=True)
-
-                fig.update_layout(
-                    xaxis_title=x_label,
-                    yaxis_title=y_label,
-                    title_font_size=16,
-                    font=dict(size=12),
-                    xaxis=dict(tickangle=-45) if len(labels) > 5 else {}
+                df_viz = pd.DataFrame({"x": labels[:10], "y": [float(v) for v in values[:10]]})
+                fig = px.bar(df_viz, x="x", y="y", title=title) if chart_type == "bar" else px.line(
+                    df_viz, x="x", y="y", title=title, markers=True
                 )
-
-                st.plotly_chart(fig, use_container_width=True)  # keep unless Streamlit warns for this too
-
+                st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
                 st.info(f"⚠️ Chart rendering failed: {e}")
         else:
-            st.info("📊 Visualization data incomplete or missing")
+            st.info("📊 Visualization data incomplete")
     else:
         st.info("📊 No visualization data available")
 
-    # Comparison Bars
-    comp = data.get("comparison_bars")
-    if comp and isinstance(comp, dict):
-        cats = comp.get("categories", [])
-        vals = comp.get("values", [])
-        if cats and vals and len(cats) == len(vals):
-            try:
-                df_comp = pd.DataFrame({"Category": cats, "Value": vals})
-                fig = px.bar(
-                    df_comp, x="Category", y="Value",
-                    title=comp.get("title", "Comparison"), text_auto=True
-                )
-                st.plotly_chart(fig, use_container_width=True)  # keep unless Streamlit warns for this too
-            except Exception:
-                pass
-
     st.markdown("---")
 
-    # Sources (compact + expandable overflow)
+    # -------------------------
     # Sources
+    # -------------------------
     st.subheader("🔗 Sources & Reliability")
-    all_sources = data.get("sources", []) or (web_context.get("sources", []) if isinstance(web_context, dict) else [])
+    sources = data.get("sources") or (web_context.get("sources") if isinstance(web_context, dict) else []) or []
 
-
-    if not all_sources:
+    if not sources:
         st.info("No sources found")
     else:
-        st.success(f"📊 Found {len(all_sources)} sources")
-
-        default = 10
+        st.success(f"📊 Found {len(sources)} sources")
         cols = st.columns(2)
-
-        for i, src in enumerate(all_sources[:default], 1):
+        for i, s in enumerate(sources[:10], 1):
             col = cols[(i - 1) % 2]
-            short_url = src[:60] + "..." if len(src) > 60 else src
-            reliability = classify_source_reliability(str(src))
+            short = s[:60] + "..." if len(s) > 60 else s
             col.markdown(
-                f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
+                f"**{i}.** [{short}]({s})<br><small>{classify_source_reliability(str(s))}</small>",
                 unsafe_allow_html=True
             )
 
-        if len(all_sources) > default:
-            with st.expander(f"Show all sources ({len(all_sources)})"):
-                # Render as a dataframe for readability when it's long
-                src_rows = []
-                for i, src in enumerate(all_sources, 1):
-                    src_rows.append({
-                        "#": i,
-                        "Source": src,
-                        "Reliability": classify_source_reliability(str(src)),
-                    })
-                st.dataframe(pd.DataFrame(src_rows), hide_index=True, width="stretch")
-
-
-        # Overflow: show the rest in a dataframe (easy scanning/copy)
-        top_n = 6  # number of sources to show inline before expanding
-        if len(all_sources) > top_n:
-            with st.expander(f"Show {len(all_sources) - top_n} more sources"):
-                rows = []
-                for j, s in enumerate(all_sources[top_n:], start=top_n + 1):
-                    rows.append({
-                        "#": j,
-                        "Source": s,
-                        "Reliability": classify_source_reliability(str(s))
-                    })
-                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-
-    # Metadata
-    col_fresh, col_action = st.columns(2)
-    with col_fresh:
-        freshness = data.get("freshness", "Current")
-        st.metric("Data Freshness", freshness)
+        if len(sources) > 10:
+            with st.expander(f"Show all sources ({len(sources)})"):
+                st.dataframe(pd.DataFrame({
+                    "#": range(1, len(sources) + 1),
+                    "Source": sources,
+                    "Reliability": [classify_source_reliability(str(s)) for s in sources],
+                }), hide_index=True, width="stretch")
 
     st.markdown("---")
 
+    # -------------------------
     # Veracity Scores
+    # -------------------------
     if veracity_scores:
         st.subheader("✅ Evidence Quality Scores")
         cols = st.columns(5)
-        metrics_display = [
+        for i, (label, key) in enumerate([
             ("Sources", "source_quality"),
             ("Numbers", "numeric_consistency"),
             ("Citations", "citation_density"),
             ("Consensus", "source_consensus"),
-            ("Overall", "overall")
-        ]
-        for i, (label, key) in enumerate(metrics_display):
+            ("Overall", "overall"),
+        ]):
             cols[i].metric(label, f"{veracity_scores.get(key, 0):.0f}%")
-
-    # Web Context
-    if isinstance(web_context, dict) and web_context.get("search_results"):
-        with st.expander("🌐 Web Search Details"):
-            sr = web_context.get("search_results", []) or []
-            default = 8
-
-            for i, result in enumerate(sr[:default], 1):
-                st.markdown(f"**{i}. {result.get('title')}**")
-                st.caption(f"{result.get('source')} - {result.get('date')}")
-                st.write(result.get("snippet", ""))
-                st.caption(f"[{result.get('link')}]({result.get('link')})")
-                st.markdown("---")
-
-            if len(sr) > default:
-                with st.expander(f"Show all web results ({len(sr)})"):
-                    sr_rows = []
-                    for i, r in enumerate(sr, 1):
-                        sr_rows.append({
-                            "#": i,
-                            "Title": r.get("title", ""),
-                            "Source": r.get("source", ""),
-                            "Date": r.get("date", ""),
-                            "Snippet": r.get("snippet", ""),
-                            "Link": r.get("link", ""),
-                        })
-                    st.dataframe(pd.DataFrame(sr_rows), hide_index=True, width="stretch")
-
-                if len(sr) > top_n:
-                    with st.expander(f"Show {len(sr) - top_n} more search results"):
-                        rows = []
-                        for j, r in enumerate(sr[top_n:], start=top_n + 1):
-                            rows.append({
-                                "#": j,
-                                "Title": r.get("title", ""),
-                                "Source": r.get("source", ""),
-                                "Date": r.get("date", ""),
-                                "Link": r.get("link", ""),
-                                "Snippet": r.get("snippet", ""),
-                            })
-                        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def render_native_comparison(baseline: Dict, compare: Dict):
