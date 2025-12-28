@@ -6418,10 +6418,10 @@ def render_dashboard(
             st.markdown(f"**{i}.** {finding}")
 
     if len(findings) > 8:
-    with st.expander(f"Show {len(findings) - 8} more findings"):
-        for i, finding in enumerate(findings[8:], 9):
-            if finding:
-                st.markdown(f"**{i}.** {finding}")
+        with st.expander(f"Show {len(findings) - 8} more findings"):
+            for i, finding in enumerate(findings[8:], 9):
+                if finding:
+                    st.markdown(f"**{i}.** {finding}")
 
 
     st.markdown("---")
