@@ -1345,9 +1345,9 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
             TrendForecastDetail(trend="Schema validation used fallback", direction="⚠️", timeline="Now")
         ],
         visualization_data=VisualizationData(
-        title="Search Results",
-        data_series_label="Attempt",
-        data_values=[search_count],
+            title="Search Results",
+            data_series_label="Attempt",
+            data_values=[search_count],
         ),
 
         sources=web_context.get("sources", []),
