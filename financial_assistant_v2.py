@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.21
+# YUREEKA AI RESEARCH ASSISTANT v7.22
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -23,6 +23,7 @@
 # Guardrails For Main + Side Topic Handling
 # Numeric Consistency Scores
 # Multi-Side Enumerations
+# Show More Detail in Dashboard
 # ================================================================================
 
 import os
@@ -6322,12 +6323,11 @@ def render_dashboard(
     st.markdown("---")
 
     # =========================
-    # Key Metrics (compact + expandable overflow)
+    # Key Metrics (simple + "show more")
     # =========================
     st.subheader("💰 Key Metrics")
     metrics = data.get("primary_metrics", {}) or {}
 
-    # Pull question signals/category into the same table output
     question_category = data.get("question_category") or (data.get("question_profile", {}) or {}).get("category")
     question_signals = data.get("question_signals") or (data.get("question_profile", {}) or {}).get("signals", {})
     side_questions = data.get("side_questions") or (data.get("question_profile", {}) or {}).get("side_questions", [])
@@ -6338,7 +6338,7 @@ def render_dashboard(
 
     metric_rows: List[Dict[str, str]] = []
 
-    # Always show these at the top
+    # Prepend question-derived signals (if present)
     if question_category:
         metric_rows.append({"Metric": "Question Category", "Value": str(question_category)})
 
@@ -6353,7 +6353,6 @@ def render_dashboard(
     if side_questions:
         metric_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(map(str, side_questions))})
 
-    # Build metric rows (keep old ordering behavior; just allow overflow display)
     if isinstance(metrics, dict) and metrics:
         try:
             canon = canonicalize_metrics(metrics)
@@ -6366,45 +6365,36 @@ def render_dashboard(
                 base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
                 by_base.setdefault(base, []).append(m)
 
-        rendered_cids = set()
-
         if expected_ids and isinstance(by_base, dict):
-            # render template order first
             for base_id in expected_ids:
                 candidates = by_base.get(base_id, [])
                 if candidates:
                     m = candidates[0]
                     metric_rows.append({"Metric": m.get("name", base_id), "Value": _format_metric_value(m)})
-                    # best-effort mark as rendered (may not match cid, so we mark by name+value fallback)
-                    rendered_cids.add((m.get("name", base_id), _format_metric_value(m)))
                 else:
                     metric_rows.append({"Metric": str(base_id).replace("_", " ").title(), "Value": "N/A"})
 
-            # then append the rest (overflow)
+            # Append remaining metrics after the expected/template ones
+            expected_set = set(expected_ids)
             if isinstance(canon, dict):
                 for cid, m in canon.items():
-                    row_sig = (m.get("name", cid), _format_metric_value(m))
-                    if row_sig in rendered_cids:
+                    base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
+                    if base in expected_set:
                         continue
                     metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
 
         else:
-            # no template -> include all (but we will display compact first)
             if isinstance(canon, dict):
                 for cid, m in canon.items():
                     metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
 
     if metric_rows:
-        df_metrics = pd.DataFrame(metric_rows)
+        default = 10
+        st.table(pd.DataFrame(metric_rows[:default]))
 
-        # compact view (old feel)
-        default_n = 10
-        st.table(df_metrics.head(default_n))
-
-        # overflow without toggles/buttons (prevents “reset” feeling)
-        if len(df_metrics) > default_n:
-            with st.expander(f"Show {len(df_metrics) - default_n} more metrics"):
-                st.dataframe(df_metrics.iloc[default_n:], hide_index=True, width="stretch")
+        if len(metric_rows) > default:
+            with st.expander(f"Show all key metrics ({len(metric_rows)})"):
+                st.dataframe(pd.DataFrame(metric_rows), hide_index=True, width="stretch")
     else:
         st.info("No metrics available")
 
@@ -6412,68 +6402,74 @@ def render_dashboard(
 
     # Key Findings
     st.subheader("🔍 Key Findings")
-    findings = data.get("key_findings", [])
-    for i, finding in enumerate(findings[:8], 1):
+    findings = data.get("key_findings", []) or []
+    default = 8
+
+    for i, finding in enumerate(findings[:default], 1):
         if finding:
             st.markdown(f"**{i}.** {finding}")
 
-    if len(findings) > 8:
-        with st.expander(f"Show {len(findings) - 8} more findings"):
-            for i, finding in enumerate(findings[8:], 9):
+    if len(findings) > default:
+        with st.expander(f"Show all key findings ({len(findings)})"):
+            for i, finding in enumerate(findings, 1):
                 if finding:
                     st.markdown(f"**{i}.** {finding}")
 
-
     st.markdown("---")
 
+
     # Top Entities
-    # Top Entities (compact + expandable overflow)
-    entities = data.get("top_entities", [])
+    entities = data.get("top_entities", []) or []
     if entities:
         st.subheader("🏢 Top Market Players")
+
         entity_data = []
         for ent in entities:
             if isinstance(ent, dict):
                 entity_data.append({
                     "Entity": ent.get("name", "N/A"),
                     "Share": ent.get("share", "N/A"),
-                    "Growth": ent.get("growth", "N/A")
+                    "Growth": ent.get("growth", "N/A"),
                 })
 
         if entity_data:
-            df_ent = pd.DataFrame(entity_data)
-            default_n = 8
+            default = 8
+            st.dataframe(pd.DataFrame(entity_data[:default]), hide_index=True, width="stretch")
 
-            st.dataframe(df_ent.head(default_n), hide_index=True, width="stretch")
+            if len(entity_data) > default:
+                with st.expander(f"Show all market players ({len(entity_data)})"):
+                    st.dataframe(pd.DataFrame(entity_data), hide_index=True, width="stretch")
 
-            if len(df_ent) > default_n:
-                with st.expander(f"Show {len(df_ent) - default_n} more players"):
-                    st.dataframe(df_ent.iloc[default_n:], hide_index=True, width="stretch")
+                if len(df_ent) > default_n:
+                    with st.expander(f"Show {len(df_ent) - default_n} more players"):
+                        st.dataframe(df_ent.iloc[default_n:], hide_index=True, width="stretch")
 
     # Trends Forecast (compact + expandable overflow)
-    trends = data.get("trends_forecast", [])
+
+    # Trends Forecast
+    trends = data.get("trends_forecast", []) or []
     if trends:
         st.subheader("📈 Trends & Forecast")
+
         trend_data = []
         for trend in trends:
             if isinstance(trend, dict):
                 trend_data.append({
                     "Trend": trend.get("trend", "N/A"),
                     "Direction": trend.get("direction", "→"),
-                    "Timeline": trend.get("timeline", "N/A")
+                    "Timeline": trend.get("timeline", "N/A"),
                 })
 
         if trend_data:
-            df_tr = pd.DataFrame(trend_data)
-            default_n = 8
+            default = 8
+            st.table(pd.DataFrame(trend_data[:default]))
 
-            st.table(df_tr.head(default_n))
-
-            if len(df_tr) > default_n:
-                with st.expander(f"Show {len(df_tr) - default_n} more trends"):
-                    st.dataframe(df_tr.iloc[default_n:], hide_index=True, width="stretch")
+            if len(trend_data) > default:
+                with st.expander(f"Show all trends ({len(trend_data)})"):
+                    st.dataframe(pd.DataFrame(trend_data), hide_index=True, width="stretch")
 
     st.markdown("---")
+
 
     # Visualization
     st.subheader("📊 Data Visualization")
@@ -6536,6 +6532,7 @@ def render_dashboard(
     st.markdown("---")
 
     # Sources (compact + expandable overflow)
+    # Sources
     st.subheader("🔗 Sources & Reliability")
     all_sources = data.get("sources", []) or (web_context.get("sources", []) if isinstance(web_context, dict) else [])
 
@@ -6544,10 +6541,10 @@ def render_dashboard(
     else:
         st.success(f"📊 Found {len(all_sources)} sources")
 
-        # Compact view (same as before)
+        default = 10
         cols = st.columns(2)
-        top_n = 10
-        for i, src in enumerate(all_sources[:top_n], 1):
+
+        for i, src in enumerate(all_sources[:default], 1):
             col = cols[(i - 1) % 2]
             short_url = src[:60] + "..." if len(src) > 60 else src
             reliability = classify_source_reliability(str(src))
@@ -6555,6 +6552,19 @@ def render_dashboard(
                 f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
                 unsafe_allow_html=True
             )
+
+        if len(all_sources) > default:
+            with st.expander(f"Show all sources ({len(all_sources)})"):
+                # Render as a dataframe for readability when it's long
+                src_rows = []
+                for i, src in enumerate(all_sources, 1):
+                    src_rows.append({
+                        "#": i,
+                        "Source": src,
+                        "Reliability": classify_source_reliability(str(src)),
+                    })
+                st.dataframe(pd.DataFrame(src_rows), hide_index=True, width="stretch")
+
 
         # Overflow: show the rest in a dataframe (easy scanning/copy)
         if len(all_sources) > top_n:
@@ -6592,17 +6602,30 @@ def render_dashboard(
 
     # Web Context
     if isinstance(web_context, dict) and web_context.get("search_results"):
+    with st.expander("🌐 Web Search Details"):
         sr = web_context.get("search_results", []) or []
-        with st.expander("🌐 Web Search Details", expanded=False):
-            top_n = 5
-            for i, result in enumerate(sr[:top_n]):
-                st.markdown(f"**{i+1}. {result.get('title', '')}**")
-                st.caption(f"{result.get('source', '')} - {result.get('date', '')}")
-                st.write(result.get("snippet", ""))
-                link = result.get("link", "")
-                if link:
-                    st.caption(f"[{link}]({link})")
-                st.markdown("---")
+        default = 8
+
+        for i, result in enumerate(sr[:default], 1):
+            st.markdown(f"**{i}. {result.get('title')}**")
+            st.caption(f"{result.get('source')} - {result.get('date')}")
+            st.write(result.get("snippet", ""))
+            st.caption(f"[{result.get('link')}]({result.get('link')})")
+            st.markdown("---")
+
+        if len(sr) > default:
+            with st.expander(f"Show all web results ({len(sr)})"):
+                sr_rows = []
+                for i, r in enumerate(sr, 1):
+                    sr_rows.append({
+                        "#": i,
+                        "Title": r.get("title", ""),
+                        "Source": r.get("source", ""),
+                        "Date": r.get("date", ""),
+                        "Snippet": r.get("snippet", ""),
+                        "Link": r.get("link", ""),
+                    })
+                st.dataframe(pd.DataFrame(sr_rows), hide_index=True, width="stretch")
 
             if len(sr) > top_n:
                 with st.expander(f"Show {len(sr) - top_n} more search results"):
