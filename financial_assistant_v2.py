@@ -4023,9 +4023,29 @@ def _embedding_category_vote(query: str) -> Dict[str, Any]:
 def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
     """
     Last resort: ask LLM to output ONLY a small JSON query-structure object.
+    Guardrail: do NOT let the LLM invent extra side questions unless the user explicitly enumerated them.
     This path must NOT validate against LLMResponse.
     """
     try:
+        q = str(query or "").strip()
+        if not q:
+            return None
+
+        # --- Detect explicit enumeration / list structure in the USER query ---
+        # If the user wrote a list (1., 2), bullets, etc.), it's reasonable to accept multiple sides.
+        enum_patterns = [
+            r"(^|\n)\s*\d+\s*[\.\)]\s+",     # 1.  / 2)
+            r"(^|\n)\s*[-•*]\s+",           # - item / • item
+            r"(^|\n)\s*[a-zA-Z]\s*[\.\)]\s+"  # a) / b. etc.
+        ]
+        has_explicit_enumeration = any(re.search(p, q, flags=re.MULTILINE) for p in enum_patterns)
+
+        # Deterministic baseline (what the system already extracted)
+        # We use this to clamp LLM hallucinations.
+        det_clauses = _split_clauses_deterministic(_normalize_q(q))
+        det_main, det_side = _choose_main_and_side(det_clauses)
+        det_side = _dedupe_clauses([s.strip() for s in (det_side or []) if isinstance(s, str) and s.strip()])
+
         prompt = (
             "Extract a query structure.\n"
             "Return ONLY valid JSON with keys:\n"
@@ -4034,12 +4054,12 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
             "  main: string (the main question/topic)\n"
             "  side: array of strings (side questions)\n"
             "No extra keys, no commentary.\n\n"
-            f"Query: {query}"
+            f"Query: {q}"
         )
 
         raw = query_perplexity_raw(prompt, max_tokens=250, timeout=30)
 
-        # If upstream ever returns dict-like accidentally, accept it
+        # Parse
         if isinstance(raw, dict):
             parsed = raw
         else:
@@ -4049,13 +4069,62 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
                 raw = str(raw)
             parsed = parse_json_safely(raw, "LLM Query Structure")
 
-        if isinstance(parsed, dict) and parsed.get("main") is not None:
-            return parsed
+        if not isinstance(parsed, dict) or parsed.get("main") is None:
+            return None
+
+        # --- Clean/normalize fields ---
+        llm_main = str(parsed.get("main") or "").strip()
+        llm_side = parsed.get("side") if isinstance(parsed.get("side"), list) else []
+        llm_side = [str(s).strip() for s in llm_side if s is not None and str(s).strip()]
+
+        # Reject "invented" side items that look like generic outline bullets
+        # (Only apply this rejection when the user did NOT explicitly enumerate a list.)
+        def _looks_like_outline_item(s: str) -> bool:
+            s2 = s.lower().strip()
+            bad_starts = (
+                "overview", "key", "key stats", "statistics", "major statistics",
+                "policies", "infrastructure", "recent trends", "post-covid", "covid",
+                "challenges", "opportunities", "drivers", "headwinds",
+                "background", "introduction"
+            )
+            return any(s2.startswith(b) for b in bad_starts)
+
+        # --- Guardrail policy ---
+        # If user didn't enumerate, do NOT accept LLM expansion of side questions.
+        if not has_explicit_enumeration:
+            # Keep deterministic sides only. (You can allow 1 LLM side if deterministic found none.)
+            final_side = det_side
+            if not final_side and llm_side:
+                # Allow at most one side item as a fallback, but avoid outline-like additions.
+                cand = llm_side[0]
+                final_side = [] if _looks_like_outline_item(cand) else [cand]
+        else:
+            # User enumerated: accept multiple sides, but still de-dupe and keep deterministic items first
+            merged = []
+            for s in (det_side + llm_side):
+                s = str(s).strip()
+                if not s:
+                    continue
+                if s not in merged:
+                    merged.append(s)
+            final_side = merged
+
+        # If LLM main is empty or fragment-y, keep deterministic main
+        bad_prefixes = ("as well as", "as well", "and ", "also ", "plus ", "as for ")
+        if not llm_main or any(llm_main.lower().startswith(p) for p in bad_prefixes):
+            llm_main = (det_main or "").strip()
+
+        # Return only allowed keys
+        out = {
+            "category": parsed.get("category", "unknown") or "unknown",
+            "category_confidence": parsed.get("category_confidence", 0.0),
+            "main": llm_main,
+            "side": final_side,
+        }
+        return out
 
     except Exception:
         return None
-
-    return None
 
 
 def _split_side_candidates(query: str) -> List[str]:
@@ -6536,6 +6605,7 @@ def render_dashboard(
     st.subheader("🔗 Sources & Reliability")
     all_sources = data.get("sources", []) or (web_context.get("sources", []) if isinstance(web_context, dict) else [])
 
+
     if not all_sources:
         st.info("No sources found")
     else:
@@ -6567,6 +6637,7 @@ def render_dashboard(
 
 
         # Overflow: show the rest in a dataframe (easy scanning/copy)
+        top_n = 6  # number of sources to show inline before expanding
         if len(all_sources) > top_n:
             with st.expander(f"Show {len(all_sources) - top_n} more sources"):
                 rows = []
@@ -6605,14 +6676,14 @@ def render_dashboard(
         with st.expander("🌐 Web Search Details"):
             sr = web_context.get("search_results", []) or []
             default = 8
-    
+
             for i, result in enumerate(sr[:default], 1):
                 st.markdown(f"**{i}. {result.get('title')}**")
                 st.caption(f"{result.get('source')} - {result.get('date')}")
                 st.write(result.get("snippet", ""))
                 st.caption(f"[{result.get('link')}]({result.get('link')})")
                 st.markdown("---")
-    
+
             if len(sr) > default:
                 with st.expander(f"Show all web results ({len(sr)})"):
                     sr_rows = []
@@ -6626,7 +6697,7 @@ def render_dashboard(
                             "Link": r.get("link", ""),
                         })
                     st.dataframe(pd.DataFrame(sr_rows), hide_index=True, width="stretch")
-    
+
                 if len(sr) > top_n:
                     with st.expander(f"Show {len(sr) - top_n} more search results"):
                         rows = []
