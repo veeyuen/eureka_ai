@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.20
+# YUREEKA AI RESEARCH ASSISTANT v7.21
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -22,6 +22,7 @@
 # Improved Main Topic + Side Topic Extractor Using Deterministic-->NLP-->LLM layer
 # Guardrails For Main + Side Topic Handling
 # Numeric Consistency Scores
+# Multi-Side Enumerations
 # ================================================================================
 
 import os
@@ -1172,79 +1173,40 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
         st.info("📦 Using cached LLM response (identical sources)")
         return cached_response
 
-    search_count = len((web_context or {}).get("search_results", []) or [])
+    search_count = len((web_context or {}).get("search_results", []))
 
-    # -------------------------------
-    # Build structured guidance block (ALWAYS included)
-    # -------------------------------
+    # Always include structure guidance (this is what fixes main vs side ordering)
     structure_txt = format_query_structure_for_prompt(query_structure)
 
-    # Strong ordering instruction: MAIN first, then SIDE(s)
-    main_q = ""
-    side_qs: List[str] = []
-    if isinstance(query_structure, dict):
-        main_q = (query_structure.get("main") or "").strip()
-        side_qs = query_structure.get("side") if isinstance(query_structure.get("side"), list) else []
-        side_qs = [str(s).strip() for s in side_qs if isinstance(s, (str, int, float)) and str(s).strip()]
-
-    ordering_instructions = (
-        "ANSWER ORDER (MANDATORY):\n"
-        f"1) Answer the MAIN question first: {main_q or '[use best interpretation of the user question]'}\n"
-    )
-    if side_qs:
-        ordering_instructions += "2) Then answer SIDE questions in the given order:\n"
-        for i, s in enumerate(side_qs, 1):
-            ordering_instructions += f"   {i}. {s}\n"
-    else:
-        ordering_instructions += "2) If there are side questions, answer them after the main.\n"
-
-    anti_fragment_instruction = (
-        "IMPORTANT GUARDRAIL:\n"
-        "- Do NOT treat fragment clauses starting with 'as well as', 'also', 'and', 'plus', etc. as the MAIN.\n"
-        "- If the query asks for an overview (e.g. 'in general'), provide general context first (facts, overview), "
-        "then move to the side topic(s).\n"
+    ordering_contract = (
+        "IMPORTANT: Follow the structured question strictly.\n"
+        "- Answer MAIN first (give general context if it is an overview request).\n"
+        "- Then answer EACH side question explicitly in order.\n"
+        "- Ensure executive_summary reflects MAIN first, then side.\n"
     )
 
-    # -------------------------------
-    # Build enhanced prompt
-    # -------------------------------
-    if not (web_context or {}).get("summary") or search_count < 2:
-        enhanced_query = (
-            f"{SYSTEM_PROMPT}\n\n"
-            f"User Question: {query}\n\n"
-            f"{structure_txt}\n\n"
-            f"{ordering_instructions}\n"
-            f"{anti_fragment_instruction}\n"
-            f"Web search returned {search_count} results. "
-            f"Use the structured question to ensure coverage of the MAIN question AND all SIDE questions.\n"
-            f"Provide complete analysis with all required fields.\n"
-            f"Return ONLY valid JSON.\n"
-        )
-    else:
-        context_section = (
-            "LATEST WEB RESEARCH:\n"
-            f"{(web_context or {}).get('summary','')}\n\n"
-        )
+    # Build context section
+    context_section = ""
+    if isinstance(web_context, dict) and web_context.get("summary"):
+        context_section += "LATEST WEB RESEARCH:\n"
+        context_section += f"{web_context.get('summary','')}\n\n"
 
-        scraped = (web_context or {}).get("scraped_content") or {}
-        if isinstance(scraped, dict) and scraped:
-            context_section += "\nDETAILED CONTENT:\n"
-            for url, content in list(scraped.items())[:2]:
-                context_section += f"\n{url}:\n{str(content)[:800]}...\n"
+    if isinstance(web_context, dict) and web_context.get("scraped_content"):
+        context_section += "DETAILED CONTENT (snippets):\n"
+        for url, content in list(web_context["scraped_content"].items())[:2]:
+            context_section += f"\n{url}:\n{str(content)[:800]}...\n"
 
-        # NOTE: structure_txt MUST be included here too (previously it was computed but not used)
-        enhanced_query = (
-            f"{context_section}\n"
-            f"{SYSTEM_PROMPT}\n\n"
-            f"User Question: {query}\n\n"
-            f"{structure_txt}\n\n"
-            f"{ordering_instructions}\n"
-            f"{anti_fragment_instruction}\n"
-            f"Use the web research above for citations and numeric support.\n"
-            f"Return ONLY valid JSON.\n"
-        )
+    # Final prompt
+    enhanced_query = (
+        f"{context_section}\n"
+        f"{SYSTEM_PROMPT}\n\n"
+        f"User Question: {query}\n\n"
+        f"{structure_txt}\n\n"
+        f"{ordering_contract}\n"
+        f"Web search returned {search_count} results.\n"
+        f"Return ONLY valid JSON matching the template and include all required fields."
+    )
 
-    # API request
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_KEY}",
         "Content-Type": "application/json"
@@ -1252,9 +1214,9 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
 
     payload = {
         "model": "sonar",
-        "temperature": 0.0,      # DETERMINISTIC: No randomness
-        "max_tokens": 2000,
-        "top_p": 1.0,            # DETERMINISTIC: No nucleus sampling
+        "temperature": 0.0,
+        "max_tokens": 2400,  # slightly more room to cover main + multi-side
+        "top_p": 1.0,
         "messages": [{"role": "user", "content": enhanced_query}]
     }
 
@@ -1285,16 +1247,15 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
             llm_obj = LLMResponse.model_validate(repaired)
 
             # Merge web sources
-            if (web_context or {}).get("sources"):
+            if isinstance(web_context, dict) and web_context.get("sources"):
                 existing = llm_obj.sources or []
-                merged = list(dict.fromkeys(existing + (web_context or {})["sources"]))
+                merged = list(dict.fromkeys(existing + web_context["sources"]))
                 llm_obj.sources = merged[:10]
                 llm_obj.freshness = "Current (web-enhanced)"
 
-                result = llm_obj.model_dump_json()
-                # Cache the successful response
-                cache_llm_response(query, web_context, result)
-                return result
+            result = llm_obj.model_dump_json()
+            cache_llm_response(query, web_context, result)
+            return result
 
         except ValidationError as e:
             st.warning(f"⚠️ Pydantic validation failed: {e}")
@@ -3818,23 +3779,122 @@ def _normalize_q(q: str) -> str:
     q = re.sub(r"\s+", " ", q)
     return q
 
-def _split_clauses_deterministic(query: str) -> List[str]:
+def _split_clauses_deterministic(q: str) -> List[str]:
     """
-    Split query into candidate clauses deterministically using conservative separators.
-    We do NOT try to be 'smart' here; smartness is added in later layers.
+    Deterministically split a question into ordered clauses.
+
+    Supports:
+    - comma/connector splits (",", "and", "as well as", "in addition to", etc.)
+    - multi-side enumerations like:
+        "in addition to: 1. X 2. Y"
+        "including: (1) X (2) Y"
+        "as well as: • X • Y"
     """
-    q = _normalize_q(query).lower()
-    if not q:
+    if not isinstance(q, str):
         return []
 
-    # Prefer multi-word separators first by replacing with a hard delimiter.
-    tmp = q
-    for pat in _QUERY_SPLIT_PATTERNS:
-        tmp = re.sub(pat, "|||", tmp, flags=re.IGNORECASE)
+    s = q.strip()
+    if not s:
+        return []
 
-    parts = [p.strip(" .?!)(").strip() for p in tmp.split("|||")]
-    parts = [p for p in parts if p and len(p) > 2]
-    return parts[:10]
+    # Normalize whitespace early (keep original casing if present; upstream may lowercase already)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # --- Step A: If there's an enumeration intro, split head vs tail ---
+    # Examples: "in addition to:", "including:", "plus:", "as well as:"
+    enum_intro = re.search(
+        r"\b(in addition to|in addition|including|in addition to the following|as well as|plus)\b\s*:?\s*",
+        s,
+        flags=re.IGNORECASE,
+    )
+
+    head = s
+    tail = ""
+
+    if enum_intro:
+        # Split at the FIRST occurrence of the enum phrase
+        idx = enum_intro.start()
+        # head is everything before the phrase if it exists, otherwise keep whole string
+        # but we usually want "Tell me about X in general" to remain in head.
+        head = s[:idx].strip().rstrip(",")
+        tail = s[enum_intro.end():].strip()
+
+        # If head is empty (e.g., query begins with "In addition to:"), treat everything as head
+        if not head:
+            head = s
+            tail = ""
+
+    clauses: List[str] = []
+
+    # --- Step B: Split head using your existing connector patterns ---
+    if head:
+        parts = [head]
+        for pat in _QUERY_SPLIT_PATTERNS:
+            next_parts = []
+            for p in parts:
+                next_parts.extend(re.split(pat, p, flags=re.IGNORECASE))
+            parts = next_parts
+
+        for p in parts:
+            p = p.strip(" ,;:.").strip()
+            if p:
+                clauses.append(p)
+
+    # --- Step C: If tail exists, split as enumerated items/bullets ---
+    if tail:
+        # Split on "1.", "1)", "(1)", "•", "-", "*"
+        # Keep it robust: find item starts, then slice.
+        item_start = re.compile(r"(?:^|\s)(?:\(?\d+\)?[\.\)]|[•\-\*])\s+", flags=re.IGNORECASE)
+        starts = [m.start() for m in item_start.finditer(tail)]
+
+        if starts:
+            # Build slices using detected starts
+            spans = []
+            for i, st0 in enumerate(starts):
+                st = st0
+                # Move start to the start of token (strip leading whitespace)
+                while st < len(tail) and tail[st].isspace():
+                    st += 1
+                en = starts[i + 1] if i + 1 < len(starts) else len(tail)
+                spans.append((st, en))
+
+            for st, en in spans:
+                item = tail[st:en].strip(" ,;:.").strip()
+                # Remove the leading bullet/number token again (safety)
+                item = re.sub(r"^\(?\d+\)?[\.\)]\s+", "", item)
+                item = re.sub(r"^[•\-\*]\s+", "", item)
+                item = item.strip(" ,;:.").strip()
+                if item:
+                    clauses.append(item)
+        else:
+            # If tail doesn't look enumerated, fall back to normal splitter on tail
+            parts = [tail]
+            for pat in _QUERY_SPLIT_PATTERNS:
+                next_parts = []
+                for p in parts:
+                    next_parts.extend(re.split(pat, p, flags=re.IGNORECASE))
+                parts = next_parts
+
+            for p in parts:
+                p = p.strip(" ,;:.").strip()
+                if p:
+                    clauses.append(p)
+
+    # Final cleanup + dedupe while preserving order
+    out: List[str] = []
+    seen = set()
+    for c in clauses:
+        c2 = c.strip()
+        if not c2:
+            continue
+        if c2.lower() in seen:
+            continue
+        seen.add(c2.lower())
+        out.append(c2)
+
+    return out
+
+
 
 def _dedupe_clauses(clauses: List[str]) -> List[str]:
     seen = set()
@@ -4243,20 +4303,33 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
 def format_query_structure_for_prompt(qs: Optional[Dict[str, Any]]) -> str:
     if not qs or not isinstance(qs, dict):
         return ""
+
     parts = []
     parts.append("STRUCTURED QUESTION (DETERMINISTIC):")
     parts.append(f"- Category: {qs.get('category','unknown')} (conf {qs.get('category_confidence','')})")
-    parts.append(f"- Main: {qs.get('main','')}")
+    parts.append(f"- Main (answer this FIRST): {qs.get('main','')}")
     side = qs.get("side") or []
+
     if side:
-        parts.append("- Side questions:")
-        for s in side[:5]:
-            parts.append(f"  - {s}")
+        parts.append("- Side questions (answer AFTER main, in this exact order):")
+        for i, s in enumerate(side[:10], 1):
+            parts.append(f"  {i}. {s}")
+
     tmpl = qs.get("template_sections") or []
     if tmpl:
-        parts.append("- Recommended response sections:")
+        parts.append("- Recommended response sections (use as headings if helpful):")
         for t in tmpl[:10]:
             parts.append(f"  - {t}")
+
+    # Hard behavioral instruction to the LLM (kept short and explicit)
+    parts.append(
+        "RESPONSE RULES:\n"
+        "1) Start by answering the MAIN request with general context.\n"
+        "2) Then answer EACH side question explicitly (label them).\n"
+        "3) Metrics/findings can include both main + side, but do not ignore the main.\n"
+        "4) If you provide tourism/industry metrics, ALSO provide basic country/overview facts when main is an overview."
+    )
+
     return "\n".join(parts).strip()
 
 
@@ -6249,12 +6322,12 @@ def render_dashboard(
     st.markdown("---")
 
     # =========================
-    # Key Metrics (template-driven when available)
+    # Key Metrics (compact + expandable overflow)
     # =========================
     st.subheader("💰 Key Metrics")
     metrics = data.get("primary_metrics", {}) or {}
 
-    # 3B: Pull question signals/category into the same table output
+    # Pull question signals/category into the same table output
     question_category = data.get("question_category") or (data.get("question_profile", {}) or {}).get("category")
     question_signals = data.get("question_signals") or (data.get("question_profile", {}) or {}).get("signals", {})
     side_questions = data.get("side_questions") or (data.get("question_profile", {}) or {}).get("side_questions", [])
@@ -6265,7 +6338,7 @@ def render_dashboard(
 
     metric_rows: List[Dict[str, str]] = []
 
-    # Prepend question-derived signals (if present)
+    # Always show these at the top
     if question_category:
         metric_rows.append({"Metric": "Question Category", "Value": str(question_category)})
 
@@ -6280,46 +6353,58 @@ def render_dashboard(
     if side_questions:
         metric_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(map(str, side_questions))})
 
+    # Build metric rows (keep old ordering behavior; just allow overflow display)
     if isinstance(metrics, dict) and metrics:
-        # Canonicalize to stabilize lookups
         try:
             canon = canonicalize_metrics(metrics)
         except Exception:
-            canon = metrics  # fallback (worst-case)
+            canon = metrics
 
-        # Build lookup by base canonical id (strip year suffixes etc.)
         by_base: Dict[str, List[Dict]] = {}
         if isinstance(canon, dict):
             for cid, m in canon.items():
                 base = re.sub(r'_\d{4}(?:_\d{4})*$', '', str(cid))
                 by_base.setdefault(base, []).append(m)
 
-        # If template expected_ids exists, render in that order
+        rendered_cids = set()
+
         if expected_ids and isinstance(by_base, dict):
+            # render template order first
             for base_id in expected_ids:
                 candidates = by_base.get(base_id, [])
                 if candidates:
-                    # deterministic pick (canonicalize_metrics already sorts deterministically)
                     m = candidates[0]
-                    metric_rows.append({
-                        "Metric": m.get("name", base_id),
-                        "Value": _format_metric_value(m)
-                    })
+                    metric_rows.append({"Metric": m.get("name", base_id), "Value": _format_metric_value(m)})
+                    # best-effort mark as rendered (may not match cid, so we mark by name+value fallback)
+                    rendered_cids.add((m.get("name", base_id), _format_metric_value(m)))
                 else:
-                    # placeholder row (avoid hard dependency on METRIC_REGISTRY)
-                    display = str(base_id).replace("_", " ").title()
-                    metric_rows.append({"Metric": display, "Value": "N/A"})
-        else:
-            # No template → show first 6 canonicalized metrics
+                    metric_rows.append({"Metric": str(base_id).replace("_", " ").title(), "Value": "N/A"})
+
+            # then append the rest (overflow)
             if isinstance(canon, dict):
-                for cid, m in list(canon.items())[:6]:
-                    metric_rows.append({
-                        "Metric": m.get("name", cid),
-                        "Value": _format_metric_value(m)
-                    })
+                for cid, m in canon.items():
+                    row_sig = (m.get("name", cid), _format_metric_value(m))
+                    if row_sig in rendered_cids:
+                        continue
+                    metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
+
+        else:
+            # no template -> include all (but we will display compact first)
+            if isinstance(canon, dict):
+                for cid, m in canon.items():
+                    metric_rows.append({"Metric": m.get("name", cid), "Value": _format_metric_value(m)})
 
     if metric_rows:
-        st.table(pd.DataFrame(metric_rows))
+        df_metrics = pd.DataFrame(metric_rows)
+
+        # compact view (old feel)
+        default_n = 10
+        st.table(df_metrics.head(default_n))
+
+        # overflow without toggles/buttons (prevents “reset” feeling)
+        if len(df_metrics) > default_n:
+            with st.expander(f"Show {len(df_metrics) - default_n} more metrics"):
+                st.dataframe(df_metrics.iloc[default_n:], hide_index=True, width="stretch")
     else:
         st.info("No metrics available")
 
@@ -6332,9 +6417,17 @@ def render_dashboard(
         if finding:
             st.markdown(f"**{i}.** {finding}")
 
+    if len(findings) > 8:
+    with st.expander(f"Show {len(findings) - 8} more findings"):
+        for i, finding in enumerate(findings[8:], 9):
+            if finding:
+                st.markdown(f"**{i}.** {finding}")
+
+
     st.markdown("---")
 
     # Top Entities
+    # Top Entities (compact + expandable overflow)
     entities = data.get("top_entities", [])
     if entities:
         st.subheader("🏢 Top Market Players")
@@ -6346,10 +6439,18 @@ def render_dashboard(
                     "Share": ent.get("share", "N/A"),
                     "Growth": ent.get("growth", "N/A")
                 })
-        if entity_data:
-            st.dataframe(pd.DataFrame(entity_data), hide_index=True, width="stretch")
 
-    # Trends Forecast
+        if entity_data:
+            df_ent = pd.DataFrame(entity_data)
+            default_n = 8
+
+            st.dataframe(df_ent.head(default_n), hide_index=True, width="stretch")
+
+            if len(df_ent) > default_n:
+                with st.expander(f"Show {len(df_ent) - default_n} more players"):
+                    st.dataframe(df_ent.iloc[default_n:], hide_index=True, width="stretch")
+
+    # Trends Forecast (compact + expandable overflow)
     trends = data.get("trends_forecast", [])
     if trends:
         st.subheader("📈 Trends & Forecast")
@@ -6361,8 +6462,16 @@ def render_dashboard(
                     "Direction": trend.get("direction", "→"),
                     "Timeline": trend.get("timeline", "N/A")
                 })
+
         if trend_data:
-            st.table(pd.DataFrame(trend_data))
+            df_tr = pd.DataFrame(trend_data)
+            default_n = 8
+
+            st.table(df_tr.head(default_n))
+
+            if len(df_tr) > default_n:
+                with st.expander(f"Show {len(df_tr) - default_n} more trends"):
+                    st.dataframe(df_tr.iloc[default_n:], hide_index=True, width="stretch")
 
     st.markdown("---")
 
@@ -6426,7 +6535,7 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # Sources
+    # Sources (compact + expandable overflow)
     st.subheader("🔗 Sources & Reliability")
     all_sources = data.get("sources", []) or (web_context.get("sources", []) if isinstance(web_context, dict) else [])
 
@@ -6435,15 +6544,29 @@ def render_dashboard(
     else:
         st.success(f"📊 Found {len(all_sources)} sources")
 
-    cols = st.columns(2)
-    for i, src in enumerate(all_sources[:10], 1):
-        col = cols[(i - 1) % 2]
-        short_url = src[:60] + "..." if len(src) > 60 else src
-        reliability = classify_source_reliability(str(src))
-        col.markdown(
-            f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
-            unsafe_allow_html=True
-        )
+        # Compact view (same as before)
+        cols = st.columns(2)
+        top_n = 10
+        for i, src in enumerate(all_sources[:top_n], 1):
+            col = cols[(i - 1) % 2]
+            short_url = src[:60] + "..." if len(src) > 60 else src
+            reliability = classify_source_reliability(str(src))
+            col.markdown(
+                f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
+                unsafe_allow_html=True
+            )
+
+        # Overflow: show the rest in a dataframe (easy scanning/copy)
+        if len(all_sources) > top_n:
+            with st.expander(f"Show {len(all_sources) - top_n} more sources"):
+                rows = []
+                for j, s in enumerate(all_sources[top_n:], start=top_n + 1):
+                    rows.append({
+                        "#": j,
+                        "Source": s,
+                        "Reliability": classify_source_reliability(str(s))
+                    })
+                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
     # Metadata
     col_fresh, col_action = st.columns(2)
@@ -6469,13 +6592,31 @@ def render_dashboard(
 
     # Web Context
     if isinstance(web_context, dict) and web_context.get("search_results"):
-        with st.expander("🌐 Web Search Details"):
-            for i, result in enumerate(web_context["search_results"][:5]):
-                st.markdown(f"**{i+1}. {result.get('title')}**")
-                st.caption(f"{result.get('source')} - {result.get('date')}")
+        sr = web_context.get("search_results", []) or []
+        with st.expander("🌐 Web Search Details", expanded=False):
+            top_n = 5
+            for i, result in enumerate(sr[:top_n]):
+                st.markdown(f"**{i+1}. {result.get('title', '')}**")
+                st.caption(f"{result.get('source', '')} - {result.get('date', '')}")
                 st.write(result.get("snippet", ""))
-                st.caption(f"[{result.get('link')}]({result.get('link')})")
+                link = result.get("link", "")
+                if link:
+                    st.caption(f"[{link}]({link})")
                 st.markdown("---")
+
+            if len(sr) > top_n:
+                with st.expander(f"Show {len(sr) - top_n} more search results"):
+                    rows = []
+                    for j, r in enumerate(sr[top_n:], start=top_n + 1):
+                        rows.append({
+                            "#": j,
+                            "Title": r.get("title", ""),
+                            "Source": r.get("source", ""),
+                            "Date": r.get("date", ""),
+                            "Link": r.get("link", ""),
+                            "Snippet": r.get("snippet", ""),
+                        })
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def render_native_comparison(baseline: Dict, compare: Dict):
