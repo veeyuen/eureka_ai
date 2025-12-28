@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.22
+# YUREEKA AI RESEARCH ASSISTANT v7.23
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -24,6 +24,7 @@
 # Numeric Consistency Scores
 # Multi-Side Enumerations
 # Show More Detail in Dashboard
+# Improved Evolution Metrics + Unit Handling
 # ================================================================================
 
 import os
@@ -406,6 +407,39 @@ RESPONSE_TEMPLATE = """
   }
 }
 """
+
+class Metric(BaseModel):
+    name: str
+    value: float
+    unit: str
+
+class Entity(BaseModel):
+    name: str
+    share: str
+    growth: str
+
+class Trend(BaseModel):
+    trend: str
+    direction: str
+    timeline: str
+
+class VisualizationData(BaseModel):
+    title: str
+    chart_labels: List[str]
+    data_series_label: str
+    data_values: List[float]
+
+class LLMResponse(BaseModel):
+    executive_summary: str
+    primary_metrics: Dict[str, Metric]
+    key_findings: List[str]
+    top_entities: List[Entity]
+    trends_forecast: List[Trend]
+    visualization_data: VisualizationData
+    confidence_score: Optional[int] = Field(None, ge=0, le=100)
+    data_freshness: Optional[str]
+    sources: Optional[List[str]]
+
 
 
 
@@ -5548,29 +5582,72 @@ def parse_human_number(value_str: str, unit: str) -> Optional[float]:
     # Unknown unit: leave as-is (still useful for ratio filtering)
     return v
 
-def build_prev_numbers(prev_metrics: Dict) -> Dict[str, Dict]:
+def build_prev_numbers(prev_metrics: Dict, frozen_schema: Optional[Dict] = None) -> Dict[str, Dict]:
     """
-    Build previous metric lookup keyed by *metric_name string*.
-    Stores parsed numeric value in comparable scale + unit + raw + keywords.
+    Build previous metric lookup keyed by metric display name.
+    Fixes:
+      - If baseline metric has no unit, pull it from frozen schema.
+      - Store both normalized comparable numeric value and a display string that includes units.
     """
-    prev_numbers = {}
+    prev_numbers: Dict[str, Dict] = {}
+    frozen_schema = frozen_schema or {}
+
+    # Build helper lookup from schema: name -> unit (best-effort)
+    schema_name_to_unit = {}
+    schema_id_to_unit = {}
+
+    for sid, sdef in frozen_schema.items():
+        if not isinstance(sdef, dict):
+            continue
+        u = (sdef.get("unit") or "").strip()
+        nm = (sdef.get("name") or sdef.get("display_name") or "").strip()
+        if u:
+            schema_id_to_unit[str(sid)] = u
+            if nm:
+                schema_name_to_unit[nm] = u
+
+    schema_names = list(schema_name_to_unit.keys())
+
     for key, metric in (prev_metrics or {}).items():
         if not isinstance(metric, dict):
             continue
-        metric_name = metric.get("name", key)
-        raw = str(metric.get("value", ""))
-        unit = metric.get("unit", "")
-        val = parse_human_number(raw, unit)
+
+        metric_name = (metric.get("name") or key or "").strip()
+        raw_val = str(metric.get("value", "")).strip()
+
+        # 1) unit from metric (if provided)
+        unit = (metric.get("unit") or "").strip()
+
+        # 2) if missing, try schema by id/key
+        if not unit and str(key) in schema_id_to_unit:
+            unit = schema_id_to_unit[str(key)]
+
+        # 3) if still missing, fuzzy match metric name to schema name
+        if not unit and metric_name and schema_names:
+            best = find_best_match(metric_name, schema_names, threshold=0.75)
+            if best:
+                unit = schema_name_to_unit.get(best, "")
+
+        # Build display string that preserves the unit for human visibility + later debug
+        u_norm = normalize_unit(unit)
+        display = raw_val
+        if u_norm and u_norm not in raw_val.upper():
+            # "1.01" + "B" -> "1.01B"
+            display = f"{raw_val}{u_norm}"
+
+        val = parse_human_number(raw_val, u_norm)
         if val is None:
             continue
-        prev_numbers[metric_name] = {
-            "value": val,
-            "unit": normalize_unit(unit),
-            "raw": raw,
-            "keywords": extract_context_keywords(metric_name)
-        }
-    return prev_numbers
 
+        prev_numbers[metric_name] = {
+            "value": val,                 # normalized comparable value (BILLIONS for currency-like)
+            "unit": normalize_unit(u_norm),
+            "raw": raw_val,               # original raw numeric string
+            "display": display,           # IMPORTANT: includes unit so it won’t be lost
+            "keywords": extract_context_keywords(metric_name),
+        }
+
+    return prev_numbers
 
 
 def compute_source_anchored_diff(previous_data: Dict) -> Dict:
@@ -5618,7 +5695,8 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     # --------- Build previous metrics (must happen before baseline reuse) ----------
     prev_metrics = prev_response.get("primary_metrics", {}) or {}
-    prev_numbers = build_prev_numbers(prev_metrics)
+    frozen_schema = prev_response.get("metric_schema_frozen", {}) or {}
+    prev_numbers = build_prev_numbers(prev_metrics, frozen_schema=frozen_schema)
 
     # --------- Baseline reuse gating ----------
     BASELINE_REUSE_HOURS = 24
@@ -5638,7 +5716,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         for metric_name, prev_item in prev_numbers.items():
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_item["raw"],
+                "previous_value": prev_item.get("display", prev_item["raw"]),
                 "current_value": prev_item["raw"],
                 "change_pct": 0.0,
                 "change_type": "unchanged",
@@ -5819,11 +5897,17 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     continue
 
             # Ratio filter (avoid far-off candidates)
+            # Ratio filter (avoid far-off candidates)
             if prev_val and curr_val:
                 ratio = curr_val / prev_val if prev_val != 0 else 0
-                if not (0.5 <= ratio <= 2.0):
-                    continue
-                value_score = 1.0 / (1.0 + abs(ratio - 1.0))
+
+                # Tight tolerance for "same metric, rounded differently"
+                if 0.95 <= ratio <= 1.05:
+                    value_score = 1.0
+                else:
+                    if not (0.5 <= ratio <= 2.0):
+                        continue
+                    value_score = 1.0 / (1.0 + abs(ratio - 1.0))
             else:
                 continue
 
@@ -5848,7 +5932,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_item["raw"],
+                "previous_value": prev_item.get("display", prev_item["raw"]),
                 "current_value": best_match.get("raw", ""),
                 "change_pct": change_pct,
                 "change_type": change_type,
@@ -5858,7 +5942,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         else:
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_item["raw"],
+                "previous_value": prev_item.get("display", prev_item["raw"]),
                 "current_value": "Not found (no confident match)",
                 "change_pct": None,
                 "change_type": "not_found",
@@ -5964,66 +6048,102 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 
     return keywords
 
-
 def extract_numbers_with_context(text: str) -> List[Dict]:
     """
     Extract numbers with surrounding context for matching.
-    Robust against commas, currency symbols, parentheses negatives,
-    and avoids many false positives (years, tiny integers, junk contexts).
+
+    Upgrades:
+    - Avoid matching digits inside longer digit runs (prevents partial-year fragments).
+    - Prevent single-letter unit being stolen from normal words (e.g., '5t' in '5 through').
+    - Stronger junk filtering (reading time, pure years, tiny integers without metric context).
+    - Values returned are normalized via parse_human_number() into BILLIONS for currency-like units.
     """
     if not text:
         return []
 
+    # Keywords that indicate "real" market metrics nearby
+    metric_hints = [
+        "market", "size", "valued", "valuation", "worth",
+        "revenue", "sales", "forecast", "projected", "estimate", "estimated",
+        "growth", "cagr", "yoy", "usd", "sgd", "$", "%"
+    ]
+
     numbers = []
 
-    # Match:
-    #   $1,234.56  billion
-    #   12.3%
-    #   (45.6) M
-    pattern = r'(\(?\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?\d+(?:\.\d+)?\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K)?'
+    # (?!\d) and (?<!\d) prevent partial matches inside longer digit sequences.
+    # Unit group:
+    # - words: trillion|billion|million|thousand|%
+    # - single-letter: T/B/M/K ONLY if it's a boundary token (B\b) and NOT followed by letters.
+    pattern = re.compile(
+        r"""
+        (?<!\d)
+        (\(?\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?\d+(?:\.\d+)?\)?)
+        \s*
+        (trillion|billion|million|thousand|%|[TBMK]\b)?
+        (?!\d)
+        """,
+        re.IGNORECASE | re.VERBOSE
+    )
 
-    for match in re.finditer(pattern, text, re.IGNORECASE):
-        raw_num = match.group(1) or ""
-        unit = (match.group(2) or "").strip()
+    for m in pattern.finditer(text):
+        raw_num = (m.group(1) or "").strip()
+        unit = (m.group(2) or "").strip()
 
         # Context window
-        start = max(0, match.start() - 180)
-        end = min(len(text), match.end() + 180)
-        context = text[start:end].lower()
+        start = max(0, m.start() - 180)
+        end = min(len(text), m.end() + 180)
+        context = text[start:end]
+        context_low = context.lower()
 
-        # Skip obvious junk contexts
-        if is_likely_junk_context(context):
+        # Skip obvious junk contexts (your existing helper)
+        if is_likely_junk_context(context_low):
             continue
 
-        # Reject pure years (e.g., 2024) unless clearly a data value (has unit or currency)
-        num_clean_for_year = raw_num.replace("$", "").replace(",", "").strip()
-        if re.fullmatch(r"(19|20)\d{2}", num_clean_for_year) and not unit and "$" not in raw_num:
+        # Drop "19 min read" style numbers
+        if re.search(r"\b\d+\s*(min|mins|minute|minutes)\b", context_low):
             continue
 
-        # Parse numeric into comparable scale
-        parsed = parse_human_number(num_clean_for_year, unit)
+        # Reject pure years if no unit/currency
+        num_clean = raw_num.replace("$", "").replace(",", "").strip()
+        if re.fullmatch(r"(19|20)\d{2}", num_clean) and not unit and "$" not in raw_num:
+            continue
+
+        u_norm = normalize_unit(unit)
+
+        # Prevent cases like "5t" where 't' is actually from a word like "through"
+        # If unit is single-letter and next char is alphabetic, reject.
+        if u_norm in ["T", "B", "M", "K"]:
+            after_idx = m.end()
+            if after_idx < len(text) and text[after_idx].isalpha():
+                continue
+
+        parsed = parse_human_number(num_clean, u_norm)
         if parsed is None:
             continue
 
-        # Filter out tiny integers that often represent ranks, list counts, etc.
-        # Keep if it has % or currency-ish markers.
-        u_norm = normalize_unit(unit)
-        is_currency_like = ("$" in raw_num) or normalize_currency_prefix(context) or u_norm in ["T", "B", "M", "K"]
-        if not is_currency_like and u_norm != "%" and abs(parsed) < 3:
+        # Tiny integers are usually junk unless context strongly indicates metric
+        if u_norm not in ["%", "T", "B", "M", "K"] and "$" not in raw_num and abs(parsed) < 3:
+            if not any(h in context_low for h in metric_hints):
+                continue
+
+        # If there are no hints at all and no unit/currency, drop it
+        if not u_norm and "$" not in raw_num and not any(h in context_low for h in metric_hints):
             continue
 
-        # Filter extreme values that are unlikely in market metrics
-        if abs(parsed) > 10_000_000:  # in billions this is astronomically large
+        # Filter astronomically large values (in billions)
+        if u_norm in ["T", "B", "M", "K"] and abs(parsed) > 10_000_000:
             continue
 
         numbers.append({
-            "value": parsed,              # normalized comparable value (billions for currency-like units)
-            "unit": u_norm,               # normalized unit (T/B/M/%/K/..)
-            "context": context,
-            "raw": f"{raw_num}{unit}".strip()
+            "value": parsed,                 # normalized comparable value (BILLIONS)
+            "unit": u_norm,                  # normalized unit
+            "context": context_low,
+            "raw": f"{raw_num}{u_norm}".strip()
         })
 
     return numbers
+
+
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
     """Calculate how well keywords match the context (deterministic)."""
@@ -6326,49 +6446,68 @@ def render_dashboard(
     # -------------------------
     # Small local helper: robust metric value formatting (range-aware)
     # -------------------------
+
     def _format_metric_value(m: Dict) -> str:
-        if not isinstance(m, dict):
-            return "N/A"
+    """
+    Format metric values cleanly:
+    - Currency before number: $204.7B, S$29.8B
+    - Compact units (B, M, K)
+    - Proper thousands separators
+    """
+    if not isinstance(m, dict):
+        return "N/A"
 
-        # Prefer deterministic span/range if available
-        span = None
-        try:
-            span = get_metric_value_span(m)
-        except Exception:
-            span = None
+    val = m.get("value")
+    unit = (m.get("unit") or "").strip()
 
-        # If the metric already has a merged range structure, prefer that
-        rng = m.get("range") if isinstance(m, dict) else None
-        unit = (m.get("unit") or "").strip()
+    if val is None or val == "":
+        return "N/A"
 
-        # Case 1: explicit "range" dict (from canonicalize_metrics merge)
-        if isinstance(rng, dict) and rng.get("min") is not None and rng.get("max") is not None:
-            try:
-                vmin = float(rng["min"])
-                vmax = float(rng["max"])
-                if vmin != vmax:
-                    return f"{rng['min']}–{rng['max']} {unit}".strip()
-            except Exception:
-                # fall through
-                pass
+    # Normalize numeric
+    try:
+        num = float(str(val).replace(",", ""))
+    except Exception:
+        return f"{val}{unit}".strip()
 
-        # Case 2: value_span from get_metric_value_span
-        if isinstance(span, dict) and span.get("min") is not None and span.get("max") is not None:
-            try:
-                vmin = float(span["min"])
-                vmax = float(span["max"])
-                u = (span.get("unit") or unit or "").strip()
-                if vmin != vmax:
-                    return f"{span['min']}–{span['max']} {u}".strip()
-                # equal bounds -> show mid if present
-                mid = span.get("mid")
-                if mid is not None:
-                    return f"{mid} {u}".strip()
-            except Exception:
-                pass
+    # Normalize unit spacing
+    unit = unit.replace(" ", "")
 
-        # Default
-        return f"{m.get('value', 'N/A')} {unit}".strip()
+    # ---- Currency handling ----
+    currency_prefix = ""
+    if unit.upper().startswith("S$"):
+        currency_prefix = "S$"
+        unit = unit[2:]
+    elif unit.upper().startswith("$"):
+        currency_prefix = "$"
+        unit = unit[1:]
+    elif unit.upper().startswith("USD"):
+        currency_prefix = "$"
+        unit = unit.replace("USD", "")
+    elif unit.upper().startswith("SGD"):
+        currency_prefix = "S$"
+        unit = unit.replace("SGD", "")
+
+    # ---- Compact number formatting ----
+    if unit.upper() == "B":
+        formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "B"
+    elif unit.upper() == "M":
+        formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "M"
+    elif unit.upper() == "K":
+        formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "K"
+    elif unit == "%":
+        return f"{num:.1f}%"
+    else:
+        # Plain number
+        if abs(num) >= 1000:
+            formatted = f"{int(num):,}"
+        else:
+            formatted = f"{num:g}"
+
+        if unit:
+            formatted = f"{formatted} {unit}"
+
+    return f"{currency_prefix}{formatted}".strip()
+
 
     # Header
     st.header("📊 Yureeka Market Report")
