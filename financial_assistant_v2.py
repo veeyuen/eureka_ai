@@ -6602,44 +6602,44 @@ def render_dashboard(
 
     # Web Context
     if isinstance(web_context, dict) and web_context.get("search_results"):
-    with st.expander("🌐 Web Search Details"):
-        sr = web_context.get("search_results", []) or []
-        default = 8
-
-        for i, result in enumerate(sr[:default], 1):
-            st.markdown(f"**{i}. {result.get('title')}**")
-            st.caption(f"{result.get('source')} - {result.get('date')}")
-            st.write(result.get("snippet", ""))
-            st.caption(f"[{result.get('link')}]({result.get('link')})")
-            st.markdown("---")
-
-        if len(sr) > default:
-            with st.expander(f"Show all web results ({len(sr)})"):
-                sr_rows = []
-                for i, r in enumerate(sr, 1):
-                    sr_rows.append({
-                        "#": i,
-                        "Title": r.get("title", ""),
-                        "Source": r.get("source", ""),
-                        "Date": r.get("date", ""),
-                        "Snippet": r.get("snippet", ""),
-                        "Link": r.get("link", ""),
-                    })
-                st.dataframe(pd.DataFrame(sr_rows), hide_index=True, width="stretch")
-
-            if len(sr) > top_n:
-                with st.expander(f"Show {len(sr) - top_n} more search results"):
-                    rows = []
-                    for j, r in enumerate(sr[top_n:], start=top_n + 1):
-                        rows.append({
-                            "#": j,
+        with st.expander("🌐 Web Search Details"):
+            sr = web_context.get("search_results", []) or []
+            default = 8
+    
+            for i, result in enumerate(sr[:default], 1):
+                st.markdown(f"**{i}. {result.get('title')}**")
+                st.caption(f"{result.get('source')} - {result.get('date')}")
+                st.write(result.get("snippet", ""))
+                st.caption(f"[{result.get('link')}]({result.get('link')})")
+                st.markdown("---")
+    
+            if len(sr) > default:
+                with st.expander(f"Show all web results ({len(sr)})"):
+                    sr_rows = []
+                    for i, r in enumerate(sr, 1):
+                        sr_rows.append({
+                            "#": i,
                             "Title": r.get("title", ""),
                             "Source": r.get("source", ""),
                             "Date": r.get("date", ""),
-                            "Link": r.get("link", ""),
                             "Snippet": r.get("snippet", ""),
+                            "Link": r.get("link", ""),
                         })
-                    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+                    st.dataframe(pd.DataFrame(sr_rows), hide_index=True, width="stretch")
+    
+                if len(sr) > top_n:
+                    with st.expander(f"Show {len(sr) - top_n} more search results"):
+                        rows = []
+                        for j, r in enumerate(sr[top_n:], start=top_n + 1):
+                            rows.append({
+                                "#": j,
+                                "Title": r.get("title", ""),
+                                "Source": r.get("source", ""),
+                                "Date": r.get("date", ""),
+                                "Link": r.get("link", ""),
+                                "Snippet": r.get("snippet", ""),
+                            })
+                        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def render_native_comparison(baseline: Dict, compare: Dict):
