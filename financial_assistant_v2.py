@@ -6047,11 +6047,12 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Source-anchored evolution: refetch same sources (or reuse cache), extract numbers, and match metrics.
 
-    This version adds:
-    - source_url provenance + source weighting
-    - projection phrase boost
-    - receipts phrase boost (so "tourism receipts" wins when the exact number is present)
-    - transparent per-source taxonomy
+    Fixes:
+    - Adds metric-specific keyword gates to prevent wrong percent/share matches:
+        * CAGR metrics require "cagr" in candidate context
+        * "home console share" requires both "home" and "console" in context
+        * share metrics require "share" OR strong metric-specific terms in context
+    - Keeps source provenance + weighting + projection boost
     """
     prev_response = previous_data.get("primary_response", {}) or {}
     prev_sources = previous_data.get("web_sources", []) or prev_response.get("sources", []) or []
@@ -6187,8 +6188,10 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         n = (metric_name or "").lower()
         if "cagr" in n or "growth rate" in n:
             return "percent"
-        if any(k in n for k in ["market size", "receipts", "revenue", "sales", "valuation", "projected", "forecast", "projection"]):
+        if any(k in n for k in ["market size", "size", "revenue", "sales", "valuation", "projected", "forecast", "projection"]):
             return "currency"
+        if "share" in n:
+            return "percent"
         return "generic"
 
     def _candidate_has_money_signal(curr: Dict) -> bool:
@@ -6214,22 +6217,41 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     def _projection_phrase_boost(metric_name: str, context: str) -> float:
         n = (metric_name or "").lower()
         ctx = (context or "").lower()
-        if any(k in n for k in ["projected", "projection", "forecast", "expected", "by 203", "2033", "2030", "2035"]):
+        if any(k in n for k in ["projected", "projection", "forecast", "expected", "by 203", "2030", "2033", "2035"]):
             if any(p in ctx for p in ["expected to reach", "anticipated to reach", "is projected to", "will reach", "forecast to", "by 203"]):
                 return 1.20
         return 1.0
 
-    def _receipts_phrase_boost(metric_name: str, context: str) -> float:
+    def _keyword_gate(metric_name: str, context: str) -> bool:
         """
-        Explicitly boost candidates that mention 'tourism receipts' when the metric is receipts-like.
-        This fixes the case where the exact value exists but context_score is slightly too low.
+        Hard gates to prevent incorrect matches for percent/share metrics.
         """
         n = (metric_name or "").lower()
         ctx = (context or "").lower()
-        if "receipts" in n:
-            if "tourism receipts" in ctx or "receipts" in ctx:
-                return 1.25
-        return 1.0
+
+        # CAGR must actually mention CAGR
+        if "cagr" in n:
+            return "cagr" in ctx
+
+        # Home console share must mention both home + console (or "home console")
+        if "home console" in n:
+            return ("home console" in ctx) or ("home" in ctx and "console" in ctx)
+
+        # Generic console share metrics: require console-like anchor
+        if "console" in n and "share" in n:
+            return "console" in ctx
+
+        # Share metrics should at least mention "share" OR the metric's key noun
+        if "share" in n:
+            if "share" in ctx:
+                return True
+            # fallback: try to require one strong token from metric name
+            for token in ["console", "handheld", "mobile", "pc", "hardware", "software"]:
+                if token in n and token in ctx:
+                    return True
+            return False
+
+        return True
 
     # ---- Match metrics ----
     metric_changes: List[Dict] = []
@@ -6254,6 +6276,12 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             if curr_val is None:
                 continue
 
+            ctx = curr.get("context", "")
+
+            # Keyword gate: prevents disposable-income CAGR stealing console CAGR, etc.
+            if not _keyword_gate(metric_name, ctx):
+                continue
+
             # Intent gating
             if intent == "percent":
                 if curr_unit != "%":
@@ -6272,20 +6300,19 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 if prev_unit and not curr_unit:
                     continue
 
-            # Ratio band
+            # Ratio band (only if we have a meaningful previous value)
             if prev_val and curr_val and prev_val != 0:
                 ratio = curr_val / prev_val
-                band = (0.7, 1.6) if intent == "currency" else (0.5, 2.0)
+                band = (0.65, 1.8) if intent == "currency" else (0.5, 2.0)
                 if not (band[0] <= ratio <= band[1]):
                     continue
                 value_score = 1.0 / (1.0 + abs(ratio - 1.0))
             else:
                 continue
 
-            ctx = curr.get("context", "")
             context_score = calculate_context_match(prev_keywords, ctx)
             penalty = _candidate_year_penalty(curr)
-            boost = _projection_phrase_boost(metric_name, ctx) * _receipts_phrase_boost(metric_name, ctx)
+            boost = _projection_phrase_boost(metric_name, ctx)
             src_w = _source_weight(curr.get("source_url") or "")
 
             combined = src_w * boost * penalty * ((0.4 * value_score) + (0.6 * context_score))
@@ -6294,13 +6321,13 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 best_score = combined
                 best_match = curr
 
-        # Threshold tweaks:
+        # Threshold tweaks
         threshold = 0.62
-        name_l = (metric_name or "").lower()
-        if any(k in name_l for k in ["projected", "forecast", "projection", "expected", "by 203"]):
+        n_l = (metric_name or "").lower()
+        if any(k in n_l for k in ["projected", "forecast", "projection", "expected", "by 203"]):
             threshold = 0.58
-        if "receipts" in name_l:
-            threshold = 0.56  # receipts often appear in short summary sentences in PDFs
+        if "cagr" in n_l or "share" in n_l:
+            threshold = 0.60  # keep slightly stricter due to common false matches
 
         if best_match and best_score > threshold:
             change_pct = compute_percent_change(prev_val, best_match["value"])
@@ -6406,11 +6433,12 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
     """
     Extract numbers with surrounding context for matching.
 
-    Key fixes (based on latest JSON):
-    - Convert nearby word scales into units: "13.6 million" -> raw "13.6M", unit "M"
+    Fixes:
     - Preserve S$ when present
-    - Kill "3t" artifacts from phrases like "2-3 times"
+    - Converts nearby word scales into units (million/billion) BUT:
+        *Never infer B/M/K/T for 4-digit years* (prevents '$2024B' artifacts)
     - Reject year+suffix magnitude tokens (2025t, 2033M, etc.)
+    - Reject 'times' artifacts like '2-3 times' -> '3t'
     """
     if not text:
         return []
@@ -6439,10 +6467,7 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
         return ""
 
     def _detect_word_scale(s: str, pos: int) -> str:
-        """
-        Detect word scale *near the number* and return canonical unit.
-        """
-        w = _window(s, pos, 80, 80).lower()
+        w = _window(s, pos, 90, 90).lower()
         if "billion" in w:
             return "B"
         if "million" in w:
@@ -6454,16 +6479,17 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
         return ""
 
     def _looks_like_times_phrase(s: str, pos: int) -> bool:
-        """
-        Prevent '2-3 times' -> '3t' style false tokens.
-        """
-        w = _window(s, pos, 25, 25).lower()
-        return ("times" in w) or ("x the" in w) or ("x " in w)
+        w = _window(s, pos, 30, 30).lower()
+        return (" times" in w) or ("x the" in w) or (" x " in w)
+
+    def _is_year_token(num_clean: str) -> bool:
+        return bool(re.fullmatch(r"(19|20)\d{2}", num_clean or ""))
 
     for match in re.finditer(pattern, text, re.IGNORECASE):
         raw_num = (match.group(1) or "").strip()
         unit_raw = (match.group(2) or "").strip()
 
+        # Context window (used by matcher)
         start = max(0, match.start() - 220)
         end = min(len(text), match.end() + 220)
         context = (text[start:end] or "").lower()
@@ -6485,19 +6511,23 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
         u = unit_map.get(unit_raw.lower(), unit_raw)
         u_norm = normalize_unit(u)
 
-        # Absolute ban: year+suffix magnitude tokens
-        if re.fullmatch(r"(19|20)\d{2}", num_clean) and u_norm in {"T", "B", "M", "K"}:
+        # Reject year+suffix magnitude tokens outright (2025t, 2033M, etc.)
+        if _is_year_token(num_clean) and u_norm in {"T", "B", "M", "K"}:
             continue
 
-        # Kill 3t artifacts from "2-3 times"
+        # Kill "2-3 times" artifacts (3t, etc.)
         if u_norm in {"T", "B", "M", "K"} and _looks_like_times_phrase(text, match.start()):
             continue
 
-        # If unit missing, infer from word scale near the number
-        if not u_norm:
+        # Infer unit from word scale *only if unit missing AND token is not a year*
+        if not u_norm and not _is_year_token(num_clean):
             inferred = _detect_word_scale(text, match.start())
             if inferred:
                 u_norm = inferred
+
+        # IMPORTANT: if token is a year, never apply inferred magnitude units
+        if _is_year_token(num_clean) and u_norm in {"T", "B", "M", "K"}:
+            continue
 
         parsed = parse_human_number(num_clean, u_norm)
         if parsed is None:
@@ -6509,7 +6539,10 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
         if u_norm == "%":
             raw_out = f"{num_clean}%"
         else:
-            raw_out = f"{currency}{num_clean}{u_norm}".strip() if u_norm in {"T", "B", "M", "K"} else f"{currency}{num_clean}".strip()
+            if u_norm in {"T", "B", "M", "K"}:
+                raw_out = f"{currency}{num_clean}{u_norm}".strip()
+            else:
+                raw_out = f"{currency}{num_clean}".strip()
 
         # Sanity guard
         if abs(parsed) > 10_000_000:
@@ -6777,9 +6810,9 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     """
     Build a question_profile used for structured reporting.
 
-    Behavior:
-    - If query_structure (qs) provides category/main/side, treat that as the category source of truth.
-    - Still compute deterministic classification for entity_kind/scope/template/intents.
+    Fixes:
+    - Normalizes qs.category 'market' -> 'industry' for backward compatibility
+    - Keeps deterministic entity_kind/scope/template/intents from classify_question_signals
     - Ensures expected_metric_ids are consistent and present in signals for dashboards/evolution.
     """
     qs = qs or {}
@@ -6788,8 +6821,15 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     det = classify_question_signals(q) or {}
 
     # Prefer category from query_structure if present
-    category_from_qs = (qs.get("category") or "").strip()
+    category_from_qs = (qs.get("category") or "").strip().lower()
+
+    # Back-compat normalization: many older parts of the codebase assume "industry"
+    if category_from_qs == "market":
+        category_from_qs = "industry"
+
     category = category_from_qs or (det.get("category") or "unknown")
+    if category == "market":
+        category = "industry"
 
     main_q = (qs.get("main") or "").strip() or q
     side_qs = qs.get("side") if isinstance(qs.get("side"), list) else []
@@ -6821,12 +6861,13 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     signals["metric_template_id"] = template_id
 
     # Determine expected ids:
-    # - If deterministic classifier already provided ids, keep them unless qs forces category change.
-    # - If category change happened, regenerate from template.
     expected_metric_ids = det.get("expected_metric_ids") if isinstance(det.get("expected_metric_ids"), list) else []
+
+    # If qs forces category, regenerate from template for consistency
     if category_from_qs:
         expected_metric_ids = get_expected_metric_ids_for_category(template_id)
 
+    # Always store expected IDs inside signals
     signals["expected_metric_ids"] = expected_metric_ids
 
     profile = {
