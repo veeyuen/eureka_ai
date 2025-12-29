@@ -5727,80 +5727,154 @@ def fetch_url_content(url: str) -> Optional[str]:
 
     return None
 
-def fetch_url_content_with_status(url: str) -> Tuple[Optional[str], str]:
-    """Fetch content and return (content, status_message)"""
+def fetch_url_content_with_status(url: str):
+    """
+    Fetch content from a URL and return (text, status_msg).
 
-    # First try: Direct request
+    PDF-first hardening:
+    - Detect PDFs by URL extension and/or Content-Type.
+    - When PDF: extract text and downweight boilerplate pages (ISSN/ISBN/doi/etc.) by filtering
+      lines/blocks that are clearly front-matter / metadata.
+    - Still returns plain text so the rest of the pipeline is unchanged.
+
+    Captcha/blocked detection:
+    - Detect common bot blocks and return (None, "captcha_or_blocked") so evolution can fallback.
+    """
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            }
-        resp = requests.get(url, headers=headers, timeout=15)
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
 
-        if resp.status_code == 403:
-            raise Exception("blocked_403")
-        if resp.status_code == 404:
-            return None, "Page not found (404)"
+        # NOTE: Use your existing request method if you have one.
+        # This implementation assumes `requests` exists in your project.
+        resp = requests.get(url, headers=headers, timeout=25)
+        status_code = getattr(resp, "status_code", None)
 
-        resp.raise_for_status()
+        if status_code and status_code >= 400:
+            # Treat 403/429/503 as probable blocks for evolution fallback logic
+            if status_code in (403, 429, 503):
+                return None, f"blocked_or_rate_limited:{status_code}"
+            return None, f"http_error:{status_code}"
 
         content_type = (resp.headers.get("Content-Type") or "").lower()
-        is_pdf = ("application/pdf" in content_type) or url.lower().endswith(".pdf")
 
-        # ----- PDF path -----
+        raw_bytes = resp.content or b""
+        if not raw_bytes:
+            return None, "empty_response"
+
+        # -------------------------
+        # Detect PDF
+        # -------------------------
+        is_pdf = url.lower().endswith(".pdf") or ("application/pdf" in content_type)
+
         if is_pdf:
-            pdf_text = _extract_pdf_text_from_bytes(resp.content)
-            if pdf_text:
-                return pdf_text, "success_pdf"
-            raise Exception("empty_content")
+            # Try to extract PDF text
+            try:
+                # Use PyMuPDF if installed; if not, this will throw and we return "pdf_extract_failed".
+                import fitz  # PyMuPDF
 
-        # ----- HTML path -----
-        if 'captcha' in resp.text.lower() or 'blocked' in resp.text.lower():
-            raise Exception("captcha_detected")
+                doc = fitz.open(stream=raw_bytes, filetype="pdf")
+                page_texts = []
+                for i in range(len(doc)):
+                    t = doc.load_page(i).get_text("text") or ""
+                    # Light normalize
+                    t = re.sub(r"[ \t]+", " ", t)
+                    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+                    if t:
+                        page_texts.append((i, t))
 
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-            tag.decompose()
+                if not page_texts:
+                    return None, "pdf_no_text"
 
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        clean_text = ' '.join(line for line in lines if line)
+                # Filter out front-matter / metadata-heavy blocks to prevent ISSN/ISBN dominating
+                def _is_metadata_page(txt: str) -> bool:
+                    x = (txt or "").lower()
+                    # Strong metadata / boilerplate markers
+                    markers = [
+                        "issn", "isbn", "doi:", "doi ", "all rights reserved", "european commission",
+                        "publisher", "printed by", "catalogue", "kc-", "manuscript completed",
+                        "legal notice", "reproduction is authorised", "luxembourg:",
+                        "©", "copyright", "institutional paper"
+                    ]
+                    hit = sum(1 for m in markers if m in x)
+                    # If page is short and has multiple markers, it's almost certainly front-matter
+                    if len(x) < 1500 and hit >= 2:
+                        return True
+                    # If it looks like a cover/credits page (many markers), drop
+                    if hit >= 4:
+                        return True
+                    return False
 
-        if len(clean_text) > 200:
-            return clean_text[:7000], "success"
-        else:
-            raise Exception("empty_content")
+                kept_pages = []
+                for (pno, txt) in page_texts:
+                    if _is_metadata_page(txt):
+                        continue
+                    kept_pages.append((pno, txt))
 
-    except Exception as e:
-        error_type = str(e)
+                # If we filtered too aggressively, fall back to the full text
+                final_pages = kept_pages if len(kept_pages) >= max(1, len(page_texts) // 3) else page_texts
 
-    # Second try: ScrapingDog
-    if SCRAPINGDOG_KEY:
+                # Join with page separators (helps context scoring)
+                full_text = "\n\n".join([f"[PDF_PAGE_{pno}]\n{txt}" for (pno, txt) in final_pages])
+
+                # Bot/captcha detection inside PDF is unlikely, but keep consistency
+                low = full_text.lower()
+                if any(s in low for s in ["captcha", "verify you are human", "access denied", "unusual traffic"]):
+                    return None, "captcha_or_blocked"
+
+                return full_text, "success_pdf"
+
+            except Exception:
+                return None, "pdf_extract_failed"
+
+        # -------------------------
+        # HTML / text
+        # -------------------------
+        text = ""
         try:
-            api_url = "https://api.scrapingdog.com/scrape"
-            params = {"api_key": SCRAPINGDOG_KEY, "url": url, "dynamic": "false"}
-            resp = requests.get(api_url, params=params, timeout=30)
+            # If you already have an HTML cleaner, use it here.
+            # This fallback is a simple, safe default.
+            from bs4 import BeautifulSoup
 
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-                    tag.decompose()
-                text = soup.get_text()
-                lines = (line.strip() for line in text.splitlines())
-                clean_text = ' '.join(line for line in lines if line)
+            soup = BeautifulSoup(raw_bytes, "html.parser")
+            # Remove scripts/styles
+            for tag in soup(["script", "style", "noscript"]):
+                tag.decompose()
+            text = soup.get_text("\n")
+        except Exception:
+            # If BS4 not available, decode raw as fallback.
+            try:
+                text = raw_bytes.decode("utf-8", errors="ignore")
+            except Exception:
+                return None, "decode_failed"
 
-                if len(clean_text) > 200:
-                    return clean_text[:5000], "success_via_proxy"
-        except:
-            pass
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
-    # Map error to user-friendly message
-    error_messages = {
-        "blocked_403": "Access blocked (403)",
-        "captcha_detected": "Captcha/bot protection",
-        "empty_content": "No readable content",
-    }
-    return None, error_messages.get(error_type, f"Failed: {error_type[:30]}")
+        # Captcha/blocked content checks
+        low = text.lower()
+        if any(s in low for s in [
+            "captcha", "verify you are human", "access denied", "unusual traffic",
+            "enable javascript", "your request has been blocked", "robot"
+        ]):
+            return None, "captcha_or_blocked"
+
+        # Very thin pages are useless for numbers
+        if len(text) < 250:
+            return None, "too_short_or_unusable"
+
+        return text, "success"
+
+    except requests.Timeout:
+        return None, "timeout"
+    except Exception as e:
+        return None, f"exception:{type(e).__name__}"
+
 
 def extract_numbers_from_text(text: str) -> List[Dict]:
     """Extract all numbers with context from text"""
@@ -6583,6 +6657,54 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
         })
 
     return numbers
+
+def extract_numbers_with_context_pdf(text: str) -> List[Dict]:
+    """
+    PDF-specialized extractor wrapper.
+
+    Strategy:
+    - Run normal extraction
+    - Add additional filtering aimed at PDF front-matter noise (ISSN/ISBN/doi)
+    - Prefer contexts that contain domain-relevant table language (GDP, growth, %, forecast, services, industry, etc.)
+
+    Returns the same schema as extract_numbers_with_context().
+    """
+    if not text:
+        return []
+
+    base = extract_numbers_with_context(text) or []
+
+    def _bad_pdf_context(ctx: str) -> bool:
+        c = (ctx or "").lower()
+        bad = [
+            "issn", "isbn", "doi", "catalogue", "kc-", "legal notice",
+            "reproduction is authorised", "all rights reserved", "printed by",
+            "manuscript completed", "luxembourg:", "©", "copyright"
+        ]
+        return any(b in c for b in bad)
+
+    def _good_pdf_context(ctx: str) -> bool:
+        c = (ctx or "").lower()
+        good = [
+            "gdp", "gross domestic product", "growth", "forecast", "projection",
+            "services", "industry", "manufacturing", "agriculture", "share",
+            "percent", "%", "table", "figure", "chart"
+        ]
+        return any(g in c for g in good)
+
+    cleaned = []
+    for n in base:
+        ctx = n.get("context", "") or ""
+        if _bad_pdf_context(ctx):
+            continue
+        # If PDF extraction is still noisy, keep only numbers with "good" context or obvious %/currency markers.
+        raw = (n.get("raw") or "").lower()
+        u = normalize_unit(n.get("unit", ""))
+        if _good_pdf_context(ctx) or u == "%" or any(sym in raw for sym in ["€", "eur", "$", "s$"]):
+            cleaned.append(n)
+
+    # If we filtered too hard, fall back to base
+    return cleaned if len(cleaned) >= max(10, len(base) // 3) else base
 
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
