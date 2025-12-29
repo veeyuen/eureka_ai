@@ -5846,12 +5846,12 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
 
         def _metric_intent(metric_name: str) -> str:
-        n = (metric_name or "").lower()
-        if "cagr" in n or "growth rate" in n:
-            return "percent"
-        if any(k in n for k in ["market size", "receipts", "revenue", "sales", "valuation", "projected", "forecast", "projection"]):
-            return "currency"
-        return "generic"
+            n = (metric_name or "").lower()
+            if "cagr" in n or "growth rate" in n:
+                return "percent"
+            if any(k in n for k in ["market size", "receipts", "revenue", "sales", "valuation", "projected", "forecast", "projection"]):
+                return "currency"
+            return "generic"
 
     def _candidate_has_money_signal(curr: Dict) -> bool:
         u = normalize_unit(curr.get("unit", ""))
