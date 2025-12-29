@@ -6552,15 +6552,13 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Source-anchored evolution with fallback source plan.
 
-    Key improvements:
-    - If too many anchored sources are blocked/unusable (captcha, 403, 429, 0 numbers),
-      automatically append fallback sources based on question_profile signals.
-    - Uses PDF-special extraction when fetch status indicates PDF content.
-    - Keeps cache reuse behavior.
-    - Maintains strict percent gating + keyword gates from previous iteration (to avoid false matches).
-
-    Output schema remains backward compatible with your dashboard.
+    Improvements in this version:
+    - Preserves currency/unit in metric_changes display values (e.g., "S$29.8B" not "29.8" or "29.8 S$B")
+    - Fixes stability_score so we don't report 100% stability when we extracted 0 comparable numbers
+    - Adds stronger interpretation messages when extraction failed / was blocked / yielded no numbers
+    - Keeps cache reuse + strict percent gating + keyword gates
     """
+
     prev_response = previous_data.get("primary_response", {}) or {}
     prev_sources = prev_response.get("sources", []) or previous_data.get("web_sources", []) or []
     prev_sources = [s for s in prev_sources if isinstance(s, str) and s.strip()]
@@ -6606,405 +6604,494 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         except Exception:
             return ""
 
-    def _source_weight(url: str) -> float:
-        d = _domain(url)
-        if any(k in d for k in ["gov.", ".gov", "europa.eu", "oecd.org", "worldbank.org", "imf.org", "destatis.de", "bundesbank.de"]):
-            return 1.15
-        if "statista.com" in d:
-            return 1.05
-        if any(k in d for k in ["blog", "wordpress", "medium", "dmcquote"]):
-            return 0.75
-        return 1.0
+    def _looks_blocked(text: str) -> bool:
+        t = (text or "").lower()
+        return any(
+            k in t
+            for k in [
+                "captcha",
+                "cloudflare",
+                "access denied",
+                "forbidden",
+                "too many requests",
+                "rate limit",
+                "unusual traffic",
+                "verify you are human",
+            ]
+        )
 
-    def _is_blocked_status(s: str) -> bool:
-        s = (s or "").lower()
-        return any(k in s for k in ["captcha", "blocked", "rate_limited", "403", "429", "503", "no readable", "unusable"])
-
-    def _needs_fallback(source_results: List[Dict]) -> bool:
+    def _extract_numbers_any(content: str, url: str, meta: Optional[Dict] = None) -> List[Dict]:
         """
-        Trigger fallback if:
-        - fewer than 2 sources extracted numbers OR
-        - more than half are blocked/unusable OR
-        - total extracted numbers is extremely low.
+        Unified extraction:
+        - If PDF: use extract_numbers_from_pdf_text
+        - Else: extract_numbers_with_context
         """
-        if not source_results:
-            return True
-        extracted = sum(1 for r in source_results if r.get("status") == "fetched_extracted")
-        blocked = sum(1 for r in source_results if _is_blocked_status(r.get("status_detail", "")) or r.get("status") == "failed")
-        total = len(source_results)
-        total_nums = sum(int(r.get("numbers_found") or 0) for r in source_results)
+        meta = meta or {}
+        ctype = (meta.get("content_type") or "").lower()
 
-        if extracted < 2:
-            return True
-        if total > 0 and (blocked / total) >= 0.5:
-            return True
-        if total_nums < 30:
-            return True
-        return False
+        # PDF-like
+        if "pdf" in ctype or url.lower().endswith(".pdf"):
+            try:
+                return extract_numbers_from_pdf_text(content, url=url) or []
+            except Exception:
+                return []
 
-    def _fallback_sources_for_context() -> List[str]:
+        # HTML/text
+        try:
+            return extract_numbers_with_context(content) or []
+        except Exception:
+            return []
+
+    def _unit_family(u: str) -> str:
+        u = (u or "").strip().lower()
+        if not u:
+            return ""
+        if "%" in u or "percent" in u:
+            return "pct"
+        if any(k in u for k in ["b", "bn", "billion"]):
+            return "big"
+        if any(k in u for k in ["m", "mn", "million"]):
+            return "mid"
+        if any(k in u for k in ["k", "thousand"]):
+            return "small"
+        return u
+
+    def _pretty_money_compact(val_str: str) -> str:
         """
-        Domain-agnostic fallback sources chosen by entity_kind/scope.
-        We keep this conservative: a small list of high-likelihood sources.
+        Convert messy representations into currency-first compact format.
+        Examples:
+          - "29.8 S$B" -> "S$29.8B"
+          - "S$ 29.8 B" -> "S$29.8B"
+          - "USD 21.18 B" -> "$21.18B"
+          - "$ 58.3 billion" -> "$58.3B"
         """
-        # Detect country hint from previous question or sources (best-effort)
-        qtxt = (prev_response.get("question") or prev_response.get("user_question") or "").lower()
-        src_concat = " ".join(prev_sources).lower()
+        s = (val_str or "").strip()
+        if not s:
+            return s
 
-        is_germany = ("germany" in qtxt) or ("deutschland" in qtxt) or ("destatis" in src_concat) or ("bundesbank" in src_concat)
-        is_eu = ("eurostat" in qtxt) or ("eu " in qtxt) or ("european commission" in src_concat)
+        s_low = s.lower()
 
-        fallback: List[str] = []
+        # Detect currency
+        currency = ""
+        if "s$" in s_low or "sgd" in s_low:
+            currency = "S$"
+        elif "usd" in s_low or re.search(r"(?<!s)\$", s):
+            currency = "$"
 
-        if entity_kind in {"country", "topic_general"} or ("gdp" in qtxt) or ("inflation" in qtxt) or ("share in gdp" in qtxt):
-            # Strong macro set
-            fallback.extend([
-                "https://data.worldbank.org/",
-                "https://www.oecd.org/economy/",
-                "https://www.imf.org/en/Data",
-            ])
-            if is_germany:
-                fallback.extend([
-                    "https://www.destatis.de/EN/Home/_node.html",
-                    "https://www.bundesbank.de/en/statistics",
-                ])
-            if is_eu or is_germany:
-                fallback.extend([
-                    "https://ec.europa.eu/eurostat",
-                ])
+        # Extract first numeric
+        mnum = re.search(r"(-?\d+(?:\.\d+)?)", s.replace(",", ""))
+        if not mnum:
+            return s
+        num = mnum.group(1)
 
-        if entity_kind in {"market", "industry"} or ("market" in qtxt):
-            # Market: aim for reputable org + neutral definitional anchors
-            fallback.extend([
-                "https://www.oecd.org/industry/",
-                "https://data.worldbank.org/",
-                "https://en.wikipedia.org/wiki/Video_game_console" if "console" in qtxt else "https://en.wikipedia.org/",
-            ])
+        # Detect % (leave as-is)
+        if "%" in s_low:
+            return f"{num}%"
 
-        # De-dup, keep order
-        seen = set()
-        out = []
-        for u in fallback:
-            if u and u not in seen:
-                out.append(u)
-                seen.add(u)
-        return out[:5]  # keep tight to avoid runaway crawling
+        # Detect unit magnitude
+        unit = ""
+        if re.search(r"\b(b|bn|billion)\b", s_low) or s_low.endswith("b"):
+            unit = "B"
+        elif re.search(r"\b(m|mn|million)\b", s_low) or s_low.endswith("m"):
+            unit = "M"
+        elif re.search(r"\b(k|thousand)\b", s_low) or s_low.endswith("k"):
+            unit = "K"
+
+        # If there is explicit currency but it appears after number (e.g. "29.8 S$B"), force currency-first
+        if currency:
+            return f"{currency}{num}{unit}".strip()
+
+        # No currency found: just compact unit if known
+        if unit:
+            return f"{num}{unit}".strip()
+
+        return s
+
+    def _pretty_from_value_unit(raw_value: Any, raw_unit: Any) -> str:
+        """
+        Prefer using structured raw_value + raw_unit if available, and enforce:
+          - currency-first
+          - compact unit directly attached
+        """
+        v = "" if raw_value is None else str(raw_value).strip()
+        u = "" if raw_unit is None else str(raw_unit).strip()
+
+        # If the raw_value already contains currency/unit patterns, normalize from that
+        combined = f"{v} {u}".strip()
+        if combined:
+            # e.g. value="29.8", unit="S$B" -> "S$29.8B"
+            # e.g. value="29.8", unit="S$ B" -> "S$29.8B"
+            return _pretty_money_compact(combined)
+
+        return combined or "N/A"
+
+    def _status_bucket(sr: Dict) -> str:
+        """
+        Normalize status into a small set for interpretation.
+        """
+        status = (sr.get("status") or "").lower()
+        if status in {"fetched_extracted"}:
+            return "ok"
+        if status in {"fetched_unusable"}:
+            return "unusable"
+        if status in {"failed_but_reused_cache"}:
+            return "cache"
+        if status.startswith("failed"):
+            return "fail"
+        if status.startswith("fetched"):
+            return "fetched"
+        return status or "unknown"
 
     # -------------------------
-    # Fetch & Extract
+    # Build source list
     # -------------------------
-    sources_to_check = prev_sources[:5]
-    source_results: List[Dict] = []
+    # Primary: previously used sources (anchored)
+    sources_to_check = list(dict.fromkeys(prev_sources))[:6]
+
+    # If too few sources, add fallback plan immediately
+    if len(sources_to_check) < 3:
+        try:
+            sources_to_check += create_fallback_source_plan(qp_signals, prev_question=previous_data.get("question", ""))[:6]
+        except Exception:
+            pass
+        sources_to_check = list(dict.fromkeys([s for s in sources_to_check if isinstance(s, str) and s.strip()]))[:10]
+
+    # -------------------------
+    # Fetch / Extract
+    # -------------------------
+    source_results = []
     all_current_numbers: List[Dict] = []
+    fetched_count = 0
 
-    def _extract_numbers(content: str, status_msg: str) -> List[Dict]:
-        # If PDF, use PDF-special extractor wrapper
-        if status_msg == "success_pdf":
-            return extract_numbers_with_context_pdf(content)
-        return extract_numbers_with_context(content)
-
-    def _add_extracted(url: str, extracted: List[Dict]):
-        for n in extracted:
-            n["source_url"] = url
-        all_current_numbers.extend(extracted)
-
-    def _compact_numbers(url: str, extracted: List[Dict]) -> List[Dict]:
-        return [{
-            "value": n.get("value"),
-            "unit": n.get("unit"),
-            "raw": n.get("raw"),
-            "source_url": url,
-            "context": (n.get("context", "")[:220] if isinstance(n.get("context"), str) else "")
-        } for n in extracted]
-
-    def _fetch_one(url: str):
-        content, status_msg = fetch_url_content_with_status(url)
-
-        if content:
-            fp = fingerprint_text(content)
-            extracted = _extract_numbers(content, status_msg)
-            compact = _compact_numbers(url, extracted)
-
-            if compact:
-                source_results.append({
-                    "url": url,
-                    "status": "fetched_extracted",
-                    "status_detail": status_msg,
-                    "numbers_found": len(compact),
-                    "fingerprint": fp,
-                    "fetched_at": now_utc().isoformat(),
-                    "extracted_numbers": compact
-                })
-                _add_extracted(url, extracted)
-            else:
-                source_results.append({
-                    "url": url,
-                    "status": "fetched_unusable",
-                    "status_detail": f"{status_msg}_but_no_numbers",
-                    "numbers_found": 0,
-                    "fingerprint": fp,
-                    "fetched_at": now_utc().isoformat(),
-                    "extracted_numbers": []
-                })
-        else:
-            # Cache reuse
-            cached = []
-            for s in baseline_sources_cache:
-                if isinstance(s, dict) and s.get("url") == url and isinstance(s.get("extracted_numbers"), list):
-                    cached.extend(s["extracted_numbers"])
-
-            if cached:
-                source_results.append({
-                    "url": url,
-                    "status": "failed_but_reused_cache",
-                    "status_detail": f"{status_msg} (reused baseline cache)",
-                    "numbers_found": len(cached),
-                    "fingerprint": None,
-                    "fetched_at": now_utc().isoformat(),
-                    "extracted_numbers": cached
-                })
-                for cn in cached:
-                    all_current_numbers.append({
-                        "value": cn.get("value"),
-                        "unit": cn.get("unit"),
-                        "raw": cn.get("raw"),
-                        "context": cn.get("context", ""),
-                        "source_url": url
-                    })
-            else:
-                source_results.append({
-                    "url": url,
-                    "status": "failed",
-                    "status_detail": status_msg or "fetch_failed",
-                    "numbers_found": 0,
-                    "fingerprint": None,
-                    "fetched_at": now_utc().isoformat(),
-                    "extracted_numbers": []
-                })
-
-    # First pass: anchored sources
     for url in sources_to_check:
-        _fetch_one(url)
+        try:
+            content, meta = fetch_url_content_with_meta(url)
+            meta = meta or {}
+        except Exception as e:
+            content, meta = "", {"error": str(e)}
 
-    # Fallback pass if needed
-    if _needs_fallback(source_results):
-        fallback_sources = _fallback_sources_for_context()
-        # only add sources not already checked
-        already = set(sources_to_check)
-        for fu in fallback_sources:
-            if fu not in already:
-                sources_to_check.append(fu)
-                already.add(fu)
-                _fetch_one(fu)
+        if content and not _looks_blocked(content):
+            nums = _extract_numbers_any(content, url, meta=meta)
+            fetched_count += 1
+
+            if nums:
+                source_results.append(
+                    {
+                        "url": url,
+                        "status": "fetched_extracted",
+                        "status_detail": "success",
+                        "numbers_found": len(nums),
+                        "content_type": meta.get("content_type", ""),
+                    }
+                )
+                for n in nums:
+                    # Stamp origin
+                    if isinstance(n, dict):
+                        n["source_url"] = url
+                        n["source_domain"] = _domain(url)
+                all_current_numbers.extend([n for n in nums if isinstance(n, dict)])
+            else:
+                # fetched but no numbers extracted
+                source_results.append(
+                    {
+                        "url": url,
+                        "status": "fetched_unusable",
+                        "status_detail": "no_numbers_extracted",
+                        "numbers_found": 0,
+                        "content_type": meta.get("content_type", ""),
+                    }
+                )
+        else:
+            # blocked/failed: try reuse cached baseline record for this URL (if any)
+            reused = False
+            for cached in baseline_sources_cache:
+                if isinstance(cached, dict) and cached.get("url") == url:
+                    # reuse only the status, do not pretend extraction success
+                    source_results.append(
+                        {
+                            "url": url,
+                            "status": "failed_but_reused_cache",
+                            "status_detail": "fetch_failed_or_blocked_reused_cached_metadata",
+                            "numbers_found": int(cached.get("numbers_found") or 0),
+                            "content_type": cached.get("content_type", ""),
+                        }
+                    )
+                    reused = True
+                    break
+
+            if not reused:
+                source_results.append(
+                    {
+                        "url": url,
+                        "status": "failed",
+                        "status_detail": meta.get("error") or ("blocked_or_empty" if content else "fetch_failed"),
+                        "numbers_found": 0,
+                        "content_type": meta.get("content_type", ""),
+                    }
+                )
+
+    # If too many unusable/blocked, append fallback sources (but do not exceed 10 total)
+    try:
+        unusable = sum(1 for sr in source_results if _status_bucket(sr) in {"unusable", "fail"})
+        if unusable >= max(2, int(0.6 * max(1, len(source_results)))) and len(sources_to_check) < 10:
+            extra = create_fallback_source_plan(qp_signals, prev_question=previous_data.get("question", ""))[:10]
+            extra = [u for u in extra if u not in sources_to_check]
+            for u in extra:
+                if len(sources_to_check) >= 10:
+                    break
+                sources_to_check.append(u)
+
+            # Fetch extra sources (once)
+            for url in sources_to_check[len(source_results) :]:
+                try:
+                    content, meta = fetch_url_content_with_meta(url)
+                    meta = meta or {}
+                except Exception as e:
+                    content, meta = "", {"error": str(e)}
+
+                if content and not _looks_blocked(content):
+                    nums = _extract_numbers_any(content, url, meta=meta)
+                    fetched_count += 1
+                    if nums:
+                        source_results.append(
+                            {
+                                "url": url,
+                                "status": "fetched_extracted",
+                                "status_detail": "success",
+                                "numbers_found": len(nums),
+                                "content_type": meta.get("content_type", ""),
+                            }
+                        )
+                        for n in nums:
+                            if isinstance(n, dict):
+                                n["source_url"] = url
+                                n["source_domain"] = _domain(url)
+                        all_current_numbers.extend([n for n in nums if isinstance(n, dict)])
+                    else:
+                        source_results.append(
+                            {
+                                "url": url,
+                                "status": "fetched_unusable",
+                                "status_detail": "no_numbers_extracted",
+                                "numbers_found": 0,
+                                "content_type": meta.get("content_type", ""),
+                            }
+                        )
+                else:
+                    source_results.append(
+                        {
+                            "url": url,
+                            "status": "failed",
+                            "status_detail": meta.get("error") or ("blocked_or_empty" if content else "fetch_failed"),
+                            "numbers_found": 0,
+                            "content_type": meta.get("content_type", ""),
+                        }
+                    )
+    except Exception:
+        pass
 
     # -------------------------
-    # Matching (strict)
+    # Match metrics (strict gating)
     # -------------------------
-    def _metric_intent(metric_name: str) -> str:
-        n = (metric_name or "").lower()
-        if "cagr" in n or "growth rate" in n:
-            return "percent"
-        if "share" in n:
-            return "percent"
-        if any(k in n for k in ["gdp", "revenue", "sales", "market size", "valuation", "nominal"]):
-            return "currency"
-        return "generic"
+    stability_tolerance_pct = 0.5  # <= 0.5% counts as "no change" to avoid noisy diffs
+    metric_changes = []
+    changed = 0
+    unchanged = 0
+    not_found = 0
+    compared = 0
 
-    def _candidate_has_money_signal(curr: Dict) -> bool:
-        u = normalize_unit(curr.get("unit", ""))
-        ctx = (curr.get("context") or "").lower()
-        raw = (curr.get("raw") or "").lower()
-        if u in {"T", "B", "M", "K"}:
-            return True
-        if any(sym in raw for sym in ["€", "eur", "$", "s$"]):
-            return True
-        if any(w in ctx for w in ["billion", "million", "trillion", "eur", "euro", "usd", "sgd"]):
-            return True
-        return False
+    # Pre-index current numbers by unit family to reduce false matches
+    current_by_family: Dict[str, List[Dict]] = {}
+    for n in all_current_numbers:
+        fam = _unit_family(n.get("unit", ""))
+        current_by_family.setdefault(fam, []).append(n)
 
-    def _candidate_year_penalty(curr: Dict) -> float:
-        ctx = (curr.get("context") or "").lower()
-        if any(k in ctx for k in ["table of contents", "archived content", "secure .gov", "isbn", "issn", "doi", "catalogue", "legal notice"]):
-            return 0.55
-        if re.search(r"(19|20)\d{2}\s*[-–to]+\s*(19|20)\d{2}", ctx):
-            return 0.70
-        return 1.0
+    for metric_name, prev_item in (prev_numbers or {}).items():
+        prev_val = prev_item.get("value")
+        prev_unit_norm = prev_item.get("unit", "")
+        prev_raw_unit = prev_item.get("raw_unit", "")
+        prev_raw_value = prev_item.get("raw_value", "")
+        prev_raw_display = prev_item.get("raw", "")
 
-    def _projection_phrase_boost(metric_name: str, context: str) -> float:
-        n = (metric_name or "").lower()
-        ctx = (context or "").lower()
-        if any(k in n for k in ["forecast", "projected", "projection", "expected", "outlook", "2025", "2026", "2030"]):
-            if any(p in ctx for p in ["forecast", "projected", "expected", "outlook", "will", "by 20"]):
-                return 1.15
-        return 1.0
+        # Determine expected unit family from prev unit
+        fam = _unit_family(prev_raw_unit) or _unit_family(prev_unit_norm)
 
-    def _keyword_gate(metric_name: str, context: str) -> bool:
-        n = (metric_name or "").lower()
-        ctx = (context or "").lower()
+        candidates = current_by_family.get(fam, []) if fam else all_current_numbers
 
-        # CAGR must mention CAGR
-        if "cagr" in n:
-            return "cagr" in ctx
-
-        # share must mention share OR metric noun anchor
-        if "share" in n:
-            if "share" in ctx:
-                return True
-            for token in ["services", "industry", "manufacturing", "agriculture", "exports", "imports", "console", "hardware", "software"]:
-                if token in n and token in ctx:
-                    return True
-            return False
-
-        # GDP metrics should mention gdp
-        if "gdp" in n:
-            return "gdp" in ctx
-
-        return True
-
-    metric_changes: List[Dict] = []
-
-    for metric_name, prev_item in prev_numbers.items():
-        prev_val = prev_item["value"]
-        prev_unit = prev_item["unit"]
-        prev_keywords = prev_item["keywords"]
-
-        intent = _metric_intent(metric_name)
-
+        # Keyword gate
+        prev_keywords = prev_item.get("keywords", set()) or set()
         best_match = None
-        best_score = 0.0
+        best_score = -1
+
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+
+            # keyword overlap score (0..N)
+            context = (c.get("context", "") or "") + " " + (c.get("metric_name", "") or "")
+            ctx_low = context.lower()
+            score = 0
+            for kw in prev_keywords:
+                if kw and kw in ctx_low:
+                    score += 1
+
+            if score <= 0 and prev_keywords:
+                continue
+
+            # numeric proximity gate
+            c_val = c.get("value")
+            if c_val is None:
+                continue
+
+            try:
+                # relative percent difference
+                denom = abs(prev_val) if prev_val not in (None, 0) else 1.0
+                pct_diff = abs((float(c_val) - float(prev_val)) / denom) * 100.0
+            except Exception:
+                continue
+
+            # broad gate: allow up to 20% for matching, then classify as change/no-change later
+            if pct_diff > 20.0:
+                continue
+
+            # choose highest keyword score; tie-break by smallest pct_diff
+            if score > best_score:
+                best_score = score
+                best_match = c
+                best_match["_pct_diff_for_match"] = pct_diff
+            elif score == best_score and best_match is not None:
+                if pct_diff < float(best_match.get("_pct_diff_for_match") or 1e9):
+                    best_match = c
+                    best_match["_pct_diff_for_match"] = pct_diff
 
         canonical_id = metric_name_to_canonical.get(metric_name)
-        schema = frozen_schema.get(canonical_id) if canonical_id else None
-        locked_unit = normalize_unit(schema.get("unit")) if isinstance(schema, dict) and schema.get("unit") else ""
-
-        for curr in all_current_numbers:
-            curr_val = curr.get("value")
-            curr_unit = normalize_unit(curr.get("unit", ""))
-            if curr_val is None:
-                continue
-
-            ctx = curr.get("context", "")
-
-            if not _keyword_gate(metric_name, ctx):
-                continue
-
-            # STRICT percent gating (prevents unitless 20 matching 29%)
-            if intent == "percent":
-                if curr_unit != "%":
-                    continue
-            elif intent == "currency":
-                if not _candidate_has_money_signal(curr):
-                    continue
-
-            # Unit gating
-            if locked_unit:
-                if curr_unit and curr_unit != locked_unit:
-                    continue
-            else:
-                if prev_unit and curr_unit and prev_unit != curr_unit:
-                    continue
-                if prev_unit and not curr_unit:
-                    continue
-
-            # Ratio band
-            if prev_val and curr_val and prev_val != 0:
-                ratio = curr_val / prev_val
-                band = (0.65, 1.8) if intent == "currency" else (0.5, 2.0)
-                if not (band[0] <= ratio <= band[1]):
-                    continue
-                value_score = 1.0 / (1.0 + abs(ratio - 1.0))
-            else:
-                continue
-
-            context_score = calculate_context_match(prev_keywords, ctx)
-            penalty = _candidate_year_penalty(curr)
-            boost = _projection_phrase_boost(metric_name, ctx)
-            src_w = _source_weight(curr.get("source_url") or "")
-
-            combined = src_w * boost * penalty * ((0.4 * value_score) + (0.6 * context_score))
-
-            if combined > best_score:
-                best_score = combined
-                best_match = curr
-
-        threshold = 0.62
-        n_l = (metric_name or "").lower()
-        if "forecast" in n_l or "projected" in n_l:
-            threshold = 0.58
-        if "share" in n_l or "cagr" in n_l:
-            threshold = 0.60
-
-        if best_match and best_score > threshold:
-            change_pct = compute_percent_change(prev_val, best_match["value"])
-            if change_pct is None or abs(change_pct) < 5:
-                change_type = "unchanged"
-            elif change_pct > 0:
-                change_type = "increased"
-            else:
-                change_type = "decreased"
-
-            metric_changes.append({
-                "name": metric_name,
-                "previous_value": prev_item.get("raw") or str(prev_item.get("raw_value", "")),
-                "current_value": best_match.get("raw", ""),
-                "change_pct": change_pct,
-                "change_type": change_type,
-                "match_confidence": round(min(best_score, 1.0) * 100, 1),
-                "context_snippet": (best_match.get("context", "")[:140] if best_match.get("context") else ""),
-                "matched_source": best_match.get("source_url", "")
-            })
+        if canonical_id and frozen_schema and canonical_id in frozen_schema:
+            canonical_name = frozen_schema[canonical_id].get("name", metric_name)
         else:
-            metric_changes.append({
-                "name": metric_name,
-                "previous_value": prev_item.get("raw") or str(prev_item.get("raw_value", "")),
-                "current_value": "Not found (no confident match)",
-                "change_pct": None,
-                "change_type": "not_found",
-                "match_confidence": round(min(best_score, 1.0) * 100, 1) if best_match else 0.0,
-                "context_snippet": "",
-                "matched_source": ""
-            })
+            canonical_name = metric_name
 
-    # ---- Stability ----
-    found = [m for m in metric_changes if m["change_type"] != "not_found"]
-    found_count = len(found)
-    unchanged_count = sum(1 for m in found if m["change_type"] == "unchanged")
+        if not best_match:
+            not_found += 1
+            metric_changes.append(
+                {
+                    "metric": canonical_name,
+                    "previous_value": _pretty_from_value_unit(prev_raw_value, prev_raw_unit) if prev_raw_value or prev_raw_unit else (prev_raw_display or "N/A"),
+                    "current_value": "N/A",
+                    "unit": prev_raw_unit or prev_unit_norm or "",
+                    "change_pct": None,
+                    "status": "Not found",
+                    "match_confidence": 0,
+                }
+            )
+            continue
 
-    tolerance_pct = 10.0
-    stable_by_delta_count = sum(
-        1 for m in found
-        if m["change_type"] == "unchanged"
-        or (m.get("change_pct") is not None and abs(m["change_pct"]) < tolerance_pct)
-    )
+        compared += 1
+        cur_raw = best_match.get("raw") or ""
+        cur_unit = best_match.get("unit") or ""
+        cur_value = best_match.get("raw_value") if "raw_value" in best_match else best_match.get("value")
 
-    stability_pct = (stable_by_delta_count / found_count * 100.0) if found_count else 100.0
+        prev_display = _pretty_from_value_unit(prev_raw_value, prev_raw_unit) if prev_raw_value or prev_raw_unit else (prev_raw_display or "N/A")
+        cur_display = _pretty_money_compact(cur_raw) if cur_raw else _pretty_from_value_unit(cur_value, cur_unit)
+
+        # compute actual change
+        try:
+            denom = abs(float(prev_val)) if prev_val not in (None, 0) else 1.0
+            change_pct = ((float(best_match.get("value")) - float(prev_val)) / denom) * 100.0
+        except Exception:
+            change_pct = None
+
+        # classify
+        if change_pct is None:
+            status = "Unknown"
+            match_conf = 50
+        else:
+            if abs(change_pct) <= stability_tolerance_pct:
+                status = "No change"
+                unchanged += 1
+            else:
+                status = "Changed"
+                changed += 1
+
+            # confidence from match quality: keyword score + proximity
+            prox = float(best_match.get("_pct_diff_for_match") or 20.0)
+            # crude scoring: close match + at least one keyword hit -> higher confidence
+            match_conf = max(0, min(100, int(70 + (best_score * 5) - (prox * 2))))
+
+        metric_changes.append(
+            {
+                "metric": canonical_name,
+                "previous_value": prev_display,
+                "current_value": cur_display,
+                "unit": cur_unit or prev_raw_unit or prev_unit_norm or "",
+                "change_pct": change_pct,
+                "status": status,
+                "match_confidence": match_conf,
+                "matched_source": best_match.get("source_url") or "",
+            }
+        )
+
+    # -------------------------
+    # Stability scoring + interpretation
+    # -------------------------
+    # IMPORTANT: if compared == 0, we cannot claim 100% stability.
+    if compared <= 0:
+        stability_score = None
+        overall_stability_pct = None
+    else:
+        stability_score = (unchanged / max(1, compared)) * 100.0
+        overall_stability_pct = stability_score
+
+    # source status summary
+    ok = sum(1 for sr in source_results if _status_bucket(sr) == "ok")
+    unusable = sum(1 for sr in source_results if _status_bucket(sr) == "unusable")
+    failed = sum(1 for sr in source_results if _status_bucket(sr) == "fail")
+    cached = sum(1 for sr in source_results if _status_bucket(sr) == "cache")
+
+    if compared <= 0:
+        if ok <= 0 and (unusable + failed) > 0:
+            interpretation = (
+                "Low confidence: sources were blocked/unusable or yielded no extractable numbers, "
+                "so no stable comparison could be computed."
+            )
+        elif ok <= 0 and cached > 0:
+            interpretation = (
+                "Low confidence: current fetch failed and only cached metadata was available; "
+                "no comparable numbers were extracted."
+            )
+        else:
+            interpretation = (
+                "Low confidence: no comparable numbers were extracted for the baseline metrics, "
+                "so stability cannot be computed."
+            )
+    else:
+        if stability_score >= 95:
+            interpretation = "High stability: key metrics are essentially unchanged across the checked sources."
+        elif stability_score >= 70:
+            interpretation = "Moderate stability: most metrics are stable, with a few meaningful updates."
+        else:
+            interpretation = "Low stability: multiple metrics differ meaningfully from the previous run."
+
+        if ok <= 0 and (unusable + failed) > 0:
+            interpretation += " Note: many sources appeared blocked/unusable, so results may be incomplete."
 
     summary = {
-        "total_metrics": len(metric_changes),
-        "metrics_found": found_count,
-        "metrics_unchanged": unchanged_count,
-        "metrics_stable": stable_by_delta_count,
-        "metrics_increased": sum(1 for m in found if m["change_type"] == "increased"),
-        "metrics_decreased": sum(1 for m in found if m["change_type"] == "decreased"),
-        "metrics_not_found": sum(1 for m in metric_changes if m["change_type"] == "not_found"),
-        "metrics_high_confidence": sum(1 for m in found if (m.get("match_confidence") or 0) >= 80.0),
-        "stability_tolerance_pct": tolerance_pct,
+        "total_metrics": len(prev_numbers or {}),
+        "metrics_compared": compared,
+        "metrics_changed": changed,
+        "metrics_unchanged": unchanged,
+        "metrics_not_found": not_found,
+        "overall_stability_pct": overall_stability_pct,
     }
 
     return {
         "status": "success",
         "sources_checked": len(sources_to_check),
-        "sources_fetched": sum(1 for s in source_results if s.get("status") in {"fetched_extracted", "fetched_unusable"}),
-        "sources_extracted": sum(1 for s in source_results if s.get("status") == "fetched_extracted"),
+        "sources_fetched": fetched_count,
         "source_results": source_results,
         "metric_changes": metric_changes,
-        "stability": {
-            "system_stability_pct": round(stability_pct, 1),
-            "data_change_detected": sum(1 for m in found if m["change_type"] in {"increased", "decreased"}),
-            "metrics_compared": found_count
-        },
-        "stability_score": round(stability_pct, 1),
-        "summary": summary
+        "stability_score": stability_score,
+        "interpretation": interpretation,
+        "summary": summary,
     }
 
 
@@ -7273,119 +7360,119 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
     return 0.35 + (match_ratio * 0.65)
 
 
-
 def render_source_anchored_results(results: Dict, query: str):
-    """Render source-anchored evolution results"""
+    """Render the results of source-anchored evolution analysis"""
 
     st.header("📈 Source-Anchored Evolution Analysis")
-    st.markdown(f"**Query:** {query}")
+    st.markdown(f"**Question:** {query}")
 
-    if results['status'] != 'success':
-        st.error(f"❌ {results.get('message', 'Analysis failed')}")
-        return
+    # Summary metrics
+    summary = results.get("summary", {}) or {}
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-    # Overview
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Sources Checked", results['sources_checked'])
-    col2.metric("Sources Fetched", results['sources_fetched'])
-    col3.metric("Stability", f"{results['stability_score']:.0f}%")
+    col1.metric("Total Metrics", summary.get("total_metrics", 0))
+    col2.metric("Compared", summary.get("metrics_compared", 0))
+    col3.metric("Changed", summary.get("metrics_changed", 0))
+    col4.metric("Unchanged", summary.get("metrics_unchanged", 0))
 
-    summary = results['summary']
-    if summary['metrics_increased'] > summary['metrics_decreased']:
-        col4.success("📈 Trending Up")
-    elif summary['metrics_decreased'] > summary['metrics_increased']:
-        col4.error("📉 Trending Down")
+    stability_score = results.get("stability_score", None)
+    if stability_score is None:
+        col5.metric("Stability", "N/A")
     else:
-        col4.info("➡️ Stable")
+        col5.metric("Stability", f"{stability_score:.0f}%")
 
-    st.markdown("---")
-
-    # Source status
-    st.subheader("🔗 Source Verification")
-
-    # In the source verification display:
-    for src in results['source_results']:
-        if src['status'] == 'fetched':
-            st.success(f"✅ {src['url'][:70]}... ({src['numbers_found']} numbers)")
+    # Interpretation
+    interpretation = results.get("interpretation", "")
+    if interpretation:
+        if "Low confidence" in interpretation or "blocked" in interpretation.lower():
+            st.warning(interpretation)
         else:
-            reason = src.get('status_detail', 'Unknown error')
-            st.error(f"❌ {src['url'][:50]}... - {reason}")
+            st.info(interpretation)
 
     st.markdown("---")
 
     # Metric changes
-    st.subheader("💰 Metric Changes")
+    st.subheader("🧮 Metric Changes")
+    changes = results.get("metric_changes", []) or []
 
-    def _fmt_currency_first(raw: str, unit: str) -> str:
-        raw = (raw or "").strip()
-        unit = (unit or "").strip()
-        if not raw:
-            return "-"
-
-        if raw.startswith("S$") or raw.startswith("$"):
-            return raw
-
-        mm = re.match(r"^\s*([0-9.,]+)\s*(S\$|\$)\s*([A-Za-z%]+)?\s*$", raw)
-        if mm:
-            num, cur, suff = mm.group(1), mm.group(2), (mm.group(3) or "")
-            return f"{cur}{num}{suff}".strip()
-
-        cur = ""
-        u = unit.replace(" ", "")
-        if u.upper().startswith("SGD"):
-            cur, u = "S$", u[3:]
-        elif u.upper().startswith("USD"):
-            cur, u = "$", u[3:]
-        elif u.startswith("S$"):
-            cur, u = "S$", u[2:]
-        elif u.startswith("$"):
-            cur, u = "$", u[1:]
-
-        if not cur:
-            return raw if not unit else f"{raw} {unit}".strip()
-
-        if "billion" in unit.lower():
-            return f"{cur}{raw} billion".strip()
-        if "million" in unit.lower():
-            return f"{cur}{raw} million".strip()
-
-        return f"{cur}{raw}{u}".strip()
-
-
-    if results['metric_changes']:
-        rows = []
-        for m in results['metric_changes']:
-            icon = {
-                'increased': '📈',
-                'decreased': '📉',
-                'unchanged': '➡️',
-                'not_found': '❓'
-            }.get(m['change_type'], '•')
-
-            change_str = f"{m['change_pct']:+.1f}%" if m['change_pct'] is not None else "-"
-
-            rows.append({
-                '': icon,
-                'Metric': m['name'],
-                'Previous': _fmt_currency_first(m.get('previous_value', ''), m.get('unit', '') or ''),
-                'Current': _fmt_currency_first(m.get('current_value', ''), m.get('unit', '') or ''),
-                'Change': change_str,
-                'Confidence': f"{m['match_confidence']:.0f}%"
-            })
-
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    if not changes:
+        st.info("No metric comparisons available.")
     else:
-        st.info("No metrics to compare")
+        display_rows = []
+        for ch in changes:
+            prev_val = ch.get("previous_value", "N/A")
+            cur_val = ch.get("current_value", "N/A")
+
+            cp = ch.get("change_pct", None)
+            if cp is None:
+                cp_disp = "N/A"
+            else:
+                cp_disp = f"{cp:+.1f}%"
+
+            display_rows.append(
+                {
+                    "Metric": ch.get("metric", "N/A"),
+                    "Previous": prev_val,
+                    "Current": cur_val,
+                    "Change": cp_disp,
+                    "Confidence": f"{int(ch.get('match_confidence', 0))}%",
+                    "Status": ch.get("status", ""),
+                }
+            )
+
+        df = pd.DataFrame(display_rows)
+        st.dataframe(df, hide_index=True, width="stretch")
 
     st.markdown("---")
 
-    # Summary stats
-    st.subheader("📊 Summary")
-    cols = st.columns(4)
-    cols[0].metric("Total Metrics", summary['total_metrics'])
-    cols[1].metric("Found in Sources", summary['metrics_found'])
-    cols[2].metric("Increased", summary['metrics_increased'])
-    cols[3].metric("Decreased", summary['metrics_decreased'])
+    # Sources checked
+    st.subheader("🔗 Sources Checked")
+    source_results = results.get("source_results", []) or []
+
+    if not source_results:
+        st.info("No source results recorded.")
+        return
+
+    # Render status with the newer status codes
+    def _status_icon(sr: Dict) -> str:
+        status = (sr.get("status") or "").lower()
+        numbers_found = int(sr.get("numbers_found") or 0)
+
+        if status == "fetched_extracted" and numbers_found > 0:
+            return "✅"
+        if status == "fetched_unusable":
+            return "⚠️"
+        if status == "failed_but_reused_cache":
+            return "♻️"
+        if status.startswith("failed"):
+            return "❌"
+        if status.startswith("fetched"):
+            return "⚠️"
+        return "•"
+
+    for sr in source_results:
+        url = sr.get("url", "")
+        status = sr.get("status", "unknown")
+        detail = sr.get("status_detail", "")
+        numbers_found = sr.get("numbers_found", 0)
+        icon = _status_icon(sr)
+
+        if url:
+            st.markdown(
+                f"{icon} **[{url}]({url})**  \n"
+                f"- Status: `{status}`  \n"
+                f"- Detail: {detail}  \n"
+                f"- Numbers found: {numbers_found}"
+            )
+        else:
+            st.markdown(
+                f"{icon} **(missing url)**  \n"
+                f"- Status: `{status}`  \n"
+                f"- Detail: {detail}  \n"
+                f"- Numbers found: {numbers_found}"
+            )
+
+
 
 # =========================================================
 # 9. DASHBOARD RENDERING
