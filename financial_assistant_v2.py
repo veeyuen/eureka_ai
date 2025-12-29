@@ -403,12 +403,7 @@ RESPONSE_TEMPLATE = """
   ],
   "sources": ["source1.com"],
   "confidence": 87,
-  "freshness": "Dec 2024",
-  "action": {
-    "recommendation": "Buy/Hold/Neutral/Sell",
-    "confidence": "High/Medium/Low",
-    "rationale": "1-sentence reason"
-  }
+  "freshness": "Dec 2024"
 }
 """
 
@@ -590,7 +585,12 @@ def repair_llm_response(data: dict) -> dict:
     - Ensure top_entities and trends_forecast are lists
     - Fix benchmark_table numeric values
     - Add missing required fields
+
+    Also:
+    - Remove 'action' block (no longer used)
     """
+    if not isinstance(data, dict):
+        return {}
 
     # Fix primary_metrics: list → dict
     if "primary_metrics" in data and isinstance(data["primary_metrics"], list):
@@ -643,11 +643,9 @@ def repair_llm_response(data: dict) -> dict:
         cleaned_table = []
         for row in data["benchmark_table"]:
             if isinstance(row, dict):
-                # Ensure category exists
                 if "category" not in row:
                     row["category"] = "Unknown"
 
-                # Fix numeric fields
                 for key in ["value_1", "value_2"]:
                     if key not in row:
                         row[key] = 0
@@ -655,13 +653,11 @@ def repair_llm_response(data: dict) -> dict:
 
                     val = row[key]
 
-                    # Convert "N/A" and similar to 0
                     if isinstance(val, str):
                         val_upper = val.upper().strip()
                         if val_upper in ["N/A", "NA", "NULL", "NONE", "", "-", "—"]:
                             row[key] = 0
                         else:
-                            # Try to parse numeric strings like "25.5", "$100", "1,234"
                             try:
                                 cleaned = re.sub(r'[^\d.-]', '', val)
                                 if cleaned:
@@ -677,7 +673,12 @@ def repair_llm_response(data: dict) -> dict:
 
         data["benchmark_table"] = cleaned_table
 
+    # REMOVE 'action' block entirely (no longer relevant)
+    if "action" in data:
+        data.pop("action", None)
+
     return data
+
 
 def validate_numeric_fields(data: dict, context: str = "LLM Response") -> None:
     """Log warnings for non-numeric values in expected numeric fields"""
@@ -1171,38 +1172,37 @@ def unit_clean_first_letter(unit: str) -> str:
 # =========================================================
 
 def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """Query Perplexity API with web context - deterministic settings"""
+    """
+    Query Perplexity and return a validated JSON string (LLMResponse-compatible).
+    Removes 'action' and excludes None fields from output JSON.
+    """
+    if not PERPLEXITY_KEY:
+        st.error("❌ PERPLEXITY_KEY not set.")
+        return None
 
-    # Check LLM cache first
-    cached_response = get_cached_llm_response(query, web_context)
-    if cached_response:
-        st.info("📦 Using cached LLM response (identical sources)")
-        return cached_response
+    query_structure = query_structure or {}
+    structure_txt = ""
+    ordering_contract = ""
 
-    search_count = len((web_context or {}).get("search_results", []))
+    try:
+        structure_txt, ordering_contract = build_query_structure_prompt(query_structure)
+    except Exception:
+        structure_txt = ""
+        ordering_contract = ""
 
-    # Always include structure guidance (this is what fixes main vs side ordering)
-    structure_txt = format_query_structure_for_prompt(query_structure)
+    # Web context: show top sources + snippets
+    sources = (web_context.get("sources", []) if isinstance(web_context, dict) else []) or []
+    search_results = (web_context.get("search_results", []) if isinstance(web_context, dict) else []) or []
+    search_count = int(web_context.get("search_count", len(search_results)) if isinstance(web_context, dict) else 0)
 
-    ordering_contract = (
-        "IMPORTANT: Follow the structured question strictly.\n"
-        "- Answer MAIN first (give general context if it is an overview request).\n"
-        "- Then answer EACH side question explicitly in order.\n"
-        "- Ensure executive_summary reflects MAIN first, then side.\n"
-    )
-
-    # Build context section
-    context_section = ""
-    if isinstance(web_context, dict) and web_context.get("summary"):
-        context_section += "LATEST WEB RESEARCH:\n"
-        context_section += f"{web_context.get('summary','')}\n\n"
-
-    if isinstance(web_context, dict) and web_context.get("scraped_content"):
-        context_section += "DETAILED CONTENT (snippets):\n"
-        for url, content in list(web_context["scraped_content"].items())[:2]:
+    context_section = "WEB CONTEXT:\n"
+    for url in sources[:6]:
+        content = (web_context.get("scraped_content", {}) or {}).get(url) if isinstance(web_context, dict) else None
+        if content:
             context_section += f"\n{url}:\n{str(content)[:800]}...\n"
+        else:
+            context_section += f"\n{url}\n"
 
-    # Final prompt
     enhanced_query = (
         f"{context_section}\n"
         f"{SYSTEM_PROMPT}\n\n"
@@ -1221,7 +1221,7 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
     payload = {
         "model": "sonar",
         "temperature": 0.0,
-        "max_tokens": 2400,  # slightly more room to cover main + multi-side
+        "max_tokens": 2400,
         "top_p": 1.0,
         "messages": [{"role": "user", "content": enhanced_query}]
     }
@@ -1238,19 +1238,23 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
         if not content or not content.strip():
             raise Exception("Empty Perplexity response")
 
-        # Parse and repair
         parsed = parse_json_safely(content, "Perplexity")
         if not parsed:
             return create_fallback_response(query, search_count, web_context)
 
         repaired = repair_llm_response(parsed)
 
-        # Debug helper
+        # Ensure action is removed even if present
+        repaired.pop("action", None)
+
         validate_numeric_fields(repaired, "Perplexity")
 
-        # Validate with Pydantic
         try:
             llm_obj = LLMResponse.model_validate(repaired)
+
+            # Ensure action not present (belt + suspenders)
+            if hasattr(llm_obj, "action"):
+                llm_obj.action = None
 
             # Merge web sources
             if isinstance(web_context, dict) and web_context.get("sources"):
@@ -1259,7 +1263,7 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
                 llm_obj.sources = merged[:10]
                 llm_obj.freshness = "Current (web-enhanced)"
 
-            result = llm_obj.model_dump_json()
+            result = llm_obj.model_dump_json(exclude_none=True)
             cache_llm_response(query, web_context, result)
             return result
 
@@ -1295,9 +1299,8 @@ def query_perplexity_raw(prompt: str, max_tokens: int = 400, timeout: int = 30) 
     data = resp.json()
     return (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
 
-
 def create_fallback_response(query: str, search_count: int, web_context: Dict) -> str:
-    """Create fallback response matching schema"""
+    """Create fallback response matching schema, excluding None fields and removing action."""
     fallback = LLMResponse(
         executive_summary=f"Analysis of '{query}' completed with {search_count} web sources. Schema validation used fallback structure.",
         primary_metrics={
@@ -1322,10 +1325,12 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
         ),
         sources=web_context.get("sources", []),
         confidence=60,
-        freshness="Current (fallback)"
+        freshness="Current (fallback)",
+        action=None
     )
 
-    return fallback.model_dump_json()
+    return fallback.model_dump_json(exclude_none=True)
+
 
 # =========================================================
 # 7B. ANCHORED EVOLUTION QUERY
@@ -2972,21 +2977,87 @@ def canonicalize_metrics(
     category_hint: str = ""
 ) -> Dict:
     """
-    Convert metrics to canonical IDs.
+    Convert metrics to canonical IDs, but NEVER merge across incompatible dimensions.
 
-    Enhancements:
-      - Range-aware mode merges duplicates (same canonical_id) into a single metric span.
-      - Deterministic geo tagging: geo_scope + geo_name.
-      - Deterministic proxy labeling: is_proxy + proxy_type + proxy_reason (+ confidence).
+    Key fix:
+      - Adds deterministic 'dimension' classification and incorporates it into canonical keys.
+      - Prevents revenue vs unit-sales from merging just because the year matches.
+      - Keeps your geo + proxy tagging behavior.
 
-    NOTE: extra fields added here persist into JSON as long as you save primary_metrics_canonical.
+    Output:
+      canonicalized[canonical_key] -> metric dict with:
+        - canonical_id (base id)
+        - canonical_key (dimension-safe id you should use everywhere downstream)
+        - dimension (currency | unit_sales | percent | count | index | unknown)
+        - name (dimension-corrected display name)
     """
     if not isinstance(metrics, dict):
         return {}
 
+    def infer_metric_dimension(metric_name: str, unit_raw: str) -> str:
+        n = (metric_name or "").lower()
+        u = (unit_raw or "").strip().lower()
+
+        # Percent
+        if "%" in u or "percent" in n or "share" in n or "cagr" in n:
+            return "percent"
+
+        # Currency signals
+        currency_tokens = ["$", "s$", "usd", "sgd", "eur", "€", "gbp", "£", "jpy", "¥", "cny", "rmb", "aud", "cad"]
+        if any(t in u for t in currency_tokens) or any(t in n for t in ["revenue", "market value", "valuation", "value (", "usd", "sgd", "eur"]):
+            return "currency"
+
+        # Unit sales / shipments
+        unit_tokens = ["unit", "units", "sold", "sales volume", "shipments", "registrations", "deliveries", "vehicles", "pcs", "pieces", "volume"]
+        if any(t in n for t in unit_tokens):
+            return "unit_sales"
+
+        # Pure counts
+        if any(t in n for t in ["count", "number of", "install base", "installed base", "users", "subscribers"]) and "revenue" not in n:
+            return "count"
+
+        # Index / score
+        if any(t in n for t in ["index", "score", "rating"]):
+            return "index"
+
+        return "unknown"
+
+    def display_name_for_dimension(original_display: str, dim: str) -> str:
+        # If registry mapped it wrongly (e.g. "Revenue (2025)" but actually unit sales),
+        # override display name to avoid misleading labels.
+        if not original_display:
+            return original_display
+
+        od = original_display.strip()
+        od_low = od.lower()
+
+        if dim == "unit_sales":
+            # Replace "Revenue" phrasing if it exists
+            if "revenue" in od_low or "market value" in od_low or "valuation" in od_low:
+                return re.sub(r"(?i)revenue|market value|valuation", "Unit Sales", od).strip()
+            # If it just says "Sales", keep but make explicit
+            if od_low.startswith("sales"):
+                return "Unit Sales" + od[len("Sales"):]
+            if "sales" in od_low:
+                return re.sub(r"(?i)sales", "Unit Sales", od).strip()
+            return od
+
+        if dim == "currency":
+            # If it says "Unit Sales" but unit is currency, flip back
+            if "unit sales" in od_low:
+                return re.sub(r"(?i)unit sales", "Revenue", od).strip()
+            return od
+
+        if dim == "percent":
+            # Prefer "Share" / "CAGR" style if it looks like one
+            if "unit sales" in od_low or "revenue" in od_low:
+                return od  # don’t aggressively rename; leave as-is
+            return od
+
+        return od
+
     candidates = []
 
-    # ---- Collect candidates (deterministic ordering) ----
     for key, metric in metrics.items():
         if not isinstance(metric, dict):
             continue
@@ -2995,27 +3066,30 @@ def canonicalize_metrics(
         canonical_id, canonical_name = get_canonical_metric_id(original_name)
 
         raw_unit = (metric.get("unit") or "").strip()
-        unit = raw_unit.upper()
+        unit_norm = raw_unit.upper()
+
+        dim = infer_metric_dimension(str(original_name), raw_unit)
+
+        # Dimension-safe canonical key (this is what you group/merge on)
+        canonical_key = f"{canonical_id}__{dim}"
 
         parsed_val = parse_to_float(metric.get("value"))
         value_for_sort = parsed_val if parsed_val is not None else str(metric.get("value", ""))
 
         stable_sort_key = (
             str(original_name).lower().strip(),
-            unit,
+            dim,
+            unit_norm,
             str(value_for_sort),
-            str(key),  # fallback stabilizer
+            str(key),
         )
 
-        # GEO inference: use metric context if present
         geo = infer_geo_scope(
             str(original_name),
             str(metric.get("context_snippet", "")),
             str(metric.get("source", "")),
             str(metric.get("source_url", "")),
         )
-
-        # PROXY inference: use question_text + optional context
 
         proxy = infer_proxy_label(
             str(original_name),
@@ -3024,51 +3098,46 @@ def canonicalize_metrics(
             str(metric.get("context_snippet", "")),
             str(metric.get("source", "")),
             str(metric.get("source_url", "")),
-            )
-
+        )
 
         candidates.append({
             "canonical_id": canonical_id,
-            "canonical_name": canonical_name,
+            "canonical_key": canonical_key,
+            "canonical_name": display_name_for_dimension(canonical_name, dim),
             "original_name": original_name,
             "metric": metric,
-            "unit": unit,
+            "unit": unit_norm,
             "parsed_val": parsed_val,
+            "dimension": dim,
             "stable_sort_key": stable_sort_key,
-
-            # NEW: geo
             "geo_scope": geo["geo_scope"],
             "geo_name": geo["geo_name"],
-
-            # NEW: proxy
             **proxy,
         })
 
     candidates.sort(key=lambda x: x["stable_sort_key"])
 
-    # ---- Group by canonical_id ----
+    # Group by canonical_key (NOT canonical_id)
     grouped: Dict[str, List[Dict]] = {}
     for c in candidates:
-        grouped.setdefault(c["canonical_id"], []).append(c)
+        grouped.setdefault(c["canonical_key"], []).append(c)
 
     canonicalized: Dict[str, Dict] = {}
 
-    for cid, group in grouped.items():
-        # Single metric → keep as-is
+    for ckey, group in grouped.items():
+        # Single metric or no merge requested
         if len(group) == 1 or not merge_duplicates_to_range:
             g = group[0]
             m = g["metric"]
-            canonicalized[cid] = {
+            canonicalized[ckey] = {
                 **m,
                 "name": g["canonical_name"],
-                "canonical_id": cid,
+                "canonical_id": g["canonical_id"],
+                "canonical_key": ckey,
+                "dimension": g["dimension"],
                 "original_name": g["original_name"],
-
-                # NEW: geo
                 "geo_scope": g.get("geo_scope", "unknown"),
                 "geo_name": g.get("geo_name", ""),
-
-                # NEW: proxy
                 "is_proxy": bool(g.get("is_proxy", False)),
                 "proxy_type": g.get("proxy_type", ""),
                 "proxy_reason": g.get("proxy_reason", ""),
@@ -3077,27 +3146,25 @@ def canonicalize_metrics(
             }
             continue
 
-        # Merge duplicates → range-aware metric
+        # Merge duplicates within SAME dimension-safe canonical_key
         base = group[0]
-        base_metric = dict(base["metric"])  # copy
+        base_metric = dict(base["metric"])
         base_metric["name"] = base["canonical_name"]
-        base_metric["canonical_id"] = cid
+        base_metric["canonical_id"] = base["canonical_id"]
+        base_metric["canonical_key"] = ckey
+        base_metric["dimension"] = base["dimension"]
 
-        # Merge GEO deterministically
         geo_scope, geo_name = merge_group_geo(group)
         base_metric["geo_scope"] = geo_scope
         base_metric["geo_name"] = geo_name
 
-        # Merge PROXY deterministically
         merged_proxy = merge_group_proxy(group)
         base_metric.update(merged_proxy)
 
-        # Collect numeric candidates
         vals = [g["parsed_val"] for g in group if g["parsed_val"] is not None]
         raw_vals = [str(g["metric"].get("value", "")) for g in group]
         orig_names = [g["original_name"] for g in group]
 
-        # Unit handling: if units disagree, keep base unit but preserve info
         units = [g["unit"] for g in group if g["unit"]]
         unit_base = units[0] if units else (base_metric.get("unit") or "")
         base_metric["unit"] = unit_base
@@ -3109,7 +3176,6 @@ def canonicalize_metrics(
             vals_sorted = sorted(vals)
             vmin, vmax = vals_sorted[0], vals_sorted[-1]
             vmed = vals_sorted[len(vals_sorted) // 2]
-
             base_metric["value"] = vmed
             base_metric["range"] = {
                 "min": vmin,
@@ -3120,25 +3186,66 @@ def canonicalize_metrics(
         else:
             base_metric["range"] = {"min": None, "max": None, "candidates": [], "n": 0}
 
-        canonicalized[cid] = base_metric
+        canonicalized[ckey] = base_metric
 
     return canonicalized
-
 
 
 def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
     """
     Lock metric identity + expected schema for future evolution.
+
+    Key fix:
+      - Stores canonical_key (dimension-safe)
+      - Stores dimension + unit family
+      - Keywords include dimension hints to improve later matching
     """
     frozen = {}
-    for cid, m in canonical_metrics.items():
-        frozen[cid] = {
-            "canonical_id": cid,
-            "name": m.get("name"),
-            "unit": unit_clean_first_letter((m.get("unit") or "").upper().strip()),
-            "keywords": extract_context_keywords(m.get("name", "")),
+    if not isinstance(canonical_metrics, dict):
+        return frozen
+
+    def unit_family(unit_raw: str) -> str:
+        u = (unit_raw or "").strip().lower()
+        if not u:
+            return "unknown"
+        if "%" in u:
+            return "percent"
+        if any(t in u for t in ["$", "s$", "usd", "sgd", "eur", "€", "gbp", "£", "jpy", "¥", "cny", "rmb"]):
+            return "currency"
+        if any(t in u for t in ["b", "bn", "billion", "m", "mn", "million", "k", "thousand", "t", "trillion"]):
+            # magnitude without currency symbol -> keep as magnitude
+            return "magnitude"
+        return "other"
+
+    for ckey, m in canonical_metrics.items():
+        if not isinstance(m, dict):
+            continue
+
+        dim = (m.get("dimension") or "").strip() or "unknown"
+        name = m.get("name")
+        unit = (m.get("unit") or "").strip()
+        uf = unit_family(unit)
+
+        # Keywords: name + dimension token to prevent cross-dimension matches later
+        kws = extract_context_keywords(name or "") or []
+        if dim and dim not in kws:
+            kws.append(dim)
+        if uf and uf not in kws:
+            kws.append(uf)
+
+        frozen[ckey] = {
+            "canonical_key": ckey,
+            "canonical_id": m.get("canonical_id") or ckey.split("__", 1)[0],
+            "dimension": dim,
+            "name": name,
+            "unit": unit_clean_first_letter(unit.upper()),
+            "unit_family": uf,
+            "keywords": kws[:30],
         }
+
     return frozen
+
+
 
 # =========================================================
 # RANGE + SOURCE ATTRIBUTION (DETERMINISTIC, NO LLM)
