@@ -6327,7 +6327,7 @@ def render_dashboard(
     # Small local helper: robust metric value formatting (range-aware)
     # -------------------------
 
-    def _format_metric_value(m: Dict) -> str:
+def _format_metric_value(m: Dict) -> str:
 
     #Format metric values cleanly:
     #- Currency before number: $204.7B, S$29.8B
