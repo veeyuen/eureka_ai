@@ -5405,8 +5405,8 @@ def fetch_url_content_with_status(url: str) -> Tuple[Optional[str], str]:
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-                resp = requests.get(url, headers=headers, timeout=15)
+            }
+        resp = requests.get(url, headers=headers, timeout=15)
 
         if resp.status_code == 403:
             raise Exception("blocked_403")
