@@ -24,7 +24,7 @@
 # Numeric Consistency Scores
 # Multi-Side Enumerations
 # Show More Detail in Dashboard
-# Dashboard Unit Presentation Fixes
+# Dashboard Unit Presentation Fixes (Main + Evolution)
 # ================================================================================
 
 import os
@@ -5165,57 +5165,30 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
     st.markdown("---")
 
     # Metric Changes Table
-
     st.subheader("💰 Metric Changes")
     if diff.metric_diffs:
         metric_rows = []
 
-        def _fmt_currency_first(raw: str, unit: str) -> str:
+        def _fmt_currency_first(raw: str) -> str:
+            """
+            Convert '29.8 S$B' -> 'S$29.8B'
+            Also handles: '29.8 $B' -> '$29.8B'
+            Leaves already-currency-first strings unchanged.
+            """
             raw = (raw or "").strip()
-            unit = (unit or "").strip()
-
-            if not raw:
+            if not raw or raw == "-":
                 return "-"
 
-            # If already currency-first, keep it
             if raw.startswith("S$") or raw.startswith("$"):
                 return raw
 
-            # Handle raw like "29.8 S$B" or "29.8 $B"
-            m = re.match(r"^\s*([0-9.,]+)\s*(S\$|\$)\s*([A-Za-z%]+)?\s*$", raw)
-            if m:
-                num, cur, suff = m.group(1), m.group(2), (m.group(3) or "")
+            # Pattern: <num> <currency> <suffix?>
+            mm = re.match(r"^\s*([0-9.,]+)\s*(S\$|\$)\s*([A-Za-z%]+)?\s*$", raw)
+            if mm:
+                num, cur, suff = mm.group(1), mm.group(2), (mm.group(3) or "")
                 return f"{cur}{num}{suff}".strip()
 
-            # Handle unit like "S$B", "$M", "SGD B", "USD billion"
-            cur = ""
-            u = unit.replace(" ", "")
-
-            if u.upper().startswith("SGD"):
-                cur = "S$"
-                u = u[3:]
-            elif u.upper().startswith("USD"):
-                cur = "$"
-                u = u[3:]
-            elif u.startswith("S$"):
-                cur = "S$"
-                u = u[2:]
-            elif u.startswith("$"):
-                cur = "$"
-                u = u[1:]
-
-            # If no currency detected, fall back
-            if not cur:
-                return raw if not unit else f"{raw} {unit}".strip()
-
-            # Preserve human “billion/million” if unit uses words
-            if unit.lower().find("billion") >= 0:
-                return f"{cur}{raw} billion".strip()
-            if unit.lower().find("million") >= 0:
-                return f"{cur}{raw} million".strip()
-
-            # Otherwise compact suffix (B/M/K/%, etc.)
-            return f"{cur}{raw}{u}".strip()
+            return raw
 
         for m in diff.metric_diffs:
             icon = {
@@ -5225,14 +5198,14 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
 
             change_str = f"{m.change_pct:+.1f}%" if m.change_pct is not None else "-"
 
-            prev_disp = _fmt_currency_first(m.old_raw, getattr(m, "unit", "") or "")
-            curr_disp = _fmt_currency_first(m.new_raw, getattr(m, "unit", "") or "")
+            prev_raw = m.old_raw or "-"
+            curr_raw = m.new_raw or "-"
 
             metric_rows.append({
                 "": icon,
                 "Metric": m.name,
-                "Previous": prev_disp,
-                "Current": curr_disp,
+                "Previous": _fmt_currency_first(prev_raw),
+                "Current": _fmt_currency_first(curr_raw),
                 "Change": change_str,
                 "Status": m.change_type.replace('_', ' ').title()
             })
@@ -5240,6 +5213,8 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
         st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
     else:
         st.info("No metrics to compare")
+
+    st.markdown("---")
 
 
     st.markdown("---")
