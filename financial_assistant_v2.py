@@ -28,6 +28,7 @@
 # More Precise Extractor
 # ================================================================================
 
+import io
 import os
 import re
 import json
@@ -41,6 +42,7 @@ import numpy as np
 import difflib
 import gspread
 import google.generativeai as genai
+from pypdf import PdfReader
 from google.oauth2.service_account import Credentials
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union, Tuple
@@ -5330,6 +5332,28 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
 # Enhanced fetch_url_content function to use scrapingdog as fallback
 # =========================================================
 
+def _extract_pdf_text_from_bytes(pdf_bytes: bytes, max_pages: int = 6, max_chars: int = 7000) -> Optional[str]:
+    """
+    Extract readable text from PDF bytes deterministically.
+    Limits pages/chars for speed and consistent output.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        texts = []
+        for i, page in enumerate(reader.pages[:max_pages]):
+            t = page.extract_text() or ""
+            t = t.replace("\x00", " ").strip()
+            if t:
+                texts.append(t)
+        joined = "\n".join(texts).strip()
+        if len(joined) < 200:
+            return None
+        return joined[:max_chars]
+    except Exception:
+        return None
+
+
+
 def fetch_url_content(url: str) -> Optional[str]:
     """Fetch content from a specific URL with ScrapingDog fallback"""
 
@@ -5382,7 +5406,7 @@ def fetch_url_content_with_status(url: str) -> Tuple[Optional[str], str]:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
-        resp = requests.get(url, headers=headers, timeout=10)
+                resp = requests.get(url, headers=headers, timeout=15)
 
         if resp.status_code == 403:
             raise Exception("blocked_403")
@@ -5391,6 +5415,17 @@ def fetch_url_content_with_status(url: str) -> Tuple[Optional[str], str]:
 
         resp.raise_for_status()
 
+        content_type = (resp.headers.get("Content-Type") or "").lower()
+        is_pdf = ("application/pdf" in content_type) or url.lower().endswith(".pdf")
+
+        # ----- PDF path -----
+        if is_pdf:
+            pdf_text = _extract_pdf_text_from_bytes(resp.content)
+            if pdf_text:
+                return pdf_text, "success_pdf"
+            raise Exception("empty_content")
+
+        # ----- HTML path -----
         if 'captcha' in resp.text.lower() or 'blocked' in resp.text.lower():
             raise Exception("captcha_detected")
 
@@ -5403,7 +5438,7 @@ def fetch_url_content_with_status(url: str) -> Tuple[Optional[str], str]:
         clean_text = ' '.join(line for line in lines if line)
 
         if len(clean_text) > 200:
-            return clean_text[:5000], "success"
+            return clean_text[:7000], "success"
         else:
             raise Exception("empty_content")
 
@@ -5605,25 +5640,78 @@ def parse_human_number(value_str: str, unit: str) -> Optional[float]:
 
 def build_prev_numbers(prev_metrics: Dict) -> Dict[str, Dict]:
     """
-    Build previous metric lookup keyed by *metric_name string*.
-    Stores parsed numeric value in comparable scale + unit + raw + keywords.
+    Build previous metric lookup keyed by metric_name string.
+    Stores:
+      - parsed numeric value (for matching)
+      - normalized unit (for gating)
+      - raw display string INCLUDING currency/magnitude (for dashboards + evolution JSON)
+      - raw_value/raw_unit for debugging
     """
-    prev_numbers = {}
+    def _format_raw_display(value: Any, unit: str) -> str:
+        v = "" if value is None else str(value).strip()
+        u = (unit or "").strip()
+
+        if not v:
+            return ""
+
+        # Currency prefix handling (SGD/USD keywords OR symbol prefixes)
+        currency = ""
+        u_nospace = u.replace(" ", "")
+
+        if u_nospace.upper().startswith("SGD"):
+            currency = "S$"
+            u_tail = u_nospace[3:]
+        elif u_nospace.upper().startswith("USD"):
+            currency = "$"
+            u_tail = u_nospace[3:]
+        elif u_nospace.startswith("S$"):
+            currency = "S$"
+            u_tail = u_nospace[2:]
+        elif u_nospace.startswith("$"):
+            currency = "$"
+            u_tail = u_nospace[1:]
+        else:
+            u_tail = u_nospace
+
+        # Percent special case
+        if u_tail == "%":
+            return f"{v}%"
+
+        # Word scales
+        if "billion" in u.lower():
+            return f"{currency}{v} billion".strip()
+        if "million" in u.lower():
+            return f"{currency}{v} million".strip()
+
+        # Compact suffix (B/M/K/T)
+        if u_tail.upper() in {"T", "B", "M", "K"}:
+            return f"{currency}{v}{u_tail.upper()}".strip()
+
+        # Fallback
+        return f"{currency}{v} {u}".strip()
+
+    prev_numbers: Dict[str, Dict] = {}
     for key, metric in (prev_metrics or {}).items():
         if not isinstance(metric, dict):
             continue
+
         metric_name = metric.get("name", key)
-        raw = str(metric.get("value", ""))
-        unit = metric.get("unit", "")
-        val = parse_human_number(raw, unit)
+        raw_value = metric.get("value", "")
+        raw_unit = metric.get("unit", "")
+
+        val = parse_human_number(str(raw_value), raw_unit)
         if val is None:
             continue
+
         prev_numbers[metric_name] = {
             "value": val,
-            "unit": normalize_unit(unit),
-            "raw": raw,
-            "keywords": extract_context_keywords(metric_name)
+            "unit": normalize_unit(raw_unit),
+            "raw": _format_raw_display(raw_value, raw_unit),   # ✅ now includes currency + unit
+            "raw_value": raw_value,
+            "raw_unit": raw_unit,
+            "keywords": extract_context_keywords(metric_name),
         }
+
     return prev_numbers
 
 
