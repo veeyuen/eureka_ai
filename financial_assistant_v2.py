@@ -6328,12 +6328,12 @@ def render_dashboard(
     # -------------------------
 
     def _format_metric_value(m: Dict) -> str:
-    """
-    Format metric values cleanly:
-    - Currency before number: $204.7B, S$29.8B
-    - Compact units (B, M, K)
-    - Proper thousands separators
-    """
+
+    #Format metric values cleanly:
+    #- Currency before number: $204.7B, S$29.8B
+    #- Compact units (B, M, K)
+    #- Proper thousands separators
+
     if not isinstance(m, dict):
         return "N/A"
 
