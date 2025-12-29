@@ -5165,11 +5165,57 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
     st.markdown("---")
 
     # Metric Changes Table
+
     st.subheader("💰 Metric Changes")
     if diff.metric_diffs:
         metric_rows = []
 
+        def _fmt_currency_first(raw: str, unit: str) -> str:
+            raw = (raw or "").strip()
+            unit = (unit or "").strip()
 
+            if not raw:
+                return "-"
+
+            # If already currency-first, keep it
+            if raw.startswith("S$") or raw.startswith("$"):
+                return raw
+
+            # Handle raw like "29.8 S$B" or "29.8 $B"
+            m = re.match(r"^\s*([0-9.,]+)\s*(S\$|\$)\s*([A-Za-z%]+)?\s*$", raw)
+            if m:
+                num, cur, suff = m.group(1), m.group(2), (m.group(3) or "")
+                return f"{cur}{num}{suff}".strip()
+
+            # Handle unit like "S$B", "$M", "SGD B", "USD billion"
+            cur = ""
+            u = unit.replace(" ", "")
+
+            if u.upper().startswith("SGD"):
+                cur = "S$"
+                u = u[3:]
+            elif u.upper().startswith("USD"):
+                cur = "$"
+                u = u[3:]
+            elif u.startswith("S$"):
+                cur = "S$"
+                u = u[2:]
+            elif u.startswith("$"):
+                cur = "$"
+                u = u[1:]
+
+            # If no currency detected, fall back
+            if not cur:
+                return raw if not unit else f"{raw} {unit}".strip()
+
+            # Preserve human “billion/million” if unit uses words
+            if unit.lower().find("billion") >= 0:
+                return f"{cur}{raw} billion".strip()
+            if unit.lower().find("million") >= 0:
+                return f"{cur}{raw} million".strip()
+
+            # Otherwise compact suffix (B/M/K/%, etc.)
+            return f"{cur}{raw}{u}".strip()
 
         for m in diff.metric_diffs:
             icon = {
@@ -5179,17 +5225,22 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
 
             change_str = f"{m.change_pct:+.1f}%" if m.change_pct is not None else "-"
 
+            prev_disp = _fmt_currency_first(m.old_raw, getattr(m, "unit", "") or "")
+            curr_disp = _fmt_currency_first(m.new_raw, getattr(m, "unit", "") or "")
+
             metric_rows.append({
                 "": icon,
                 "Metric": m.name,
-                "Previous": m.old_raw or "-",
-                "Current": m.new_raw or "-",
+                "Previous": prev_disp,
+                "Current": curr_disp,
                 "Change": change_str,
                 "Status": m.change_type.replace('_', ' ').title()
             })
+
         st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
     else:
         st.info("No metrics to compare")
+
 
     st.markdown("---")
 
@@ -6099,6 +6150,42 @@ def render_source_anchored_results(results: Dict, query: str):
     # Metric changes
     st.subheader("💰 Metric Changes")
 
+    def _fmt_currency_first(raw: str, unit: str) -> str:
+        raw = (raw or "").strip()
+        unit = (unit or "").strip()
+        if not raw:
+            return "-"
+
+        if raw.startswith("S$") or raw.startswith("$"):
+            return raw
+
+        mm = re.match(r"^\s*([0-9.,]+)\s*(S\$|\$)\s*([A-Za-z%]+)?\s*$", raw)
+        if mm:
+            num, cur, suff = mm.group(1), mm.group(2), (mm.group(3) or "")
+            return f"{cur}{num}{suff}".strip()
+
+        cur = ""
+        u = unit.replace(" ", "")
+        if u.upper().startswith("SGD"):
+            cur, u = "S$", u[3:]
+        elif u.upper().startswith("USD"):
+            cur, u = "$", u[3:]
+        elif u.startswith("S$"):
+            cur, u = "S$", u[2:]
+        elif u.startswith("$"):
+            cur, u = "$", u[1:]
+
+        if not cur:
+            return raw if not unit else f"{raw} {unit}".strip()
+
+        if "billion" in unit.lower():
+            return f"{cur}{raw} billion".strip()
+        if "million" in unit.lower():
+            return f"{cur}{raw} million".strip()
+
+        return f"{cur}{raw}{u}".strip()
+
+
     if results['metric_changes']:
         rows = []
         for m in results['metric_changes']:
@@ -6114,8 +6201,8 @@ def render_source_anchored_results(results: Dict, query: str):
             rows.append({
                 '': icon,
                 'Metric': m['name'],
-                'Previous': m['previous_value'],
-                'Current': m['current_value'],
+                'Previous': _fmt_currency_first(m.get('previous_value', ''), m.get('unit', '') or ''),
+                'Current': _fmt_currency_first(m.get('current_value', ''), m.get('unit', '') or ''),
                 'Change': change_str,
                 'Confidence': f"{m['match_confidence']:.0f}%"
             })
@@ -6692,8 +6779,8 @@ def render_native_comparison(baseline: Dict, compare: Dict):
             diff_rows.append({
                 '': icon,
                 'Metric': display_name,
-                'Old': f"{old_val} {unit}".strip(),
-                'New': f"{new_val} {unit}".strip(),
+                'Old': _fmt_currency_first(str(old_val), str(unit)),
+                'New': _fmt_currency_first(str(new_val), str(unit)),
                 'Δ': delta_str,
                 'Reason': reason
             })
