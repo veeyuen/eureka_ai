@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.23
+# YUREEKA AI RESEARCH ASSISTANT v7.24
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -25,6 +25,7 @@
 # Multi-Side Enumerations
 # Show More Detail in Dashboard
 # Dashboard Unit Presentation Fixes (Main + Evolution)
+# More Precise Extractor
 # ================================================================================
 
 import os
@@ -5843,10 +5844,43 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     except Exception:
         metric_name_to_canonical = {}
 
+
+        def _metric_intent(metric_name: str) -> str:
+        n = (metric_name or "").lower()
+        if "cagr" in n or "growth rate" in n:
+            return "percent"
+        if any(k in n for k in ["market size", "receipts", "revenue", "sales", "valuation", "projected", "forecast", "projection"]):
+            return "currency"
+        return "generic"
+
+    def _candidate_has_money_signal(curr: Dict) -> bool:
+        u = normalize_unit(curr.get("unit", ""))
+        ctx = (curr.get("context") or "").lower()
+        raw = (curr.get("raw") or "").lower()
+        if u in {"T", "B", "M", "K"}:
+            return True
+        if "$" in raw or "s$" in ctx or "sgd" in ctx or "usd" in ctx:
+            return True
+        if "billion" in ctx or "million" in ctx or "trillion" in ctx:
+            return True
+        return False
+
+    def _candidate_year_penalty(curr: Dict) -> float:
+        # Penalize values that appear in study period / year-range contexts
+        ctx = (curr.get("context") or "").lower()
+        if any(k in ctx for k in ["study period", "forecast period", "base year", "historical", "table of contents"]):
+            return 0.65
+        # Penalize "2024-2033", "2025 to 2033", etc.
+        if re.search(r"(19|20)\d{2}\s*[-–to]+\s*(19|20)\d{2}", ctx):
+            return 0.70
+        return 1.0
+
     for metric_name, prev_item in prev_numbers.items():
         prev_val = prev_item["value"]
         prev_unit = prev_item["unit"]
         prev_keywords = prev_item["keywords"]
+
+        intent = _metric_intent(metric_name)
 
         best_match = None
         best_score = 0.0
@@ -5862,20 +5896,34 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             if curr_val is None:
                 continue
 
-            # Unit gating:
-            # - If we have a locked unit, require match.
-            # - Else if prev unit exists and current has unit, require compatible.
+            # -------- Intent gating (prevents unitless junk like '3') ----------
+            if intent == "percent":
+                # Require percent-like unit
+                if curr_unit != "%":
+                    continue
+            elif intent == "currency":
+                # Require money signal (unit magnitude or currency markers)
+                if not _candidate_has_money_signal(curr):
+                    continue
+
+            # -------- Unit gating ----------
             if locked_unit:
                 if curr_unit and curr_unit != locked_unit:
                     continue
             else:
+                # If both have units, require exact match
                 if prev_unit and curr_unit and prev_unit != curr_unit:
                     continue
+                # If previous had a unit but current does not, reject (prevents unit loss)
+                if prev_unit and not curr_unit:
+                    continue
 
-            # Ratio filter (avoid far-off candidates)
-            if prev_val and curr_val:
-                ratio = curr_val / prev_val if prev_val != 0 else 0
-                if not (0.5 <= ratio <= 2.0):
+            # -------- Ratio filter (tighten for currency metrics) ----------
+            if prev_val and curr_val and prev_val != 0:
+                ratio = curr_val / prev_val
+                # tighter band for currency-like (reduces drift)
+                band = (0.7, 1.6) if intent == "currency" else (0.5, 2.0)
+                if not (band[0] <= ratio <= band[1]):
                     continue
                 value_score = 1.0 / (1.0 + abs(ratio - 1.0))
             else:
@@ -5883,14 +5931,17 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             context_score = calculate_context_match(prev_keywords, curr.get("context", ""))
 
-            # Combined score (deterministic weighting)
-            combined = (0.4 * value_score) + (0.6 * context_score)
+            # Penalize year-range / boilerplate contexts
+            penalty = _candidate_year_penalty(curr)
+
+            # Combined score (more weight on context, but penalty can knock out garbage)
+            combined = penalty * ((0.4 * value_score) + (0.6 * context_score))
 
             if combined > best_score:
                 best_score = combined
                 best_match = curr
 
-        if best_match and best_score > 0.6:
+        if best_match and best_score > 0.62:
             change_pct = compute_percent_change(prev_val, best_match["value"])
 
             if change_pct is None or abs(change_pct) < 5:
@@ -5907,7 +5958,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 "change_pct": change_pct,
                 "change_type": change_type,
                 "match_confidence": round(best_score * 100, 1),
-                "context_snippet": (best_match.get("context", "")[:100] if best_match.get("context") else "")
+                "context_snippet": (best_match.get("context", "")[:140] if best_match.get("context") else "")
             })
         else:
             metric_changes.append({
@@ -5920,30 +5971,52 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 "context_snippet": ""
             })
 
-    # --------- Stability scoring ----------
-    found_count = sum(1 for m in metric_changes if m["change_type"] != "not_found")
-    unchanged_count = sum(1 for m in metric_changes if m["change_type"] == "unchanged")
-    stable_count = sum(
-        1 for m in metric_changes
-        if m["change_type"] == "unchanged" or (m["change_pct"] is not None and abs(m["change_pct"]) < 10)
-    )
+
+
+    # --------- Stability scoring (transparent + consistent) ----------
+    found = [m for m in metric_changes if m["change_type"] != "not_found"]
+    found_count = len(found)
+
+    unchanged = [m for m in found if m["change_type"] == "unchanged"]
+    unchanged_count = len(unchanged)
+
+    # Define "stable_by_delta": unchanged OR within tolerance band
+    tolerance_pct = 10.0
+    stable_by_delta = [
+        m for m in found
+        if (m["change_type"] == "unchanged")
+        or (m.get("change_pct") is not None and abs(m["change_pct"]) < tolerance_pct)
+    ]
+    stable_by_delta_count = len(stable_by_delta)
+
+    # Define "high_confidence" so you can debug noisy matches
+    high_conf = [m for m in found if (m.get("match_confidence") or 0) >= 80.0]
+    high_conf_count = len(high_conf)
 
     if found_count > 0:
-        stability = (stable_count / found_count) * 100.0
+        stability_pct = (stable_by_delta_count / found_count) * 100.0
     else:
-        stability = 100.0
+        stability_pct = 100.0
 
     summary = {
         "total_metrics": len(metric_changes),
         "metrics_found": found_count,
         "metrics_unchanged": unchanged_count,
-        "metrics_stable": stable_count,
-        "metrics_increased": sum(1 for m in metric_changes if m["change_type"] == "increased"),
-        "metrics_decreased": sum(1 for m in metric_changes if m["change_type"] == "decreased"),
+
+        # keep the existing key, but now it's explicitly "stable_by_delta"
+        "metrics_stable": stable_by_delta_count,
+
+        "metrics_increased": sum(1 for m in found if m["change_type"] == "increased"),
+        "metrics_decreased": sum(1 for m in found if m["change_type"] == "decreased"),
         "metrics_not_found": sum(1 for m in metric_changes if m["change_type"] == "not_found"),
+
+        # new diagnostics (safe additive)
+        "metrics_high_confidence": high_conf_count,
+        "stability_tolerance_pct": tolerance_pct,
     }
 
-    results_stability_score = round(stability, 1)
+    results_stability_score = round(stability_pct, 1)
+
 
     # Determinism guard: source order must remain identical
     # Uncomment the 2 lines below for old method
@@ -6022,62 +6095,92 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 def extract_numbers_with_context(text: str) -> List[Dict]:
     """
     Extract numbers with surrounding context for matching.
-    Robust against commas, currency symbols, parentheses negatives,
-    and avoids many false positives (years, tiny integers, junk contexts).
+
+    Key improvements vs previous:
+    - Uses strict token boundaries so we don't match partial digits inside years (e.g., 2033 -> '3')
+    - Supports currency prefixes like S$, USD/SGD (via context/currency detection)
+    - Filters out year-like numbers unless explicitly unit/currency-qualified
+    - Down-ranks tiny unitless integers aggressively
     """
     if not text:
         return []
 
-    numbers = []
+    numbers: List[Dict] = []
 
-    # Match:
-    #   $1,234.56  billion
-    #   12.3%
+    # Strict numeric token:
+    # - Either a comma-number (1,234.56) OR a plain number (1234.56)
+    # - Enforced boundaries: not preceded/followed by a digit (prevents partial matches inside 2033)
+    num_token = r"(?<!\d)(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?!\d)"
+
+    # Optional parentheses negative + optional currency symbols directly attached
+    # Examples:
+    #   $1,234.5B
     #   (45.6) M
-    pattern = r'(\(?\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?\d+(?:\.\d+)?\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K)?'
+    #   S$29.8 billion  (handled via context currency; S$ may appear in text but we keep $ capture too)
+    pattern = rf"(\(?\s*\$?\s*{num_token}\s*\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K|bn|mn)?"
 
     for match in re.finditer(pattern, text, re.IGNORECASE):
-        raw_num = match.group(1) or ""
-        unit = (match.group(2) or "").strip()
+        raw_num = (match.group(1) or "").strip()
+        unit_raw = (match.group(2) or "").strip()
 
         # Context window
-        start = max(0, match.start() - 180)
-        end = min(len(text), match.end() + 180)
+        start = max(0, match.start() - 220)
+        end = min(len(text), match.end() + 220)
         context = text[start:end].lower()
 
-        # Skip obvious junk contexts
+        # Skip obvious junk contexts (you already have this helper)
         if is_likely_junk_context(context):
             continue
 
-        # Reject pure years (e.g., 2024) unless clearly a data value (has unit or currency)
-        num_clean_for_year = raw_num.replace("$", "").replace(",", "").strip()
-        if re.fullmatch(r"(19|20)\d{2}", num_clean_for_year) and not unit and "$" not in raw_num:
-            continue
+        # Clean numeric for parsing/year checks
+        num_clean = raw_num.replace("$", "").replace(",", "").replace("(", "").replace(")", "").strip()
 
-        # Parse numeric into comparable scale
-        parsed = parse_human_number(num_clean_for_year, unit)
+        # Reject year tokens unless unit/currency-qualified
+        # (prevents "2024" and also prevents year-like matches from being treated as metrics)
+        if re.fullmatch(r"(19|20)\d{2}", num_clean):
+            has_unit = bool(unit_raw)
+            has_currency = ("$" in raw_num) or ("s$" in context) or ("sgd" in context) or ("usd" in context)
+            if not (has_unit or has_currency):
+                continue
+
+        # Normalize unit
+        unit_map = {"bn": "B", "mn": "M"}
+        u = unit_map.get(unit_raw.lower(), unit_raw)
+        u_norm = normalize_unit(u)
+
+        parsed = parse_human_number(num_clean, u_norm)
         if parsed is None:
             continue
 
-        # Filter out tiny integers that often represent ranks, list counts, etc.
-        # Keep if it has % or currency-ish markers.
-        u_norm = normalize_unit(unit)
-        is_currency_like = ("$" in raw_num) or normalize_currency_prefix(context) or u_norm in ["T", "B", "M", "K"]
-        if not is_currency_like and u_norm != "%" and abs(parsed) < 3:
+        # Currency-like detection: either explicit $ in token, or currency in nearby context,
+        # or scale units that typically represent money magnitudes.
+        is_currency_like = (
+            ("$" in raw_num)
+            or ("s$" in context)
+            or ("sgd" in context)
+            or ("usd" in context)
+            or (u_norm in {"T", "B", "M", "K"})
+        )
+
+        # Kill tiny unitless integers (common false positives)
+        if not is_currency_like and u_norm != "%" and abs(parsed) < 10:
             continue
 
-        # Filter extreme values that are unlikely in market metrics
-        if abs(parsed) > 10_000_000:  # in billions this is astronomically large
+        # Kill absurdly huge values (sanity guard)
+        if abs(parsed) > 10_000_000:
             continue
 
         numbers.append({
-            "value": parsed,              # normalized comparable value (billions for currency-like units)
-            "unit": u_norm,               # normalized unit (T/B/M/%/K/..)
+            "value": parsed,
+            "unit": u_norm,
             "context": context,
-            "raw": f"{raw_num}{unit}".strip()
+            # Preserve original raw string shape for UI
+            "raw": f"{raw_num}{unit_raw}".strip()
         })
 
     return numbers
+
+
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
     """Calculate how well keywords match the context (deterministic)."""
