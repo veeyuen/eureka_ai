@@ -5169,26 +5169,56 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
     if diff.metric_diffs:
         metric_rows = []
 
-        def _fmt_currency_first(raw: str) -> str:
+        def _fmt_currency_first(raw: str, unit: str) -> str:
             """
-            Convert '29.8 S$B' -> 'S$29.8B'
-            Also handles: '29.8 $B' -> '$29.8B'
-            Leaves already-currency-first strings unchanged.
+            Formats evolution metrics as:
+            - S$29.8B
+            - $120M
+            - 29.8%
             """
             raw = (raw or "").strip()
+            unit = (unit or "").strip()
+
             if not raw or raw == "-":
                 return "-"
 
+            # If already currency-first, trust it
             if raw.startswith("S$") or raw.startswith("$"):
                 return raw
 
-            # Pattern: <num> <currency> <suffix?>
-            mm = re.match(r"^\s*([0-9.,]+)\s*(S\$|\$)\s*([A-Za-z%]+)?\s*$", raw)
-            if mm:
-                num, cur, suff = mm.group(1), mm.group(2), (mm.group(3) or "")
-                return f"{cur}{num}{suff}".strip()
+            # Percent case
+            if unit == "%":
+                return f"{raw}%"
 
-            return raw
+            # Detect currency from unit
+            currency = ""
+            scale = unit.replace(" ", "")
+
+            if scale.upper().startswith("SGD"):
+                currency = "S$"
+                scale = scale[3:]
+            elif scale.upper().startswith("USD"):
+                currency = "$"
+                scale = scale[3:]
+            elif scale.startswith("S$"):
+                currency = "S$"
+                scale = scale[2:]
+            elif scale.startswith("$"):
+                currency = "$"
+                scale = scale[1:]
+
+            # Human-readable units
+            if unit.lower().endswith("billion"):
+                return f"{currency}{raw} billion".strip()
+            if unit.lower().endswith("million"):
+                return f"{currency}{raw} million".strip()
+
+            # Compact units (B/M/K)
+            if scale.upper() in {"B", "M", "K"}:
+                return f"{currency}{raw}{scale}".strip()
+
+            # Fallback
+            return f"{currency}{raw} {unit}".strip()
 
         for m in diff.metric_diffs:
             icon = {
@@ -5204,8 +5234,8 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
             metric_rows.append({
                 "": icon,
                 "Metric": m.name,
-                "Previous": _fmt_currency_first(prev_raw),
-                "Current": _fmt_currency_first(curr_raw),
+                "Previous": _fmt_currency_first(prev_raw, getattr(m, "unit", "") or ""),
+                "Current":  _fmt_currency_first(curr_raw, getattr(m, "unit", "") or ""),
                 "Change": change_str,
                 "Status": m.change_type.replace('_', ' ').title()
             })
@@ -5213,9 +5243,6 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
         st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
     else:
         st.info("No metrics to compare")
-
-    st.markdown("---")
-
 
     st.markdown("---")
 
