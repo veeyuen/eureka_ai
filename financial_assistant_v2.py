@@ -6047,12 +6047,11 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Source-anchored evolution: refetch same sources (or reuse cache), extract numbers, and match metrics.
 
-    Fixes:
-    - Adds metric-specific keyword gates to prevent wrong percent/share matches:
-        * CAGR metrics require "cagr" in candidate context
-        * "home console share" requires both "home" and "console" in context
-        * share metrics require "share" OR strong metric-specific terms in context
-    - Keeps source provenance + weighting + projection boost
+    Hardening fixes (based on Germany run):
+    - Percent metrics MUST match candidates with unit '%' (no unitless integers allowed)
+      (prevents 'Jan 20' matching '29% industry share')
+    - Share metrics require 'share' or strong metric keywords in context
+    - Keeps source weighting + projection boost + cache reuse
     """
     prev_response = previous_data.get("primary_response", {}) or {}
     prev_sources = previous_data.get("web_sources", []) or prev_response.get("sources", []) or []
@@ -6095,12 +6094,10 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     def _source_weight(url: str) -> float:
         d = _domain(url)
-        if any(k in d for k in ["stb.gov.sg", "singstat.gov.sg", "mti.gov.sg", "gov.sg"]):
-            return 1.25
-        if any(k in d for k in ["wttc.org", "worldbank.org", "imf.org", "oecd.org", "unwto"]):
-            return 1.15
-        if "statista.com" in d:
+        if any(k in d for k in ["statista.com"]):
             return 1.05
+        if any(k in d for k in ["gov.", ".gov", "europa.eu", "oecd.org", "worldbank.org", "imf.org"]):
+            return 1.15
         if any(k in d for k in ["blog", "wordpress", "medium", "dmcquote"]):
             return 0.75
         return 1.0
@@ -6188,10 +6185,10 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         n = (metric_name or "").lower()
         if "cagr" in n or "growth rate" in n:
             return "percent"
-        if any(k in n for k in ["market size", "size", "revenue", "sales", "valuation", "projected", "forecast", "projection"]):
-            return "currency"
         if "share" in n:
             return "percent"
+        if any(k in n for k in ["gdp", "revenue", "sales", "market size", "valuation", "nominal"]):
+            return "currency"
         return "generic"
 
     def _candidate_has_money_signal(curr: Dict) -> bool:
@@ -6200,16 +6197,16 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         raw = (curr.get("raw") or "").lower()
         if u in {"T", "B", "M", "K"}:
             return True
-        if "$" in raw or "s$" in raw or "sgd" in ctx or "usd" in ctx:
+        if any(sym in raw for sym in ["$", "s$", "€", "eur"]):
             return True
-        if any(w in ctx for w in ["billion", "million", "trillion"]):
+        if any(w in ctx for w in ["billion", "million", "trillion", "eur", "euro", "usd", "sgd"]):
             return True
         return False
 
     def _candidate_year_penalty(curr: Dict) -> float:
         ctx = (curr.get("context") or "").lower()
-        if any(k in ctx for k in ["study period", "forecast period", "base year", "historical", "table of contents"]):
-            return 0.65
+        if any(k in ctx for k in ["table of contents", "archived content", "secure .gov", "copyright", "issn", "isbn"]):
+            return 0.55
         if re.search(r"(19|20)\d{2}\s*[-–to]+\s*(19|20)\d{2}", ctx):
             return 0.70
         return 1.0
@@ -6217,39 +6214,39 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     def _projection_phrase_boost(metric_name: str, context: str) -> float:
         n = (metric_name or "").lower()
         ctx = (context or "").lower()
-        if any(k in n for k in ["projected", "projection", "forecast", "expected", "by 203", "2030", "2033", "2035"]):
-            if any(p in ctx for p in ["expected to reach", "anticipated to reach", "is projected to", "will reach", "forecast to", "by 203"]):
-                return 1.20
+        if any(k in n for k in ["forecast", "projected", "projection", "expected", "outlook", "2025", "2026", "2030"]):
+            if any(p in ctx for p in ["forecast", "projected", "expected", "outlook", "will", "by 20"]):
+                return 1.15
         return 1.0
 
     def _keyword_gate(metric_name: str, context: str) -> bool:
         """
-        Hard gates to prevent incorrect matches for percent/share metrics.
+        Tight, metric-specific gating to avoid matching generic numbers.
         """
         n = (metric_name or "").lower()
         ctx = (context or "").lower()
 
-        # CAGR must actually mention CAGR
+        # Block obvious boilerplate contexts
+        if any(k in ctx for k in ["secure .gov", "archived content", "isbn", "issn", "table of contents"]):
+            return False
+
+        # CAGR must mention CAGR
         if "cagr" in n:
             return "cagr" in ctx
 
-        # Home console share must mention both home + console (or "home console")
-        if "home console" in n:
-            return ("home console" in ctx) or ("home" in ctx and "console" in ctx)
-
-        # Generic console share metrics: require console-like anchor
-        if "console" in n and "share" in n:
-            return "console" in ctx
-
-        # Share metrics should at least mention "share" OR the metric's key noun
+        # Shares must mention share (or strong anchor token)
         if "share" in n:
             if "share" in ctx:
                 return True
-            # fallback: try to require one strong token from metric name
-            for token in ["console", "handheld", "mobile", "pc", "hardware", "software"]:
+            # allow if metric has a clear noun and noun appears
+            for token in ["services", "industry", "manufacturing", "agriculture", "exports", "imports"]:
                 if token in n and token in ctx:
                     return True
             return False
+
+        # GDP metrics must mention gdp
+        if "gdp" in n:
+            return "gdp" in ctx
 
         return True
 
@@ -6278,12 +6275,12 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             ctx = curr.get("context", "")
 
-            # Keyword gate: prevents disposable-income CAGR stealing console CAGR, etc.
             if not _keyword_gate(metric_name, ctx):
                 continue
 
-            # Intent gating
+            # STRICT intent gating
             if intent == "percent":
+                # must truly be percent
                 if curr_unit != "%":
                     continue
             elif intent == "currency":
@@ -6300,7 +6297,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 if prev_unit and not curr_unit:
                     continue
 
-            # Ratio band (only if we have a meaningful previous value)
+            # Ratio band
             if prev_val and curr_val and prev_val != 0:
                 ratio = curr_val / prev_val
                 band = (0.65, 1.8) if intent == "currency" else (0.5, 2.0)
@@ -6321,13 +6318,11 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 best_score = combined
                 best_match = curr
 
-        # Threshold tweaks
         threshold = 0.62
-        n_l = (metric_name or "").lower()
-        if any(k in n_l for k in ["projected", "forecast", "projection", "expected", "by 203"]):
+        if "forecast" in (metric_name or "").lower():
             threshold = 0.58
-        if "cagr" in n_l or "share" in n_l:
-            threshold = 0.60  # keep slightly stricter due to common false matches
+        if "share" in (metric_name or "").lower() or "cagr" in (metric_name or "").lower():
+            threshold = 0.60
 
         if best_match and best_score > threshold:
             change_pct = compute_percent_change(prev_val, best_match["value"])
@@ -6433,11 +6428,12 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
     """
     Extract numbers with surrounding context for matching.
 
-    Fixes:
-    - Preserve S$ when present
-    - Converts nearby word scales into units (million/billion) BUT:
-        *Never infer B/M/K/T for 4-digit years* (prevents '$2024B' artifacts)
-    - Reject year+suffix magnitude tokens (2025t, 2033M, etc.)
+    Hardening fixes (based on latest Germany run):
+    - Absolutely prevent 4-digit years from acquiring magnitude units (B/M/K/T) or currency raw formats
+    - Prevent '$2022B' artifacts by:
+        * only treating '$' as currency if it is immediately adjacent to a non-year number OR the local window contains USD cues
+        * never prepending '$' to plain year tokens
+    - Infer word scales (million/billion) ONLY for non-year numbers
     - Reject 'times' artifacts like '2-3 times' -> '3t'
     """
     if not text:
@@ -6445,26 +6441,26 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
 
     numbers: List[Dict] = []
 
+    # Numeric token boundaries
     num_token = r"(?<!\d)(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?!\d)"
-    pattern = rf"(\(?\s*(?:S\$|\$)?\s*{num_token}\s*\)?)\s*(%|T|B|M|K|bn|mn)?"
+
+    # Capture optional currency symbol only if it directly precedes the number (no spaces),
+    # OR as a separate group so we can validate later.
+    # Example accepted: "$190.237", "S$29.8"
+    # Example rejected downstream: "$2022" (year-like)
+    pattern = rf"(?<!\w)(S\$|\$)?\s*({num_token})\s*(%|T|B|M|K|bn|mn|trillion|billion|million|thousand)?"
 
     unit_map = {"bn": "B", "mn": "M"}
 
-    def _window(s: str, pos: int, left: int = 90, right: int = 90) -> str:
+    def _window(s: str, pos: int, left: int = 100, right: int = 100) -> str:
         return (s[max(0, pos - left):min(len(s), pos + right)] or "")
 
-    def _detect_currency(s: str, pos: int, raw_num: str) -> str:
-        rn = raw_num or ""
-        if "S$" in rn:
-            return "S$"
-        if "$" in rn:
-            return "$"
-        w = _window(s, pos, 80, 80).lower()
-        if "s$" in w or "sgd" in w:
-            return "S$"
-        if "usd" in w or "$" in w:
-            return "$"
-        return ""
+    def _is_year_token(num_str: str) -> bool:
+        return bool(re.fullmatch(r"(19|20)\d{2}", (num_str or "").strip()))
+
+    def _looks_like_times_phrase(s: str, pos: int) -> bool:
+        w = _window(s, pos, 35, 35).lower()
+        return (" times" in w) or ("x the" in w) or (" x " in w)
 
     def _detect_word_scale(s: str, pos: int) -> str:
         w = _window(s, pos, 90, 90).lower()
@@ -6478,78 +6474,109 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
             return "T"
         return ""
 
-    def _looks_like_times_phrase(s: str, pos: int) -> bool:
-        w = _window(s, pos, 30, 30).lower()
-        return (" times" in w) or ("x the" in w) or (" x " in w)
+    def _currency_is_valid(sym: str, num_str: str, pos: int) -> bool:
+        """
+        '$' is only valid currency if:
+        - number is NOT a year token, AND
+        - either symbol is 'S$' OR local window suggests money (usd, dollars, sgd, € etc.)
+        This prevents '$2022' being treated as money.
+        """
+        if not sym:
+            return False
+        if _is_year_token(num_str):
+            return False
+        if sym == "S$":
+            return True
+        w = _window(text, pos, 80, 80).lower()
+        return any(k in w for k in ["usd", "dollar", "dollars", "us$", "sgd", "€", "eur", "million", "billion", "trillion"])
 
-    def _is_year_token(num_clean: str) -> bool:
-        return bool(re.fullmatch(r"(19|20)\d{2}", num_clean or ""))
+    def _normalize_unit(u_raw: str) -> str:
+        if not u_raw:
+            return ""
+        u = u_raw.strip()
+        u = unit_map.get(u.lower(), u)
+        # Word units
+        if u.lower() == "billion":
+            return "B"
+        if u.lower() == "million":
+            return "M"
+        if u.lower() == "thousand":
+            return "K"
+        if u.lower() == "trillion":
+            return "T"
+        return normalize_unit(u)
 
-    for match in re.finditer(pattern, text, re.IGNORECASE):
-        raw_num = (match.group(1) or "").strip()
-        unit_raw = (match.group(2) or "").strip()
+    for m in re.finditer(pattern, text, re.IGNORECASE):
+        sym = (m.group(1) or "").strip()
+        num_str = (m.group(2) or "").strip()
+        unit_raw = (m.group(3) or "").strip()
 
-        # Context window (used by matcher)
-        start = max(0, match.start() - 220)
-        end = min(len(text), match.end() + 220)
+        # Context window
+        start = max(0, m.start() - 220)
+        end = min(len(text), m.end() + 220)
         context = (text[start:end] or "").lower()
 
         if is_likely_junk_context(context):
             continue
 
-        # Clean numeric part
-        num_clean = (
-            raw_num.replace("S$", "")
-            .replace("$", "")
-            .replace(",", "")
-            .replace("(", "")
-            .replace(")", "")
-            .strip()
-        )
-
-        # Normalize explicit unit suffix
-        u = unit_map.get(unit_raw.lower(), unit_raw)
-        u_norm = normalize_unit(u)
-
-        # Reject year+suffix magnitude tokens outright (2025t, 2033M, etc.)
-        if _is_year_token(num_clean) and u_norm in {"T", "B", "M", "K"}:
+        # Reject times artifacts if unit looks like magnitude
+        u_norm = _normalize_unit(unit_raw)
+        if u_norm in {"T", "B", "M", "K"} and _looks_like_times_phrase(text, m.start()):
             continue
 
-        # Kill "2-3 times" artifacts (3t, etc.)
-        if u_norm in {"T", "B", "M", "K"} and _looks_like_times_phrase(text, match.start()):
+        # If this is a year token, we do NOT allow:
+        # - currency symbols
+        # - inferred word scales
+        # - explicit magnitude units
+        if _is_year_token(num_str):
+            # if unit explicitly indicates magnitude, reject
+            if u_norm in {"T", "B", "M", "K"}:
+                continue
+            # drop currency-marked years entirely (stops "$2023" pollution)
+            if sym in {"$", "S$"}:
+                continue
+
+            # Keep plain year as unitless, but it will usually be filtered later by matching gates
+            parsed_year = parse_human_number(num_str, "")
+            if parsed_year is None:
+                continue
+            numbers.append({
+                "value": float(parsed_year),
+                "unit": "",
+                "context": context,
+                "raw": num_str
+            })
             continue
 
-        # Infer unit from word scale *only if unit missing AND token is not a year*
-        if not u_norm and not _is_year_token(num_clean):
-            inferred = _detect_word_scale(text, match.start())
+        # For non-years: infer unit if missing and word-scale nearby
+        if not u_norm:
+            inferred = _detect_word_scale(text, m.start())
             if inferred:
                 u_norm = inferred
 
-        # IMPORTANT: if token is a year, never apply inferred magnitude units
-        if _is_year_token(num_clean) and u_norm in {"T", "B", "M", "K"}:
-            continue
-
-        parsed = parse_human_number(num_clean, u_norm)
+        parsed = parse_human_number(num_str, u_norm)
         if parsed is None:
             continue
 
-        currency = _detect_currency(text, match.start(), raw_num)
+        # Validate currency symbol usage
+        currency_prefix = ""
+        if sym and _currency_is_valid(sym, num_str, m.start()):
+            currency_prefix = sym
 
-        # Build raw display string
+        # Build raw output
         if u_norm == "%":
-            raw_out = f"{num_clean}%"
+            raw_out = f"{num_str}%"
+        elif u_norm in {"T", "B", "M", "K"}:
+            raw_out = f"{currency_prefix}{num_str}{u_norm}".strip()
         else:
-            if u_norm in {"T", "B", "M", "K"}:
-                raw_out = f"{currency}{num_clean}{u_norm}".strip()
-            else:
-                raw_out = f"{currency}{num_clean}".strip()
+            raw_out = f"{currency_prefix}{num_str}".strip()
 
         # Sanity guard
         if abs(parsed) > 10_000_000:
             continue
 
         numbers.append({
-            "value": parsed,
+            "value": float(parsed),
             "unit": u_norm,
             "context": context,
             "raw": raw_out
