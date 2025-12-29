@@ -5852,7 +5852,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         if any(k in n for k in [
             "market size", "receipts", "revenue", "sales",
             "valuation", "projected", "forecast", "projection"
-        ]):
+            ]):
             return "currency"
         return "generic"
 
