@@ -582,101 +582,212 @@ def repair_llm_response(data: dict) -> dict:
     """
     Repair common LLM JSON structure issues:
     - Convert primary_metrics from list to dict
-    - Ensure top_entities and trends_forecast are lists
+    - Ensure top_entities, trends_forecast, key_findings, sources are lists
     - Fix benchmark_table numeric values
-    - Add missing required fields
+    - Add missing required fields where safe
 
     Also:
-    - Remove 'action' block (no longer used)
+    - Remove 'action' / 'recommendations' style blocks (no longer used)
+
+    Design goals:
+    - Preserve currency + unit by keeping 'raw' when possible
+    - Avoid destructive parsing (never delete original strings)
     """
     if not isinstance(data, dict):
         return {}
 
-    # Fix primary_metrics: list → dict
-    if "primary_metrics" in data and isinstance(data["primary_metrics"], list):
+    # -------------------------
+    # Helpers
+    # -------------------------
+    def _ensure_list(v):
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        if isinstance(v, dict):
+            return list(v.values())
+        return []
+
+    def _coerce_metric_item(item: dict, fallback_name: str = "") -> dict:
+        """
+        Normalize a metric item to:
+          { name, value, unit, raw }
+        Preserve original formatting in raw whenever possible.
+        """
+        if not isinstance(item, dict):
+            return {"name": fallback_name or "N/A", "value": None, "unit": "", "raw": ""}
+
+        name = item.get("name") or fallback_name or "N/A"
+
+        # Keep whatever came in as the best "raw" truth
+        raw = item.get("raw")
+        if raw is None:
+            # fall back to concatenation if it looks like value+unit
+            v0 = item.get("value")
+            u0 = item.get("unit")
+            if isinstance(v0, str) and (u0 is None or u0 == ""):
+                raw = v0
+            elif v0 is None:
+                raw = ""
+            else:
+                raw = f"{v0}{u0 or ''}".strip()
+
+        # Value/unit
+        value = item.get("value", None)
+        unit = (item.get("unit") or "").strip()
+
+        # If value is a string and unit is missing, do NOT strip currency/unit away.
+        # Try light derivation of unit only; always preserve raw.
+        if isinstance(value, str) and not unit:
+            s = value.strip()
+            # Common currency prefixes we want to preserve via raw; unit can stay empty,
+            # but we can infer compact units for downstream formatting if helpful.
+            # Examples: "S$29.8B", "$66.1bn", "29.8 billion", "13.6 million"
+            m = re.search(r"(?i)(\btrillion\b|\bt\b|\bbillion\b|\bbn\b|\bb\b|\bmillion\b|\bmn\b|\bm\b|\bthousand\b|\bk\b|%)\s*$", s)
+            if m:
+                token = m.group(1).lower()
+                if token in {"%", }:
+                    unit = "%"
+                elif token in {"t", "trillion"}:
+                    unit = "T"
+                elif token in {"b", "bn", "billion"}:
+                    unit = "B"
+                elif token in {"m", "mn", "million"}:
+                    unit = "M"
+                elif token in {"k", "thousand"}:
+                    unit = "K"
+
+        # If value is numeric but unit is embedded in raw, preserve raw and keep unit if present.
+        if (isinstance(value, (int, float)) or value is None) and not unit and isinstance(raw, str) and raw:
+            m2 = re.search(r"(?i)(\btrillion\b|\bt\b|\bbillion\b|\bbn\b|\bb\b|\bmillion\b|\bmn\b|\bm\b|\bthousand\b|\bk\b|%)\s*$", raw.strip())
+            if m2:
+                token = m2.group(1).lower()
+                if token == "%":
+                    unit = "%"
+                elif token in {"t", "trillion"}:
+                    unit = "T"
+                elif token in {"b", "bn", "billion"}:
+                    unit = "B"
+                elif token in {"m", "mn", "million"}:
+                    unit = "M"
+                elif token in {"k", "thousand"}:
+                    unit = "K"
+
+        return {
+            "name": name,
+            "value": value,
+            "unit": unit,
+            "raw": raw,
+        }
+
+    # -------------------------
+    # Remove deprecated blocks
+    # -------------------------
+    for dead_key in [
+        "action",
+        "actions",
+        "recommendation",
+        "recommendations",
+        "next_steps",
+        "nextSteps",
+        "what_to_do_next",
+        "whatToDoNext",
+        "plan",
+        "playbook",
+    ]:
+        if dead_key in data:
+            data.pop(dead_key, None)
+
+    # -------------------------
+    # Ensure core fields exist (non-destructive defaults)
+    # -------------------------
+    data.setdefault("executive_summary", data.get("executiveSummary", ""))  # allow alias
+    if "executiveSummary" in data:
+        data.pop("executiveSummary", None)
+
+    # -------------------------
+    # Fix primary_metrics
+    # -------------------------
+    metrics = data.get("primary_metrics")
+
+    # If list -> dict
+    if isinstance(metrics, list):
         new_metrics = {}
-        for i, item in enumerate(data["primary_metrics"]):
-            if isinstance(item, dict):
-                raw_name = item.get("name", f"metric_{i+1}")
-                key = re.sub(r'[^a-z0-9_]', '', raw_name.lower().replace(" ", "_"))
-                if not key:
-                    key = f"metric_{i+1}"
-
-                original_key = key
-                j = 1
-                while key in new_metrics:
-                    key = f"{original_key}_{j}"
-                    j += 1
-
-                item.setdefault("name", raw_name)
-                item.setdefault("value", "N/A")
-                item.setdefault("unit", "")
-
-                new_metrics[key] = item
-
+        for i, item in enumerate(metrics):
+            if not isinstance(item, dict):
+                continue
+            key = item.get("id") or item.get("metric_id") or item.get("key") or item.get("name") or f"metric_{i+1}"
+            key = str(key).strip().replace(" ", "_")
+            new_metrics[key] = _coerce_metric_item(item, fallback_name=str(item.get("name") or key))
         data["primary_metrics"] = new_metrics
 
-    # Fix top_entities: ensure list
-    if "top_entities" in data:
-        if isinstance(data["top_entities"], dict):
-            data["top_entities"] = list(data["top_entities"].values())
-        elif not isinstance(data["top_entities"], list):
-            data["top_entities"] = []
+    # If dict -> normalize each item
+    elif isinstance(metrics, dict):
+        new_metrics = {}
+        for k, v in metrics.items():
+            key = str(k).strip()
+            if isinstance(v, dict):
+                new_metrics[key] = _coerce_metric_item(v, fallback_name=v.get("name") or key)
+            else:
+                # scalar -> treat as raw/value
+                new_metrics[key] = _coerce_metric_item({"name": key, "value": v, "unit": "", "raw": str(v)}, fallback_name=key)
+        data["primary_metrics"] = new_metrics
 
-    # Fix trends_forecast: ensure list
-    if "trends_forecast" in data:
-        if isinstance(data["trends_forecast"], dict):
-            data["trends_forecast"] = list(data["trends_forecast"].values())
-        elif not isinstance(data["trends_forecast"], list):
-            data["trends_forecast"] = []
+    else:
+        data["primary_metrics"] = {}
 
-    # Fix visualization_data: handle old 'labels'/'values' keys
-    if "visualization_data" in data and isinstance(data["visualization_data"], dict):
-        viz = data["visualization_data"]
-        if "labels" in viz and "chart_labels" not in viz:
-            viz["chart_labels"] = viz.pop("labels")
-        if "values" in viz and "chart_values" not in viz:
-            viz["chart_values"] = viz.pop("values")
+    # -------------------------
+    # Ensure list-like sections are lists
+    # -------------------------
+    data["top_entities"] = _ensure_list(data.get("top_entities"))
+    data["trends_forecast"] = _ensure_list(data.get("trends_forecast"))
+    data["key_findings"] = _ensure_list(data.get("key_findings"))
+    data["sources"] = _ensure_list(data.get("sources"))
 
-    # Fix benchmark_table numeric values
-    if "benchmark_table" in data and isinstance(data["benchmark_table"], list):
-        cleaned_table = []
-        for row in data["benchmark_table"]:
-            if isinstance(row, dict):
-                if "category" not in row:
-                    row["category"] = "Unknown"
+    # -------------------------
+    # Fix benchmark_table
+    # -------------------------
+    bt = data.get("benchmark_table")
+    if bt is None:
+        return data
 
-                for key in ["value_1", "value_2"]:
-                    if key not in row:
-                        row[key] = 0
-                        continue
+    if isinstance(bt, dict):
+        bt = list(bt.values())
 
-                    val = row[key]
+    if not isinstance(bt, list):
+        data["benchmark_table"] = []
+        return data
 
-                    if isinstance(val, str):
-                        val_upper = val.upper().strip()
-                        if val_upper in ["N/A", "NA", "NULL", "NONE", "", "-", "—"]:
-                            row[key] = 0
-                        else:
-                            try:
-                                cleaned = re.sub(r'[^\d.-]', '', val)
-                                if cleaned:
-                                    row[key] = float(cleaned) if '.' in cleaned else int(cleaned)
-                                else:
-                                    row[key] = 0
-                            except (ValueError, TypeError):
-                                row[key] = 0
-                    elif not isinstance(val, (int, float)):
-                        row[key] = 0
+    cleaned_table = []
+    for row in bt:
+        if not isinstance(row, dict):
+            continue
+        clean_row = {}
+        for key, val in row.items():
+            # Keep strings as-is (often labels)
+            if isinstance(val, str):
+                clean_row[key] = val
+                continue
 
-                cleaned_table.append(row)
+            # Coerce numeric-like values where appropriate
+            if isinstance(val, (int, float)):
+                clean_row[key] = val
+                continue
 
-        data["benchmark_table"] = cleaned_table
+            # None / unknown -> 0 for numeric table stability
+            if val is None:
+                clean_row[key] = 0
+                continue
 
-    # REMOVE 'action' block entirely (no longer relevant)
-    if "action" in data:
-        data.pop("action", None)
+            # Try float conversion, else 0
+            try:
+                clean_row[key] = float(val)
+            except Exception:
+                clean_row[key] = 0
 
+        cleaned_table.append(clean_row)
+
+    data["benchmark_table"] = cleaned_table
     return data
 
 
