@@ -7094,7 +7094,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         "summary": summary,
     }
 
-
 def extract_context_keywords(metric_name: str) -> List[str]:
     """Extract meaningful keywords from metric name for matching"""
     name_lower = metric_name.lower()
@@ -7359,7 +7358,6 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
     # Score between 0.35 and 1.0 depending on ratio
     return 0.35 + (match_ratio * 0.65)
 
-
 def render_source_anchored_results(results: Dict, query: str):
     """Render the results of source-anchored evolution analysis"""
 
@@ -7471,7 +7469,6 @@ def render_source_anchored_results(results: Dict, query: str):
                 f"- Detail: {detail}  \n"
                 f"- Numbers found: {numbers_found}"
             )
-
 
 
 # =========================================================
