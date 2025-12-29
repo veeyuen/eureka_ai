@@ -5849,7 +5849,10 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         n = (metric_name or "").lower()
         if "cagr" in n or "growth rate" in n:
             return "percent"
-        if any(k in n for k in ["market size", "receipts", "revenue", "sales", "valuation", "projected", "forecast", "projection"]):
+        if any(k in n for k in [
+            "market size", "receipts", "revenue", "sales",
+            "valuation", "projected", "forecast", "projection"
+        ]):
             return "currency"
         return "generic"
 
@@ -5857,6 +5860,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         u = normalize_unit(curr.get("unit", ""))
         ctx = (curr.get("context") or "").lower()
         raw = (curr.get("raw") or "").lower()
+
         if u in {"T", "B", "M", "K"}:
             return True
         if "$" in raw or "s$" in ctx or "sgd" in ctx or "usd" in ctx:
@@ -5866,14 +5870,17 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         return False
 
     def _candidate_year_penalty(curr: Dict) -> float:
-        # Penalize values that appear in study period / year-range contexts
         ctx = (curr.get("context") or "").lower()
-        if any(k in ctx for k in ["study period", "forecast period", "base year", "historical", "table of contents"]):
+        if any(k in ctx for k in [
+            "study period", "forecast period",
+            "base year", "historical", "table of contents"
+        ]):
             return 0.65
-        # Penalize "2024-2033", "2025 to 2033", etc.
         if re.search(r"(19|20)\d{2}\s*[-–to]+\s*(19|20)\d{2}", ctx):
             return 0.70
         return 1.0
+
+
 
     for metric_name, prev_item in prev_numbers.items():
         prev_val = prev_item["value"]
