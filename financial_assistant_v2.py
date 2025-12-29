@@ -2235,23 +2235,15 @@ def get_expected_metric_ids_for_category(category: str) -> List[str]:
     return []
 
 
-
 def classify_question_signals(query: str) -> Dict[str, Any]:
     """
-    Domain-agnostic question profiler.
-
-    Outputs (backward compatible + additive):
-      - category: 'country' | 'industry' | 'company' | 'generic'
+    Deterministically classify query and return:
+      - category: high-level bucket used for templates (country | industry | company | generic)
       - expected_metric_ids: list[str]
       - signals: list[str] (debuggable reasons)
-
-    New fields:
-      - entity_kind: 'country' | 'market' | 'company' | 'product' | 'topic_general'
-      - scope: 'broad_overview' | 'metrics_light' | 'metrics_heavy' | 'forecast_specific' | 'comparative'
-      - metric_template_id: generalized template name
-      - metric_tiers_enabled: [1] or [1,2] (tier 3 only when explicitly requested)
-      - intents: list[str] (size/growth/forecast/share/volume/price/segments/regions/players/trends/macro)
-      - preferred_source_classes: list[str] (search planning hint)
+      - years: list[int]
+      - regions: list[str]
+      - intents: list[str] (market_size, growth_forecast, competitive_landscape, pricing, regulation, consumer_demand, supply_chain, investment, macro_outlook)
     """
     q_raw = (query or "").strip()
     q = q_raw.lower().strip()
@@ -2262,51 +2254,160 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
             "category": "generic",
             "expected_metric_ids": [],
             "signals": ["empty_query"],
-            "entity_kind": "topic_general",
-            "scope": "broad_overview",
-            "metric_template_id": "ENTITY_OVERVIEW_TOPIC_V1",
-            "metric_tiers_enabled": [],
-            "preferred_source_classes": ["reference", "official_stats"],
-            "intents": [],
+            "years": [],
+            "regions": [],
+            "intents": []
         }
 
     # -------------------------
-    # Generic intent lexicon (domain-agnostic)
+    # 1) Extract years (deterministic)
     # -------------------------
-    broad_phrases = [
-        "tell me about", "in general", "overview", "explain", "background",
-        "introduction", "what is", "what are", "general information"
+    years: List[int] = []
+    try:
+        year_matches = re.findall(r"\b(19|20)\d{2}\b", q_raw)
+        # The regex above returns the first group; re-run with a non-capturing group to capture full year strings.
+        year_matches_full = re.findall(r"\b(?:19|20)\d{2}\b", q_raw)
+        years = sorted({int(y) for y in year_matches_full})
+        if years:
+            signals.append(f"years:{','.join(map(str, years[:8]))}")
+    except Exception:
+        years = []
+
+    # -------------------------
+    # 2) Extract regions/countries (best-effort deterministic; spaCy if available)
+    # -------------------------
+    regions: List[str] = []
+    try:
+        nlp = _try_spacy_nlp()
+        if nlp:
+            doc = nlp(q_raw)
+            gpes = [ent.text.strip() for ent in getattr(doc, "ents", []) if ent.label_ in ("GPE", "LOC")]
+            regions = []
+            for g in gpes:
+                if g and g.lower() not in [x.lower() for x in regions]:
+                    regions.append(g)
+            if regions:
+                signals.append(f"regions_spacy:{','.join(regions[:6])}")
+    except Exception:
+        pass
+
+    # Fallback: very lightweight region tokens
+    if not regions:
+        region_tokens = [
+            "singapore", "malaysia", "indonesia", "thailand", "vietnam", "philippines",
+            "china", "india", "japan", "korea", "australia",
+            "usa", "united states", "europe", "uk", "united kingdom",
+            "asean", "southeast asia", "sea", "global", "worldwide"
+        ]
+        hits = [t for t in region_tokens if t in q]
+        if hits:
+            # Keep original casing loosely (title-case single words)
+            regions = [h.title() if " " not in h else h.upper() if h in ("usa", "uk") else h.title() for h in hits[:6]]
+            signals.append(f"regions_kw:{','.join(hits[:6])}")
+
+    # -------------------------
+    # 3) Intent detection (domain-agnostic)
+    # -------------------------
+    intent_patterns: Dict[str, List[str]] = {
+        "market_size": ["market size", "tam", "total addressable market", "how big", "size of the market", "market value"],
+        "growth_forecast": ["cagr", "forecast", "projection", "by 20", "growth rate", "expected to", "outlook", "trend"],
+        "competitive_landscape": ["key players", "competitors", "market share", "top companies", "leading players", "who are the players"],
+        "pricing": ["pricing", "price", "asp", "average selling price", "cost", "margins"],
+        "consumer_demand": ["demand", "users", "penetration", "adoption", "consumer", "customer", "behavior"],
+        "supply_chain": ["supply", "capacity", "production", "manufacturing", "inventory", "shipment", "lead time"],
+        "regulation": ["regulation", "policy", "law", "compliance", "tax", "tariff", "subsidy"],
+        "investment": ["investment", "capex", "funding", "valuation", "roi", "profit", "ebitda"],
+        "macro_outlook": ["gdp", "inflation", "interest rate", "policy rate", "exports", "imports", "currency", "exchange rate", "per capita"],
+    }
+
+    intents: List[str] = []
+    for intent, pats in intent_patterns.items():
+        if any(p in q for p in pats):
+            intents.append(intent)
+
+    # Small disambiguation: "by 2030" etc. strongly suggests forecast if years exist
+    if years and "growth_forecast" not in intents and any(yr >= 2025 for yr in years):
+        intents.append("growth_forecast")
+
+    if intents:
+        signals.append(f"intents:{','.join(intents[:10])}")
+
+    # -------------------------
+    # 4) Category decision (template driver)
+    # -------------------------
+    # Keep it coarse: country vs industry vs company vs generic
+    country_kw = [
+        "gdp", "per capita", "population", "exports", "imports",
+        "inflation", "cpi", "interest rate", "policy rate", "central bank",
+        "currency", "exchange rate"
+    ]
+    company_kw = ["revenue", "earnings", "profit", "ebitda", "guidance", "quarter", "fy", "10-k", "10q", "balance sheet"]
+    industry_kw = [
+        "market", "industry", "sector", "tam", "cagr", "market size", "market share",
+        "key players", "competitors", "pricing", "forecast", "outlook"
     ]
 
-    comparative_kw = ["vs", "versus", "compare", "comparison", "relative to", "difference between", "differences between"]
-    forecast_kw = ["forecast", "projection", "projected", "outlook", "by 20", "next year", "future", "over the next", "expected to"]
+    country_hits = [k for k in country_kw if k in q]
+    company_hits = [k for k in company_kw if k in q]
+    industry_hits = [k for k in industry_kw if k in q]
 
-    # Market-ish terms (but still generic)
-    market_entity_kw = ["market", "industry", "sector", "category", "tAM", "tam", "sam", "som"]
+    # If macro intent is present, strongly bias to country
+    if "macro_outlook" in intents and (regions or country_hits):
+        category = "country"
+        signals.append("category_rule:macro_outlook_bias_country")
+    elif company_hits and not industry_hits:
+        category = "company"
+        signals.append(f"category_rule:company_keywords:{','.join(company_hits[:5])}")
+    elif industry_hits and not country_hits:
+        category = "industry"
+        signals.append(f"category_rule:industry_keywords:{','.join(industry_hits[:5])}")
+    elif industry_hits and country_hits:
+        # tie-break: if market sizing/competitive signals exist -> industry; if macro_outlook -> country
+        if "macro_outlook" in intents:
+            category = "country"
+            signals.append("category_rule:mixed_signals_macro_wins")
+        else:
+            category = "industry"
+            signals.append("category_rule:mixed_signals_default_to_industry")
+    else:
+        category = "generic"
+        signals.append("category_rule:no_template_keywords")
 
-    # Company-ish terms
-    company_entity_kw = ["company", "firm", "inc", "ltd", "corp", "revenue", "earnings", "profit", "margin", "market cap", "valuation", "p/e", "ebitda"]
+    # -------------------------
+    # 5) Expected metric IDs (category + intent)
+    # -------------------------
+    expected_metric_ids: List[str] = []
+    try:
+        expected_metric_ids = get_expected_metric_ids_for_category(category) or []
+    except Exception:
+        expected_metric_ids = []
 
-    # Country/macro-ish terms
-    country_entity_kw = ["gdp", "population", "inflation", "cpi", "unemployment", "exports", "imports", "currency", "interest rate", "central bank", "policy rate"]
-
-    # Product-ish terms (light heuristic)
-    product_entity_kw = ["price", "cost", "specs", "features", "model", "version", "battery", "camera", "performance"]
-
-    # Intent triggers
-    intent_triggers: Dict[str, List[str]] = {
-        "size": ["market size", "size of", "worth", "value", "revenue", "sales", "spending", "receipts", "tAM", "tam", "sam", "som"],
-        "growth": ["cagr", "growth rate", "growing", "increase", "decrease", "decline", "expand"],
-        "forecast": ["forecast", "projection", "projected", "outlook", "expected", "by 20", "future", "over the next"],
-        "share": ["share", "market share", "penetration", "contribution", "portion"],
-        "volume": ["volume", "units", "shipments", "users", "visits", "visitors", "arrivals", "consumption", "demand"],
-        "price": ["price", "pricing", "cost", "average price", "asp", "arpu"],
-        "segments": ["segment", "segmentation", "by channel", "by type", "breakdown", "split"],
-        "regions": ["region", "regional", "by country", "apac", "emea", "north america", "europe", "asia", "china", "india", "us", "usa"],
-        "players": ["top players", "key players", "major players", "leaders", "companies", "brands", "competitors"],
-        "trends": ["trend", "trends", "drivers", "tailwinds", "headwinds", "what's driving", "what is driving"],
-        "macro": ["gdp", "inflation", "unemployment", "exports", "imports", "interest rate", "currency"],
+    # Add a few intent-driven metric IDs (only if your registry supports them)
+    intent_metric_suggestions = {
+        "market_size": ["market_size", "market_size_2024", "market_size_2025"],
+        "growth_forecast": ["cagr", "forecast_period", "market_size_2030"],
+        "competitive_landscape": ["market_share", "top_players"],
+        "pricing": ["avg_price", "asp"],
+        "consumer_demand": ["users", "penetration", "arpu"],
+        "supply_chain": ["capacity", "shipments"],
+        "investment": ["capex", "profit", "ebitda"],
+        "macro_outlook": ["gdp", "inflation", "interest_rate", "exchange_rate"],
     }
+
+    for intent in intents:
+        for mid in intent_metric_suggestions.get(intent, []):
+            if mid not in expected_metric_ids:
+                expected_metric_ids.append(mid)
+
+    return {
+        "category": category,
+        "expected_metric_ids": expected_metric_ids,
+        "signals": signals,
+        "years": years,
+        "regions": regions,
+        "intents": intents
+    }
+
 
     def _contains_any(needle_list: List[str]) -> bool:
         return any(k in q for k in needle_list)
@@ -7064,73 +7165,90 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     """
     Build a question_profile used for structured reporting.
 
-    Fixes:
-    - Normalizes qs.category 'market' -> 'industry' for backward compatibility
-    - Keeps deterministic entity_kind/scope/template/intents from classify_question_signals
-    - Ensures expected_metric_ids are consistent and present in signals for dashboards/evolution.
+    IMPORTANT:
+      - category must follow query_structure if provided (single source of truth).
+      - signals can be rich, but must not contradict the chosen category.
     """
     qs = qs or {}
     q = (query or "").strip()
 
-    det = classify_question_signals(q) or {}
-
-    # Prefer category from query_structure if present
-    category_from_qs = (qs.get("category") or "").strip().lower()
-
-    # Back-compat normalization: many older parts of the codebase assume "industry"
-    if category_from_qs == "market":
-        category_from_qs = "industry"
-
-    category = category_from_qs or (det.get("category") or "unknown")
-    if category == "market":
-        category = "industry"
-
+    # Prefer category/main/side from query_structure when available
+    category = (qs.get("category") or "").strip() or "unknown"
     main_q = (qs.get("main") or "").strip() or q
     side_qs = qs.get("side") if isinstance(qs.get("side"), list) else []
 
-    # Build signals dict that dashboards consume
+    # Deterministic signals (richer classifier)
+    base = classify_question_signals(q) or {}
+
+    # Force category + expected_metric_ids to match query_structure category
+    # (but preserve other extracted info like years/regions/intents)
     signals: Dict[str, Any] = {}
-    signals["signals"] = det.get("signals", []) if isinstance(det.get("signals"), list) else []
-    signals["entity_kind"] = det.get("entity_kind", "topic_general")
-    signals["scope"] = det.get("scope", "broad_overview")
-    signals["metric_template_id"] = det.get("metric_template_id", "ENTITY_OVERVIEW_TOPIC_V1")
-    signals["metric_tiers_enabled"] = det.get("metric_tiers_enabled", [])
-    signals["preferred_source_classes"] = det.get("preferred_source_classes", [])
-    signals["intents"] = det.get("intents", [])
-
-    # Normalize template to the final category if qs overrides
-    template_id = signals.get("metric_template_id") or "ENTITY_OVERVIEW_TOPIC_V1"
-    scope = (signals.get("scope") or "broad_overview").strip().lower()
-
-    if category == "country":
-        template_id = "ENTITY_OVERVIEW_COUNTRY_LIGHT_V1"
-    elif category == "company":
-        template_id = "ENTITY_OVERVIEW_COMPANY_LIGHT_V1"
-    elif category == "industry":
-        template_id = "ENTITY_OVERVIEW_MARKET_HEAVY_V1" if scope in {"metrics_heavy", "comparative"} else "ENTITY_OVERVIEW_MARKET_LIGHT_V1"
-    elif category == "generic":
-        template_id = "ENTITY_OVERVIEW_TOPIC_V1"
-
     signals["category"] = category
-    signals["metric_template_id"] = template_id
 
-    # Determine expected ids:
-    expected_metric_ids = det.get("expected_metric_ids") if isinstance(det.get("expected_metric_ids"), list) else []
+    # Carry over extracted fields
+    signals["years"] = base.get("years", []) or []
+    signals["regions"] = base.get("regions", []) or []
+    signals["intents"] = base.get("intents", []) or []
 
-    # If qs forces category, regenerate from template for consistency
-    if category_from_qs:
-        expected_metric_ids = get_expected_metric_ids_for_category(template_id)
+    # Keep raw signals for debugging
+    raw_hits = list(base.get("signals") or [])
+    signals["raw_signals"] = raw_hits
 
-    # Always store expected IDs inside signals
+    def _signal_consistent_with_category(sig: str, cat: str) -> bool:
+        s = (sig or "").lower()
+        c = (cat or "").lower()
+        if not s:
+            return False
+
+        # If final category is country, drop industry/company category-rule strings
+        if c == "country":
+            if "industry_keywords" in s or "mixed_signals_default_to_industry" in s or "company_keywords" in s:
+                return False
+
+        # If final category is industry, drop explicit country-rule strings
+        if c == "industry":
+            if "macro_outlook_bias_country" in s or "country_keywords" in s:
+                return False
+
+        return True
+
+    signals["signals"] = [s for s in raw_hits if _signal_consistent_with_category(s, category)]
+
+    # Expected metric IDs: always determined by the final category, then lightly enriched by intents (optional)
+    expected_metric_ids: List[str] = []
+    try:
+        expected_metric_ids = get_expected_metric_ids_for_category(category) or []
+    except Exception:
+        expected_metric_ids = []
+
+    # Optional: enrich with intent-based suggestions (won't remove anything)
+    intent_metric_suggestions = {
+        "market_size": ["market_size", "market_size_2024", "market_size_2025"],
+        "growth_forecast": ["cagr", "market_size_2030"],
+        "competitive_landscape": ["market_share", "top_players"],
+        "pricing": ["avg_price", "asp"],
+        "consumer_demand": ["users", "penetration", "arpu"],
+        "supply_chain": ["capacity", "shipments"],
+        "investment": ["capex", "profit", "ebitda"],
+        "macro_outlook": ["gdp", "inflation", "interest_rate", "exchange_rate"],
+    }
+
+    intents = signals.get("intents") or []
+    for intent in intents:
+        for mid in intent_metric_suggestions.get(intent, []):
+            if mid not in expected_metric_ids:
+                expected_metric_ids.append(mid)
+
     signals["expected_metric_ids"] = expected_metric_ids
 
-    profile = {
+    profile: Dict[str, Any] = {
         "category": category,
         "signals": signals,
         "main_question": main_q,
         "side_questions": side_qs,
     }
 
+    # Keep debug for traceability
     if qs.get("debug") is not None:
         profile["debug_query_structure"] = qs.get("debug")
 
