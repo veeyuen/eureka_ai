@@ -5715,32 +5715,59 @@ def build_prev_numbers(prev_metrics: Dict) -> Dict[str, Dict]:
     return prev_numbers
 
 
-
 def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Re-fetch the SAME sources from previous analysis and extract current numbers.
     Deterministic + context-aware matching.
-    Fixes:
-      - schema lookup (canonical_id vs display name mismatch)
-      - asserts before variable init
-      - baseline reuse ordering
+
+    Improvements in this version:
+    - Adds clear per-source outcome taxonomy:
+        fetched_extracted / fetched_unusable / failed / skipped_recent_baseline
+    - Adds projection phrase boost so "expected to reach / by 2033" candidates win
+    - Keeps intent gating (percent vs currency) and year-range penalties
     """
     prev_response = previous_data.get("primary_response", {}) or {}
     prev_sources = previous_data.get("web_sources", []) or prev_response.get("sources", []) or []
 
-    # Always define this early (avoids undefined references in error paths)
     sources_to_check = prev_sources[:5]
 
     frozen_schema = prev_response.get("metric_schema_frozen", {}) or {}
+    prev_metrics = prev_response.get("primary_metrics", {}) or {}
 
-    # --------- No sources: safe early return (no undefined vars) ----------
-    if not prev_sources:
+    # Normalize baseline cache
+    try:
+        baseline_sources_cache = (
+            previous_data.get("results", {})
+            .get("source_results", [])
+            or previous_data.get("source_results", [])
+            or []
+        )
+    except Exception:
+        baseline_sources_cache = []
+
+    if isinstance(baseline_sources_cache, dict):
+        baseline_sources_cache = (
+            baseline_sources_cache.get("source_results")
+            or baseline_sources_cache.get("sources")
+            or baseline_sources_cache.get("items")
+            or []
+        )
+
+    if not isinstance(baseline_sources_cache, list):
+        baseline_sources_cache = []
+
+    # Fast path: if baseline is very recent and reuse policy is enabled, skip refetch
+    # (Keep your existing behavior if your code sets these flags upstream)
+    if previous_data.get("baseline_recent_reuse") is True:
         return {
-            "status": "no_sources",
-            "message": "No sources found in previous analysis. Please run a new analysis first.",
-            "sources_checked": 0,
+            "status": "success",
+            "sources_checked": len(sources_to_check),
             "sources_fetched": 0,
-            "source_results": [],
+            "sources_extracted": 0,
+            "source_results": [
+                {"url": u, "status": "skipped_recent_baseline", "status_detail": "baseline_recent_reuse", "numbers_found": 0}
+                for u in sources_to_check
+            ],
             "metric_changes": [],
             "stability": {
                 "system_stability_pct": 100.0,
@@ -5755,95 +5782,25 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 "metrics_stable": 0,
                 "metrics_increased": 0,
                 "metrics_decreased": 0,
-                "metrics_not_found": 0
+                "metrics_not_found": 0,
             }
         }
 
-    # --------- Build previous metrics (must happen before baseline reuse) ----------
-    prev_metrics = prev_response.get("primary_metrics", {}) or {}
+    # Build prev_numbers (your function exists in file; we rely on it)
     prev_numbers = build_prev_numbers(prev_metrics)
 
-    # --------- Baseline reuse gating ----------
-    BASELINE_REUSE_HOURS = 24
-    baseline_ts = None
-
-    baseline_ts_raw = prev_response.get("timestamp") or previous_data.get("timestamp")
-    baseline_ts = _parse_iso_dt(str(baseline_ts_raw)) if baseline_ts_raw else None
-
-    baseline_is_recent = (
-        baseline_ts is not None and
-        (now_utc() - baseline_ts).total_seconds() < BASELINE_REUSE_HOURS * 3600
-    )
-
-
-    if baseline_is_recent:
-        metric_changes = []
-        for metric_name, prev_item in prev_numbers.items():
-            metric_changes.append({
-                "name": metric_name,
-                "previous_value": prev_item["raw"],
-                "current_value": prev_item["raw"],
-                "change_pct": 0.0,
-                "change_type": "unchanged",
-                "match_confidence": 100.0,
-                "context_snippet": "baseline_recent_reuse"
-            })
-
-        summary = {
-            "total_metrics": len(metric_changes),
-            "metrics_found": len(metric_changes),
-            "metrics_unchanged": len(metric_changes),
-            "metrics_stable": len(metric_changes),
-            "metrics_increased": 0,
-            "metrics_decreased": 0,
-            "metrics_not_found": 0,
-        }
-        return {
-            "status": "success",
-            "sources_checked": len(sources_to_check),
-            "sources_fetched": 0,
-            "source_results": [
-                {"url": u, "status": "skipped_recent_baseline", "status_detail": "baseline_recent_reuse", "numbers_found": 0}
-                for u in sources_to_check
-            ],
-            "metric_changes": metric_changes,
-            "stability": {
-                "system_stability_pct": 100.0,
-                "data_change_detected": 0,
-                "metrics_compared": len(metric_changes)
-            },
-            "stability_score": 100.0,
-            "summary": summary
-        }
-
-    # --------- Re-fetch sources and extract numbers ----------
-    source_results = []
-    all_current_numbers = []
-
-    # Baseline cached content (optional) — stored from the original run
-    baseline_sources_cache = []
+    # Map metric display name -> canonical id (for frozen schema lookup)
+    metric_name_to_canonical = {}
     try:
-        baseline_sources_cache = (
-            previous_data.get("baseline_sources_cache")
-            or prev_response.get("baseline_sources_cache")
-            or []
-        )
+        canon = canonicalize_metrics(prev_metrics)
+        for cid, m in canon.items():
+            metric_name_to_canonical[m.get("name", m.get("original_name", cid))] = cid
     except Exception:
-        baseline_sources_cache = []
+        metric_name_to_canonical = {}
 
-    # If someone stored this as a dict wrapper, normalize to a list
-    if isinstance(baseline_sources_cache, dict):
-        baseline_sources_cache = (
-            baseline_sources_cache.get("source_results")
-            or baseline_sources_cache.get("sources")
-            or baseline_sources_cache.get("items")
-            or []
-        )
-
-    if not isinstance(baseline_sources_cache, list):
-        baseline_sources_cache = []
-
-
+    # ---- Fetch sources & extract numbers ----
+    source_results = []
+    all_current_numbers: List[Dict] = []
 
     for url in sources_to_check:
         content, status_msg = fetch_url_content_with_status(url)
@@ -5852,49 +5809,49 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             content_fingerprint = fingerprint_text(content)
             numbers = extract_numbers_with_context(content)
 
-            # Compact cache: store extracted numbers + short context snippets (avoid storing full content)
-
-
-            numbers_compact = [
-            {
+            numbers_compact = [{
                 "value": n.get("value"),
                 "unit": n.get("unit"),
                 "raw": n.get("raw"),
-                "context_snippet": (n.get("context") or "")[:200]
-            }
-            for n in numbers
-        ]
+                "context": (n.get("context", "")[:220] if isinstance(n.get("context"), str) else "")
+            } for n in numbers]
 
-            source_results.append({
-                "url": url,
-                "status": "fetched",
-                "status_detail": status_msg,
-                "numbers_found": len(numbers),
-                "fingerprint": content_fingerprint,
-                "fetched_at": now_utc().isoformat(),
-                "extracted_numbers": numbers_compact
-            })
-
-            all_current_numbers.extend(numbers)
+            if numbers_compact:
+                source_results.append({
+                    "url": url,
+                    "status": "fetched_extracted",
+                    "status_detail": "success",
+                    "numbers_found": len(numbers_compact),
+                    "fingerprint": content_fingerprint,
+                    "fetched_at": now_utc().isoformat(),
+                    "extracted_numbers": numbers_compact
+                })
+                all_current_numbers.extend(numbers)
+            else:
+                # fetched but unusable (paywall/JS/etc.)
+                source_results.append({
+                    "url": url,
+                    "status": "fetched_unusable",
+                    "status_detail": "success_but_no_numbers",
+                    "numbers_found": 0,
+                    "fingerprint": content_fingerprint,
+                    "fetched_at": now_utc().isoformat(),
+                    "extracted_numbers": []
+                })
 
         else:
-
-            # baseline_sources_cache is normalized to a LIST of dicts
+            # Reuse cached extracted numbers if present
             cached_numbers = []
-
-            # Find cached extracted_numbers for this URL
             for s in baseline_sources_cache:
                 if not isinstance(s, dict):
                     continue
                 if s.get("url") != url:
                     continue
-
                 extracted = s.get("extracted_numbers") or []
                 if isinstance(extracted, list):
                     cached_numbers.extend(extracted)
 
             if cached_numbers:
-                # Cache contains already-extracted numbers in the same shape as extract_numbers_with_context()
                 source_results.append({
                     "url": url,
                     "status": "failed_but_reused_cache",
@@ -5904,35 +5861,27 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     "fetched_at": now_utc().isoformat(),
                     "extracted_numbers": cached_numbers
                 })
-                all_current_numbers.extend(cached_numbers)
+
+                # cached_numbers are already compact; rebuild minimal objects for matching
+                for cn in cached_numbers:
+                    all_current_numbers.append({
+                        "value": cn.get("value"),
+                        "unit": cn.get("unit"),
+                        "raw": cn.get("raw"),
+                        "context": cn.get("context", "")
+                    })
             else:
                 source_results.append({
                     "url": url,
                     "status": "failed",
-                    "status_detail": status_msg,
+                    "status_detail": status_msg or "fetch_failed",
                     "numbers_found": 0,
+                    "fingerprint": None,
                     "fetched_at": now_utc().isoformat(),
+                    "extracted_numbers": []
                 })
 
-
-
-
-    # --------- Match metrics using context + value similarity ----------
-    metric_changes = []
-
-    # Optional: use canonicalization to enforce frozen schema units (correctly)
-    # frozen_schema keys are canonical_id (from freeze_metric_schema)
-    # We map metric_name -> canonical_id once for lookup.
-    metric_name_to_canonical = {}
-    try:
-        canon = canonicalize_metrics(prev_metrics)
-        for cid, m in canon.items():
-            # m["original_name"] is the original metric label
-            metric_name_to_canonical[m.get("name", m.get("original_name", cid))] = cid
-    except Exception:
-        metric_name_to_canonical = {}
-
-
+    # ---- Matching helpers ----
     def _metric_intent(metric_name: str) -> str:
         n = (metric_name or "").lower()
         if "cagr" in n or "growth rate" in n:
@@ -5940,7 +5889,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         if any(k in n for k in [
             "market size", "receipts", "revenue", "sales",
             "valuation", "projected", "forecast", "projection"
-            ]):
+        ]):
             return "currency"
         return "generic"
 
@@ -5959,16 +5908,23 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     def _candidate_year_penalty(curr: Dict) -> float:
         ctx = (curr.get("context") or "").lower()
-        if any(k in ctx for k in [
-            "study period", "forecast period",
-            "base year", "historical", "table of contents"
-        ]):
+        if any(k in ctx for k in ["study period", "forecast period", "base year", "historical", "table of contents"]):
             return 0.65
         if re.search(r"(19|20)\d{2}\s*[-–to]+\s*(19|20)\d{2}", ctx):
             return 0.70
         return 1.0
 
+    def _projection_phrase_boost(metric_name: str, context: str) -> float:
+        n = (metric_name or "").lower()
+        ctx = (context or "").lower()
+        if any(k in n for k in ["projected", "projection", "forecast", "expected", "by 203", "2030", "2031", "2032", "2033", "2034", "2035"]):
+            # Boost candidates that look like true projection sentences
+            if any(p in ctx for p in ["expected to reach", "anticipated to reach", "is projected to", "will reach", "to reach", "by 203", "forecast to"]):
+                return 1.20
+        return 1.0
 
+    # ---- Metric matching ----
+    metric_changes: List[Dict] = []
 
     for metric_name, prev_item in prev_numbers.items():
         prev_val = prev_item["value"]
@@ -5991,32 +5947,27 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             if curr_val is None:
                 continue
 
-            # -------- Intent gating (prevents unitless junk like '3') ----------
+            # Intent gating
             if intent == "percent":
-                # Require percent-like unit
                 if curr_unit != "%":
                     continue
             elif intent == "currency":
-                # Require money signal (unit magnitude or currency markers)
                 if not _candidate_has_money_signal(curr):
                     continue
 
-            # -------- Unit gating ----------
+            # Unit gating
             if locked_unit:
                 if curr_unit and curr_unit != locked_unit:
                     continue
             else:
-                # If both have units, require exact match
                 if prev_unit and curr_unit and prev_unit != curr_unit:
                     continue
-                # If previous had a unit but current does not, reject (prevents unit loss)
                 if prev_unit and not curr_unit:
                     continue
 
-            # -------- Ratio filter (tighten for currency metrics) ----------
+            # Ratio filter
             if prev_val and curr_val and prev_val != 0:
                 ratio = curr_val / prev_val
-                # tighter band for currency-like (reduces drift)
                 band = (0.7, 1.6) if intent == "currency" else (0.5, 2.0)
                 if not (band[0] <= ratio <= band[1]):
                     continue
@@ -6025,18 +5976,21 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 continue
 
             context_score = calculate_context_match(prev_keywords, curr.get("context", ""))
-
-            # Penalize year-range / boilerplate contexts
             penalty = _candidate_year_penalty(curr)
+            boost = _projection_phrase_boost(metric_name, curr.get("context", ""))
 
-            # Combined score (more weight on context, but penalty can knock out garbage)
-            combined = penalty * ((0.4 * value_score) + (0.6 * context_score))
+            combined = boost * penalty * ((0.4 * value_score) + (0.6 * context_score))
 
             if combined > best_score:
                 best_score = combined
                 best_match = curr
 
-        if best_match and best_score > 0.62:
+        # slightly lower threshold for projection-like metrics when boosted
+        threshold = 0.62
+        if any(k in (metric_name or "").lower() for k in ["projected", "forecast", "projection", "expected", "by 203"]):
+            threshold = 0.58
+
+        if best_match and best_score > threshold:
             change_pct = compute_percent_change(prev_val, best_match["value"])
 
             if change_pct is None or abs(change_pct) < 5:
@@ -6048,118 +6002,72 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_item["raw"],
+                "previous_value": prev_item.get("raw") or str(prev_item.get("raw_value", "")),
                 "current_value": best_match.get("raw", ""),
                 "change_pct": change_pct,
                 "change_type": change_type,
-                "match_confidence": round(best_score * 100, 1),
+                "match_confidence": round(min(best_score, 1.0) * 100, 1),
                 "context_snippet": (best_match.get("context", "")[:140] if best_match.get("context") else "")
             })
         else:
             metric_changes.append({
                 "name": metric_name,
-                "previous_value": prev_item["raw"],
+                "previous_value": prev_item.get("raw") or str(prev_item.get("raw_value", "")),
                 "current_value": "Not found (no confident match)",
                 "change_pct": None,
                 "change_type": "not_found",
-                "match_confidence": round(best_score * 100, 1) if best_match else 0.0,
+                "match_confidence": round(min(best_score, 1.0) * 100, 1) if best_match else 0.0,
                 "context_snippet": ""
             })
 
-
-
-    # --------- Stability scoring (transparent + consistent) ----------
+    # ---- Stability scoring (found-only, transparent) ----
     found = [m for m in metric_changes if m["change_type"] != "not_found"]
     found_count = len(found)
+    unchanged_count = sum(1 for m in found if m["change_type"] == "unchanged")
 
-    unchanged = [m for m in found if m["change_type"] == "unchanged"]
-    unchanged_count = len(unchanged)
-
-    # Define "stable_by_delta": unchanged OR within tolerance band
     tolerance_pct = 10.0
-    stable_by_delta = [
-        m for m in found
-        if (m["change_type"] == "unchanged")
+    stable_by_delta_count = sum(
+        1 for m in found
+        if m["change_type"] == "unchanged"
         or (m.get("change_pct") is not None and abs(m["change_pct"]) < tolerance_pct)
-    ]
-    stable_by_delta_count = len(stable_by_delta)
+    )
 
-    # Define "high_confidence" so you can debug noisy matches
-    high_conf = [m for m in found if (m.get("match_confidence") or 0) >= 80.0]
-    high_conf_count = len(high_conf)
-
-    if found_count > 0:
-        stability_pct = (stable_by_delta_count / found_count) * 100.0
-    else:
-        stability_pct = 100.0
+    stability_pct = (stable_by_delta_count / found_count * 100.0) if found_count else 100.0
 
     summary = {
         "total_metrics": len(metric_changes),
         "metrics_found": found_count,
         "metrics_unchanged": unchanged_count,
-
-        # keep the existing key, but now it's explicitly "stable_by_delta"
         "metrics_stable": stable_by_delta_count,
-
         "metrics_increased": sum(1 for m in found if m["change_type"] == "increased"),
         "metrics_decreased": sum(1 for m in found if m["change_type"] == "decreased"),
         "metrics_not_found": sum(1 for m in metric_changes if m["change_type"] == "not_found"),
-
-        # new diagnostics (safe additive)
-        "metrics_high_confidence": high_conf_count,
+        "metrics_high_confidence": sum(1 for m in found if (m.get("match_confidence") or 0) >= 80.0),
         "stability_tolerance_pct": tolerance_pct,
     }
-
-    results_stability_score = round(stability_pct, 1)
-
-
-    # Determinism guard: source order must remain identical
-    # Uncomment the 2 lines below for old method
-  #  assert sources_to_check == prev_sources[:len(sources_to_check)], \
-  #      "Source order mutation detected – evolution must be deterministic"
-    if sources_to_check != prev_sources[:len(sources_to_check)]:
-        st.error(
-            "❌ Source order mutation detected.\n\n"
-            "Evolution analysis requires the exact same sources in the same order "
-            "to remain deterministic.\n\n"
-            "Please rerun the baseline analysis."
-        )
-        return {
-            "status": "error",
-            "message": "Source order mutation detected – determinism violated",
-            "sources_checked": len(sources_to_check),
-            "sources_fetched": 0,
-            "source_results": [],
-            "metric_changes": [],
-            "stability_score": 0.0,
-            "summary": {}
-        }
-
-
-
-    # 🔒 Ensure status_detail always exists
-    for src in source_results:
-        if 'status_detail' not in src:
-            src['status_detail'] = 'unknown'
 
     return {
         "status": "success",
         "sources_checked": len(sources_to_check),
-        "sources_fetched": sum(1 for s in source_results if s["status"] == "fetched"),
+
+        # keep legacy meaning: HTTP fetch succeeded (even if numbers_found == 0)
+        "sources_fetched": sum(1 for s in source_results if s.get("status") in {"fetched_extracted", "fetched_unusable"}),
+
+        # new: extracted usable numbers
+        "sources_extracted": sum(1 for s in source_results if s.get("status") == "fetched_extracted"),
+
         "source_results": source_results,
         "metric_changes": metric_changes,
-
-        # structured stability
         "stability": {
-            "system_stability_pct": results_stability_score,
-            "data_change_detected": summary["metrics_increased"] + summary["metrics_decreased"],
+            "system_stability_pct": round(stability_pct, 1),
+            "data_change_detected": sum(1 for m in found if m["change_type"] in {"increased", "decreased"}),
             "metrics_compared": found_count
         },
-
-        # backward compat
-        "stability_score": results_stability_score,
+        "stability_score": round(stability_pct, 1),
         "summary": summary
     }
+
+
 
 def extract_context_keywords(metric_name: str) -> List[str]:
     """Extract meaningful keywords from metric name for matching"""
@@ -6191,28 +6099,33 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
     """
     Extract numbers with surrounding context for matching.
 
-    Key improvements vs previous:
-    - Uses strict token boundaries so we don't match partial digits inside years (e.g., 2033 -> '3')
-    - Supports currency prefixes like S$, USD/SGD (via context/currency detection)
-    - Filters out year-like numbers unless explicitly unit/currency-qualified
-    - Down-ranks tiny unitless integers aggressively
+    Fixes in this version:
+    - Prevents partial matches inside larger numbers/years via strict digit boundaries
+    - Rejects year+suffix junk like "2025t", "2033M" unless currency is present nearby
+    - Rejects plain year tokens (e.g., 2024) unless explicitly currency/unit-qualified
+    - Down-ranks tiny unitless integers and reduces PDF/boilerplate noise
     """
     if not text:
         return []
 
     numbers: List[Dict] = []
 
-    # Strict numeric token:
-    # - Either a comma-number (1,234.56) OR a plain number (1234.56)
-    # - Enforced boundaries: not preceded/followed by a digit (prevents partial matches inside 2033)
+    # strict numeric token boundaries (prevents matching partial digits from years like 2033 -> "3")
     num_token = r"(?<!\d)(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?!\d)"
 
-    # Optional parentheses negative + optional currency symbols directly attached
-    # Examples:
-    #   $1,234.5B
-    #   (45.6) M
-    #   S$29.8 billion  (handled via context currency; S$ may appear in text but we keep $ capture too)
+    # Allow suffix right after number (space optional) so we can capture "2025t" and reject it properly.
     pattern = rf"(\(?\s*\$?\s*{num_token}\s*\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K|bn|mn)?"
+
+    unit_map = {"bn": "B", "mn": "M"}
+
+    def _has_currency_near(context: str, raw_num: str) -> bool:
+        ctx = (context or "").lower()
+        rn = (raw_num or "").lower()
+        return (
+            ("$" in rn) or
+            ("s$" in ctx) or ("sgd" in ctx) or
+            ("usd" in ctx) or ("$" in ctx)
+        )
 
     for match in re.finditer(pattern, text, re.IGNORECASE):
         raw_num = (match.group(1) or "").strip()
@@ -6221,47 +6134,47 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
         # Context window
         start = max(0, match.start() - 220)
         end = min(len(text), match.end() + 220)
-        context = text[start:end].lower()
+        context = (text[start:end] or "").lower()
 
-        # Skip obvious junk contexts (you already have this helper)
+        # Skip junk contexts (existing helper in your file)
         if is_likely_junk_context(context):
             continue
 
         # Clean numeric for parsing/year checks
-        num_clean = raw_num.replace("$", "").replace(",", "").replace("(", "").replace(")", "").strip()
-
-        # Reject year tokens unless unit/currency-qualified
-        # (prevents "2024" and also prevents year-like matches from being treated as metrics)
-        if re.fullmatch(r"(19|20)\d{2}", num_clean):
-            has_unit = bool(unit_raw)
-            has_currency = ("$" in raw_num) or ("s$" in context) or ("sgd" in context) or ("usd" in context)
-            if not (has_unit or has_currency):
-                continue
+        num_clean = (
+            raw_num.replace("$", "")
+            .replace(",", "")
+            .replace("(", "")
+            .replace(")", "")
+            .strip()
+        )
 
         # Normalize unit
-        unit_map = {"bn": "B", "mn": "M"}
         u = unit_map.get(unit_raw.lower(), unit_raw)
         u_norm = normalize_unit(u)
+
+        # Reject plain year tokens unless explicitly currency/unit-qualified
+        if re.fullmatch(r"(19|20)\d{2}", num_clean):
+            if not (u_norm or _has_currency_near(context, raw_num)):
+                continue
+
+        # Reject "year + magnitude suffix" junk (e.g. 2025t, 2033M) unless currency exists nearby
+        # This is the specific artifact you saw: "2025t" being interpreted as a trillion-scale number.
+        if re.fullmatch(r"(19|20)\d{2}", num_clean) and u_norm in {"T", "B", "M", "K"}:
+            if not _has_currency_near(context, raw_num):
+                continue
 
         parsed = parse_human_number(num_clean, u_norm)
         if parsed is None:
             continue
 
-        # Currency-like detection: either explicit $ in token, or currency in nearby context,
-        # or scale units that typically represent money magnitudes.
-        is_currency_like = (
-            ("$" in raw_num)
-            or ("s$" in context)
-            or ("sgd" in context)
-            or ("usd" in context)
-            or (u_norm in {"T", "B", "M", "K"})
-        )
+        currency_like = _has_currency_near(context, raw_num) or (u_norm in {"T", "B", "M", "K"})
 
         # Kill tiny unitless integers (common false positives)
-        if not is_currency_like and u_norm != "%" and abs(parsed) < 10:
+        if not currency_like and u_norm != "%" and abs(parsed) < 10:
             continue
 
-        # Kill absurdly huge values (sanity guard)
+        # Sanity guard
         if abs(parsed) > 10_000_000:
             continue
 
@@ -6269,11 +6182,11 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
             "value": parsed,
             "unit": u_norm,
             "context": context,
-            # Preserve original raw string shape for UI
             "raw": f"{raw_num}{unit_raw}".strip()
         })
 
     return numbers
+
 
 
 
