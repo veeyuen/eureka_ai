@@ -581,218 +581,279 @@ domain_classifier, embedder = load_models()
 def repair_llm_response(data: dict) -> dict:
     """
     Repair common LLM JSON structure issues:
-    - Convert primary_metrics from list to dict
-    - Ensure top_entities, trends_forecast, key_findings, sources are lists
+
+    - Convert primary_metrics from list -> dict (stable keys)
+    - Normalize MetricDetail fields so currency+unit do NOT get lost:
+        "29.8 S$B" / "S$29.8B" / "S$29.8 billion" -> value=29.8, unit="S$B"
+        "$204.7B" -> value=204.7, unit="$B"
+        "9.8%" -> value=9.8, unit="%"
+    - Ensure top_entities and trends_forecast are lists
+    - Fix visualization_data legacy keys (labels/values)
     - Fix benchmark_table numeric values
-    - Add missing required fields where safe
+    - Remove 'action' block entirely (no longer used)
+    - Add minimal required fields if missing
 
-    Also:
-    - Remove 'action' / 'recommendations' style blocks (no longer used)
-
-    Design goals:
-    - Preserve currency + unit by keeping 'raw' when possible
-    - Avoid destructive parsing (never delete original strings)
+    NOTE: This function is intentionally conservative: it normalizes obvious formatting
+    without trying to "invent" missing values.
     """
     if not isinstance(data, dict):
         return {}
 
-    # -------------------------
-    # Helpers
-    # -------------------------
-    def _ensure_list(v):
-        if v is None:
+    def _to_list(x):
+        if x is None:
             return []
-        if isinstance(v, list):
-            return v
-        if isinstance(v, dict):
-            return list(v.values())
+        if isinstance(x, list):
+            return x
+        if isinstance(x, dict):
+            return list(x.values())
         return []
 
-    def _coerce_metric_item(item: dict, fallback_name: str = "") -> dict:
+    def _coerce_number(s: str):
+        try:
+            return float(str(s).replace(",", "").strip())
+        except Exception:
+            return None
+
+    def _normalize_metric_item(item: dict) -> dict:
         """
-        Normalize a metric item to:
-          { name, value, unit, raw }
-        Preserve original formatting in raw whenever possible.
+        Normalize a single metric dict in-place-ish and return it.
+
+        Goal: preserve currency + magnitude in `unit`, keep `value` numeric when possible.
         """
         if not isinstance(item, dict):
-            return {"name": fallback_name or "N/A", "value": None, "unit": "", "raw": ""}
+            return {"name": "N/A", "value": "N/A", "unit": ""}
 
-        name = item.get("name") or fallback_name or "N/A"
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            name = "N/A"
+        item["name"] = name
 
-        # Keep whatever came in as the best "raw" truth
-        raw = item.get("raw")
-        if raw is None:
-            # fall back to concatenation if it looks like value+unit
-            v0 = item.get("value")
-            u0 = item.get("unit")
-            if isinstance(v0, str) and (u0 is None or u0 == ""):
-                raw = v0
-            elif v0 is None:
-                raw = ""
+        raw_val = item.get("value")
+        raw_unit = item.get("unit")
+
+        unit = (raw_unit or "")
+        if not isinstance(unit, str):
+            unit = str(unit)
+
+        # If already numeric and unit looks okay, keep as-is
+        if isinstance(raw_val, (int, float)) and isinstance(unit, str):
+            item["unit"] = unit.strip()
+            return item
+
+        # Try to parse string value forms like:
+        # "S$29.8B", "29.8 S$B", "$ 204.7 billion", "9.8%", "12 percent"
+        if isinstance(raw_val, str):
+            txt = raw_val.strip()
+
+            # Also allow unit to carry the number sometimes (rare but happens)
+            # e.g. value="29.8", unit="S$B" is already fine.
+            # But if unit is empty and txt contains unit, we extract.
+            # Percent detection
+            if re.search(r'(%|\bpercent\b)', txt, flags=re.I):
+                num = _coerce_number(re.sub(r'[^0-9\.\-\,]+', '', txt))
+                if num is not None:
+                    item["value"] = num
+                    item["unit"] = "%"
+                    return item
+
+            # Currency detection
+            currency = ""
+            # Normalize currency tokens in either value or unit
+            combo = f"{txt} {unit}".strip()
+
+            if re.search(r'\bSGD\b', combo, flags=re.I) or "S$" in combo.upper():
+                currency = "S$"
+            elif re.search(r'\bUSD\b', combo, flags=re.I) or "$" in combo:
+                currency = "$"
+
+            # Magnitude detection
+            # Accept: T/B/M/K, or words
+            mag = ""
+            if re.search(r'\btrillion\b', combo, flags=re.I):
+                mag = "T"
+            elif re.search(r'\bbillion\b', combo, flags=re.I):
+                mag = "B"
+            elif re.search(r'\bmillion\b', combo, flags=re.I):
+                mag = "M"
+            elif re.search(r'\bthousand\b', combo, flags=re.I):
+                mag = "K"
             else:
-                raw = f"{v0}{u0 or ''}".strip()
+                m = re.search(r'([TBMK])\b', combo.replace(" ", ""), flags=re.I)
+                if m:
+                    mag = m.group(1).upper()
 
-        # Value/unit
-        value = item.get("value", None)
-        unit = (item.get("unit") or "").strip()
+            # Extract numeric
+            num = _coerce_number(re.sub(r'[^0-9\.\-\,]+', '', txt))
+            if num is not None:
+                # If unit was present and meaningful (and already includes %), keep it
+                if unit.strip() == "%":
+                    item["value"] = num
+                    item["unit"] = "%"
+                    return item
 
-        # If value is a string and unit is missing, do NOT strip currency/unit away.
-        # Try light derivation of unit only; always preserve raw.
-        if isinstance(value, str) and not unit:
-            s = value.strip()
-            # Common currency prefixes we want to preserve via raw; unit can stay empty,
-            # but we can infer compact units for downstream formatting if helpful.
-            # Examples: "S$29.8B", "$66.1bn", "29.8 billion", "13.6 million"
-            m = re.search(r"(?i)(\btrillion\b|\bt\b|\bbillion\b|\bbn\b|\bb\b|\bmillion\b|\bmn\b|\bm\b|\bthousand\b|\bk\b|%)\s*$", s)
-            if m:
-                token = m.group(1).lower()
-                if token in {"%", }:
-                    unit = "%"
-                elif token in {"t", "trillion"}:
-                    unit = "T"
-                elif token in {"b", "bn", "billion"}:
-                    unit = "B"
-                elif token in {"m", "mn", "million"}:
-                    unit = "M"
-                elif token in {"k", "thousand"}:
-                    unit = "K"
+                # Build unit as currency+magnitude when any found
+                # If neither found, keep existing unit (may be e.g. "years", "points")
+                if currency or mag:
+                    item["value"] = num
+                    item["unit"] = f"{currency}{mag}".strip()
+                    return item
 
-        # If value is numeric but unit is embedded in raw, preserve raw and keep unit if present.
-        if (isinstance(value, (int, float)) or value is None) and not unit and isinstance(raw, str) and raw:
-            m2 = re.search(r"(?i)(\btrillion\b|\bt\b|\bbillion\b|\bbn\b|\bb\b|\bmillion\b|\bmn\b|\bm\b|\bthousand\b|\bk\b|%)\s*$", raw.strip())
-            if m2:
-                token = m2.group(1).lower()
-                if token == "%":
-                    unit = "%"
-                elif token in {"t", "trillion"}:
-                    unit = "T"
-                elif token in {"b", "bn", "billion"}:
-                    unit = "B"
-                elif token in {"m", "mn", "million"}:
-                    unit = "M"
-                elif token in {"k", "thousand"}:
-                    unit = "K"
+                # No currency/mag detected: keep unit if provided; else blank
+                item["value"] = num
+                item["unit"] = unit.strip()
+                return item
 
-        return {
-            "name": name,
-            "value": value,
-            "unit": unit,
-            "raw": raw,
-        }
+            # If we can’t parse into a number, at least preserve the original text
+            item["value"] = txt
+            item["unit"] = unit.strip()
+            return item
+
+        # Non-string, non-numeric (None, dict, list, etc.)
+        if raw_val is None or raw_val == "":
+            item["value"] = "N/A"
+        else:
+            item["value"] = str(raw_val)
+
+        item["unit"] = unit.strip()
+        return item
 
     # -------------------------
-    # Remove deprecated blocks
-    # -------------------------
-    for dead_key in [
-        "action",
-        "actions",
-        "recommendation",
-        "recommendations",
-        "next_steps",
-        "nextSteps",
-        "what_to_do_next",
-        "whatToDoNext",
-        "plan",
-        "playbook",
-    ]:
-        if dead_key in data:
-            data.pop(dead_key, None)
-
-    # -------------------------
-    # Ensure core fields exist (non-destructive defaults)
-    # -------------------------
-    data.setdefault("executive_summary", data.get("executiveSummary", ""))  # allow alias
-    if "executiveSummary" in data:
-        data.pop("executiveSummary", None)
-
-    # -------------------------
-    # Fix primary_metrics
+    # primary_metrics normalization
     # -------------------------
     metrics = data.get("primary_metrics")
 
-    # If list -> dict
+    # list -> dict
     if isinstance(metrics, list):
         new_metrics = {}
         for i, item in enumerate(metrics):
             if not isinstance(item, dict):
                 continue
-            key = item.get("id") or item.get("metric_id") or item.get("key") or item.get("name") or f"metric_{i+1}"
-            key = str(key).strip().replace(" ", "_")
-            new_metrics[key] = _coerce_metric_item(item, fallback_name=str(item.get("name") or key))
+            item = _normalize_metric_item(item)
+
+            raw_name = item.get("name", f"metric_{i+1}")
+            key = re.sub(r'[^a-z0-9_]', '', str(raw_name).lower().replace(" ", "_")).strip("_")
+            if not key:
+                key = f"metric_{i+1}"
+
+            original_key = key
+            j = 1
+            while key in new_metrics:
+                key = f"{original_key}_{j}"
+                j += 1
+
+            new_metrics[key] = item
+
         data["primary_metrics"] = new_metrics
 
-    # If dict -> normalize each item
     elif isinstance(metrics, dict):
-        new_metrics = {}
+        # Normalize each metric dict entry
+        cleaned = {}
         for k, v in metrics.items():
-            key = str(k).strip()
             if isinstance(v, dict):
-                new_metrics[key] = _coerce_metric_item(v, fallback_name=v.get("name") or key)
+                cleaned[str(k)] = _normalize_metric_item(v)
             else:
-                # scalar -> treat as raw/value
-                new_metrics[key] = _coerce_metric_item({"name": key, "value": v, "unit": "", "raw": str(v)}, fallback_name=key)
-        data["primary_metrics"] = new_metrics
+                # If someone stored a scalar, wrap it
+                cleaned[str(k)] = _normalize_metric_item({"name": str(k), "value": v, "unit": ""})
+        data["primary_metrics"] = cleaned
 
     else:
         data["primary_metrics"] = {}
 
     # -------------------------
-    # Ensure list-like sections are lists
+    # list-like fields
     # -------------------------
-    data["top_entities"] = _ensure_list(data.get("top_entities"))
-    data["trends_forecast"] = _ensure_list(data.get("trends_forecast"))
-    data["key_findings"] = _ensure_list(data.get("key_findings"))
-    data["sources"] = _ensure_list(data.get("sources"))
+    data["top_entities"] = _to_list(data.get("top_entities"))
+    data["trends_forecast"] = _to_list(data.get("trends_forecast"))
+    data["key_findings"] = _to_list(data.get("key_findings"))
+
+    # Ensure strings in key_findings
+    data["key_findings"] = [str(x) for x in data["key_findings"] if x is not None and str(x).strip()]
 
     # -------------------------
-    # Fix benchmark_table
+    # visualization_data legacy keys
     # -------------------------
-    bt = data.get("benchmark_table")
-    if bt is None:
-        return data
+    if isinstance(data.get("visualization_data"), dict):
+        viz = data["visualization_data"]
+        if "labels" in viz and "chart_labels" not in viz:
+            viz["chart_labels"] = viz.pop("labels")
+        if "values" in viz and "chart_values" not in viz:
+            viz["chart_values"] = viz.pop("values")
 
-    if isinstance(bt, dict):
-        bt = list(bt.values())
+        # Coerce chart_labels/values types gently
+        if "chart_labels" in viz and not isinstance(viz["chart_labels"], list):
+            viz["chart_labels"] = [str(viz["chart_labels"])]
+        if "chart_values" in viz and not isinstance(viz["chart_values"], list):
+            viz["chart_values"] = [viz["chart_values"]]
 
-    if not isinstance(bt, list):
-        data["benchmark_table"] = []
-        return data
-
-    cleaned_table = []
-    for row in bt:
-        if not isinstance(row, dict):
-            continue
-        clean_row = {}
-        for key, val in row.items():
-            # Keep strings as-is (often labels)
-            if isinstance(val, str):
-                clean_row[key] = val
+    # -------------------------
+    # benchmark_table numeric cleaning
+    # -------------------------
+    if isinstance(data.get("benchmark_table"), list):
+        cleaned_table = []
+        for row in data["benchmark_table"]:
+            if not isinstance(row, dict):
                 continue
 
-            # Coerce numeric-like values where appropriate
-            if isinstance(val, (int, float)):
-                clean_row[key] = val
-                continue
+            if "category" not in row:
+                row["category"] = "Unknown"
 
-            # None / unknown -> 0 for numeric table stability
-            if val is None:
-                clean_row[key] = 0
-                continue
+            for key in ["value_1", "value_2"]:
+                if key not in row:
+                    row[key] = 0
+                    continue
 
-            # Try float conversion, else 0
-            try:
-                clean_row[key] = float(val)
-            except Exception:
-                clean_row[key] = 0
+                val = row.get(key)
+                if isinstance(val, str):
+                    val_upper = val.upper().strip()
+                    if val_upper in ["N/A", "NA", "NULL", "NONE", "", "-", "—"]:
+                        row[key] = 0
+                    else:
+                        try:
+                            cleaned = re.sub(r'[^\d.-]', '', val)
+                            row[key] = float(cleaned) if '.' in cleaned else int(cleaned) if cleaned else 0
+                        except Exception:
+                            row[key] = 0
+                elif isinstance(val, (int, float)):
+                    pass
+                else:
+                    row[key] = 0
 
-        cleaned_table.append(clean_row)
+            cleaned_table.append(row)
 
-    data["benchmark_table"] = cleaned_table
+        data["benchmark_table"] = cleaned_table
+
+    # -------------------------
+    # Remove action block entirely
+    # -------------------------
+    data.pop("action", None)
+
+    # -------------------------
+    # Minimal required top-level fields
+    # -------------------------
+    if not isinstance(data.get("executive_summary"), str) or not data.get("executive_summary", "").strip():
+        data["executive_summary"] = "No executive summary provided."
+
+    if not isinstance(data.get("sources"), list):
+        data["sources"] = []
+
+    if "confidence" not in data:
+        data["confidence"] = 60
+
+    if not isinstance(data.get("freshness"), str) or not data.get("freshness", "").strip():
+        data["freshness"] = "Current"
+
     return data
 
 
 def validate_numeric_fields(data: dict, context: str = "LLM Response") -> None:
-    """Log warnings for non-numeric values in expected numeric fields"""
+    """
+    Guardrail logger (and gentle coercer) for numeric lists used in charts/tables.
+
+    We keep this lightweight: warn when strings appear where numbers are expected,
+    and attempt to coerce when safe.
+    """
+    if not isinstance(data, dict):
+        return
 
     # Check benchmark_table
     if "benchmark_table" in data and isinstance(data["benchmark_table"], list):
@@ -802,42 +863,67 @@ def validate_numeric_fields(data: dict, context: str = "LLM Response") -> None:
                     val = row.get(key)
                     if isinstance(val, str):
                         st.warning(
-                            f"⚠️ {context}: benchmark_table[{i}].{key} is string: '{val}' "
-                            f"(will be converted to 0)"
+                            f"⚠️ {context}: benchmark_table[{i}].{key} is string: '{val}' (coercing to 0 if invalid)"
                         )
+                        try:
+                            cleaned = re.sub(r"[^\d\.\-]", "", val)
+                            row[key] = float(cleaned) if cleaned else 0
+                        except Exception:
+                            row[key] = 0
+
+    # Check visualization_data chart_values
+    viz = data.get("visualization_data")
+    if isinstance(viz, dict):
+        vals = viz.get("chart_values")
+        if isinstance(vals, list):
+            new_vals = []
+            for j, v in enumerate(vals):
+                if isinstance(v, (int, float)):
+                    new_vals.append(v)
+                elif isinstance(v, str):
+                    try:
+                        cleaned = re.sub(r"[^\d\.\-]", "", v)
+                        new_vals.append(float(cleaned) if cleaned else 0.0)
+                        st.warning(f"⚠️ {context}: visualization_data.chart_values[{j}] is string: '{v}' (coerced)")
+                    except Exception:
+                        new_vals.append(0.0)
+                else:
+                    new_vals.append(0.0)
+            viz["chart_values"] = new_vals
+
 
 def preclean_json(raw: str) -> str:
-    """Remove markdown fences and citations before parsing"""
+    """
+    Remove markdown fences and common citation markers before JSON parsing.
+    Conservative: tries not to destroy legitimate JSON content.
+    """
     if not raw or not isinstance(raw, str):
         return ""
 
     text = raw.strip()
 
-    # Remove code fences
-    if text.startswith("```json"):
-        text = text[7:]
-    elif text.startswith("```"):
-        text = text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
+    # Remove leading/trailing code fences (```json ... ```)
+    text = re.sub(r'^\s*```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*```\s*$', '', text)
 
     text = text.strip()
 
-    # Remove citations
-    text = re.sub(r'\[web:\d+\]', '', text)
-    text = re.sub(r'\[\d+\]', '', text)
-    text = re.sub(r'\(\d+\)', '', text)
+    # Remove common citation formats the model may append
+    # [web:1], [1], (1) etc. (but avoid killing array syntax by being specific)
+    text = re.sub(r'\[web:\d+\]', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<!")\[\d+\](?!")', '', text)   # not inside quotes
+    text = re.sub(r'(?<!")\(\d+\)(?!")', '', text)   # not inside quotes
 
-    return text
+    return text.strip()
 
 
 def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
     """
     Parse JSON with aggressive error recovery:
-    1. Pre-clean
-    2. Extract JSON object
-    3. Fix common issues (trailing commas, unquoted keys)
-    4. Iterative quote repair for unterminated strings
+    1) Pre-clean markdown/citations
+    2) Extract the *first* JSON object
+    3) Repair common issues (unquoted keys, trailing commas, True/False/Null)
+    4) Try parsing; if it fails, attempt a small set of pragmatic fixes
     """
     if json_str is None:
         return {}
@@ -849,7 +935,7 @@ def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
 
     cleaned = preclean_json(json_str)
 
-    # Extract main JSON object
+    # Extract first JSON object (most LLM outputs are one object)
     match = re.search(r'\{.*\}', cleaned, flags=re.DOTALL)
     if not match:
         st.warning(f"⚠️ No JSON object found in {context} response")
@@ -859,46 +945,72 @@ def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
 
     # Structural repairs
     try:
-        # Fix unquoted keys: {key: → {"key":
-        json_content = re.sub(r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]+)(\s*):', r'\1"\2"\3:', json_content)
+        # Fix unquoted keys: {key: -> {"key":
+        json_content = re.sub(
+            r'([\{\,]\s*)([a-zA-Z_][a-zA-Z0-9_\-]*)(\s*):',
+            r'\1"\2"\3:',
+            json_content
+        )
 
         # Remove trailing commas
         json_content = re.sub(r',\s*([\]\}])', r'\1', json_content)
 
         # Fix boolean/null capitalization
-        json_content = json_content.replace(': True', ': true')
-        json_content = json_content.replace(': False', ': false')
-        json_content = json_content.replace(': Null', ': null')
+        json_content = re.sub(r':\s*True\b', ': true', json_content)
+        json_content = re.sub(r':\s*False\b', ': false', json_content)
+        json_content = re.sub(r':\s*Null\b', ': null', json_content)
 
     except Exception as e:
-        st.warning(f"Regex repair failed: {e}")
+        st.warning(f"⚠️ {context}: Regex repair failed: {e}")
 
-    # Iterative parsing with quote repair
-    max_attempts = 10
-    for attempt in range(max_attempts):
+    # Attempt parse with a few passes
+    attempts = 0
+    last_err = None
+
+    while attempts < 6:
         try:
             return json.loads(json_content)
         except json.JSONDecodeError as e:
-            if "Unterminated string" not in e.msg:
-                if attempt == 0:
-                    st.warning(f"JSON parse error in {context}: {e.msg[:100]}")
-                break
+            last_err = e
+            msg = (e.msg or "").lower()
 
-            # Find and escape unescaped quote near error position
-            error_pos = e.pos
-            found = False
-            for i in range(error_pos - 1, max(0, error_pos - 150), -1):
-                if i < len(json_content) and json_content[i] == '"':
-                    if i == 0 or json_content[i-1] != '\\':
-                        json_content = json_content[:i] + '\\"' + json_content[i+1:]
-                        found = True
-                        break
+            # Pass 1: replace smart quotes
+            if attempts == 0:
+                json_content = (
+                    json_content.replace("“", '"')
+                                .replace("”", '"')
+                                .replace("’", "'")
+                )
 
-            if not found:
-                break
+            # Pass 2: single-quote keys/strings -> double quotes (limited)
+            elif attempts == 1:
+                # Only do this if it looks like single quotes dominate
+                if json_content.count("'") > json_content.count('"'):
+                    json_content = re.sub(r"\'", '"', json_content)
 
-    st.error(f"❌ Failed to parse JSON from {context} after {max_attempts} attempts")
+            # Pass 3: try removing control characters
+            elif attempts == 2:
+                json_content = re.sub(r"[\x00-\x1F\x7F]", "", json_content)
+
+            # Pass 4: if unterminated string, try escaping a quote near the error
+            elif "unterminated string" in msg or "unterminated" in msg:
+                pos = e.pos
+                # Try escaping a quote a bit before pos
+                for i in range(pos - 1, max(0, pos - 200), -1):
+                    if i < len(json_content) and json_content[i] == '"':
+                        if i == 0 or json_content[i - 1] != "\\":
+                            json_content = json_content[:i] + '\\"' + json_content[i + 1:]
+                            break
+
+            # Pass 5+: give up
+            attempts += 1
+            continue
+
+    st.error(f"❌ Failed to parse JSON from {context}: {str(last_err)[:180] if last_err else 'unknown error'}")
     return {}
+
+
+
 
 def parse_query_structure_safe(json_str: str, user_question: str) -> Dict:
     """
