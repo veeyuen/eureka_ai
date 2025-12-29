@@ -5718,11 +5718,11 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Source-anchored evolution: refetch same sources (or reuse cache), extract numbers, and match metrics.
 
-    Improvements:
-    - per-source taxonomy: fetched_extracted / fetched_unusable / failed / failed_but_reused_cache / skipped_recent_baseline
-    - attaches source_url to each extracted number
-    - source weighting (official > reputable > unknown/blog)
-    - projection phrase boosts for “expected to reach / by 2033” style contexts
+    This version adds:
+    - source_url provenance + source weighting
+    - projection phrase boost
+    - receipts phrase boost (so "tourism receipts" wins when the exact number is present)
+    - transparent per-source taxonomy
     """
     prev_response = previous_data.get("primary_response", {}) or {}
     prev_sources = previous_data.get("web_sources", []) or prev_response.get("sources", []) or []
@@ -5731,7 +5731,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     frozen_schema = prev_response.get("metric_schema_frozen", {}) or {}
     prev_metrics = prev_response.get("primary_metrics", {}) or {}
 
-    # Baseline cache (for reuse when fetch fails)
+    # Baseline cache for reuse if fetch fails
     try:
         baseline_sources_cache = (
             previous_data.get("results", {}).get("source_results", [])
@@ -5745,7 +5745,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     if not isinstance(baseline_sources_cache, list):
         baseline_sources_cache = []
 
-    # Prev numbers (your improved baseline formatter lives here)
+    # Baseline metrics
     prev_numbers = build_prev_numbers(prev_metrics)
 
     # Map metric display name -> canonical id
@@ -5765,16 +5765,12 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     def _source_weight(url: str) -> float:
         d = _domain(url)
-        # official / stats
         if any(k in d for k in ["stb.gov.sg", "singstat.gov.sg", "mti.gov.sg", "gov.sg"]):
             return 1.25
-        # reputable orgs
-        if any(k in d for k in ["wttc.org", "unwto", "worldbank.org", "imf.org", "oecd.org"]):
+        if any(k in d for k in ["wttc.org", "worldbank.org", "imf.org", "oecd.org", "unwto"]):
             return 1.15
-        # big research portals (still can be paywalled)
-        if any(k in d for k in ["statista.com"]):
+        if "statista.com" in d:
             return 1.05
-        # unknown/blog-like
         if any(k in d for k in ["blog", "wordpress", "medium", "dmcquote"]):
             return 0.75
         return 1.0
@@ -5790,7 +5786,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             fp = fingerprint_text(content)
             extracted = extract_numbers_with_context(content)
 
-            # Attach provenance to each candidate
             for n in extracted:
                 n["source_url"] = url
 
@@ -5824,7 +5819,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     "extracted_numbers": []
                 })
         else:
-            # Reuse cached extracted numbers
             cached = []
             for s in baseline_sources_cache:
                 if isinstance(s, dict) and s.get("url") == url and isinstance(s.get("extracted_numbers"), list):
@@ -5874,7 +5868,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         raw = (curr.get("raw") or "").lower()
         if u in {"T", "B", "M", "K"}:
             return True
-        if "$" in raw or "s$" in ctx or "sgd" in ctx or "usd" in ctx:
+        if "$" in raw or "s$" in raw or "sgd" in ctx or "usd" in ctx:
             return True
         if any(w in ctx for w in ["billion", "million", "trillion"]):
             return True
@@ -5894,6 +5888,18 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         if any(k in n for k in ["projected", "projection", "forecast", "expected", "by 203", "2033", "2030", "2035"]):
             if any(p in ctx for p in ["expected to reach", "anticipated to reach", "is projected to", "will reach", "forecast to", "by 203"]):
                 return 1.20
+        return 1.0
+
+    def _receipts_phrase_boost(metric_name: str, context: str) -> float:
+        """
+        Explicitly boost candidates that mention 'tourism receipts' when the metric is receipts-like.
+        This fixes the case where the exact value exists but context_score is slightly too low.
+        """
+        n = (metric_name or "").lower()
+        ctx = (context or "").lower()
+        if "receipts" in n:
+            if "tourism receipts" in ctx or "receipts" in ctx:
+                return 1.25
         return 1.0
 
     # ---- Match metrics ----
@@ -5947,9 +5953,10 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             else:
                 continue
 
-            context_score = calculate_context_match(prev_keywords, curr.get("context", ""))
+            ctx = curr.get("context", "")
+            context_score = calculate_context_match(prev_keywords, ctx)
             penalty = _candidate_year_penalty(curr)
-            boost = _projection_phrase_boost(metric_name, curr.get("context", ""))
+            boost = _projection_phrase_boost(metric_name, ctx) * _receipts_phrase_boost(metric_name, ctx)
             src_w = _source_weight(curr.get("source_url") or "")
 
             combined = src_w * boost * penalty * ((0.4 * value_score) + (0.6 * context_score))
@@ -5958,10 +5965,13 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 best_score = combined
                 best_match = curr
 
-        # Slightly lower threshold for projection metrics
+        # Threshold tweaks:
         threshold = 0.62
-        if any(k in (metric_name or "").lower() for k in ["projected", "forecast", "projection", "expected", "by 203"]):
+        name_l = (metric_name or "").lower()
+        if any(k in name_l for k in ["projected", "forecast", "projection", "expected", "by 203"]):
             threshold = 0.58
+        if "receipts" in name_l:
+            threshold = 0.56  # receipts often appear in short summary sentences in PDFs
 
         if best_match and best_score > threshold:
             change_pct = compute_percent_change(prev_val, best_match["value"])
@@ -6067,59 +6077,86 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
     """
     Extract numbers with surrounding context for matching.
 
-    This version fixes:
-    - absolute rejection of year+suffix junk (e.g., 2025t, 2033M)
-    - rejects small-int + magnitude suffix junk (e.g., 19t) unless currency is explicit nearby
-    - rejects plain years unless currency/unit-qualified
-    - strict digit boundaries (prevents partial matches inside larger numbers)
+    Fixes:
+    - Preserves SGD currency marker: detects "S$" / "SGD" and stores raw like "S$29.8billion"
+    - Absolute rejection of year+suffix magnitude tokens (2025t, 2033M, etc.)
+    - Rejects PDF TOC/page-number noise that appears as <smallint><T/B/M/K> in junk contexts
+    - Rejects small-int magnitude tokens unless explicit currency is in a tight window
+    - Uses strict digit boundaries to avoid partial matches inside larger numbers
     """
     if not text:
         return []
 
     numbers: List[Dict] = []
 
-    # Strict numeric token boundaries (prevents partial digits inside 2033 -> "3")
+    # Strict numeric token boundaries
     num_token = r"(?<!\d)(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?!\d)"
 
-    # Capture optional magnitude unit (space optional)
-    pattern = rf"(\(?\s*\$?\s*{num_token}\s*\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K|bn|mn)?"
+    # Capture optional unit right after number (space optional)
+    pattern = rf"(\(?\s*(?:S\$|\$)?\s*{num_token}\s*\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K|bn|mn)?"
 
     unit_map = {"bn": "B", "mn": "M"}
 
-    def _tight_window(text_: str, a: int, b: int) -> str:
-        return (text_[max(0, a):min(len(text_), b)] or "")
+    def _tight_window(s: str, pos: int, left: int = 80, right: int = 80) -> str:
+        return (s[max(0, pos - left):min(len(s), pos + right)] or "")
 
-    def _currency_near(text_: str, pos: int, raw_num: str) -> bool:
-        # Tight window (prevents “whole page is currency-like” false positives)
-        w = _tight_window(text_, pos - 60, pos + 60).lower()
-        rn = (raw_num or "").lower()
-        return (
-            ("$" in rn)
-            or ("s$" in w)
-            or ("sgd" in w)
-            or ("usd" in w)
-            or ("$" in w)
-        )
+    def _detect_currency(s: str, pos: int, raw_num: str) -> str:
+        """
+        Returns: "S$", "$", or "" based on a tight window around the match.
+        Priority: explicit S$ > USD/$
+        """
+        rn = (raw_num or "")
+        if "S$" in rn:
+            return "S$"
+        if "$" in rn:
+            return "$"
 
-    def _word_scale_near(text_: str, pos: int) -> bool:
-        w = _tight_window(text_, pos - 80, pos + 80).lower()
-        return any(k in w for k in ["billion", "million", "trillion", "bn", "mn"])
+        w = _tight_window(s, pos, 80, 80).lower()
+        # Prefer SGD/S$ if present
+        if "s$" in w or "sgd" in w:
+            return "S$"
+        if "usd" in w or "$" in w:
+            return "$"
+        return ""
+
+    def _word_scale_near(s: str, pos: int) -> bool:
+        w = _tight_window(s, pos, 120, 120).lower()
+        return any(k in w for k in ["billion", "million", "trillion", " bn", " mn", "usd", "sgd", "s$"])
+
+    def _is_pdf_noise_context(ctx: str) -> bool:
+        """
+        Extra PDF-specific noise filter. Your STB PDF extraction shows TOC/page artifacts.
+        """
+        c = (ctx or "").lower()
+        # If your existing junk filter already handles some of this, this is additive.
+        return any(k in c for k in [
+            "table of contents", "contents", "page", "p.", "figure", "table", "copyright",
+            "isbn", "all rights reserved"
+        ])
 
     for match in re.finditer(pattern, text, re.IGNORECASE):
         raw_num = (match.group(1) or "").strip()
         unit_raw = (match.group(2) or "").strip()
 
-        # Context window (bigger window used for keyword matching)
+        # Context window (used later for matching)
         start = max(0, match.start() - 220)
         end = min(len(text), match.end() + 220)
         context = (text[start:end] or "").lower()
 
+        # Keep your existing junk filter
         if is_likely_junk_context(context):
             continue
 
+        # PDF-specific TOC/page noise filter
+        if _is_pdf_noise_context(context):
+            # Still allow real money/% values if they have strong signals
+            # (handled below by currency/word-scale requirements)
+            pass
+
         # Clean numeric
         num_clean = (
-            raw_num.replace("$", "")
+            raw_num.replace("S$", "")
+            .replace("$", "")
             .replace(",", "")
             .replace("(", "")
             .replace(")", "")
@@ -6129,37 +6166,51 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
         u = unit_map.get(unit_raw.lower(), unit_raw)
         u_norm = normalize_unit(u)
 
-        # ---- Absolute ban: year+suffix magnitude (kills 2025t, 2033M etc) ----
+        # Detect currency in a tight window (preserve S$)
+        currency = _detect_currency(text, match.start(), raw_num)
+
+        # ---- Absolute ban: year+suffix magnitude tokens (kills 2025t / 2033M etc) ----
         if re.fullmatch(r"(19|20)\d{2}", num_clean) and u_norm in {"T", "B", "M", "K"}:
             continue
 
-        # Reject plain year tokens unless currency/unit is explicit nearby
+        # Reject plain years unless explicitly currency/scale-qualified
         if re.fullmatch(r"(19|20)\d{2}", num_clean):
-            if not (u_norm or _currency_near(text, match.start(), raw_num) or _word_scale_near(text, match.start())):
+            if not (currency or u_norm or _word_scale_near(text, match.start())):
                 continue
 
         parsed = parse_human_number(num_clean, u_norm)
         if parsed is None:
             continue
 
-        # ---- Reject small integers with magnitude suffix unless currency is explicit nearby ----
-        # This kills “19t”, “3b”, etc that can appear as noise.
+        # ---- Kill PDF/page-number magnitude junk ----
+        # Examples seen: 23T, 29T, 3T, 17.0t in PDF contexts.
+        # Rule: if magnitude unit and abs(value) < 100 and NOT explicitly currency-qualified, drop.
         if u_norm in {"T", "B", "M", "K"} and abs(parsed) < 100:
-            if not _currency_near(text, match.start(), raw_num):
-                continue
+            # Keep only if explicit currency is nearby OR word-scale is nearby and context is not TOC/page-ish
+            if not currency:
+                # If the context smells like TOC/page noise, always drop
+                if _is_pdf_noise_context(context):
+                    continue
+                # If there is no strong word-scale phrase, drop
+                if not _word_scale_near(text, match.start()):
+                    continue
 
-        # currency-like if explicit currency nearby OR magnitude unit OR word scale near
-        currency_like = (
-            _currency_near(text, match.start(), raw_num)
-            or (u_norm in {"T", "B", "M", "K"})
-            or _word_scale_near(text, match.start())
-        )
+        # Percent values: ensure raw looks like percent when unit is %
+        if u_norm == "%":
+            raw_out = f"{num_clean}%"
+        else:
+            # Preserve currency marker when present (S$ vs $)
+            # Preserve word scales if present immediately after (e.g., "29.8billion")
+            # We keep the original unit_raw string if it was a word like "billion".
+            if unit_raw and unit_raw.lower() in {"billion", "million", "trillion", "thousand"}:
+                raw_out = f"{currency}{num_clean}{unit_raw}".strip()
+            elif u_norm in {"T", "B", "M", "K"}:
+                raw_out = f"{currency}{num_clean}{u_norm}".strip()
+            else:
+                # fallback: no magnitude unit
+                raw_out = f"{currency}{num_clean}".strip()
 
-        # Kill tiny unitless integers (common false positives)
-        if not currency_like and u_norm != "%" and abs(parsed) < 10:
-            continue
-
-        # Sanity guard
+        # Sanity guard: reject absurdly huge numbers
         if abs(parsed) > 10_000_000:
             continue
 
@@ -6167,7 +6218,7 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
             "value": parsed,
             "unit": u_norm,
             "context": context,
-            "raw": f"{raw_num}{unit_raw}".strip()
+            "raw": raw_out
         })
 
     return numbers
