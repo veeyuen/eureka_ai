@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.24
+# YUREEKA AI RESEARCH ASSISTANT v7.25
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -26,6 +26,7 @@
 # Show More Detail in Dashboard
 # Dashboard Unit Presentation Fixes (Main + Evolution)
 # More Precise Extractor
+# Domain-Agnostic Question Profiling
 # ================================================================================
 
 import io
@@ -2137,12 +2138,23 @@ QUESTION_CATEGORY_TEMPLATES = {
 
 def get_expected_metric_ids_for_category(category: str) -> List[str]:
     """
-    Map a query category -> template metric IDs.
-    Keep this deterministic and minimal.
-    """
-    c = (category or "unknown").lower().strip()
+    Domain-agnostic mapping from a template/category string to expected metric IDs.
 
-    if c == "country":
+    Backward compatible:
+      - accepts legacy categories like 'country', 'industry', 'company', 'generic'
+      - also accepts template IDs like 'ENTITY_OVERVIEW_MARKET_LIGHT_V1', etc.
+
+    NOTE:
+    - This function returns a *default* set for a given template/category.
+    - The profiler (classify_question_signals) can override/compose expected_metric_ids dynamically.
+    """
+    c_raw = (category or "unknown").strip()
+    c = c_raw.lower().strip()
+
+    # -------------------------
+    # New generalized templates
+    # -------------------------
+    if c in {"entity_overview_country_light_v1", "entity_overview_country_v1"}:
         return [
             "population",
             "gdp_nominal",
@@ -2150,25 +2162,37 @@ def get_expected_metric_ids_for_category(category: str) -> List[str]:
             "gdp_growth",
             "inflation",
             "currency",
-            "interest_rate",
             "unemployment",
-            "top_industries",
             "exports",
             "imports",
+            "top_industries",
         ]
 
-    if c == "industry":
+    if c in {"entity_overview_market_light_v1"}:
         return [
             "market_size_current",
             "market_size_projected",
             "cagr",
-            "revenue",
+            "key_trends",
+            "top_players",
+        ]
+
+    if c in {"entity_overview_market_heavy_v1"}:
+        return [
+            "market_size_current",
+            "market_size_projected",
+            "cagr",
+            "key_trends",
+            "top_players",
+            "key_regions",
+            "segments",
             "market_share",
+            "revenue",
             "units_sold",
             "average_price",
         ]
 
-    if c == "company":
+    if c in {"entity_overview_company_light_v1", "entity_overview_company_v1"}:
         return [
             "revenue",
             "growth",
@@ -2179,53 +2203,358 @@ def get_expected_metric_ids_for_category(category: str) -> List[str]:
             "valuation_multiple",
         ]
 
+    if c in {"entity_overview_product_light_v1", "entity_overview_product_v1"}:
+        return [
+            "average_price",
+            "units_sold",
+            "market_share",
+            "growth",
+            "key_trends",
+        ]
+
+    if c in {"entity_overview_topic_v1", "generic_v1"}:
+        return []
+
+    # -------------------------
+    # Legacy categories (still supported)
+    # -------------------------
+    if c == "country":
+        return get_expected_metric_ids_for_category("ENTITY_OVERVIEW_COUNTRY_LIGHT_V1")
+
+    if c == "industry":
+        # legacy industry defaults to light market
+        return get_expected_metric_ids_for_category("ENTITY_OVERVIEW_MARKET_LIGHT_V1")
+
+    if c == "company":
+        return get_expected_metric_ids_for_category("ENTITY_OVERVIEW_COMPANY_LIGHT_V1")
+
+    if c == "generic":
+        return []
+
     # fallback
     return []
 
 
+
 def classify_question_signals(query: str) -> Dict[str, Any]:
     """
-    Deterministically classify query and return:
-      - category: 'country' | 'industry' | 'generic'
-      - expected_metric_ids: list[str] (canonical metric ids)
+    Domain-agnostic question profiler.
+
+    Outputs (backward compatible + additive):
+      - category: 'country' | 'industry' | 'company' | 'generic'
+      - expected_metric_ids: list[str]
       - signals: list[str] (debuggable reasons)
+
+    New fields:
+      - entity_kind: 'country' | 'market' | 'company' | 'product' | 'topic_general'
+      - scope: 'broad_overview' | 'metrics_light' | 'metrics_heavy' | 'forecast_specific' | 'comparative'
+      - metric_template_id: generalized template name
+      - metric_tiers_enabled: [1] or [1,2] (tier 3 only when explicitly requested)
+      - intents: list[str] (size/growth/forecast/share/volume/price/segments/regions/players/trends/macro)
+      - preferred_source_classes: list[str] (search planning hint)
     """
-    q = (query or "").lower().strip()
-    signals = []
+    q_raw = (query or "").strip()
+    q = q_raw.lower().strip()
+    signals: List[str] = []
 
     if not q:
-        return {"category": "generic", "expected_metric_ids": [], "signals": ["empty_query"]}
+        return {
+            "category": "generic",
+            "expected_metric_ids": [],
+            "signals": ["empty_query"],
+            "entity_kind": "topic_general",
+            "scope": "broad_overview",
+            "metric_template_id": "ENTITY_OVERVIEW_TOPIC_V1",
+            "metric_tiers_enabled": [],
+            "preferred_source_classes": ["reference", "official_stats"],
+            "intents": [],
+        }
 
-    country_kw = [
-        "gdp", "per capita", "population", "exports", "imports",
-        "inflation", "cpi", "interest rate", "policy rate", "central bank",
-        "currency", "exchange rate"
+    # -------------------------
+    # Generic intent lexicon (domain-agnostic)
+    # -------------------------
+    broad_phrases = [
+        "tell me about", "in general", "overview", "explain", "background",
+        "introduction", "what is", "what are", "general information"
     ]
-    industry_kw = [
-        "market", "industry", "sector", "tam", "total addressable market",
-        "cagr", "market size", "market share", "key players", "competitors",
-        "pricing", "revenue", "forecast"
-    ]
 
-    country_hits = [k for k in country_kw if k in q]
-    industry_hits = [k for k in industry_kw if k in q]
+    comparative_kw = ["vs", "versus", "compare", "comparison", "relative to", "difference between", "differences between"]
+    forecast_kw = ["forecast", "projection", "projected", "outlook", "by 20", "next year", "future", "over the next", "expected to"]
 
-    if country_hits and not industry_hits:
+    # Market-ish terms (but still generic)
+    market_entity_kw = ["market", "industry", "sector", "category", "tAM", "tam", "sam", "som"]
+
+    # Company-ish terms
+    company_entity_kw = ["company", "firm", "inc", "ltd", "corp", "revenue", "earnings", "profit", "margin", "market cap", "valuation", "p/e", "ebitda"]
+
+    # Country/macro-ish terms
+    country_entity_kw = ["gdp", "population", "inflation", "cpi", "unemployment", "exports", "imports", "currency", "interest rate", "central bank", "policy rate"]
+
+    # Product-ish terms (light heuristic)
+    product_entity_kw = ["price", "cost", "specs", "features", "model", "version", "battery", "camera", "performance"]
+
+    # Intent triggers
+    intent_triggers: Dict[str, List[str]] = {
+        "size": ["market size", "size of", "worth", "value", "revenue", "sales", "spending", "receipts", "tAM", "tam", "sam", "som"],
+        "growth": ["cagr", "growth rate", "growing", "increase", "decrease", "decline", "expand"],
+        "forecast": ["forecast", "projection", "projected", "outlook", "expected", "by 20", "future", "over the next"],
+        "share": ["share", "market share", "penetration", "contribution", "portion"],
+        "volume": ["volume", "units", "shipments", "users", "visits", "visitors", "arrivals", "consumption", "demand"],
+        "price": ["price", "pricing", "cost", "average price", "asp", "arpu"],
+        "segments": ["segment", "segmentation", "by channel", "by type", "breakdown", "split"],
+        "regions": ["region", "regional", "by country", "apac", "emea", "north america", "europe", "asia", "china", "india", "us", "usa"],
+        "players": ["top players", "key players", "major players", "leaders", "companies", "brands", "competitors"],
+        "trends": ["trend", "trends", "drivers", "tailwinds", "headwinds", "what's driving", "what is driving"],
+        "macro": ["gdp", "inflation", "unemployment", "exports", "imports", "interest rate", "currency"],
+    }
+
+    def _contains_any(needle_list: List[str]) -> bool:
+        return any(k in q for k in needle_list)
+
+    # -------------------------
+    # Determine intents
+    # -------------------------
+    intents: List[str] = []
+    for intent, kws in intent_triggers.items():
+        if _contains_any(kws):
+            intents.append(intent)
+
+    if intents:
+        signals.append("intents:" + ",".join(sorted(set(intents))))
+
+    # -------------------------
+    # Determine entity_kind (best-effort heuristic)
+    # -------------------------
+    is_marketish = _contains_any(market_entity_kw) or any(i in intents for i in ["size", "growth", "forecast", "share", "segments", "players", "regions"])
+    is_companyish = _contains_any(company_entity_kw) and not _contains_any(country_entity_kw)
+    is_countryish = _contains_any(country_entity_kw) and not is_companyish
+    is_productish = _contains_any(product_entity_kw) and not (is_marketish or is_countryish or is_companyish)
+
+    if is_countryish:
+        entity_kind = "country"
+        signals.append("entity_kind:country")
+    elif is_companyish:
+        entity_kind = "company"
+        signals.append("entity_kind:company")
+    elif is_productish:
+        entity_kind = "product"
+        signals.append("entity_kind:product")
+    elif is_marketish:
+        entity_kind = "market"
+        signals.append("entity_kind:market")
+    else:
+        entity_kind = "topic_general"
+        signals.append("entity_kind:topic_general")
+
+    # -------------------------
+    # Determine scope
+    # -------------------------
+    is_comparative = _contains_any(comparative_kw)
+    is_forecasty = _contains_any(forecast_kw) or bool(YEAR_PATTERN.findall(q_raw))
+
+    # Broad overview should win when user explicitly asks for general explainer
+    # BUT: if they also mention measurable intents (size/growth/forecast/etc.), treat as metrics_light.
+    is_broad_phrase = _contains_any(broad_phrases)
+
+    if is_comparative:
+        scope = "comparative"
+        signals.append("scope:comparative")
+    elif is_forecasty and any(i in intents for i in ["forecast", "growth", "size"]):
+        scope = "forecast_specific"
+        signals.append("scope:forecast_specific")
+    elif is_broad_phrase and not intents:
+        scope = "broad_overview"
+        signals.append("scope:broad_overview")
+    else:
+        # metrics light vs heavy
+        heavy_asks = ["segments", "share", "volume", "regions", "players"]
+        heavy_requested = any(i in intents for i in heavy_asks)
+        if heavy_requested:
+            scope = "metrics_heavy"
+            signals.append("scope:metrics_heavy")
+        else:
+            scope = "metrics_light"
+            signals.append("scope:metrics_light")
+
+    # -------------------------
+    # Map entity_kind -> category (backward compatible)
+    # -------------------------
+    if entity_kind == "country":
         category = "country"
-        signals.append(f"country_keywords:{','.join(country_hits[:5])}")
-    elif industry_hits and not country_hits:
+    elif entity_kind == "company":
+        category = "company"
+    elif entity_kind in {"market", "product"}:
         category = "industry"
-        signals.append(f"industry_keywords:{','.join(industry_hits[:5])}")
-    elif industry_hits and country_hits:
-        # tie-break: prefer industry unless query is explicitly macro-heavy
-        category = "industry"
-        signals.append("mixed_signals_default_to_industry")
     else:
         category = "generic"
-        signals.append("no_template_keywords")
 
-    expected = QUESTION_CATEGORY_TEMPLATES.get(category, [])
-    return {"category": category, "expected_metric_ids": expected, "signals": signals}
+    # -------------------------
+    # Choose generalized template + tiers
+    # -------------------------
+    # Tier meanings:
+    #  1 = high extractability (size/growth/forecast)
+    #  2 = medium (players/regions/basic segments)
+    #  3 = low (granular channels, detailed splits) -> only if explicitly asked
+    if category == "country":
+        metric_template_id = "ENTITY_OVERVIEW_COUNTRY_LIGHT_V1" if scope != "metrics_heavy" else "ENTITY_OVERVIEW_COUNTRY_LIGHT_V1"
+        metric_tiers_enabled = [1]
+    elif category == "company":
+        metric_template_id = "ENTITY_OVERVIEW_COMPANY_LIGHT_V1"
+        metric_tiers_enabled = [1]
+    elif category == "industry":
+        if scope in {"metrics_heavy", "comparative"}:
+            metric_template_id = "ENTITY_OVERVIEW_MARKET_HEAVY_V1"
+            metric_tiers_enabled = [1, 2]
+        else:
+            metric_template_id = "ENTITY_OVERVIEW_MARKET_LIGHT_V1"
+            metric_tiers_enabled = [1]
+    else:
+        metric_template_id = "ENTITY_OVERVIEW_TOPIC_V1"
+        metric_tiers_enabled = []
+
+    # -------------------------
+    # Build expected_metric_ids dynamically from intents (domain-agnostic)
+    # -------------------------
+    # Slot -> metric id mapping (kept generic; avoids tourism specialization)
+    # If you later add more canonical IDs, expand these mappings.
+    market_slot_to_id = {
+        "size_current": "market_size_current",
+        "size_projected": "market_size_projected",
+        "growth_cagr": "cagr",
+        "growth_yoy": "growth",
+        "share_key": "market_share",
+        "volume_current": "units_sold",
+        "price_avg": "average_price",
+        "players_top": "top_players",
+        "regions_key": "key_regions",
+        "segments_basic": "segments",
+        "trends": "key_trends",
+        "revenue": "revenue",
+    }
+
+    company_slot_to_id = {
+        "revenue": "revenue",
+        "growth": "growth",
+        "gross_margin": "gross_margin",
+        "operating_margin": "operating_margin",
+        "net_income": "net_income",
+        "market_cap": "market_cap",
+        "valuation_multiple": "valuation_multiple",
+        "trends": "key_trends",
+    }
+
+    country_slot_to_id = {
+        "population": "population",
+        "gdp_nominal": "gdp_nominal",
+        "gdp_per_capita": "gdp_per_capita",
+        "gdp_growth": "gdp_growth",
+        "inflation": "inflation",
+        "currency": "currency",
+        "unemployment": "unemployment",
+        "exports": "exports",
+        "imports": "imports",
+        "top_industries": "top_industries",
+        "trends": "key_trends",
+    }
+
+    # Determine slots from intents
+    slots: List[str] = []
+    if entity_kind == "country":
+        # For countries: macro defaults if broad, otherwise macro intents
+        if scope == "broad_overview":
+            slots = ["population", "gdp_nominal", "gdp_per_capita", "gdp_growth", "inflation", "currency", "top_industries"]
+        else:
+            # If user asks for macro (or didn’t specify), still give a tight macro set
+            slots = ["population", "gdp_nominal", "gdp_growth", "inflation", "currency"]
+            if "macro" in intents:
+                slots += ["unemployment", "exports", "imports"]
+
+        mapper = country_slot_to_id
+
+    elif entity_kind == "company":
+        slots = ["revenue", "growth", "gross_margin", "operating_margin", "net_income", "market_cap", "valuation_multiple"]
+        mapper = company_slot_to_id
+
+    elif entity_kind in {"market", "product"}:
+        # Tier 1 core (always when metrics_* scope)
+        if scope == "broad_overview":
+            slots = ["trends", "players_top"]
+        else:
+            slots = ["size_current", "growth_cagr"]
+            if "forecast" in intents:
+                slots.append("size_projected")
+            if "trends" in intents:
+                slots.append("trends")
+            # Tier 2 (only when explicitly asked or heavy scope)
+            if scope in {"metrics_heavy", "comparative"}:
+                if "players" in intents:
+                    slots.append("players_top")
+                if "regions" in intents:
+                    slots.append("regions_key")
+                if "segments" in intents:
+                    slots.append("segments_basic")
+                if "share" in intents:
+                    slots.append("share_key")
+                if "volume" in intents:
+                    slots.append("volume_current")
+                if "price" in intents:
+                    slots.append("price_avg")
+            else:
+                # metrics_light: include players/trends only if asked
+                if "players" in intents:
+                    slots.append("players_top")
+                if "regions" in intents:
+                    slots.append("regions_key")
+
+        mapper = market_slot_to_id
+
+    else:
+        # topic_general
+        slots = []
+        mapper = {}
+
+    expected_metric_ids = []
+    for s in slots:
+        mid = mapper.get(s)
+        if mid:
+            expected_metric_ids.append(mid)
+
+    # If still empty but template provides defaults, use template defaults
+    if not expected_metric_ids:
+        expected_metric_ids = get_expected_metric_ids_for_category(metric_template_id)
+
+    # De-dup while preserving order
+    seen = set()
+    expected_metric_ids = [x for x in expected_metric_ids if not (x in seen or seen.add(x))]
+
+    # -------------------------
+    # Preferred source classes (generic)
+    # -------------------------
+    if category == "country":
+        preferred_source_classes = ["official_stats", "government", "reputable_org", "reference"]
+    elif category == "company":
+        preferred_source_classes = ["official_filings", "investor_relations", "reputable_org", "news"]
+    elif category == "industry":
+        preferred_source_classes = ["industry_association", "reputable_org", "official_stats", "news", "research_portal"]
+    else:
+        preferred_source_classes = ["reference", "official_stats", "reputable_org"]
+
+    # Attach year detection signal
+    years = sorted(set(YEAR_PATTERN.findall(q_raw))) if YEAR_PATTERN.findall(q_raw) else []
+    if years:
+        signals.append("years_detected:" + ",".join(years))
+
+    return {
+        "category": category,
+        "expected_metric_ids": expected_metric_ids,
+        "signals": signals,
+        "entity_kind": entity_kind,
+        "scope": scope,
+        "metric_template_id": metric_template_id,
+        "metric_tiers_enabled": metric_tiers_enabled,
+        "preferred_source_classes": preferred_source_classes,
+        "intents": sorted(set(intents)),
+    }
 
 
 def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
@@ -6077,83 +6406,72 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
     """
     Extract numbers with surrounding context for matching.
 
-    Fixes:
-    - Preserves SGD currency marker: detects "S$" / "SGD" and stores raw like "S$29.8billion"
-    - Absolute rejection of year+suffix magnitude tokens (2025t, 2033M, etc.)
-    - Rejects PDF TOC/page-number noise that appears as <smallint><T/B/M/K> in junk contexts
-    - Rejects small-int magnitude tokens unless explicit currency is in a tight window
-    - Uses strict digit boundaries to avoid partial matches inside larger numbers
+    Key fixes (based on latest JSON):
+    - Convert nearby word scales into units: "13.6 million" -> raw "13.6M", unit "M"
+    - Preserve S$ when present
+    - Kill "3t" artifacts from phrases like "2-3 times"
+    - Reject year+suffix magnitude tokens (2025t, 2033M, etc.)
     """
     if not text:
         return []
 
     numbers: List[Dict] = []
 
-    # Strict numeric token boundaries
     num_token = r"(?<!\d)(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?!\d)"
-
-    # Capture optional unit right after number (space optional)
-    pattern = rf"(\(?\s*(?:S\$|\$)?\s*{num_token}\s*\)?)\s*(trillion|billion|million|thousand|%|T|B|M|K|bn|mn)?"
+    pattern = rf"(\(?\s*(?:S\$|\$)?\s*{num_token}\s*\)?)\s*(%|T|B|M|K|bn|mn)?"
 
     unit_map = {"bn": "B", "mn": "M"}
 
-    def _tight_window(s: str, pos: int, left: int = 80, right: int = 80) -> str:
+    def _window(s: str, pos: int, left: int = 90, right: int = 90) -> str:
         return (s[max(0, pos - left):min(len(s), pos + right)] or "")
 
     def _detect_currency(s: str, pos: int, raw_num: str) -> str:
-        """
-        Returns: "S$", "$", or "" based on a tight window around the match.
-        Priority: explicit S$ > USD/$
-        """
-        rn = (raw_num or "")
+        rn = raw_num or ""
         if "S$" in rn:
             return "S$"
         if "$" in rn:
             return "$"
-
-        w = _tight_window(s, pos, 80, 80).lower()
-        # Prefer SGD/S$ if present
+        w = _window(s, pos, 80, 80).lower()
         if "s$" in w or "sgd" in w:
             return "S$"
         if "usd" in w or "$" in w:
             return "$"
         return ""
 
-    def _word_scale_near(s: str, pos: int) -> bool:
-        w = _tight_window(s, pos, 120, 120).lower()
-        return any(k in w for k in ["billion", "million", "trillion", " bn", " mn", "usd", "sgd", "s$"])
+    def _detect_word_scale(s: str, pos: int) -> str:
+        """
+        Detect word scale *near the number* and return canonical unit.
+        """
+        w = _window(s, pos, 80, 80).lower()
+        if "billion" in w:
+            return "B"
+        if "million" in w:
+            return "M"
+        if "thousand" in w:
+            return "K"
+        if "trillion" in w:
+            return "T"
+        return ""
 
-    def _is_pdf_noise_context(ctx: str) -> bool:
+    def _looks_like_times_phrase(s: str, pos: int) -> bool:
         """
-        Extra PDF-specific noise filter. Your STB PDF extraction shows TOC/page artifacts.
+        Prevent '2-3 times' -> '3t' style false tokens.
         """
-        c = (ctx or "").lower()
-        # If your existing junk filter already handles some of this, this is additive.
-        return any(k in c for k in [
-            "table of contents", "contents", "page", "p.", "figure", "table", "copyright",
-            "isbn", "all rights reserved"
-        ])
+        w = _window(s, pos, 25, 25).lower()
+        return ("times" in w) or ("x the" in w) or ("x " in w)
 
     for match in re.finditer(pattern, text, re.IGNORECASE):
         raw_num = (match.group(1) or "").strip()
         unit_raw = (match.group(2) or "").strip()
 
-        # Context window (used later for matching)
         start = max(0, match.start() - 220)
         end = min(len(text), match.end() + 220)
         context = (text[start:end] or "").lower()
 
-        # Keep your existing junk filter
         if is_likely_junk_context(context):
             continue
 
-        # PDF-specific TOC/page noise filter
-        if _is_pdf_noise_context(context):
-            # Still allow real money/% values if they have strong signals
-            # (handled below by currency/word-scale requirements)
-            pass
-
-        # Clean numeric
+        # Clean numeric part
         num_clean = (
             raw_num.replace("S$", "")
             .replace("$", "")
@@ -6163,54 +6481,37 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
             .strip()
         )
 
+        # Normalize explicit unit suffix
         u = unit_map.get(unit_raw.lower(), unit_raw)
         u_norm = normalize_unit(u)
 
-        # Detect currency in a tight window (preserve S$)
-        currency = _detect_currency(text, match.start(), raw_num)
-
-        # ---- Absolute ban: year+suffix magnitude tokens (kills 2025t / 2033M etc) ----
+        # Absolute ban: year+suffix magnitude tokens
         if re.fullmatch(r"(19|20)\d{2}", num_clean) and u_norm in {"T", "B", "M", "K"}:
             continue
 
-        # Reject plain years unless explicitly currency/scale-qualified
-        if re.fullmatch(r"(19|20)\d{2}", num_clean):
-            if not (currency or u_norm or _word_scale_near(text, match.start())):
-                continue
+        # Kill 3t artifacts from "2-3 times"
+        if u_norm in {"T", "B", "M", "K"} and _looks_like_times_phrase(text, match.start()):
+            continue
+
+        # If unit missing, infer from word scale near the number
+        if not u_norm:
+            inferred = _detect_word_scale(text, match.start())
+            if inferred:
+                u_norm = inferred
 
         parsed = parse_human_number(num_clean, u_norm)
         if parsed is None:
             continue
 
-        # ---- Kill PDF/page-number magnitude junk ----
-        # Examples seen: 23T, 29T, 3T, 17.0t in PDF contexts.
-        # Rule: if magnitude unit and abs(value) < 100 and NOT explicitly currency-qualified, drop.
-        if u_norm in {"T", "B", "M", "K"} and abs(parsed) < 100:
-            # Keep only if explicit currency is nearby OR word-scale is nearby and context is not TOC/page-ish
-            if not currency:
-                # If the context smells like TOC/page noise, always drop
-                if _is_pdf_noise_context(context):
-                    continue
-                # If there is no strong word-scale phrase, drop
-                if not _word_scale_near(text, match.start()):
-                    continue
+        currency = _detect_currency(text, match.start(), raw_num)
 
-        # Percent values: ensure raw looks like percent when unit is %
+        # Build raw display string
         if u_norm == "%":
             raw_out = f"{num_clean}%"
         else:
-            # Preserve currency marker when present (S$ vs $)
-            # Preserve word scales if present immediately after (e.g., "29.8billion")
-            # We keep the original unit_raw string if it was a word like "billion".
-            if unit_raw and unit_raw.lower() in {"billion", "million", "trillion", "thousand"}:
-                raw_out = f"{currency}{num_clean}{unit_raw}".strip()
-            elif u_norm in {"T", "B", "M", "K"}:
-                raw_out = f"{currency}{num_clean}{u_norm}".strip()
-            else:
-                # fallback: no magnitude unit
-                raw_out = f"{currency}{num_clean}".strip()
+            raw_out = f"{currency}{num_clean}{u_norm}".strip() if u_norm in {"T", "B", "M", "K"} else f"{currency}{num_clean}".strip()
 
-        # Sanity guard: reject absurdly huge numbers
+        # Sanity guard
         if abs(parsed) > 10_000_000:
             continue
 
@@ -6222,7 +6523,6 @@ def extract_numbers_with_context(text: str) -> List[Dict]:
         })
 
     return numbers
-
 
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
@@ -6476,54 +6776,57 @@ def detect_y_label_dynamic(values: list) -> str:
 def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Build a question_profile used for structured reporting.
-    IMPORTANT: category must follow query_structure if provided (single source of truth).
+
+    Behavior:
+    - If query_structure (qs) provides category/main/side, treat that as the category source of truth.
+    - Still compute deterministic classification for entity_kind/scope/template/intents.
+    - Ensures expected_metric_ids are consistent and present in signals for dashboards/evolution.
     """
     qs = qs or {}
     q = (query or "").strip()
 
-    # Prefer category/main/side from query_structure when available
-    category = (qs.get("category") or "").strip() or "unknown"
+    det = classify_question_signals(q) or {}
+
+    # Prefer category from query_structure if present
+    category_from_qs = (qs.get("category") or "").strip()
+    category = category_from_qs or (det.get("category") or "unknown")
+
     main_q = (qs.get("main") or "").strip() or q
     side_qs = qs.get("side") if isinstance(qs.get("side"), list) else []
 
-    # Deterministic signals (can still be useful), BUT do not override category
-    signals = classify_question_signals(q) or {}
-    # Force signals category to match query_structure category
+    # Build signals dict that dashboards consume
+    signals: Dict[str, Any] = {}
+    signals["signals"] = det.get("signals", []) if isinstance(det.get("signals"), list) else []
+    signals["entity_kind"] = det.get("entity_kind", "topic_general")
+    signals["scope"] = det.get("scope", "broad_overview")
+    signals["metric_template_id"] = det.get("metric_template_id", "ENTITY_OVERVIEW_TOPIC_V1")
+    signals["metric_tiers_enabled"] = det.get("metric_tiers_enabled", [])
+    signals["preferred_source_classes"] = det.get("preferred_source_classes", [])
+    signals["intents"] = det.get("intents", [])
+
+    # Normalize template to the final category if qs overrides
+    template_id = signals.get("metric_template_id") or "ENTITY_OVERVIEW_TOPIC_V1"
+    scope = (signals.get("scope") or "broad_overview").strip().lower()
+
+    if category == "country":
+        template_id = "ENTITY_OVERVIEW_COUNTRY_LIGHT_V1"
+    elif category == "company":
+        template_id = "ENTITY_OVERVIEW_COMPANY_LIGHT_V1"
+    elif category == "industry":
+        template_id = "ENTITY_OVERVIEW_MARKET_HEAVY_V1" if scope in {"metrics_heavy", "comparative"} else "ENTITY_OVERVIEW_MARKET_LIGHT_V1"
+    elif category == "generic":
+        template_id = "ENTITY_OVERVIEW_TOPIC_V1"
+
     signals["category"] = category
+    signals["metric_template_id"] = template_id
 
-    # --- keep raw hits, but don't let contradictory keyword hits pollute the "active" signals ---
-    raw_hits = list(signals.get("signals") or [])
-    signals["raw_signals"] = raw_hits
+    # Determine expected ids:
+    # - If deterministic classifier already provided ids, keep them unless qs forces category change.
+    # - If category change happened, regenerate from template.
+    expected_metric_ids = det.get("expected_metric_ids") if isinstance(det.get("expected_metric_ids"), list) else []
+    if category_from_qs:
+        expected_metric_ids = get_expected_metric_ids_for_category(template_id)
 
-    def _signal_consistent_with_category(sig: str, cat: str) -> bool:
-        s = (sig or "").lower()
-        c = (cat or "").lower()
-        if not s:
-            return False
-
-        # If final category is country, drop industry/company/market category-hit strings
-        if c == "country":
-            if s.startswith("industry_keywords:") or s.startswith("company_keywords:") or s.startswith("market_keywords:"):
-                return False
-
-        # If final category is industry, drop country-hit strings
-        if c == "industry":
-            if s.startswith("country_keywords:") or s.startswith("country_overview:"):
-                return False
-
-        return True
-
-    signals["signals"] = [s for s in raw_hits if _signal_consistent_with_category(s, category)]
-
-
-    # Choose expected metric template based on category (not signals)
-    expected_metric_ids = []
-    try:
-        expected_metric_ids = get_expected_metric_ids_for_category(category)
-    except Exception:
-        expected_metric_ids = []
-
-    # Store expected_metric_ids inside signals (consistent place)
     signals["expected_metric_ids"] = expected_metric_ids
 
     profile = {
@@ -6533,7 +6836,6 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
         "side_questions": side_qs,
     }
 
-    # Keep debug for traceability
     if qs.get("debug") is not None:
         profile["debug_query_structure"] = qs.get("debug")
 
