@@ -6119,20 +6119,25 @@ def build_prev_numbers(prev_metrics: Dict) -> Dict[str, Dict]:
 
 def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
-    Source-anchored evolution: refetch same sources (or reuse cache), extract numbers, and match metrics.
+    Source-anchored evolution with fallback source plan.
 
-    Hardening fixes (based on Germany run):
-    - Percent metrics MUST match candidates with unit '%' (no unitless integers allowed)
-      (prevents 'Jan 20' matching '29% industry share')
-    - Share metrics require 'share' or strong metric keywords in context
-    - Keeps source weighting + projection boost + cache reuse
+    Key improvements:
+    - If too many anchored sources are blocked/unusable (captcha, 403, 429, 0 numbers),
+      automatically append fallback sources based on question_profile signals.
+    - Uses PDF-special extraction when fetch status indicates PDF content.
+    - Keeps cache reuse behavior.
+    - Maintains strict percent gating + keyword gates from previous iteration (to avoid false matches).
+
+    Output schema remains backward compatible with your dashboard.
     """
     prev_response = previous_data.get("primary_response", {}) or {}
-    prev_sources = previous_data.get("web_sources", []) or prev_response.get("sources", []) or []
-    sources_to_check = prev_sources[:5]
+    prev_sources = prev_response.get("sources", []) or previous_data.get("web_sources", []) or []
+    prev_sources = [s for s in prev_sources if isinstance(s, str) and s.strip()]
 
-    frozen_schema = prev_response.get("metric_schema_frozen", {}) or {}
-    prev_metrics = prev_response.get("primary_metrics", {}) or {}
+    question_profile = prev_response.get("question_profile", {}) or {}
+    qp_signals = question_profile.get("signals", {}) if isinstance(question_profile.get("signals"), dict) else {}
+    scope = (qp_signals.get("scope") or "").lower()
+    entity_kind = (qp_signals.get("entity_kind") or "").lower()
 
     # Baseline cache for reuse if fetch fails
     try:
@@ -6148,7 +6153,8 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     if not isinstance(baseline_sources_cache, list):
         baseline_sources_cache = []
 
-    # Baseline metrics
+    frozen_schema = prev_response.get("metric_schema_frozen", {}) or {}
+    prev_metrics = prev_response.get("primary_metrics", {}) or {}
     prev_numbers = build_prev_numbers(prev_metrics)
 
     # Map metric display name -> canonical id
@@ -6160,6 +6166,9 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     except Exception:
         metric_name_to_canonical = {}
 
+    # -------------------------
+    # Helpers
+    # -------------------------
     def _domain(url: str) -> str:
         try:
             return (url.split("//", 1)[-1].split("/", 1)[0] or "").lower()
@@ -6168,58 +6177,146 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     def _source_weight(url: str) -> float:
         d = _domain(url)
-        if any(k in d for k in ["statista.com"]):
-            return 1.05
-        if any(k in d for k in ["gov.", ".gov", "europa.eu", "oecd.org", "worldbank.org", "imf.org"]):
+        if any(k in d for k in ["gov.", ".gov", "europa.eu", "oecd.org", "worldbank.org", "imf.org", "destatis.de", "bundesbank.de"]):
             return 1.15
+        if "statista.com" in d:
+            return 1.05
         if any(k in d for k in ["blog", "wordpress", "medium", "dmcquote"]):
             return 0.75
         return 1.0
 
-    # ---- Fetch & extract ----
+    def _is_blocked_status(s: str) -> bool:
+        s = (s or "").lower()
+        return any(k in s for k in ["captcha", "blocked", "rate_limited", "403", "429", "503", "no readable", "unusable"])
+
+    def _needs_fallback(source_results: List[Dict]) -> bool:
+        """
+        Trigger fallback if:
+        - fewer than 2 sources extracted numbers OR
+        - more than half are blocked/unusable OR
+        - total extracted numbers is extremely low.
+        """
+        if not source_results:
+            return True
+        extracted = sum(1 for r in source_results if r.get("status") == "fetched_extracted")
+        blocked = sum(1 for r in source_results if _is_blocked_status(r.get("status_detail", "")) or r.get("status") == "failed")
+        total = len(source_results)
+        total_nums = sum(int(r.get("numbers_found") or 0) for r in source_results)
+
+        if extracted < 2:
+            return True
+        if total > 0 and (blocked / total) >= 0.5:
+            return True
+        if total_nums < 30:
+            return True
+        return False
+
+    def _fallback_sources_for_context() -> List[str]:
+        """
+        Domain-agnostic fallback sources chosen by entity_kind/scope.
+        We keep this conservative: a small list of high-likelihood sources.
+        """
+        # Detect country hint from previous question or sources (best-effort)
+        qtxt = (prev_response.get("question") or prev_response.get("user_question") or "").lower()
+        src_concat = " ".join(prev_sources).lower()
+
+        is_germany = ("germany" in qtxt) or ("deutschland" in qtxt) or ("destatis" in src_concat) or ("bundesbank" in src_concat)
+        is_eu = ("eurostat" in qtxt) or ("eu " in qtxt) or ("european commission" in src_concat)
+
+        fallback: List[str] = []
+
+        if entity_kind in {"country", "topic_general"} or ("gdp" in qtxt) or ("inflation" in qtxt) or ("share in gdp" in qtxt):
+            # Strong macro set
+            fallback.extend([
+                "https://data.worldbank.org/",
+                "https://www.oecd.org/economy/",
+                "https://www.imf.org/en/Data",
+            ])
+            if is_germany:
+                fallback.extend([
+                    "https://www.destatis.de/EN/Home/_node.html",
+                    "https://www.bundesbank.de/en/statistics",
+                ])
+            if is_eu or is_germany:
+                fallback.extend([
+                    "https://ec.europa.eu/eurostat",
+                ])
+
+        if entity_kind in {"market", "industry"} or ("market" in qtxt):
+            # Market: aim for reputable org + neutral definitional anchors
+            fallback.extend([
+                "https://www.oecd.org/industry/",
+                "https://data.worldbank.org/",
+                "https://en.wikipedia.org/wiki/Video_game_console" if "console" in qtxt else "https://en.wikipedia.org/",
+            ])
+
+        # De-dup, keep order
+        seen = set()
+        out = []
+        for u in fallback:
+            if u and u not in seen:
+                out.append(u)
+                seen.add(u)
+        return out[:5]  # keep tight to avoid runaway crawling
+
+    # -------------------------
+    # Fetch & Extract
+    # -------------------------
+    sources_to_check = prev_sources[:5]
     source_results: List[Dict] = []
     all_current_numbers: List[Dict] = []
 
-    for url in sources_to_check:
+    def _extract_numbers(content: str, status_msg: str) -> List[Dict]:
+        # If PDF, use PDF-special extractor wrapper
+        if status_msg == "success_pdf":
+            return extract_numbers_with_context_pdf(content)
+        return extract_numbers_with_context(content)
+
+    def _add_extracted(url: str, extracted: List[Dict]):
+        for n in extracted:
+            n["source_url"] = url
+        all_current_numbers.extend(extracted)
+
+    def _compact_numbers(url: str, extracted: List[Dict]) -> List[Dict]:
+        return [{
+            "value": n.get("value"),
+            "unit": n.get("unit"),
+            "raw": n.get("raw"),
+            "source_url": url,
+            "context": (n.get("context", "")[:220] if isinstance(n.get("context"), str) else "")
+        } for n in extracted]
+
+    def _fetch_one(url: str):
         content, status_msg = fetch_url_content_with_status(url)
 
         if content:
             fp = fingerprint_text(content)
-            extracted = extract_numbers_with_context(content)
-
-            for n in extracted:
-                n["source_url"] = url
-
-            compact = [{
-                "value": n.get("value"),
-                "unit": n.get("unit"),
-                "raw": n.get("raw"),
-                "source_url": url,
-                "context": (n.get("context", "")[:220] if isinstance(n.get("context"), str) else "")
-            } for n in extracted]
+            extracted = _extract_numbers(content, status_msg)
+            compact = _compact_numbers(url, extracted)
 
             if compact:
                 source_results.append({
                     "url": url,
                     "status": "fetched_extracted",
-                    "status_detail": "success",
+                    "status_detail": status_msg,
                     "numbers_found": len(compact),
                     "fingerprint": fp,
                     "fetched_at": now_utc().isoformat(),
                     "extracted_numbers": compact
                 })
-                all_current_numbers.extend(extracted)
+                _add_extracted(url, extracted)
             else:
                 source_results.append({
                     "url": url,
                     "status": "fetched_unusable",
-                    "status_detail": "success_but_no_numbers",
+                    "status_detail": f"{status_msg}_but_no_numbers",
                     "numbers_found": 0,
                     "fingerprint": fp,
                     "fetched_at": now_utc().isoformat(),
                     "extracted_numbers": []
                 })
         else:
+            # Cache reuse
             cached = []
             for s in baseline_sources_cache:
                 if isinstance(s, dict) and s.get("url") == url and isinstance(s.get("extracted_numbers"), list):
@@ -6254,7 +6351,24 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                     "extracted_numbers": []
                 })
 
-    # ---- Matching helpers ----
+    # First pass: anchored sources
+    for url in sources_to_check:
+        _fetch_one(url)
+
+    # Fallback pass if needed
+    if _needs_fallback(source_results):
+        fallback_sources = _fallback_sources_for_context()
+        # only add sources not already checked
+        already = set(sources_to_check)
+        for fu in fallback_sources:
+            if fu not in already:
+                sources_to_check.append(fu)
+                already.add(fu)
+                _fetch_one(fu)
+
+    # -------------------------
+    # Matching (strict)
+    # -------------------------
     def _metric_intent(metric_name: str) -> str:
         n = (metric_name or "").lower()
         if "cagr" in n or "growth rate" in n:
@@ -6271,7 +6385,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         raw = (curr.get("raw") or "").lower()
         if u in {"T", "B", "M", "K"}:
             return True
-        if any(sym in raw for sym in ["$", "s$", "€", "eur"]):
+        if any(sym in raw for sym in ["€", "eur", "$", "s$"]):
             return True
         if any(w in ctx for w in ["billion", "million", "trillion", "eur", "euro", "usd", "sgd"]):
             return True
@@ -6279,7 +6393,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     def _candidate_year_penalty(curr: Dict) -> float:
         ctx = (curr.get("context") or "").lower()
-        if any(k in ctx for k in ["table of contents", "archived content", "secure .gov", "copyright", "issn", "isbn"]):
+        if any(k in ctx for k in ["table of contents", "archived content", "secure .gov", "isbn", "issn", "doi", "catalogue", "legal notice"]):
             return 0.55
         if re.search(r"(19|20)\d{2}\s*[-–to]+\s*(19|20)\d{2}", ctx):
             return 0.70
@@ -6294,37 +6408,28 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         return 1.0
 
     def _keyword_gate(metric_name: str, context: str) -> bool:
-        """
-        Tight, metric-specific gating to avoid matching generic numbers.
-        """
         n = (metric_name or "").lower()
         ctx = (context or "").lower()
-
-        # Block obvious boilerplate contexts
-        if any(k in ctx for k in ["secure .gov", "archived content", "isbn", "issn", "table of contents"]):
-            return False
 
         # CAGR must mention CAGR
         if "cagr" in n:
             return "cagr" in ctx
 
-        # Shares must mention share (or strong anchor token)
+        # share must mention share OR metric noun anchor
         if "share" in n:
             if "share" in ctx:
                 return True
-            # allow if metric has a clear noun and noun appears
-            for token in ["services", "industry", "manufacturing", "agriculture", "exports", "imports"]:
+            for token in ["services", "industry", "manufacturing", "agriculture", "exports", "imports", "console", "hardware", "software"]:
                 if token in n and token in ctx:
                     return True
             return False
 
-        # GDP metrics must mention gdp
+        # GDP metrics should mention gdp
         if "gdp" in n:
             return "gdp" in ctx
 
         return True
 
-    # ---- Match metrics ----
     metric_changes: List[Dict] = []
 
     for metric_name, prev_item in prev_numbers.items():
@@ -6352,9 +6457,8 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             if not _keyword_gate(metric_name, ctx):
                 continue
 
-            # STRICT intent gating
+            # STRICT percent gating (prevents unitless 20 matching 29%)
             if intent == "percent":
-                # must truly be percent
                 if curr_unit != "%":
                     continue
             elif intent == "currency":
@@ -6393,9 +6497,10 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 best_match = curr
 
         threshold = 0.62
-        if "forecast" in (metric_name or "").lower():
+        n_l = (metric_name or "").lower()
+        if "forecast" in n_l or "projected" in n_l:
             threshold = 0.58
-        if "share" in (metric_name or "").lower() or "cagr" in (metric_name or "").lower():
+        if "share" in n_l or "cagr" in n_l:
             threshold = 0.60
 
         if best_match and best_score > threshold:
