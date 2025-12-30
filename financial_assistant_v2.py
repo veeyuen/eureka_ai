@@ -6506,30 +6506,30 @@ def fetch_url_content(url: str) -> Optional[str]:
 
     return None
 
-def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional[str], str]:
+
+def fetch_url_content_with_status(url, timeout=25):
     """
     Fetch URL content and return (text, status_detail).
-    Never raises — always returns a status string.
 
     status_detail values:
-      - "success"        (HTML / text content)
-      - "success_pdf"    (PDF content extracted to text)
+      - "success"
+      - "success_pdf"
       - "http_<code>"
       - "exception:<TypeName>"
       - "empty"
-      - "pdf_no_text"    (PDF fetched but no extractable text)
-      - "pdf_parse_failed"
+
+    Hardening:
+      - Accept bare domains by prefixing https://
+      - Detect PDFs by URL or content-type and extract text (prevents binary junk contexts)
     """
     try:
         import re
-        import io
         import requests
 
         u = (url or "").strip()
         if not u:
             return None, "empty"
 
-        # Normalize common "domain only" sources like "bank.gov.ua"
         if not re.match(r"^https?://", u, flags=re.I):
             u = "https://" + u
 
@@ -6538,77 +6538,53 @@ def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.7",
-            "Accept-Language": "en-US,en;q=0.9",
+            )
         }
 
-        # Use bytes first (prevents PDF/binary garbage from being treated as text)
-        resp = requests.get(u, headers=headers, timeout=timeout, stream=True)
+        resp = requests.get(u, headers=headers, timeout=timeout)
         if resp.status_code >= 400:
             return None, f"http_{resp.status_code}"
 
         content_type = (resp.headers.get("content-type") or "").lower()
-        is_pdf = ("application/pdf" in content_type) or u.lower().split("?", 1)[0].endswith(".pdf")
-
-        # Read bounded content to avoid huge memory spikes on very large PDFs/pages
-        # (adjust if you want, but this is a sane default)
-        MAX_BYTES = 20 * 1024 * 1024  # 20MB
-        raw = resp.content or b""
-        if not raw:
-            return None, "empty"
-        if len(raw) > MAX_BYTES:
-            # still try to parse first chunk for HTML; PDF parsing on partial bytes is unreliable
-            if not is_pdf:
-                raw = raw[:MAX_BYTES]
-            else:
-                return None, "exception:ContentTooLarge"
+        is_pdf = u.lower().endswith(".pdf") or ("application/pdf" in content_type)
 
         if is_pdf:
-            # Extract text from PDF safely
+            # --- PDF text extraction (no binary context) ---
             try:
-                text_out = ""
-                # Try pypdf first, then PyPDF2 (both common)
-                try:
-                    from pypdf import PdfReader  # type: ignore
-                except Exception:
-                    from PyPDF2 import PdfReader  # type: ignore
+                import io
+                import pdfplumber
 
-                reader = PdfReader(io.BytesIO(raw))
-                parts = []
-                for page in reader.pages:
-                    try:
+                b = resp.content or b""
+                if not b:
+                    return None, "empty"
+
+                text_parts = []
+                with pdfplumber.open(io.BytesIO(b)) as pdf:
+                    for page in pdf.pages[:30]:  # cap pages for speed / stability
                         t = page.extract_text() or ""
-                        if t:
-                            parts.append(t)
-                    except Exception:
-                        continue
-                text_out = "\n\n".join(parts).strip()
+                        if t.strip():
+                            text_parts.append(t)
 
-                if not text_out:
-                    return None, "pdf_no_text"
-                return text_out, "success_pdf"
+                text = "\n".join(text_parts).strip()
+                if not text:
+                    return None, "empty"
 
-            except Exception:
-                return None, "pdf_parse_failed"
+                return text, "success_pdf"
 
-        # Otherwise treat as text/HTML
-        # Respect encoding if provided; fallback to requests' guess
-        try:
-            # requests will usually set resp.encoding; but resp.text is based on it.
-            # Decode bytes explicitly for stability.
-            enc = resp.encoding or "utf-8"
-            text = raw.decode(enc, errors="replace")
-        except Exception:
-            text = raw.decode("utf-8", errors="replace")
+            except Exception as e:
+                # If pdfplumber fails, do not emit binary garbage — return empty
+                return None, f"exception:{type(e).__name__}"
 
-        if not text or not text.strip():
+        # --- HTML / text ---
+        text = resp.text or ""
+        if not text.strip():
             return None, "empty"
 
         return text, "success"
 
     except Exception as e:
         return None, f"exception:{type(e).__name__}"
+
 
 
 def extract_numbers_from_text(text: str) -> List[Dict]:
@@ -6779,12 +6755,56 @@ def normalize_currency_prefix(raw: str) -> bool:
     s = raw.strip().upper()
     return s.startswith("$") or " USD" in s or s.startswith("USD")
 
-def is_likely_junk_context(context: str) -> bool:
-    """Reject contexts that are likely not data-bearing (deterministic)."""
+def is_likely_junk_context(context):
+    """
+    Reject contexts that are likely not data-bearing.
+
+    Expanded hardening:
+      - kills nav/footer/cookie/login
+      - kills JS bundles / instrumentation / CSS / layout grids
+      - kills author bios / social links / phone numbers / UI chrome
+      - kills binary-ish / non-printable heavy snippets (PDF junk)
+    """
     if not context:
         return False
-    c = context.lower()
-    return any(h in c for h in NON_DATA_CONTEXT_HINTS)
+
+    c = (context or "").lower()
+
+    # If lots of non-printable chars, it's almost certainly junk
+    try:
+        nonprint = sum(1 for ch in context if ord(ch) < 9 or (13 < ord(ch) < 32))
+        if nonprint / max(1, len(context)) > 0.03:
+            return True
+    except Exception:
+        pass
+
+    hard_hits = [
+        # site chrome
+        "cookie", "privacy", "terms", "copyright", "subscribe", "newsletter",
+        "login", "sign in", "sign-in", "register", "accept all", "manage consent",
+
+        # html/js/css/layout noise
+        "<script", "function(", "var ", "const ", "let ", "webpack", "chunk",
+        "googletag", "gtag(", "analytics", "instrumentationkey", "onerror",
+        "aria-label", "material-icons", "btn-", "navbar", "footer", "header",
+        "aem-grid", "col-sm-", "col-xs-", "responsivegrid", "cmp-container",
+        "href=\"", "src=\"", "rel=\"noopener", "role=\"", "class=\"",
+
+        # author/social / misc UI
+        "about the authors", "open in new window", "facebook", "twitter",
+        "youtube", "linkedin", "instagram", "glassdoor", "contact us",
+
+        # pdf front matter / boilerplate
+        "issn", "isbn", "doi", "all rights reserved", "reproduction is authorised",
+        "printed by", "legal notice",
+    ]
+
+    if any(h in c for h in hard_hits):
+        return True
+
+    return False
+
+
 
 def parse_human_number(value_str: str, unit: str) -> Optional[float]:
     """
@@ -7427,179 +7447,194 @@ def extract_context_keywords(metric_name: str) -> List[str]:
     return out[:30]
 
 
-def extract_numbers_with_context(text: str):
+def extract_numbers_with_context(text):
     """
     Extract numbers with surrounding context for matching.
 
-    Improvements (junk reduction + stability):
-    - Strips HTML tags and non-printable characters from context snippets
-    - Drops low-signal markup integers (e.g., 12, 6, 1, 0) when no unit/currency and context is "web chrome"
-    - Keeps small integers ONLY if context contains economic keywords
-    - Prevents common year/currency artifacts from earlier hardening
+    Hardening:
+      - Prevent year tokens from acquiring currency/magnitude units
+      - Prevent '$2022B' artifacts
+      - Infer word scales only for non-year numbers
+      - Reject times-artifacts
+      - Aggressively filter unitless layout noise (e.g., many 6/12/0 values)
     """
-    import re
-
     if not text:
         return []
 
-    # If the "text" is actually binary-ish (PDF bytes decoded badly), bail out early
-    # (lots of control chars / replacement chars tends to indicate junk).
-    sample = text[:5000]
-    ctrl = sum(1 for ch in sample if ord(ch) < 32 and ch not in "\n\r\t")
-    if len(sample) > 0 and (ctrl / max(1, len(sample))) > 0.06:
-        return []
+    import re
 
     numbers = []
 
-    # -------------------------
-    # Helpers
-    # -------------------------
-    def _clean_snippet(s: str) -> str:
-        if not s:
-            return ""
-        # strip tags
-        s = re.sub(r"<script\b[^>]*>.*?</script>", " ", s, flags=re.I | re.S)
-        s = re.sub(r"<style\b[^>]*>.*?</style>", " ", s, flags=re.I | re.S)
-        s = re.sub(r"<[^>]+>", " ", s)
-        # remove non-printable
-        s = "".join(ch if ch.isprintable() else " " for ch in s)
-        # collapse whitespace
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
-
-    def _looks_like_year(n: str) -> bool:
-        try:
-            x = int(float(n))
-            return 1900 <= x <= 2100
-        except Exception:
-            return False
-
-    def _economic_context(ctx: str) -> bool:
-        c = (ctx or "").lower()
-        kw = [
-            "gdp", "growth", "inflation", "unemployment", "employment",
-            "rate", "interest", "policy", "deficit", "debt", "budget",
-            "exports", "imports", "trade", "forecast", "projection",
-            "percent", "%", "billion", "million", "trillion",
-            "cagr", "yoy", "qoq", "quarter", "annual", "real gdp",
-            "nominal", "per capita", "fiscal", "monetary",
-        ]
-        return any(k in c for k in kw)
-
-    def _markup_noise_context(ctx: str) -> bool:
-        c = (ctx or "").lower()
-        bad = [
-            "og:", "twitter:", "aria-label", "viewport", "scene7",
-            "aem-grid", "cmp-container", "pageuid", "pagename",
-            "siteinfo", "useragent", "instrumentationkey",
-            "material-icons", "btn-back-to-top", "cookie", "captcha",
-            "header", "footer", "nav", "breadcrumb",
-        ]
-        return any(b in c for b in bad)
-
-    # Numeric token boundaries
     num_token = r"(?<!\d)(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?!\d)"
-
-    # optional currency symbol; optional unit/scale
     pattern = rf"(?<!\w)(S\$|\$)?\s*({num_token})\s*(%|T|B|M|K|bn|mn|trillion|billion|million|thousand)?"
+    unit_map = {"bn": "B", "mn": "M"}
 
-    unit_map = {
-        "bn": "B",
-        "mn": "M",
-        "billion": "B",
-        "million": "M",
-        "thousand": "K",
-        "trillion": "T",
-    }
+    def _window(s, pos, left=140, right=140):
+        return (s[max(0, pos - left):min(len(s), pos + right)] or "")
 
-    # scan
-    for m in re.finditer(pattern, text, flags=re.I):
-        cur = (m.group(1) or "").strip()
-        value_str = (m.group(2) or "").strip()
+    def _clean_ctx(ctx):
+        ctx = (ctx or "").replace("\n", " ").replace("\r", " ")
+        ctx = re.sub(r"\s+", " ", ctx).strip()
+        # cap to keep JSON small
+        return ctx[:260]
+
+    def _is_year_token(num_str):
+        return bool(re.fullmatch(r"(19|20)\d{2}", (num_str or "").strip()))
+
+    def _looks_like_times_phrase(s, pos):
+        w = _window(s, pos, 40, 40).lower()
+        return (" times" in w) or ("x the" in w) or (" x " in w)
+
+    def _detect_word_scale(s, pos):
+        w = _window(s, pos, 110, 110).lower()
+        if "billion" in w:
+            return "B"
+        if "million" in w:
+            return "M"
+        if "thousand" in w:
+            return "K"
+        if "trillion" in w:
+            return "T"
+        return ""
+
+    def _currency_is_valid(sym, num_str, pos):
+        if not sym:
+            return False
+        if _is_year_token(num_str):
+            return False
+        if sym == "S$":
+            return True
+        w = _window(text, pos, 90, 90).lower()
+        return any(k in w for k in ["usd", "dollar", "dollars", "us$", "sgd", "eur", "gbp", "million", "billion", "trillion"])
+
+    def _normalize_unit(u_raw):
+        if not u_raw:
+            return ""
+        u = u_raw.strip()
+        u = unit_map.get(u.lower(), u)
+        if u.lower() == "billion":
+            u = "B"
+        elif u.lower() == "million":
+            u = "M"
+        elif u.lower() == "thousand":
+            u = "K"
+        elif u.lower() == "trillion":
+            u = "T"
+        try:
+            return normalize_unit(u)
+        except Exception:
+            return (u or "").strip().upper()
+
+    for m in re.finditer(pattern, text, re.IGNORECASE):
+        sym = (m.group(1) or "").strip()
+        num_str = (m.group(2) or "").strip()
         unit_raw = (m.group(3) or "").strip()
 
-        if not value_str:
+        start = max(0, m.start() - 240)
+        end = min(len(text), m.end() + 240)
+        ctx_raw = (text[start:end] or "")
+        ctx = _clean_ctx(ctx_raw)
+
+        if is_likely_junk_context(ctx):
             continue
 
-        # prevent "$2022" year artifact
-        if cur and _looks_like_year(value_str):
-            cur = ""  # do not treat year as currency amount
+        u_norm = _normalize_unit(unit_raw)
 
-        # normalize unit
-        unit_norm = unit_map.get(unit_raw.lower(), unit_raw.upper() if unit_raw else "")
-        # parse numeric
-        try:
-            value = float(value_str.replace(",", ""))
-        except Exception:
+        # reject times artifacts for magnitude units
+        if u_norm in {"T", "B", "M", "K"} and _looks_like_times_phrase(text, m.start()):
             continue
 
-        # context window
-        start = max(0, m.start() - 140)
-        end = min(len(text), m.end() + 140)
-        ctx_raw = text[start:end]
-        ctx = _clean_snippet(ctx_raw)[:220]
-
-        # ---- junk filtering ----
-        has_unit_or_currency = bool(cur) or bool(unit_norm) or ("%" in unit_raw)
-
-        # drop obvious markup noise tokens like "12" "6" "1" "0" with no unit/currency
-        if not has_unit_or_currency:
-            # tiny integers are almost always markup/list noise unless economic context
-            if float(value).is_integer() and 0 <= value <= 25:
-                if not _economic_context(ctx):
-                    continue
-            # if context is pure web chrome noise, skip
-            if _markup_noise_context(ctx) and not _economic_context(ctx):
+        # years: never currency/magnitude
+        if _is_year_token(num_str):
+            if u_norm in {"T", "B", "M", "K"}:
                 continue
-            # very short context is usually useless
-            if len(ctx) < 25 and not _economic_context(ctx):
+            if sym in {"$", "S$"}:
                 continue
+            parsed_year = parse_human_number(num_str, "")
+            if parsed_year is None:
+                continue
+            numbers.append({"value": float(parsed_year), "unit": "", "context": ctx, "raw": num_str})
+            continue
 
-        raw = f"{cur}{value_str}{unit_raw}".strip()
+        # infer word scale for non-year if missing
+        if not u_norm:
+            inferred = _detect_word_scale(text, m.start())
+            if inferred:
+                u_norm = inferred
 
-        numbers.append({
-            "value": value,
-            "unit": unit_norm,
-            "context_snippet": ctx,
-            "context": ctx,  # keep for backward compatibility (some code uses 'context')
-            "raw": raw,
-        })
+        parsed = parse_human_number(num_str, u_norm)
+        if parsed is None:
+            continue
+
+        # aggressive filter: unitless tiny integers are usually layout noise
+        # (still allow if context looks “data-ish”)
+        if (u_norm == "") and (sym == ""):
+            try:
+                v = float(num_str.replace(",", ""))
+                if v.is_integer():
+                    iv = int(v)
+                    if 0 <= iv <= 50:
+                        dataish = any(k in ctx.lower() for k in [
+                            "gdp", "inflation", "unemployment", "forecast", "percent", "%", "rate",
+                            "budget", "deficit", "surplus", "growth", "exports", "imports",
+                            "population", "debt", "revenue", "spending", "billion", "million"
+                        ])
+                        if not dataish:
+                            continue
+            except Exception:
+                pass
+
+        currency_prefix = ""
+        if sym and _currency_is_valid(sym, num_str, m.start()):
+            currency_prefix = sym
+
+        if u_norm == "%":
+            raw_out = f"{num_str}%"
+        elif u_norm in {"T", "B", "M", "K"}:
+            raw_out = f"{currency_prefix}{num_str}{u_norm}".strip()
+        else:
+            raw_out = f"{currency_prefix}{num_str}".strip()
+
+        # sanity guard (prevents absurd parse artefacts)
+        if abs(parsed) > 10_000_000:
+            continue
+
+        numbers.append({"value": float(parsed), "unit": u_norm, "context": ctx, "raw": raw_out})
 
     return numbers
 
 
-
-def extract_numbers_with_context_pdf(text: str) -> List[Dict]:
+def extract_numbers_with_context_pdf(text):
     """
     PDF-specialized extractor wrapper.
 
     Strategy:
-    - Run normal extraction
-    - Add additional filtering aimed at PDF front-matter noise (ISSN/ISBN/doi)
-    - Prefer contexts that contain domain-relevant table language (GDP, growth, %, forecast, services, industry, etc.)
-
-    Returns the same schema as extract_numbers_with_context().
+      - Run normal extraction
+      - Filter boilerplate (ISSN/ISBN/doi/front matter)
+      - Prefer contexts that look economic/metric/table-like
+      - If filtering removes too much, fall back safely
     """
     if not text:
         return []
 
     base = extract_numbers_with_context(text) or []
 
-    def _bad_pdf_context(ctx: str) -> bool:
+    def _bad_pdf_context(ctx):
         c = (ctx or "").lower()
         bad = [
-            "issn", "isbn", "doi", "catalogue", "kc-", "legal notice",
-            "reproduction is authorised", "all rights reserved", "printed by",
-            "manuscript completed", "luxembourg:", "©", "copyright"
+            "issn", "isbn", "doi", "catalogue", "legal notice",
+            "all rights reserved", "reproduction is authorised",
+            "printed by", "manuscript completed", "©", "copyright",
+            "table of contents"
         ]
         return any(b in c for b in bad)
 
-    def _good_pdf_context(ctx: str) -> bool:
+    def _good_pdf_context(ctx):
         c = (ctx or "").lower()
         good = [
-            "gdp", "gross domestic product", "growth", "forecast", "projection",
-            "services", "industry", "manufacturing", "agriculture", "share",
-            "percent", "%", "table", "figure", "chart"
+            "gdp", "growth", "forecast", "projection", "inflation", "unemployment",
+            "exports", "imports", "debt", "deficit", "budget", "interest rate",
+            "table", "figure", "chart", "%", "billion", "million", "trillion"
         ]
         return any(g in c for g in good)
 
@@ -7608,14 +7643,19 @@ def extract_numbers_with_context_pdf(text: str) -> List[Dict]:
         ctx = n.get("context", "") or ""
         if _bad_pdf_context(ctx):
             continue
-        # If PDF extraction is still noisy, keep only numbers with "good" context or obvious %/currency markers.
+
         raw = (n.get("raw") or "").lower()
-        u = normalize_unit(n.get("unit", ""))
+        u = ""
+        try:
+            u = normalize_unit(n.get("unit", ""))
+        except Exception:
+            u = (n.get("unit") or "")
+
+        # Keep if data-ish context OR has strong marker
         if _good_pdf_context(ctx) or u == "%" or any(sym in raw for sym in ["€", "eur", "$", "s$"]):
             cleaned.append(n)
 
-    # If we filtered too hard, fall back to base
-    return cleaned if len(cleaned) >= max(10, len(base) // 3) else base
+    return cleaned if len(cleaned) >= max(8, len(base) // 4) else base
 
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
