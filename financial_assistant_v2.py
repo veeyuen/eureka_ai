@@ -46,6 +46,7 @@ import difflib
 import gspread
 import google.generativeai as genai
 from pypdf import PdfReader
+from pathlib import Path
 from google.oauth2.service_account import Credentials
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union, Tuple
@@ -7799,14 +7800,11 @@ def main():
     # TAB 1: NEW ANALYSIS
     # =====================
     with tab1:
-
-        # User input
         query = st.text_input(
             "Enter your question about markets, industries, finance, or economics:",
             placeholder="e.g., What is the size of the global EV battery market?"
         )
 
-        # Options
         col_opt1, col_opt2 = st.columns(2)
         with col_opt1:
             use_web = st.checkbox(
@@ -7815,114 +7813,216 @@ def main():
                 disabled=not SERPAPI_KEY
             )
 
-        # Analysis button
         if st.button("🔍 Analyze", type="primary") and query:
+            if len(query.strip()) < 5:
+                st.error("❌ Please enter a question with at least 5 characters")
+                return
 
-            # Fetch web context
-            web_context = {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
+            query = query.strip()[:500]
+
+            query_structure = extract_query_structure(query) or {}
+            question_profile = categorize_question_signals(query, qs=query_structure)
+            question_signals = question_profile.get("signals", {}) or {}
+
+            web_context = {}
             if use_web:
-                with st.spinner("🌐 Fetching web context..."):
-                    try:
-                        web_context = fetch_web_context(query, num_sources=5) or web_context
-                    except Exception as e:
-                        st.warning(f"Web context fetch failed: {e}")
-                        web_context = web_context
+                with st.spinner("🌐 Searching the web..."):
+                    web_context = fetch_web_context(query, num_sources=3)
 
-            # Run analysis
-            with st.spinner("🤖 Running analysis..."):
-                primary_json = query_perplexity(query, web_context)
-
-            if not primary_json:
-                st.error("❌ Analysis failed.")
-                return
-
-            try:
-                primary_data = json.loads(primary_json)
-            except Exception as e:
-                st.error(f"❌ Model output is not valid JSON: {e}")
-                st.code(primary_json[:2000])
-                return
-
-            # Evidence-based verification
-            veracity_scores = None
-            try:
-                veracity_scores = evidence_based_veracity(primary_data, web_context)
-            except Exception as e:
-                st.warning(f"Veracity scoring failed: {e}")
-
-            # Confidence calculation
-            try:
-                base_conf = float(primary_data.get("confidence", 75))
-            except Exception:
-                base_conf = 75.0
-
-            if veracity_scores and isinstance(veracity_scores, dict):
-                try:
-                    final_conf = calculate_final_confidence(base_conf, float(veracity_scores.get("overall", 0)))
-                except Exception:
-                    final_conf = base_conf
-            else:
-                final_conf = base_conf
-
-            # Save to history
-            try:
-                history_item = {
-                    "question": query,
-                    "timestamp": datetime.now().isoformat(),
-                    "primary_response": primary_data,
-                    "final_confidence": final_conf,
-                    "veracity_scores": veracity_scores,
-                    "web_sources": web_context.get("sources", [])
+            if not web_context or not web_context.get("search_results"):
+                st.info("💡 Using AI knowledge without web search")
+                web_context = {
+                    "search_results": [],
+                    "scraped_content": {},
+                    "summary": "",
+                    "sources": [],
+                    "source_reliability": []
                 }
-                add_to_history(history_item)
-            except Exception as e:
-                st.warning(f"Could not save analysis to history: {e}")
 
-            # Render dashboard
-            render_dashboard(
-                primary_json=json.dumps(primary_data),
-                final_conf=final_conf,
-                web_context=web_context,
-                base_conf=base_conf,
-                user_question=query,
-                veracity_scores=veracity_scores,
-                source_reliability=web_context.get("source_reliability")
+            with st.spinner("🤖 Analyzing query..."):
+                primary_response = query_perplexity(query, web_context, query_structure=query_structure)
+
+            if not primary_response:
+                st.error("❌ Primary model failed to respond")
+                return
+
+            try:
+                primary_data = json.loads(primary_response)
+            except Exception as e:
+                st.error(f"❌ Failed to parse primary response: {e}")
+                st.code(primary_response[:1000])
+                return
+
+            with st.spinner("✅ Verifying evidence quality..."):
+                veracity_scores = evidence_based_veracity(primary_data, web_context)
+
+            base_conf = float(primary_data.get("confidence", 75))
+            final_conf = calculate_final_confidence(base_conf, veracity_scores.get("overall", 0))
+
+            # Optional: canonicalize + attribution + schema freeze (only if your codebase defines these)
+            try:
+                if primary_data.get("primary_metrics"):
+                    primary_data["primary_metrics_canonical"] = canonicalize_metrics(
+                        primary_data.get("primary_metrics", {}),
+                        merge_duplicates_to_range=True,
+                        question_text=query,
+                        category_hint=str(primary_data.get("question_category", ""))
+                    )
+                if primary_data.get("primary_metrics_canonical"):
+                    primary_data["primary_metrics_canonical"] = add_range_and_source_attribution_to_canonical_metrics(
+                        primary_data.get("primary_metrics_canonical", {}),
+                        web_context
+                    )
+                if primary_data.get("primary_metrics_canonical"):
+                    primary_data["metric_schema_frozen"] = freeze_metric_schema(
+                        primary_data["primary_metrics_canonical"]
+                    )
+            except Exception:
+                pass
+
+            # Hash key findings (optional)
+            try:
+                if primary_data.get("key_findings"):
+                    findings_with_hash = []
+                    for finding in primary_data.get("key_findings", []):
+                        if finding:
+                            findings_with_hash.append({
+                                "text": finding,
+                                "semantic_hash": compute_semantic_hash(finding)
+                            })
+                    primary_data["key_findings_hashed"] = findings_with_hash
+            except Exception:
+                pass
+
+            # Build output
+            output = {
+                "question": query,
+                "question_profile": question_profile,
+                "question_category": question_profile.get("category"),
+                "question_signals": question_signals,
+                "side_questions": question_profile.get("side_questions", []),
+                "timestamp": now_utc().isoformat(),
+                "primary_response": primary_data,
+                "final_confidence": final_conf,
+                "veracity_scores": veracity_scores,
+                "web_sources": web_context.get("sources", []),
+            }
+
+            # Save baseline numeric cache if available (optional; your codebase may already do this)
+            try:
+                baseline_sources_cache = []
+                scraped = (web_context or {}).get("scraped_content") or {}
+                for url, content in scraped.items():
+                    if not content:
+                        continue
+                    nums = extract_numbers_with_context(content)
+                    baseline_sources_cache.append({
+                        "url": url,
+                        "fetched_at": now_utc().isoformat(),
+                        "fingerprint": fingerprint_text(content),
+                        "extracted_numbers": [
+                            {
+                                "value": n.get("value"),
+                                "unit": n.get("unit"),
+                                "raw": n.get("raw"),
+                                "context_snippet": (n.get("context") or "")[:200]
+                            }
+                            for n in (nums or [])
+                        ]
+                    })
+                if baseline_sources_cache:
+                    output["baseline_sources_cache"] = baseline_sources_cache
+            except Exception:
+                pass
+
+            with st.spinner("💾 Saving to history..."):
+                if add_to_history(output):
+                    st.success("✅ Analysis saved to Google Sheets")
+                else:
+                    st.warning("⚠️ Saved to session only (Google Sheets unavailable)")
+
+            json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode("utf-8")
+            filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+            st.download_button(
+                label="💾 Download Analysis JSON",
+                data=json_bytes,
+                file_name=filename,
+                mime="application/json"
             )
 
-    # ==========================
-    # TAB 2: EVOLUTION ANALYSIS
-    # ==========================
-    with tab2:
+            render_dashboard(
+                primary_response,
+                final_conf,
+                web_context,
+                base_conf,
+                query,
+                veracity_scores,
+                web_context.get("source_reliability", [])
+            )
 
-        st.subheader("📈 Evolution Analysis")
-        history = load_history()
+            with st.expander("🔧 Debug Information"):
+                st.write("**Confidence Breakdown:**")
+                st.json({
+                    "base_confidence": base_conf,
+                    "evidence_score": veracity_scores.get("overall", 0),
+                    "final_confidence": final_conf,
+                    "veracity_breakdown": veracity_scores
+                })
+                st.write("**Primary Model Response:**")
+                st.json(primary_data)
+
+    # =====================
+    # TAB 2: EVOLUTION ANALYSIS
+    # =====================
+    with tab2:
+        st.markdown("""
+        ### 📈 Track the evolution of key metrics over time using **deterministic source-anchored analysis**.
+
+        **How it works:**
+        - Select a baseline from your history (stored in Google Sheets)
+        - Re-fetches the **exact same sources** from that analysis
+        - Extracts current numbers using regex (no LLM variance)
+        - Computes deterministic diffs with context-aware matching
+        """)
+
+        with st.sidebar:
+            st.subheader("📚 History")
+
+            if st.button("🔄 Refresh"):
+                st.cache_resource.clear()
+                st.rerun()
+
+            sheet = get_google_sheet()
+            if sheet:
+                st.success("✅ Google Sheets connected")
+            else:
+                st.warning("⚠️ Using session storage")
+
+        # ✅ FIX: your codebase uses get_history(), not load_history()
+        history = get_history()
 
         if not history:
-            st.info("No saved analyses yet. Run a new analysis first.")
+            st.info("📭 No previous analyses found. Run an analysis in the 'New Analysis' tab first.")
             return
 
-        # Select baseline
         baseline_options = [
             f"{i+1}. {h.get('question', 'N/A')}  ({h.get('timestamp', '')})"
             for i, h in enumerate(history)
         ]
-        baseline_choice = st.selectbox("Select a baseline analysis:", baseline_options)
-        baseline_idx = baseline_options.index(baseline_choice)
+        baseline_choice = st.selectbox("Select baseline analysis:", baseline_options)
+        baseline_idx = int(baseline_choice.split(".")[0]) - 1
         baseline_data = history[baseline_idx]
 
-        st.markdown("---")
-
-        compare_method = st.radio(
-            "Compare baseline against:",
+        compare_method = st.selectbox(
+            "Comparison method:",
             [
-                "latest analysis (fresh run)",
+                "source-anchored evolution (re-fetch same sources)",
                 "another saved analysis (deterministic)",
-                "source-anchored evolution (re-fetch sources)"
-            ],
-            index=2
+                "fresh analysis (volatile)"
+            ]
         )
 
-        # Optional compare selection (history vs history)
         compare_data = None
         if "another saved analysis" in compare_method:
             compare_options = [
@@ -7941,10 +8041,6 @@ def main():
         if st.button("🧬 Run Evolution Analysis", type="primary"):
 
             if "source-anchored evolution" in compare_method:
-                # =====================
-                # SOURCE-ANCHORED (VOLATILE BUT GROUNDED)
-                # =====================
-
                 evolution_query = baseline_data.get("question", "")
                 if not evolution_query:
                     st.error("❌ No question found in baseline.")
@@ -7957,11 +8053,9 @@ def main():
                         st.error(f"❌ Evolution failed: {e}")
                         return
 
-                # Optional LLM interpretation (kept from your existing flow)
                 interpretation = ""
                 try:
                     if results and isinstance(results, dict):
-                        # Some versions wrap interpretation differently; keep safe
                         interpretation = results.get("interpretation", "") or ""
                 except Exception:
                     interpretation = ""
@@ -7986,13 +8080,10 @@ def main():
                     mime="application/json"
                 )
 
-                # ✅ FIX: render via the guarded renderer (handles stability_score=None safely)
+                # ✅ FIX: guarded renderer to avoid stability_score=None formatting crashes
                 render_source_anchored_results(results, evolution_query)
 
             elif "another saved analysis" in compare_method:
-                # =====================
-                # HISTORY VS HISTORY (DETERMINISTIC)
-                # =====================
                 if compare_data:
                     st.success("✅ Comparing two saved analyses (deterministic)")
                     render_native_comparison(baseline_data, compare_data)
@@ -8000,9 +8091,6 @@ def main():
                     st.error("❌ Please select a comparison analysis")
 
             else:
-                # =====================
-                # FRESH ANALYSIS (VOLATILE)
-                # =====================
                 st.warning("⚠️ Running fresh analysis - results may vary")
 
                 query = baseline_data.get("question", "")
@@ -8014,7 +8102,13 @@ def main():
                     web_context = fetch_web_context(query, num_sources=3)
 
                 if not web_context:
-                    web_context = {"search_results": [], "scraped_content": {}, "summary": "", "sources": [], "source_reliability": []}
+                    web_context = {
+                        "search_results": [],
+                        "scraped_content": {},
+                        "summary": "",
+                        "sources": [],
+                        "source_reliability": []
+                    }
 
                 with st.spinner("🤖 Running analysis..."):
                     new_response = query_perplexity(query, web_context)
