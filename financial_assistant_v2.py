@@ -7448,140 +7448,347 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
     return 0.35 + (match_ratio * 0.65)
 
 
-def render_source_anchored_results(results: Dict, question: str):
-    """
-    Streamlit renderer for source-anchored evolution output.
-    - Guards against missing/None fields (esp. stability_score)
-    - Displays metric changes, source fetch diagnostics, and source stability
-    """
+def render_source_anchored_results(results, query: str):
+    """Render the results of source-anchored evolution analysis (guarded + unit/currency-safe)."""
 
-    st.subheader("🧬 Source-Anchored Evolution Results")
-    st.caption(question or "")
+    # -----------------------------
+    # Small helpers (local, safe)
+    # -----------------------------
+    def _safe_int(x, default=0):
+        try:
+            return int(float(x))
+        except Exception:
+            return default
 
-    if not results or not isinstance(results, dict):
-        st.error("❌ No evolution results to display.")
+    def _safe_float(x, default=None):
+        try:
+            return float(x)
+        except Exception:
+            return default
+
+    def _format_pct(x) -> str:
+        v = _safe_float(x, None)
+        if v is None:
+            return "N/A"
+        return f"{v:+.1f}%"
+
+    def _status_icon(sr: dict) -> str:
+        status = (sr.get("status") or "").lower()
+        numbers_found = _safe_int(sr.get("numbers_found"), 0)
+
+        # newer multi-state statuses
+        if status == "fetched_extracted" and numbers_found > 0:
+            return "✅"
+        if status == "fetched_unusable":
+            return "⚠️"
+        if status == "failed_but_reused_cache":
+            return "♻️"
+        if status.startswith("failed"):
+            return "❌"
+        if status.startswith("fetched"):
+            return "⚠️"
+        return "•"
+
+    def _looks_like_currency(text: str) -> bool:
+        t = (text or "")
+        return bool(re.search(r"(S\$|\$|USD|SGD|EUR|€|GBP|£)", t, flags=re.I))
+
+    def _extract_currency_token(text: str) -> str:
+        t = (text or "")
+        up = t.upper()
+        if "S$" in up or "SGD" in up:
+            return "SGD"
+        if "€" in t or "EUR" in up:
+            return "EUR"
+        if "£" in t or "GBP" in up:
+            return "GBP"
+        if "$" in t or "USD" in up:
+            return "USD"
+        return ""
+
+    def _currency_symbol(token: str) -> str:
+        tok = (token or "").upper().strip()
+        if tok == "SGD":
+            return "S$"
+        if tok == "USD":
+            return "$"
+        if tok == "EUR":
+            return "€"
+        if tok == "GBP":
+            return "£"
+        return ""
+
+    def _fmt_currency_first(raw: str, unit: str = "") -> str:
+        """
+        Display preference:
+          - "S$29.8B" instead of "29.8 S$B"
+          - Keep raw if already good.
+          - If unit contains 'billion/million', show "S$29.8 billion" (optional)
+        """
+        raw = (raw or "").strip()
+        unit = (unit or "").strip()
+
+        if not raw:
+            return "N/A"
+
+        # If raw already starts with currency symbol, trust it.
+        if raw.startswith(("S$", "$", "€", "£")):
+            return raw
+
+        # If raw is like "29.8 S$B" or "29.8 $ B"
+        mm = re.match(r"^\s*([0-9.,]+)\s*(S\$|\$|€|£)\s*([A-Za-z%]+)?\s*$", raw)
+        if mm:
+            num, cur, suff = mm.group(1), mm.group(2), (mm.group(3) or "")
+            return f"{cur}{num}{suff}".strip()
+
+        # If unit contains currency token like "SGD", "USD", "$", "S$"
+        cur = ""
+        u = unit.replace(" ", "")
+        up = u.upper()
+
+        if up.startswith("SGD"):
+            cur, u = "S$", u[3:]
+        elif up.startswith("USD"):
+            cur, u = "$", u[3:]
+        elif up.startswith("EUR"):
+            cur, u = "€", u[3:]
+        elif up.startswith("GBP"):
+            cur, u = "£", u[3:]
+        elif u.startswith("S$"):
+            cur, u = "S$", u[2:]
+        elif u.startswith("$"):
+            cur, u = "$", u[1:]
+        elif u.startswith("€"):
+            cur, u = "€", u[1:]
+        elif u.startswith("£"):
+            cur, u = "£", u[1:]
+
+        if not cur:
+            # No currency detected — keep a neat spacing
+            return raw if not unit else f"{raw} {unit}".strip()
+
+        # If unit is words "billion/million" etc, prefer "S$29.8 billion"
+        ulow = unit.lower()
+        if "billion" in ulow:
+            return f"{cur}{raw} billion".strip()
+        if "million" in ulow:
+            return f"{cur}{raw} million".strip()
+
+        # Scale suffix like B/M/K
+        return f"{cur}{raw}{u}".strip()
+
+    def _format_value_any(v, unit="") -> str:
+        """
+        Handles values that may come as:
+        - already formatted strings ("S$29.8B")
+        - plain strings ("29.8")
+        - numeric
+        with optional `unit` hints.
+        """
+        if v is None or v == "":
+            return "N/A"
+
+        # If it's already a string, attempt currency-first normalization
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return "N/A"
+            # If string contains currency but not in front, normalize
+            if _looks_like_currency(s) and not s.startswith(("S$", "$", "€", "£")):
+                return _fmt_currency_first(s, unit)
+            # If unit carries currency, still apply
+            if unit:
+                return _fmt_currency_first(s, unit)
+            return s
+
+        # numeric
+        num = _safe_float(v, None)
+        if num is None:
+            return str(v)
+
+        u = (unit or "").strip()
+        if u == "%":
+            return f"{num:.1f}%"
+
+        # if unit implies currency, put symbol in front
+        sym = ""
+        cur_tok = _extract_currency_token(u)
+        if cur_tok:
+            sym = _currency_symbol(cur_tok)
+            u = re.sub(r"^(SGD|USD|EUR|GBP)", "", u, flags=re.I).strip()
+
+        # compact suffixes
+        u2 = u.replace(" ", "")
+        if u2.upper() in ("T", "B", "M", "K"):
+            # keep as compact
+            s_num = f"{num:.2f}".rstrip("0").rstrip(".")
+            return f"{sym}{s_num}{u2.upper()}".strip()
+
+        # plain number
+        if abs(num) >= 1000:
+            s_num = f"{num:,.0f}"
+        else:
+            s_num = f"{num:g}"
+
+        if u:
+            return f"{sym}{s_num} {u}".strip()
+        return f"{sym}{s_num}".strip()
+
+    # -----------------------------
+    # Start rendering
+    # -----------------------------
+    st.header("📈 Source-Anchored Evolution Analysis")
+    st.markdown(f"**Question:** {query}")
+
+    if not isinstance(results, dict):
+        st.error("❌ Evolution results are not a dictionary (unexpected format).")
+        st.write(results)
         return
 
-    # ---- Safe read of core fields ----
-    sources_checked = results.get("sources_checked", 0) or 0
-    sources_fetched = results.get("sources_fetched", 0) or 0
-
-    stability = results.get("stability_score", 0.0)
-    try:
-        stability_val = float(stability) if stability is not None else 0.0
-    except Exception:
-        stability_val = 0.0
+    status = results.get("status", "")
+    if status and status != "success":
+        st.error(f"❌ {results.get('message', 'Evolution analysis failed')}")
+        return
 
     summary = results.get("summary", {}) or {}
-    inc = int(summary.get("metrics_increased", 0) or 0)
-    dec = int(summary.get("metrics_decreased", 0) or 0)
-    same = int(summary.get("metrics_unchanged", 0) or 0)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Sources Checked", sources_checked)
-    col2.metric("Sources Fetched", sources_fetched)
-    col3.metric("Stability", f"{stability_val:.1f}%")
-    col4.metric("Stable Metrics", same)
+    # Top row metrics (guarded, no formatting crash if None)
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    col1.metric("Total Metrics", _safe_int(summary.get("total_metrics"), 0))
+    col2.metric("Compared", _safe_int(summary.get("metrics_compared"), 0))
+    col3.metric("Changed", _safe_int(summary.get("metrics_changed"), 0))
+    col4.metric("Unchanged", _safe_int(summary.get("metrics_unchanged"), 0))
+
+    stability_score = results.get("stability_score", None)
+    if stability_score is None:
+        col5.metric("Stability", "N/A")
+    else:
+        try:
+            col5.metric("Stability", f"{float(stability_score):.0f}%")
+        except Exception:
+            col5.metric("Stability", "N/A")
+
+    # Optional interpretation
+    interpretation = results.get("interpretation", "") or ""
+    if interpretation:
+        low = interpretation.lower()
+        if "low confidence" in low or "blocked" in low or "failed" in low:
+            st.warning(interpretation)
+        else:
+            st.info(interpretation)
 
     st.markdown("---")
 
-    # ---- Optional: Source stability diagnostics ----
-    ss = results.get("source_stability")
-    if isinstance(ss, dict):
-        st.subheader("🧷 Source Stability Diagnostics")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Exact URL matches", int(ss.get("exact_url_matches", 0) or 0))
-        c2.metric("Domain matches", int(ss.get("domain_matches", 0) or 0))
-        c3.metric("Identical fingerprints", int(ss.get("identical_fingerprints", 0) or 0))
-        c4.metric("Fingerprints compared", int(ss.get("fingerprints_compared", 0) or 0))
-        st.markdown("---")
+    # -----------------------------
+    # Metric changes
+    # -----------------------------
+    st.subheader("🧮 Metric Changes")
+    changes = results.get("metric_changes", []) or []
 
-    # ---- Metric changes table ----
-    st.subheader("📌 Metric Changes")
-
-    rows = results.get("metric_changes", []) or []
-    if not rows:
-        st.info("No metric changes computed.")
+    if not changes:
+        st.info("No metric comparisons available.")
     else:
-        table_rows = []
-        for r in rows:
-            if not isinstance(r, dict):
+        rows = []
+        for ch in changes:
+            if not isinstance(ch, dict):
                 continue
-            cp = r.get("change_pct")
-            try:
-                cp_str = f"{float(cp):+.1f}%" if cp is not None else "N/A"
-            except Exception:
-                cp_str = "N/A"
 
-            conf = r.get("confidence")
-            try:
-                conf_str = f"{float(conf):.0f}%"
-            except Exception:
-                conf_str = "N/A"
+            metric_name = ch.get("metric") or ch.get("metric_name") or "N/A"
 
-            table_rows.append({
-                "Metric": r.get("metric", "N/A"),
-                "Prev": r.get("previous_value", "N/A"),
-                "Current": r.get("current_value", "N/A"),
-                "Δ%": cp_str,
-                "Confidence": conf_str,
-                "Notes": r.get("notes", ""),
-                "Source": r.get("matched_source", "") or "",
+            # Prefer raw fields if present (these keep currency/unit placement better)
+            prev_raw = ch.get("previous_raw") or ch.get("previous_value")
+            cur_raw = ch.get("current_raw") or ch.get("current_value")
+
+            # Some pipelines also provide explicit units
+            prev_unit = ch.get("previous_unit") or ch.get("unit") or ""
+            cur_unit = ch.get("current_unit") or ch.get("unit") or ""
+
+            prev_disp = _format_value_any(prev_raw, prev_unit)
+            cur_disp = _format_value_any(cur_raw, cur_unit)
+
+            rows.append({
+                "Metric": metric_name,
+                "Previous": prev_disp,
+                "Current": cur_disp,
+                "Change": _format_pct(ch.get("change_pct")),
+                "Confidence": f"{_safe_int(ch.get('match_confidence'), 0)}%",
+                "Status": ch.get("status", "") or "",
             })
 
-        default_n = 12
-        df = pd.DataFrame(table_rows)
-        st.dataframe(df.head(default_n), hide_index=True, width="stretch")
-
-        if len(df) > default_n:
-            with st.expander(f"Show all metric changes ({len(df)})"):
-                st.dataframe(df, hide_index=True, width="stretch")
+        if rows:
+            df = pd.DataFrame(rows)
+            st.dataframe(df, hide_index=True, width="stretch")
+        else:
+            st.info("No metric rows to display.")
 
     st.markdown("---")
 
-    # ---- Per-source diagnostics ----
-    st.subheader("🔗 Source Fetch Diagnostics")
-    srs = results.get("source_results", []) or []
-    if not srs:
-        st.info("No per-source results available.")
+    # -----------------------------
+    # Sources checked
+    # -----------------------------
+    st.subheader("🔗 Sources Checked")
+    source_results = results.get("source_results", []) or []
+
+    if not source_results:
+        st.info("No source results recorded.")
         return
 
-    diag_rows = []
-    for sr in srs:
+    # Compact summary table first
+    sr_rows = []
+    for sr in source_results:
         if not isinstance(sr, dict):
             continue
-        diag_rows.append({
-            "Source (raw)": sr.get("url", ""),
-            "Normalized": sr.get("normalized_url", ""),
-            "Status": sr.get("status", ""),
-            "Detail": sr.get("status_detail", ""),
-            "Numbers Found": int(sr.get("numbers_found", 0) or 0),
-            "Fingerprint": sr.get("fingerprint", "") or "",
+        icon = _status_icon(sr)
+        url = sr.get("url", "") or ""
+        sr_rows.append({
+            "": icon,
+            "Source": url,
+            "Status": sr.get("status", "unknown"),
+            "Numbers Found": _safe_int(sr.get("numbers_found"), 0),
+            "Detail": (sr.get("status_detail") or "")[:140],
         })
 
-    st.dataframe(pd.DataFrame(diag_rows), hide_index=True, width="stretch")
+    if sr_rows:
+        st.dataframe(pd.DataFrame(sr_rows), hide_index=True, width="stretch")
 
-    with st.expander("Show extracted numbers (first 25 per source)"):
-        for sr in srs:
+    # Expandable per-source detail (incl. extracted_numbers)
+    with st.expander("Show per-source details (incl. extracted numbers)"):
+        for sr in source_results:
             if not isinstance(sr, dict):
                 continue
-            st.markdown(f"**{sr.get('normalized_url') or sr.get('url')}**")
-            nums = sr.get("extracted_numbers", []) or []
-            if not nums:
-                st.caption("No extracted numbers.")
-                st.markdown("---")
-                continue
-            show = []
-            for n in nums[:25]:
-                if isinstance(n, dict):
-                    show.append({
-                        "raw": n.get("raw", ""),
-                        "value": n.get("value", ""),
-                        "unit": n.get("unit", ""),
-                        "context": (n.get("context", "") or "")[:240],
+            url = sr.get("url", "")
+            icon = _status_icon(sr)
+            status = sr.get("status", "unknown")
+            detail = sr.get("status_detail", "")
+            numbers_found = _safe_int(sr.get("numbers_found"), 0)
+            fetched_at = sr.get("fetched_at", "")
+            fp = sr.get("fingerprint", None)
+
+            st.markdown(f"**{icon} {url}**")
+            st.caption(f"Status: {status} | Numbers: {numbers_found} | Fetched: {fetched_at}")
+            if detail:
+                st.write(f"Detail: {detail}")
+            if fp:
+                st.caption(f"Fingerprint: {fp}")
+
+            extracted = sr.get("extracted_numbers", []) or []
+            if isinstance(extracted, list) and extracted:
+                # show a small sample table
+                ex_rows = []
+                for n in extracted[:40]:
+                    if not isinstance(n, dict):
+                        continue
+                    ex_rows.append({
+                        "Raw": n.get("raw", ""),
+                        "Value": n.get("value", ""),
+                        "Unit": n.get("unit", ""),
+                        "Context": (n.get("context_snippet") or n.get("context") or "")[:160],
                     })
-            st.dataframe(pd.DataFrame(show), hide_index=True, width="stretch")
+                if ex_rows:
+                    st.dataframe(pd.DataFrame(ex_rows), hide_index=True, width="stretch")
             st.markdown("---")
+
 
 
 # =========================================================
