@@ -124,13 +124,24 @@ def add_to_history(analysis: Dict) -> bool:
     Save analysis to Google Sheet (or session fallback).
 
     Enhancement (safe):
-    - If baseline_sources_cache exists, build & store:
+    - If a baseline source cache exists, build & store:
         * evidence_records (structured, cached)
         * metric_anchors (baseline metrics anchored to evidence)
     This is used by evolution to improve matching determinism and stability.
+
+    Notes:
+    - Backward compatible: only adds keys; does not change existing schema.
+    - Robust: finds baseline cache in multiple likely locations.
+    - Safe: never blocks saving if enrichment fails.
+    - Safe: Sheets open failure falls back to session state.
     """
 
+    # Local imports to avoid silent NameError if globals are missing
+    import json
+    import re
     import hashlib
+    from datetime import datetime
+    from typing import Any, Dict, List
 
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
@@ -164,7 +175,7 @@ def add_to_history(analysis: Dict) -> bool:
     def _metric_tokens(name: str) -> List[str]:
         n = (name or "").lower()
         toks = re.findall(r"[a-z0-9]+", n)
-        stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
+        stop = {"the", "and", "or", "of", "in", "to", "for", "by", "from", "with", "on", "at", "as"}
         out = [t for t in toks if len(t) > 3 and t not in stop]
         # small expansions
         if "gdp" in toks:
@@ -222,10 +233,10 @@ def add_to_history(analysis: Dict) -> bool:
 
     def _build_evidence_records_from_baseline_cache(baseline_cache: Any) -> List[Dict]:
         """
-        Convert baseline_sources_cache (existing) into stable evidence_records.
+        Convert baseline_sources_cache/source_results into stable evidence_records.
         Keeps fields small and deterministic.
         """
-        records = []
+        records: List[Dict] = []
         if not isinstance(baseline_cache, list):
             return records
 
@@ -247,28 +258,32 @@ def add_to_history(analysis: Dict) -> bool:
                     val = n.get("value")
                     unit = n.get("unit")
                     anchor_hash = _sha1(f"{url}|{raw}|{ctx[:220]}")
-                    clean_nums.append({
-                        "value": val,
-                        "unit": unit,
-                        "raw": raw,
-                        "context_snippet": ctx[:220],
-                        "anchor_hash": anchor_hash,
-                    })
+                    clean_nums.append(
+                        {
+                            "value": val,
+                            "unit": unit,
+                            "raw": raw,
+                            "context_snippet": ctx[:220],
+                            "anchor_hash": anchor_hash,
+                        }
+                    )
 
-            records.append({
-                "url": url,
-                "fetched_at": fetched_at,
-                "fingerprint": fp,
-                "numbers": clean_nums,
-            })
+            records.append(
+                {
+                    "url": url,
+                    "fetched_at": fetched_at,
+                    "fingerprint": fp,
+                    "numbers": clean_nums,
+                }
+            )
         return records
 
     def _build_metric_anchors(primary_metrics: Any, evidence_records: List[Dict]) -> List[Dict]:
         """
         For each baseline metric, pick the best matching evidence number and store anchor.
-        This is baseline-time anchoring: metric -> (source_url, anchor_hash, snippet).
+        Baseline-time anchoring: metric -> (source_url, anchor_hash, snippet).
         """
-        anchors = []
+        anchors: List[Dict] = []
         if not isinstance(primary_metrics, dict):
             return anchors
 
@@ -282,15 +297,17 @@ def add_to_history(analysis: Dict) -> bool:
             for n in rec.get("numbers", []) or []:
                 if not isinstance(n, dict):
                     continue
-                all_nums.append({
-                    "source_url": url,
-                    "fingerprint": fp,
-                    "value": n.get("value"),
-                    "unit": n.get("unit"),
-                    "raw": n.get("raw"),
-                    "context_snippet": n.get("context_snippet") or "",
-                    "anchor_hash": n.get("anchor_hash"),
-                })
+                all_nums.append(
+                    {
+                        "source_url": url,
+                        "fingerprint": fp,
+                        "value": n.get("value"),
+                        "unit": n.get("unit"),
+                        "raw": n.get("raw"),
+                        "context_snippet": n.get("context_snippet") or "",
+                        "anchor_hash": n.get("anchor_hash"),
+                    }
+                )
 
         for mid, m in primary_metrics.items():
             if not isinstance(m, dict):
@@ -330,33 +347,37 @@ def add_to_history(analysis: Dict) -> bool:
                     best = cand
 
             if best and best_score >= 0.20:
-                anchors.append({
-                    "metric_id": str(mid),
-                    "metric_name": mname,
-                    "baseline_raw": prev_raw,
-                    "source_url": best.get("source_url"),
-                    "fingerprint": best.get("fingerprint"),
-                    "anchor_hash": best.get("anchor_hash"),
-                    "matched_raw": best.get("raw"),
-                    "matched_value": best.get("value"),
-                    "matched_unit": best.get("unit"),
-                    "context_snippet": best.get("context_snippet"),
-                    "anchor_confidence": float(min(100.0, best_score * 100.0)),
-                })
+                anchors.append(
+                    {
+                        "metric_id": str(mid),
+                        "metric_name": mname,
+                        "baseline_raw": prev_raw,
+                        "source_url": best.get("source_url"),
+                        "fingerprint": best.get("fingerprint"),
+                        "anchor_hash": best.get("anchor_hash"),
+                        "matched_raw": best.get("raw"),
+                        "matched_value": best.get("value"),
+                        "matched_unit": best.get("unit"),
+                        "context_snippet": best.get("context_snippet"),
+                        "anchor_confidence": float(min(100.0, best_score * 100.0)),
+                    }
+                )
             else:
-                anchors.append({
-                    "metric_id": str(mid),
-                    "metric_name": mname,
-                    "baseline_raw": prev_raw,
-                    "source_url": None,
-                    "fingerprint": None,
-                    "anchor_hash": None,
-                    "matched_raw": None,
-                    "matched_value": None,
-                    "matched_unit": None,
-                    "context_snippet": None,
-                    "anchor_confidence": 0.0,
-                })
+                anchors.append(
+                    {
+                        "metric_id": str(mid),
+                        "metric_name": mname,
+                        "baseline_raw": prev_raw,
+                        "source_url": None,
+                        "fingerprint": None,
+                        "anchor_hash": None,
+                        "matched_raw": None,
+                        "matched_value": None,
+                        "matched_unit": None,
+                        "context_snippet": None,
+                        "anchor_confidence": 0.0,
+                    }
+                )
 
         return anchors
 
@@ -366,7 +387,17 @@ def add_to_history(analysis: Dict) -> bool:
     try:
         # Only do this once
         if not analysis.get("evidence_layer_version"):
+            # Robustly locate baseline cache across different pipelines
             baseline_cache = analysis.get("baseline_sources_cache")
+
+            if not baseline_cache:
+                baseline_cache = (analysis.get("results", {}) or {}).get("source_results")
+
+            if not baseline_cache:
+                wc = analysis.get("web_context", {}) or {}
+                if isinstance(wc, dict):
+                    baseline_cache = wc.get("source_results")
+
             primary_response = analysis.get("primary_response", {}) or {}
             primary_metrics = primary_response.get("primary_metrics", {}) or {}
 
@@ -382,12 +413,16 @@ def add_to_history(analysis: Dict) -> bool:
         pass
 
     # -----------------------
-    # Existing Google Sheet save behavior (unchanged)
+    # Existing Google Sheet save behavior (unchanged, but guarded)
     # -----------------------
-    sheet = get_google_sheet()
+    try:
+        sheet = get_google_sheet()
+    except Exception:
+        sheet = None
+
     if not sheet:
         # Fallback to session state
-        if 'analysis_history' not in st.session_state:
+        if "analysis_history" not in st.session_state:
             st.session_state.analysis_history = []
         st.session_state.analysis_history.append(analysis)
         return False
@@ -399,18 +434,17 @@ def add_to_history(analysis: Dict) -> bool:
             analysis.get("timestamp", datetime.now().isoformat()),
             analysis.get("question", "")[:100],  # Truncate for display
             str(analysis.get("final_confidence", "")),
-            json.dumps(analysis, default=str)  # Full JSON data
+            json.dumps(analysis, default=str),  # Full JSON data
         ]
-        sheet.append_row(row, value_input_option='RAW')
+        sheet.append_row(row, value_input_option="RAW")
         return True
     except Exception as e:
         st.warning(f"⚠️ Failed to save to Google Sheets: {e}")
         # Fallback to session state
-        if 'analysis_history' not in st.session_state:
+        if "analysis_history" not in st.session_state:
             st.session_state.analysis_history = []
         st.session_state.analysis_history.append(analysis)
         return False
-
 
 
 def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
