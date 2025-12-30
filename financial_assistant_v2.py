@@ -6630,16 +6630,16 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     """
     Unified, deterministic source-anchored evolution.
 
-    Source selection priority:
-      1) previous_data["web_sources"] (real URLs from baseline web fetch)
-      2) previous_data["baseline_sources_cache"][].url (saved baseline extraction cache)
-      3) previous evolution cache: previous_data["results"]["source_results"][].url
-      4) primary_response["sources"] ONLY if they look like URLs/domains
+    Enhancements (safe / low-side-effect):
+      ✅ Year alignment gating: penalize mismatched years between metric and candidate context
+      ✅ Concept gating: market-size/value metrics prefer currency/scale; CAGR prefers %
+      ✅ Junk-number suppression: phone/time/office-hour patterns downranked
 
     Output schema is compatible with render_source_anchored_results():
       - status, sources_checked, sources_fetched, numbers_extracted_total
       - source_results (with extracted_numbers)
-      - metric_changes (change_type, change_pct, match_confidence, context_snippet, source_url)
+      - metric_changes (name, previous_value, current_value, change_pct, change_type, match_confidence,
+                       context_snippet, source_url)
       - summary + stability_score (never None)
     """
 
@@ -6661,7 +6661,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             return False
         if "://" in t:
             return True
-        # reject title-like sources
         if " " in t:
             return False
         return "." in t
@@ -6696,7 +6695,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     except Exception:
         prev_metrics_canon = prev_metrics
 
-    # Build baseline metric list: [{name, value, unit, raw_display}]
+    # Build baseline metric list: [{name, value_num, unit, raw}]
     baseline_metric_items = []
     if isinstance(prev_metrics_canon, dict):
         for mid, m in prev_metrics_canon.items():
@@ -6742,7 +6741,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     # 2) baseline_sources_cache urls
     baseline_sources_cache = previous_data.get("baseline_sources_cache", []) or []
     if isinstance(baseline_sources_cache, dict):
-        # if older format dict(url->stuff), take keys
         for k in baseline_sources_cache.keys():
             nu = _normalize_url(str(k))
             if nu:
@@ -6817,7 +6815,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             except Exception:
                 extracted = []
         else:
-            # reuse baseline cache if present
             cached = cache_by_url.get(url)
             if cached and isinstance(cached.get("extracted_numbers"), list):
                 used_cache = True
@@ -6841,12 +6838,11 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 "unit": n.get("unit"),
                 "raw": n.get("raw"),
                 "source_url": url,
-                "context": (n.get("context", "")[:220] if isinstance(n.get("context"), str) else ""),
+                "context": (n.get("context", "")[:400] if isinstance(n.get("context"), str) else ""),
             }
             compact.append(item)
             all_current_candidates.append(item)
 
-        # fingerprint if possible (only when fetched)
         fp = None
         if content:
             try:
@@ -6870,7 +6866,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
     numbers_extracted_total = sum(int(r.get("numbers_found") or 0) for r in source_results)
 
     # -------------------------
-    # Matching helpers
+    # Matching helpers (year gating + concept gating + junk filtering)
     # -------------------------
     def _safe_float(x):
         if x is None or x == "":
@@ -6889,26 +6885,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 return u
         return u
 
-    def _kw_list(metric_name: str):
-        if "extract_context_keywords" in globals() and callable(globals()["extract_context_keywords"]):
-            try:
-                return extract_context_keywords(metric_name) or []
-            except Exception:
-                return []
-        # fallback: basic tokens
-        toks = re.findall(r"[a-z0-9]+", (metric_name or "").lower())
-        return [t for t in toks if len(t) > 3][:20]
-
-    def _is_junk(ctx: str) -> bool:
-        if "is_likely_junk_context" in globals() and callable(globals()["is_likely_junk_context"]):
-            try:
-                return bool(is_likely_junk_context(ctx))
-            except Exception:
-                return False
-        return False
-
     def _parse_human(val_num: float, unit: str):
-        # Use your existing parse_human_number if available
         if "parse_human_number" in globals() and callable(globals()["parse_human_number"]):
             try:
                 return parse_human_number(val_num, unit)
@@ -6916,29 +6893,125 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 return val_num
         return val_num
 
-    def _score(metric, cand):
-        ctx = (cand.get("context") or "")
-        if isinstance(ctx, str) and _is_junk(ctx):
+    def _kw_list(metric_name: str):
+        if "extract_context_keywords" in globals() and callable(globals()["extract_context_keywords"]):
+            try:
+                return extract_context_keywords(metric_name) or []
+            except Exception:
+                return []
+        toks = re.findall(r"[a-z0-9]+", (metric_name or "").lower())
+        return [t for t in toks if len(t) > 3][:25]
+
+    def _metric_intent(metric_name: str) -> str:
+        n = (metric_name or "").lower()
+        if any(k in n for k in ["cagr", "growth rate", "yoy", "year-on-year", "percent", "%"]):
+            return "percent"
+        if any(k in n for k in ["market size", "revenue", "sales", "receipts", "valuation", "value", "forecast", "projected", "projection"]):
+            return "value"
+        return "generic"
+
+    def _extract_years(text: str) -> List[int]:
+        if not text or not isinstance(text, str):
+            return []
+        yrs = re.findall(r"\b(19\d{2}|20\d{2})\b", text)
+        out = []
+        for y in yrs:
+            try:
+                out.append(int(y))
+            except Exception:
+                pass
+        # Dedup, stable
+        seen = set()
+        uniq = []
+        for y in out:
+            if y not in seen:
+                seen.add(y)
+                uniq.append(y)
+        return uniq[:6]
+
+    def _year_penalty(metric_years: List[int], cand_years: List[int]) -> float:
+        """
+        Returns a penalty in [-0.60, 0.0].
+        - If metric has years and candidate has years:
+            - if overlap -> 0
+            - if disjoint -> penalize more when difference is large
+        - If metric has years but candidate has none -> small penalty
+        - Otherwise -> 0
+        """
+        if not metric_years:
+            return 0.0
+        if not cand_years:
+            return -0.08  # candidate doesn't state year
+        overlap = set(metric_years) & set(cand_years)
+        if overlap:
+            return 0.0
+        # disjoint: compute min absolute diff
+        diffs = []
+        for my in metric_years:
+            for cy in cand_years:
+                diffs.append(abs(my - cy))
+        mind = min(diffs) if diffs else 10
+        # Bigger year difference => bigger penalty
+        if mind >= 5:
+            return -0.55
+        if mind >= 3:
+            return -0.40
+        if mind >= 2:
+            return -0.28
+        return -0.18
+
+    def _looks_like_junk_number(cand: Dict) -> bool:
+        """
+        Conservative junk checks (won't break other parts of app because scoped to evolution matching).
+        Targets: phone numbers, office hours, time-of-day, contact snippets.
+        """
+        raw = str(cand.get("raw") or "")
+        ctx = str(cand.get("context") or "")
+        blob = (raw + " " + ctx).lower()
+
+        # Phone patterns / contact-heavy contexts
+        if re.search(r"\+\d{1,3}\s*\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4}", blob):
+            return True
+        if any(k in blob for k in ["call us", "contact us", "phone", "tel:", "telephone", "email", "@"]):
+            return True
+
+        # Office hours / time-of-day patterns
+        if re.search(r"\b\d{1,2}(:\d{2})\s*(am|pm)\b", blob):
+            return True
+        if any(k in blob for k in ["mon-fri", "monday", "tuesday", "wednesday", "thursday", "friday", "sat", "sun"]):
+            # Only consider junk if it's clearly hours-related
+            if any(x in blob for x in ["am", "pm", "open", "hours"]):
+                return True
+
+        return False
+
+    def _score(metric: Dict, cand: Dict) -> float:
+        ctx = cand.get("context") or ""
+        if not isinstance(ctx, str):
+            ctx = ""
+
+        # Junk candidate? Downrank hard
+        if _looks_like_junk_number(cand):
             return -1.0
 
         kws = metric.get("kws") or []
-        ctx_l = ctx.lower() if isinstance(ctx, str) else ""
+        ctx_l = ctx.lower()
 
         kw_hits = 0
         for k in kws:
             if k and str(k).lower() in ctx_l:
                 kw_hits += 1
 
-        # unit gate/bonus
+        # Unit bonus / gate (soft)
         mu = _norm_unit(metric.get("unit", ""))
         cu = _norm_unit(cand.get("unit", ""))
         unit_bonus = 0.0
         if mu and cu:
             unit_bonus = 0.15 if mu == cu else -0.05
         elif mu or cu:
-            unit_bonus = 0.05  # one side missing unit
+            unit_bonus = 0.05
 
-        # value similarity (if baseline numeric exists)
+        # Value similarity
         sim = 0.0
         mv = metric.get("value_num")
         cv = _safe_float(cand.get("value"))
@@ -6948,13 +7021,36 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 cvn = _parse_human(cv, cand.get("unit", ""))
                 if mvn is not None and cvn is not None and mvn != 0:
                     rel = abs(cvn - mvn) / abs(mvn)
-                    sim = max(0.0, 1.0 - rel)  # 0% diff -> 1.0
+                    sim = max(0.0, 1.0 - rel)
             except Exception:
                 sim = 0.0
 
-        # combine (context dominates)
-        score = min(1.0, (0.18 * kw_hits) + (0.55 * sim) + unit_bonus)
-        return score
+        # Year alignment penalty
+        myears = metric.get("years") or []
+        cyears = _extract_years(ctx)
+        ypen = _year_penalty(myears, cyears)
+
+        # Concept intent gating
+        intent = metric.get("intent", "generic")
+        intent_bonus = 0.0
+        if intent == "percent":
+            # prefer percent candidates
+            if str(cand.get("unit") or "").strip() == "%":
+                intent_bonus = 0.18
+            else:
+                intent_bonus = -0.15
+        elif intent == "value":
+            # prefer currency/scale mentions
+            raw = str(cand.get("raw") or "")
+            if ("$" in raw) or ("usd" in raw.lower()) or ("sgd" in raw.lower()) or ("s$" in raw.lower()):
+                intent_bonus = 0.10
+            # penalize obvious percent candidates
+            if str(cand.get("unit") or "").strip() == "%":
+                intent_bonus -= 0.20
+
+        # Combine (context dominates, but year+intent prevent wrong confident matches)
+        score = (0.18 * kw_hits) + (0.55 * sim) + unit_bonus + intent_bonus + ypen
+        return float(max(-1.0, min(1.0, score)))
 
     # -------------------------
     # Compute metric_changes
@@ -6966,6 +7062,8 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
 
     for bm in baseline_metric_items:
         bm["kws"] = _kw_list(bm.get("name", ""))
+        bm["intent"] = _metric_intent(bm.get("name", ""))
+        bm["years"] = _extract_years(bm.get("name", ""))
 
         best = None
         best_score = -1.0
@@ -6978,7 +7076,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         prev_val_disp = bm.get("raw", "N/A")
 
         # Not found
-        if best is None or best_score < 0.25:
+        if best is None or best_score < 0.20:
             metric_changes.append({
                 "name": bm.get("name", "N/A"),
                 "previous_value": prev_val_disp,
@@ -7027,7 +7125,6 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
                 change_type = "unchanged"
                 same += 1
         else:
-            # If we can't compute a numeric change, treat as unchanged for stability (conservative)
             change_type = "unchanged"
             same += 1
 
@@ -7037,12 +7134,12 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
             "current_value": cv_raw,
             "change_pct": change_pct,
             "change_type": change_type,
-            "match_confidence": float(best_score * 100.0),
+            "match_confidence": float(max(0.0, best_score) * 100.0),
             "context_snippet": (best.get("context") or "")[:220] if isinstance(best.get("context"), str) else None,
             "source_url": best.get("source_url"),
         })
 
-    # Stability: % unchanged out of total baseline metrics (keeps it deterministic)
+    # Stability: % unchanged out of total baseline metrics
     stability_score = 0.0
     if total_metrics > 0:
         stability_score = (same / total_metrics) * 100.0
@@ -7064,7 +7161,7 @@ def compute_source_anchored_diff(previous_data: Dict) -> Dict:
         "metric_changes": metric_changes,
         "stability_score": float(stability_score),  # NEVER None
         "summary": summary,
-        "interpretation": "Matched baseline metrics against current extracted numeric candidates using context + value similarity (URL-filtered, cache-aware).",
+        "interpretation": "Matched baseline metrics against current extracted numeric candidates using context + value similarity, with year/concept gating and junk suppression.",
     }
 
 def extract_context_keywords(metric_name: str) -> List[str]:
