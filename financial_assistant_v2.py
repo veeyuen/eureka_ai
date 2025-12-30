@@ -6512,12 +6512,19 @@ def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional
     Never raises — always returns a status string.
 
     status_detail values:
-      - "success"
+      - "success"        (HTML / text content)
+      - "success_pdf"    (PDF content extracted to text)
       - "http_<code>"
       - "exception:<TypeName>"
       - "empty"
+      - "pdf_no_text"    (PDF fetched but no extractable text)
+      - "pdf_parse_failed"
     """
     try:
+        import re
+        import io
+        import requests
+
         u = (url or "").strip()
         if not u:
             return None, "empty"
@@ -6531,22 +6538,77 @@ def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
-            )
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
         }
 
-        resp = requests.get(u, headers=headers, timeout=timeout)
+        # Use bytes first (prevents PDF/binary garbage from being treated as text)
+        resp = requests.get(u, headers=headers, timeout=timeout, stream=True)
         if resp.status_code >= 400:
             return None, f"http_{resp.status_code}"
 
-        text = resp.text or ""
-        if not text.strip():
+        content_type = (resp.headers.get("content-type") or "").lower()
+        is_pdf = ("application/pdf" in content_type) or u.lower().split("?", 1)[0].endswith(".pdf")
+
+        # Read bounded content to avoid huge memory spikes on very large PDFs/pages
+        # (adjust if you want, but this is a sane default)
+        MAX_BYTES = 20 * 1024 * 1024  # 20MB
+        raw = resp.content or b""
+        if not raw:
+            return None, "empty"
+        if len(raw) > MAX_BYTES:
+            # still try to parse first chunk for HTML; PDF parsing on partial bytes is unreliable
+            if not is_pdf:
+                raw = raw[:MAX_BYTES]
+            else:
+                return None, "exception:ContentTooLarge"
+
+        if is_pdf:
+            # Extract text from PDF safely
+            try:
+                text_out = ""
+                # Try pypdf first, then PyPDF2 (both common)
+                try:
+                    from pypdf import PdfReader  # type: ignore
+                except Exception:
+                    from PyPDF2 import PdfReader  # type: ignore
+
+                reader = PdfReader(io.BytesIO(raw))
+                parts = []
+                for page in reader.pages:
+                    try:
+                        t = page.extract_text() or ""
+                        if t:
+                            parts.append(t)
+                    except Exception:
+                        continue
+                text_out = "\n\n".join(parts).strip()
+
+                if not text_out:
+                    return None, "pdf_no_text"
+                return text_out, "success_pdf"
+
+            except Exception:
+                return None, "pdf_parse_failed"
+
+        # Otherwise treat as text/HTML
+        # Respect encoding if provided; fallback to requests' guess
+        try:
+            # requests will usually set resp.encoding; but resp.text is based on it.
+            # Decode bytes explicitly for stability.
+            enc = resp.encoding or "utf-8"
+            text = raw.decode(enc, errors="replace")
+        except Exception:
+            text = raw.decode("utf-8", errors="replace")
+
+        if not text or not text.strip():
             return None, "empty"
 
         return text, "success"
 
     except Exception as e:
         return None, f"exception:{type(e).__name__}"
-
 
 
 def extract_numbers_from_text(text: str) -> List[Dict]:
