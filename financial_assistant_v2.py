@@ -6413,6 +6413,34 @@ def _normalize_number_to_parse_base(value: float, unit: str) -> float:
         return value
     return value
 
+def run_source_anchored_evolution(previous_data: Dict) -> Dict:
+    """
+    Backward-compatible entrypoint used by the Streamlit Evolution UI.
+
+    The UI (main) calls `run_source_anchored_evolution(baseline_data)`, but some
+    versions of the codebase implement the logic under `compute_source_anchored_diff`.
+    This wrapper keeps the UI stable across refactors.
+    """
+    fn = globals().get("compute_source_anchored_diff")
+    if callable(fn):
+        return fn(previous_data)
+
+    # Hard fail with a useful message instead of NameError
+    return {
+        "status": "failed",
+        "message": "compute_source_anchored_diff() is not defined, so source-anchored evolution cannot run.",
+        "sources_checked": 0,
+        "sources_fetched": 0,
+        "stability_score": 0.0,
+        "summary": {
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_unchanged": 0,
+        },
+        "metric_changes": [],
+        "source_results": [],
+    }
+
 
 # =========================================================
 # ROBUST EVOLUTION HELPERS (DETERMINISTIC)
