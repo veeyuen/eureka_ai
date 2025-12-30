@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.27
+# YUREEKA AI RESEARCH ASSISTANT v7.28
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -6508,32 +6508,25 @@ def fetch_url_content(url: str) -> Optional[str]:
 
 
 
-def fetch_url_content_with_status(url: str, timeout: int = 25):
+def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional[Union[str, bytes]], str]:
     """
-    Fetch URL content and return (text, status_detail).
+    Fetch URL content and return (content, status_detail).
+    Never raises — always returns a status string.
 
-    status_detail:
-      - "success"
-      - "success_pdf"
+    status_detail values:
+      - "success"        (HTML/text)
+      - "success_pdf"    (PDF bytes)
       - "http_<code>"
       - "exception:<TypeName>"
       - "empty"
-
-    Key hardening:
-      - Normalizes bare domains to https://
-      - Detects PDF via headers OR .pdf suffix and extracts real text via pdfplumber
-      - Avoids returning binary garbage as "text"
     """
-    import re
-    import requests
-
     try:
         u = (url or "").strip()
         if not u:
             return None, "empty"
 
         if not re.match(r"^https?://", u, flags=re.I):
-            u = "https://" + u.lstrip("/")
+            u = "https://" + u
 
         headers = {
             "User-Agent": (
@@ -6541,63 +6534,114 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-            "Accept": "text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.9,*/*;q=0.8",
         }
 
+        import requests
         resp = requests.get(u, headers=headers, timeout=timeout)
         if resp.status_code >= 400:
             return None, f"http_{resp.status_code}"
 
-        content_type = (resp.headers.get("content-type") or "").lower()
-        is_pdf = ("application/pdf" in content_type) or u.lower().endswith(".pdf")
+        ctype = (resp.headers.get("Content-Type") or "").lower()
 
-        # ---- PDF handling: extract readable text ----
+        # PDF detection (content-type OR URL suffix OR PDF magic bytes)
+        content_bytes = resp.content or b""
+        is_pdf = (
+            ("application/pdf" in ctype)
+            or u.lower().split("?")[0].endswith(".pdf")
+            or content_bytes[:4] == b"%PDF"
+        )
+
         if is_pdf:
-            try:
-                import io
-                import pdfplumber
+            if not content_bytes.strip():
+                return None, "empty"
+            return content_bytes, "success_pdf"
 
-                raw = resp.content or b""
-                if not raw:
-                    return None, "empty"
-
-                # Extract text (cap pages to keep latency + output stable)
-                out = []
-                with pdfplumber.open(io.BytesIO(raw)) as pdf:
-                    max_pages = min(len(pdf.pages), 25)
-                    for i in range(max_pages):
-                        try:
-                            t = pdf.pages[i].extract_text() or ""
-                            if t.strip():
-                                out.append(t)
-                        except Exception:
-                            continue
-
-                text = "\n".join(out).strip()
-                if not text:
-                    # PDF exists but no extractable text (scanned image etc.)
-                    return None, "empty"
-
-                return text, "success_pdf"
-            except Exception as e:
-                return None, f"exception:{type(e).__name__}"
-
-        # ---- HTML/Text handling ----
+        # default: treat as text/html
         text = resp.text or ""
         if not text.strip():
             return None, "empty"
-
-        # If the "text" is mostly non-printable, treat as empty (prevents binary junk contexts)
-        sample = text[:4000]
-        if sample:
-            non_printable = sum(1 for ch in sample if ord(ch) < 9 or (13 < ord(ch) < 32))
-            if (non_printable / max(1, len(sample))) > 0.05:
-                return None, "empty"
 
         return text, "success"
 
     except Exception as e:
         return None, f"exception:{type(e).__name__}"
+
+
+# ------------------------------
+# Junk filtering + HTML cleaning
+# ------------------------------
+
+_NON_DATA_TOKENS = [
+    # CSS/layout heavy
+    "column__", "slick-slide", "grid__", "grid-row", "grid-column", "display:", "width:", "height:",
+    "--wp--preset", "rem;", "px;", "vh;", "vw;", "rgba(", "rgb(", "calc(", "@media", "font-family",
+    # JS/code heavy
+    "function(", "var ", "const ", "let ", "=>", "offscreencanvas", "getcontext(", "aria-label",
+    # srcset/resize/url-encoding junk
+    "srcset=", "resize=", "quality=", "%2c", "%2f", "%3a", "%3d", "wp-content/uploads", ".jpg", ".png", ".svg",
+    # boilerplate
+    "cookie", "privacy", "terms", "subscribe", "newsletter", "login", "sign in", "copyright",
+]
+
+
+def _looks_like_markup_or_code(chunk: str) -> bool:
+    """
+    Deterministic heuristic: reject CSS/JS/URL-parameter contexts that generate bogus numbers.
+    """
+    if not chunk:
+        return False
+    c = chunk.strip().lower()
+    if any(tok in c for tok in _NON_DATA_TOKENS):
+        return True
+
+    # Too many punctuation/braces tends to be CSS/JS
+    punct = sum(1 for ch in c if ch in "{}[]();=:<>")
+    if punct >= 18:
+        return True
+
+    # If digits dominate letters, it's usually an id/param/blob
+    letters = sum(1 for ch in c if ch.isalpha())
+    digits = sum(1 for ch in c if ch.isdigit())
+    if digits > 0 and letters > 0 and digits / max(1, letters) > 1.6:
+        return True
+
+    # URL-ish patterns
+    if "http" in c or "://" in c:
+        return True
+
+    return False
+
+
+def _strip_html_to_text(html: str) -> str:
+    """
+    Convert HTML -> visible text. Tries BeautifulSoup; falls back to regex stripping.
+    Also removes huge style/script blobs before text extraction.
+    """
+    if not html:
+        return ""
+
+    # Hard drop script/style blocks first (prevents a *lot* of junk numbers)
+    html2 = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", html)
+    html2 = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", html2)
+    html2 = re.sub(r"(?is)<!--.*?-->", " ", html2)
+
+    try:
+        from bs4 import BeautifulSoup  # optional
+        soup = BeautifulSoup(html2, "html.parser")
+
+        # remove noisy structural blocks
+        for tag in soup(["script", "style", "noscript", "svg", "canvas", "header", "footer", "nav", "aside", "form"]):
+            tag.decompose()
+
+        text = soup.get_text(separator=" ", strip=True)
+    except Exception:
+        # Fallback: strip tags
+        text = re.sub(r"(?is)<[^>]+>", " ", html2)
+
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def extract_numbers_from_text(text: str) -> List[Dict]:
@@ -7467,219 +7511,165 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 
     return out[:30]
 
-def extract_numbers_with_context(text: str, source_url: str = "", max_results: int = 600) -> list:
+def extract_numbers_with_context(text: str) -> List[Dict]:
     """
-    Extract numeric candidates with short context snippets.
+    Extract numbers with surrounding context for matching.
 
-    Key upgrades:
-    - If input looks like HTML, convert to visible text (strip script/style/noscript/svg/head).
-    - Remove obvious asset URL zones (srcset/resize/quality) before extraction.
-    - Filter junk contexts (JS/CSS/SVG/path/meta/srcset).
-    - Cap output volume (max_results).
-    """
-    import re
-    import hashlib
-
-    def _sha1(s: str) -> str:
-        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
-
-    def _clean_html_to_visible_text(html: str) -> str:
-        # Best-effort: BeautifulSoup if available, else regex fallback.
-        try:
-            from bs4 import BeautifulSoup  # type: ignore
-            soup = BeautifulSoup(html or "", "html.parser")
-
-            # Drop common non-content zones
-            for tag in soup(["script", "style", "noscript", "svg", "head"]):
-                try:
-                    tag.decompose()
-                except Exception:
-                    try:
-                        tag.extract()
-                    except Exception:
-                        pass
-
-            visible = soup.get_text(" ", strip=True)
-            return visible
-        except Exception:
-            # Regex fallback: strip scripts/styles and tags
-            s = html or ""
-            s = re.sub(r"(?is)<script.*?>.*?</script>", " ", s)
-            s = re.sub(r"(?is)<style.*?>.*?</style>", " ", s)
-            s = re.sub(r"(?is)<noscript.*?>.*?</noscript>", " ", s)
-            s = re.sub(r"(?is)<svg.*?>.*?</svg>", " ", s)
-            s = re.sub(r"(?is)<head.*?>.*?</head>", " ", s)
-            s = re.sub(r"(?is)<[^>]+>", " ", s)
-            return s
-
-    def _preclean(s: str) -> str:
-        s = s or ""
-
-        # Remove common asset URL parameter zones that cause fake % values
-        # e.g. "jpg?resize=770%2C513&quality=80"
-        s = re.sub(r"(?i)\bresize=\d+%2c\d+[^ \t\r\n\"']*", " ", s)
-        s = re.sub(r"(?i)\bquality=\d+[^ \t\r\n\"']*", " ", s)
-        s = re.sub(r"(?i)\bsrcset=[^>]+", " ", s)
-
-        # Remove inline SVG path command sequences that leak as text in some pages
-        s = re.sub(r"(?i)\bd=\"[a-z0-9\.\-,\s]+\"", " ", s)
-
-        # Collapse whitespace
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
-
-    # If bytes leaked in, decode best-effort
-    if isinstance(text, (bytes, bytearray)):
-        try:
-            text = text.decode("utf-8", errors="ignore")
-        except Exception:
-            text = str(text)
-
-    raw = text or ""
-    looks_like_html = ("<html" in raw.lower()) or ("</" in raw and "<" in raw)
-
-    if looks_like_html:
-        raw = _clean_html_to_visible_text(raw)
-
-    raw = _preclean(raw)
-
-    # Candidate patterns:
-    # - optional currency token
-    # - number (with commas)
-    # - optional scale or percent
-    # Avoid matching inside long alphanumeric strings.
-    num_pat = re.compile(
-        r"(?<![A-Za-z0-9_])"
-        r"(S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
-        r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*"
-        r"(T|B|M|K|bn|billion|mn|million|%)?"
-        r"(?![A-Za-z0-9_])",
-        flags=re.I
-    )
-
-    out = []
-    for m in num_pat.finditer(raw):
-        cur = (m.group(1) or "").strip()
-        num_s = (m.group(2) or "").strip()
-        suf = (m.group(3) or "").strip()
-
-        if not num_s:
-            continue
-
-        # Normalize unit
-        unit = ""
-        suf_l = suf.lower()
-        if suf_l in ("bn", "billion"):
-            unit = "B"
-        elif suf_l in ("mn", "million"):
-            unit = "M"
-        elif suf in ("T", "B", "M", "K", "%"):
-            unit = suf.upper()
-        else:
-            unit = ""
-
-        # Parse numeric value
-        try:
-            value = float(num_s.replace(",", ""))
-        except Exception:
-            continue
-
-        # Drop obvious “layout/asset junk” % values:
-        # percentages in remaining contexts can still be from resize blocks, etc.
-        start = max(0, m.start() - 110)
-        end = min(len(raw), m.end() + 110)
-        ctx = raw[start:end].strip()
-
-        if "resize=" in ctx.lower() or "srcset" in ctx.lower() or "/wp-content/" in ctx.lower():
-            continue
-
-        # Drop 0T / 0B / 0M etc (almost always junk artifacts)
-        if unit in ("T", "B", "M", "K") and abs(value) == 0.0:
-            continue
-
-        # Drop extremely tiny “SVG-ish” decimals near commands (if any leaked)
-        if re.search(r"(?:^|[^a-z0-9])[a-z]\d", ctx.lower()):
-            continue
-
-        # Final junk context filter
-        try:
-            if "is_likely_junk_context" in globals() and callable(globals()["is_likely_junk_context"]):
-                if is_likely_junk_context(ctx):
-                    continue
-        except Exception:
-            pass
-
-        raw_disp = (cur + " " + num_s + (unit or "")).strip()
-        anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx[:180]}")
-
-        out.append({
-            "value": value,
-            "unit": unit,
-            "raw": raw_disp,
-            "context": ctx[:180],
-            "anchor_hash": anchor_hash,
-            "source_url": source_url,
-        })
-
-        if len(out) >= max_results:
-            break
-
-    return out
-
-
-def extract_numbers_with_context_pdf(text):
-    """
-    PDF-specialized extractor wrapper.
-
-    Strategy:
-      - Run normal extraction
-      - Filter boilerplate (ISSN/ISBN/doi/front matter)
-      - Prefer contexts that look economic/metric/table-like
-      - If filtering removes too much, fall back safely
+    Major improvements:
+    - Cleans HTML to text first (removes script/style/nav/footer)
+    - Filters out CSS/JS/srcset/resize/url-encoded junk contexts
+    - Caps output to keep JSON smaller and matching faster
     """
     if not text:
         return []
 
-    base = extract_numbers_with_context(text) or []
+    # If this looks like raw HTML, turn it into visible text.
+    cleaned = _strip_html_to_text(text) if "<html" in text.lower() or "<body" in text.lower() or "<div" in text.lower() else text
+    if not cleaned:
+        return []
 
-    def _bad_pdf_context(ctx):
-        c = (ctx or "").lower()
-        bad = [
-            "issn", "isbn", "doi", "catalogue", "legal notice",
-            "all rights reserved", "reproduction is authorised",
-            "printed by", "manuscript completed", "©", "copyright",
-            "table of contents"
-        ]
-        return any(b in c for b in bad)
+    # A tighter numeric regex:
+    # - supports commas, decimals, currency prefix, negatives, parentheses
+    # - supports %, T/B/M/K, and trillion/billion/million keywords
+    pattern = re.compile(
+        r"""
+        (?P<prefix>\$|usd\s*)?
+        (?P<num>
+            \(?-?
+            (?:\d{1,3}(?:,\d{3})+|\d+)
+            (?:\.\d+)?
+            \)?
+        )
+        \s*
+        (?P<unit>
+            %|
+            (?:trillion|billion|million|thousand)|
+            [TBMK]
+        )?
+        """,
+        re.IGNORECASE | re.VERBOSE
+    )
 
-    def _good_pdf_context(ctx):
-        c = (ctx or "").lower()
-        good = [
-            "gdp", "growth", "forecast", "projection", "inflation", "unemployment",
-            "exports", "imports", "debt", "deficit", "budget", "interest rate",
-            "table", "figure", "chart", "%", "billion", "million", "trillion"
-        ]
-        return any(g in c for g in good)
+    unit_map = {
+        "trillion": "T", "t": "T",
+        "billion": "B", "b": "B",
+        "million": "M", "m": "M",
+        "thousand": "K", "k": "K",
+        "%": "%",
+    }
 
-    cleaned = []
-    for n in base:
-        ctx = n.get("context", "") or ""
-        if _bad_pdf_context(ctx):
+    out: List[Dict[str, Any]] = []
+    seen = set()
+
+    # Cap: prevents runaway JSON bloat on noisy pages
+    MAX_CANDIDATES = 450
+
+    for m in pattern.finditer(cleaned):
+        if len(out) >= MAX_CANDIDATES:
+            break
+
+        raw_num = (m.group("num") or "").strip()
+        raw_unit = (m.group("unit") or "").strip()
+
+        # Normalize parentheses negatives
+        num_str = raw_num
+        if num_str.startswith("(") and num_str.endswith(")"):
+            num_str = "-" + num_str[1:-1].strip()
+
+        # Remove commas and currency prefix
+        num_str2 = num_str.replace(",", "").replace("$", "").strip()
+        if not num_str2:
             continue
 
-        raw = (n.get("raw") or "").lower()
-        u = ""
         try:
-            u = normalize_unit(n.get("unit", ""))
+            val = float(num_str2)
         except Exception:
-            u = (n.get("unit") or "")
+            continue
 
-        # Keep if data-ish context OR has strong marker
-        if _good_pdf_context(ctx) or u == "%" or any(sym in raw for sym in ["€", "eur", "$", "s$"]):
-            cleaned.append(n)
+        # Reject obvious garbage values (0 shows up *a lot* in code)
+        if val == 0.0:
+            continue
 
-    return cleaned if len(cleaned) >= max(8, len(base) // 4) else base
+        # Context window
+        start = max(0, m.start() - 140)
+        end = min(len(cleaned), m.end() + 140)
+        ctx = cleaned[start:end].strip()
 
+        # Junk context filter
+        if _looks_like_markup_or_code(ctx):
+            continue
+
+        # Normalize unit
+        unit_norm = ""
+        if raw_unit:
+            unit_norm = unit_map.get(raw_unit.lower(), raw_unit.upper())
+
+        # Extra junk guards (srcset/resize often yields absurd % like 770%)
+        if unit_norm == "%" and (val >= 200.0):
+            # 770%/375%/270% are almost always image resize or CSS
+            continue
+
+        raw = f"{raw_num}{raw_unit}".strip()
+
+        # Stable-ish anchor hash per number+context (deterministic)
+        anchor_input = (raw + "|" + ctx[:220]).encode("utf-8", errors="ignore")
+        anchor_hash = hashlib.sha1(anchor_input).hexdigest()
+
+        dedupe_key = (round(val, 6), unit_norm, anchor_hash)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        out.append({
+            "value": float(val),
+            "unit": unit_norm,
+            "raw": raw,
+            "context": ctx.lower(),
+            "anchor_hash": anchor_hash,
+        })
+
+    return out
+
+def extract_numbers_with_context_pdf(content: Union[bytes, str]) -> List[Dict]:
+    """
+    Extract numbers from PDF bytes (preferred) or a fallback string.
+    Adds aggressive cleanup to avoid PDF binary junk in context.
+    """
+    if not content:
+        return []
+
+    # If a string slips in, treat as already-extracted text
+    if isinstance(content, str):
+        pdf_text = content
+    else:
+        pdf_text = ""
+        try:
+            import io
+            from PyPDF2 import PdfReader
+
+            reader = PdfReader(io.BytesIO(content))
+            # Cap pages to avoid huge PDFs exploding output
+            max_pages = min(len(reader.pages), 12)
+            parts = []
+            for i in range(max_pages):
+                try:
+                    parts.append(reader.pages[i].extract_text() or "")
+                except Exception:
+                    continue
+            pdf_text = "\n".join(parts)
+        except Exception:
+            pdf_text = ""
+
+    # Clean non-printable junk that creates nonsense contexts
+    pdf_text = re.sub(r"[^\x09\x0a\x0d\x20-\x7E]", " ", pdf_text)   # keep basic ascii + whitespace
+    pdf_text = re.sub(r"\s+", " ", pdf_text).strip()
+
+    # If still empty, nothing we can do
+    if not pdf_text:
+        return []
+
+    # Reuse the same extractor (works well once text is cleaned)
+    return extract_numbers_with_context(pdf_text)
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
     """Calculate how well keywords match the context (deterministic)."""
