@@ -29,7 +29,7 @@
 # Domain-Agnostic Question Profiling
 # Baseline Caching Contains HTTP Validators + Numeric Data
 # URL canonicalization
-# Persist Baseline Evidence Records and anchor metrics
+# Canonicalization of Evolution Layer Metrics To Match Analysis Layer
 # ================================================================================
 
 import io
@@ -7322,12 +7322,18 @@ def _safe_parse_current_analysis(query: str, web_context: dict) -> dict:
 
 def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
     """
-    Canonical-first diff:
-      1) If both responses have primary_metrics_canonical -> match by canonical_key
-      2) Else fall back to primary_metrics name normalization
+    Canonical-first diff with HARD STOP on canonical mismatches, and guaranteed display names.
 
-    Returns:
-      metric_changes, unchanged, increased, decreased, found
+    Rules:
+      1) If BOTH responses have primary_metrics_canonical:
+         - Compare ONLY metrics with the SAME canonical_key
+         - If a prev canonical_key is missing in current -> not_found (NO name fallback)
+      2) If either side lacks primary_metrics_canonical:
+         - Fall back to name-based matching (legacy behavior)
+
+    Output guarantees:
+      - Every row has a non-empty 'name'
+      - Rows include 'canonical_key' when canonical mode is used
     """
     import re
 
@@ -7349,28 +7355,80 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
         except Exception:
             return None
 
+    def prettify_ckey(ckey: str) -> str:
+        # e.g. "market_size_2025__currency" -> "Market Size 2025 (currency)"
+        ckey = str(ckey or "").strip()
+        if not ckey:
+            return "Unknown Metric"
+        parts = ckey.split("__", 1)
+        left = parts[0].replace("_", " ").strip()
+        right = parts[1].replace("_", " ").strip() if len(parts) > 1 else ""
+        left = " ".join(w.capitalize() for w in left.split())
+        if right:
+            return f"{left} ({right})"
+        return left
+
+    def get_display_name(prev_can_obj: dict, cur_can_obj: dict, ckey: str, prev_response_obj: dict) -> str:
+        """
+        Always returns a non-empty display name using the best available source:
+          1) prev canonical name/original_name
+          2) current canonical name/original_name
+          3) metric_schema_frozen[ckey].name
+          4) prettified canonical key
+        """
+        # 1) prev canonical
+        for k in ("name", "original_name"):
+            v = prev_can_obj.get(k) if isinstance(prev_can_obj, dict) else None
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+        # 2) cur canonical
+        for k in ("name", "original_name"):
+            v = cur_can_obj.get(k) if isinstance(cur_can_obj, dict) else None
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+        # 3) schema frozen
+        schema = prev_response_obj.get("metric_schema_frozen")
+        if isinstance(schema, dict):
+            sm = schema.get(ckey)
+            if isinstance(sm, dict):
+                v = sm.get("name")
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
+        # 4) fallback
+        return prettify_ckey(ckey)
+
     prev_response = prev_response if isinstance(prev_response, dict) else {}
     cur_response = cur_response if isinstance(cur_response, dict) else {}
 
     prev_can = prev_response.get("primary_metrics_canonical")
     cur_can = cur_response.get("primary_metrics_canonical")
 
-    # ---------- Path A: canonical ----------
-    if isinstance(prev_can, dict) and isinstance(cur_can, dict) and prev_can and cur_can:
+    # =========================
+    # Path A: canonical-first
+    # =========================
+    if isinstance(prev_can, dict) and isinstance(cur_can, dict) and prev_can:
         metric_changes = []
         unchanged = increased = decreased = found = 0
 
         for ckey, pm in prev_can.items():
             if not isinstance(pm, dict):
-                continue
-
-            display_name = pm.get("name") or pm.get("original_name") or ckey
-            prev_raw = pm.get("raw") or pm.get("value")
-            prev_unit = pm.get("unit") or ""
-            prev_val = parse_num(pm.get("value"), prev_unit)
+                pm = {}
 
             cm = cur_can.get(ckey)
             if not isinstance(cm, dict):
+                cm = {}
+
+            display_name = get_display_name(pm, cm, ckey, prev_response)
+
+            prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
+            prev_unit = pm.get("unit") or ""
+            prev_val = parse_num(pm.get("value"), prev_unit)
+
+            # ✅ HARD STOP: if canonical key missing in current, DO NOT fall back to name matching
+            if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
                 metric_changes.append({
                     "name": display_name,
                     "previous_value": prev_raw,
@@ -7386,7 +7444,8 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 continue
 
             found += 1
-            cur_raw = cm.get("raw") or cm.get("value")
+
+            cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
             cur_unit = cm.get("unit") or ""
             cur_val = parse_num(cm.get("value"), cur_unit)
 
@@ -7413,7 +7472,7 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 "current_value": cur_raw,
                 "change_pct": change_pct,
                 "change_type": change_type,
-                "match_confidence": 92.0,  # higher confidence: canonical match
+                "match_confidence": 92.0,
                 "context_snippet": None,
                 "source_url": None,
                 "anchor_used": False,
@@ -7422,7 +7481,9 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
         return metric_changes, unchanged, increased, decreased, found
 
-    # ---------- Path B: name fallback ----------
+    # =========================
+    # Path B: name-based fallback
+    # =========================
     prev_metrics = prev_response.get("primary_metrics") or {}
     cur_metrics = cur_response.get("primary_metrics") or {}
     if not isinstance(prev_metrics, dict):
@@ -7446,13 +7507,13 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
     unchanged = increased = decreased = found = 0
 
     for nk, (display_name, pm) in prev_index.items():
-        prev_raw = pm.get("raw") or pm.get("value")
+        prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
         prev_unit = pm.get("unit") or ""
         prev_val = parse_num(pm.get("value"), prev_unit)
 
         if nk not in cur_index:
             metric_changes.append({
-                "name": display_name,
+                "name": display_name or "Unknown Metric",
                 "previous_value": prev_raw,
                 "current_value": "N/A",
                 "change_pct": None,
@@ -7466,7 +7527,7 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
         found += 1
         _, cm = cur_index[nk]
-        cur_raw = cm.get("raw") or cm.get("value")
+        cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
         cur_unit = cm.get("unit") or ""
         cur_val = parse_num(cm.get("value"), cur_unit)
 
@@ -7488,7 +7549,7 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 decreased += 1
 
         metric_changes.append({
-            "name": display_name,
+            "name": display_name or "Unknown Metric",
             "previous_value": prev_raw,
             "current_value": cur_raw,
             "change_pct": change_pct,
@@ -7500,7 +7561,6 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
         })
 
     return metric_changes, unchanged, increased, decreased, found
-
 
 def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_by_name: dict):
     """
