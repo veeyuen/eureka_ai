@@ -8029,46 +8029,68 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
 
 def compute_source_anchored_diff(previous_data):
     """
-    Source-anchored evolution (analysis-aligned, snapshot-aware, Streamlit-compatible)
-    with:
-      - Full URL preservation (no domain collapsing)
-      - Topic gating (page-level + context-level)
-      - Hub/directory page rejection (prevents cross-market contamination)
-      - Snapshot reuse:
-          (1) If snapshot exists and fingerprint unchanged: reuse snapshot even if live fetch works
-          (2) If live fetch fails but snapshot exists: reuse snapshot
-          (3) If no snapshot and no live extraction: mark source as not_found (no junk)
-      - Always returns a dict (never None)
+    Source-anchored evolution (analysis-aligned, snapshot-aware, Streamlit-compatible).
 
-    Streamlit compatibility: metric_changes rows include:
-      metric, previous_value, current_value, change_pct, status,
-      match_confidence, anchor_used, matched_source, matched_context
+    Tightening changes in this version:
+      A) Robust question extraction (prevents topic gating from accidentally being disabled)
+      B) Hard reject domain-only/homepage URLs unless snapshot exists AND snapshot contexts contain topic terms
+      C) Candidate-level topic gating enforced wherever candidates enter the pool
+
+    Returns backward-compatible keys:
+      status, message, sources_checked, sources_fetched, stability_score,
+      summary{...}, metric_changes[], source_results[]
     """
     import re
     import hashlib
     from datetime import datetime
-    from urllib.parse import urlparse, urlunparse
 
     # -------------------------
     # Tunables
     # -------------------------
     MAX_TEXT_CHARS = 250_000
-    MAX_NUMS_PER_SOURCE = 300
-    STORE_NUMS_PER_SOURCE = 120
     CONTEXT_CHARS = 220
-    ABS_EPS = 1e-9
-    REL_EPS = 0.0005  # 0.05%
+    MAX_NUMS_PER_SOURCE = 800
+    STORE_NUMS_PER_SOURCE = 120
 
-    HUB_PHRASES = (
+    ABS_EPS = 1e-9
+    REL_EPS = 0.0005
+
+    ECON_KEYWORDS = {
+        "gdp","growth","inflation","cpi","unemployment","rate","interest","policy",
+        "deficit","debt","exports","imports","budget","forecast","projection",
+        "percent","%","yoy","qoq","quarter","annual","recession","surplus",
+        "trade","currency","exchange","bond","yield",
+        "market","size","revenue","share","cagr"
+    }
+
+    HUB_PHRASES = [
         "market size was estimated",
-        "market was valued at",
-        "market is expected to reach",
-        "expected to grow at a cagr",
-        "forecast period",
-    )
+        "registering a cagr",
+        "according to a new report",
+        "request sample",
+        "speak to an analyst",
+        "download free sample",
+        "table of contents",
+        "related reports",
+        "view all reports",
+        "industry insights",
+        "press release",
+        "by application",
+        "by region",
+    ]
 
     # -------------------------
-    # Helper adapters (prefer globals)
+    # Prefer analysis helpers if present
+    # -------------------------
+    _fetch_helper = globals().get("fetch_url_content_with_status")
+    _clean_html_helper = globals().get("clean_html_to_visible_text")
+    _extract_nums = globals().get("extract_numbers_with_context")
+    _ctx_match = globals().get("context_match_score")
+    _normalize_unit = globals().get("normalize_unit")
+    _parse_human = globals().get("parse_human_number")
+
+    # -------------------------
+    # Small local helpers
     # -------------------------
     def _now_iso():
         try:
@@ -8079,159 +8101,65 @@ def compute_source_anchored_diff(previous_data):
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
-    def _get_global(name):
-        try:
-            fn = globals().get(name)
-            return fn if callable(fn) else None
-        except Exception:
-            return None
-
-    _fetch_helper = _get_global("fetch_url_content_with_status")
-    _clean_html_helper = _get_global("clean_html_to_text")
-    _extract_nums = _get_global("extract_numbers_with_context")
-    _extract_nums_pdf = _get_global("extract_numbers_with_context_pdf")
-    _fingerprint_text = _get_global("fingerprint_text")
-    _parse_human = _get_global("parse_human_number")
-    _normalize_unit = _get_global("normalize_unit")
-    _ctx_match = _get_global("calculate_context_match")
-
-    # -------------------------
-    # URL handling: FULL URL ONLY
-    # -------------------------
-    def _looks_like_url(s: str) -> bool:
-        if not s or not isinstance(s, str):
-            return False
-        t = s.strip()
-        if not t:
-            return False
-        # hard reject whitespace-containing "urls"
-        if any(ch.isspace() for ch in t):
-            return False
-        if re.match(r"^https?://", t, flags=re.I):
-            try:
-                p = urlparse(t)
-                return bool(p.scheme and p.netloc and "." in p.netloc)
-            except Exception:
-                return False
-        # allow bare domains
-        return bool(re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", t, flags=re.I))
-
-    def _norm_url_full(s: str) -> str:
-        """
-        Normalize WITHOUT dropping path/query.
-        - Adds https:// for bare domains.
-        - Removes fragments.
-        - Preserves path + query.
-        """
-        t = (s or "").strip()
-        if not _looks_like_url(t):
+    def _fingerprint(text: str) -> str:
+        if not text:
             return ""
-        if not re.match(r"^https?://", t, flags=re.I):
-            t = "https://" + t
-        try:
-            p = urlparse(t)
-            # strip fragment only
-            p2 = p._replace(fragment="")
-            # ensure path is at least "/"
-            if not p2.path:
-                p2 = p2._replace(path="/")
-            return urlunparse(p2)
-        except Exception:
-            return ""
+        compact = re.sub(r"\s+", " ", text.strip().lower())
+        return hashlib.md5(compact[:200000].encode("utf-8", errors="ignore")).hexdigest()
 
-    def _is_domain_homepage(url: str) -> bool:
-        """
-        True if URL is essentially a homepage / domain-only:
-          https://example.com
-          https://example.com/
-          https://example.com/?x=y   (still too broad)
-        """
-        try:
-            p = urlparse(url)
-            path = p.path or "/"
-            # treat only "/" as homepage; very short paths are risky too
-            if path.strip() in ("", "/"):
-                return True
-            # common landing paths
-            if path.strip().lower() in ("/home", "/index", "/index.html", "/default", "/default.aspx"):
-                return True
-            return False
-        except Exception:
-            return True
-
-    # -------------------------
-    # Unit + number parsing
-    # -------------------------
     def _safe_normalize_unit(u: str) -> str:
         u = (u or "").strip()
-        try:
-            if _normalize_unit:
-                return _normalize_unit(u) or (u or "")
-        except Exception:
-            pass
-        ul = u.lower()
-        if ul in ("bn", "billion"):
-            return "B"
-        if ul in ("mn", "mio", "million"):
-            return "M"
-        if ul in ("k", "thousand", "000"):
-            return "K"
-        if ul in ("pct", "percent"):
-            return "%"
+        if callable(_normalize_unit):
+            try:
+                return _normalize_unit(u) or u
+            except Exception:
+                return u
         return u
 
     def _parse_number(val, unit_hint=""):
-        try:
-            if _parse_human:
+        if callable(_parse_human):
+            try:
                 return _parse_human(str(val), unit_hint)
-        except Exception:
-            pass
+            except Exception:
+                return None
         try:
-            s = str(val).strip().replace(",", "")
-            if not s:
-                return None
-            m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*([KMBT%]?)\s*$", s, flags=re.I)
-            if not m:
-                return None
-            num = float(m.group(1))
-            suf = (m.group(2) or "").upper()
-            uh = _safe_normalize_unit(unit_hint)
-            scale = suf or (uh if uh in ("K", "M", "B", "T") else "")
-            if scale == "K":
-                num *= 1e3
-            elif scale == "M":
-                num *= 1e6
-            elif scale == "B":
-                num *= 1e9
-            elif scale == "T":
-                num *= 1e12
-            return num
+            return float(str(val).replace(",", "").strip())
         except Exception:
             return None
 
-    def _fingerprint(content: str) -> str:
-        c = (content or "")[:MAX_TEXT_CHARS]
-        try:
-            if _fingerprint_text:
-                return _fingerprint_text(c)
-        except Exception:
-            pass
-        compact = re.sub(r"\s+", " ", c).strip()
-        return _sha1(compact[:200000])
+    def _norm_url_full(s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return ""
+        # reject whitespace / labels
+        if " " in s:
+            return ""
+        if re.match(r"^https?://", s, flags=re.I):
+            return s
+        # allow bare domains
+        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", s, flags=re.I):
+            return "https://" + s
+        return ""
 
-    # -------------------------
-    # Text cleaning
-    # -------------------------
+    def _is_domain_homepage(url: str) -> bool:
+        try:
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            path = (p.path or "/").strip()
+            return path in ("", "/")
+        except Exception:
+            return True
+
     def _html_to_text(html: str) -> str:
         if not html:
             return ""
-        if _clean_html_helper:
+        if callable(_clean_html_helper):
             try:
                 t = _clean_html_helper(html)
                 return (t or "")[:MAX_TEXT_CHARS]
             except Exception:
                 pass
-        # minimal fallback
+        # minimal bs4 fallback
         try:
             from bs4 import BeautifulSoup  # type: ignore
             soup = BeautifulSoup(html, "html.parser")
@@ -8247,13 +8175,38 @@ def compute_source_anchored_diff(previous_data):
             return txt[:MAX_TEXT_CHARS]
 
     # -------------------------
-    # Topic extraction / gating
+    # Topic extraction / gating (HARDENED)
     # -------------------------
+    def _get_question_text(previous_data: dict, prev_response: dict) -> str:
+        """
+        Robustly locate the question so topic gating doesn't silently disable.
+        """
+        # direct
+        q = previous_data.get("question")
+        if isinstance(q, str) and q.strip():
+            return q.strip()
+
+        # sometimes stored under prev_response
+        q = prev_response.get("question")
+        if isinstance(q, str) and q.strip():
+            return q.strip()
+
+        # question_profile.main_question
+        qp = previous_data.get("question_profile") or prev_response.get("question_profile") or {}
+        if isinstance(qp, dict):
+            mq = qp.get("main_question")
+            if isinstance(mq, str) and mq.strip():
+                # include side questions if present
+                sides = qp.get("side_questions") or previous_data.get("side_questions") or []
+                if isinstance(sides, list) and sides:
+                    joined = " ".join([mq] + [str(x) for x in sides if str(x).strip()])
+                    return joined.strip()
+                return mq.strip()
+
+        # last resort: stringify (but keep it small)
+        return ""
+
     def _topic_terms_from_question(q: str):
-        """
-        Extract topic terms from question. Keeps only meaningful tokens.
-        Adds plural/variant forms for common cases.
-        """
         q = (q or "").lower()
         toks = re.findall(r"[a-z0-9]+", q)
         stop = {
@@ -8262,11 +8215,7 @@ def compute_source_anchored_diff(previous_data):
             "in", "to", "on", "about", "its", "this", "that"
         }
         core = [t for t in toks if len(t) >= 3 and t not in stop]
-
-        # Keep a small set, but stable
         core = list(dict.fromkeys(core))[:10]
-
-        # add simple variants
         variants = set(core)
         for t in list(core):
             if t.endswith("s"):
@@ -8281,50 +8230,47 @@ def compute_source_anchored_diff(previous_data):
         tl = text.lower()
         return any(t in tl for t in (topic_terms or []))
 
-    def _is_hub_page(clean_text: str, topic_terms):
+    def _snapshot_has_topic(snapshot_nums, topic_terms) -> bool:
         """
-        Heuristic: hub/directory pages often contain many templated "Market Size..." blocks
-        for many unrelated markets.
+        Used to decide whether to allow homepage URLs. If snapshot contexts never mention topic,
+        treat snapshot as untrusted for that homepage.
+        """
+        if not topic_terms:
+            return False
+        if not isinstance(snapshot_nums, list) or not snapshot_nums:
+            return False
+        for n in snapshot_nums:
+            if not isinstance(n, dict):
+                continue
+            ctx = (n.get("context_snippet") or n.get("context") or "")
+            if _contains_topic(ctx, topic_terms):
+                return True
+        return False
 
-        We reject if:
-          - Many hub phrases appear, AND
-          - Topic terms are scarce on the page, AND
-          - Page seems to mention many 'Market ...' headers.
-        """
+    def _is_hub_page(clean_text: str, topic_terms):
         t = (clean_text or "")[:MAX_TEXT_CHARS].lower()
         if not t:
             return False
-
         hub_hits = sum(t.count(p) for p in HUB_PHRASES)
         market_headers = len(re.findall(r"\bmarket\b.*?\bsize\b", t))
-
         topic_hits = 0
         for term in (topic_terms or []):
             topic_hits += t.count(term)
 
-        # strong hub signature + weak topic
         if hub_hits >= 6 and market_headers >= 10 and topic_hits <= 2:
             return True
-
-        # another pattern: lots of "market size was estimated" but no topic
         if t.count("market size was estimated") >= 4 and topic_hits == 0:
             return True
-
         return False
 
     # -------------------------
-    # Candidate extraction aligned with analysis pipeline
+    # Candidate extraction aligned with analysis pipeline (topic-gated)
     # -------------------------
     def _extract_candidates_from_clean_text(clean_text: str, source_url: str, topic_terms):
-        """
-        Uses extract_numbers_with_context when available. Filters candidates by topic terms
-        present in candidate context.
-        """
         if not clean_text:
             return []
 
-        # Preferred analysis extractor
-        if _extract_nums:
+        if callable(_extract_nums):
             try:
                 nums = _extract_nums(clean_text) or []
                 out = []
@@ -8333,9 +8279,11 @@ def compute_source_anchored_diff(previous_data):
                         continue
                     raw = (n.get("raw") or "").strip()
                     ctx = (n.get("context") or "")[:CONTEXT_CHARS]
-                    # context-level topic gate
+
+                    # HARD candidate-level topic gate
                     if topic_terms and not _contains_topic(ctx, topic_terms):
                         continue
+
                     out.append({
                         "value": n.get("value"),
                         "unit": _safe_normalize_unit(n.get("unit", "")),
@@ -8344,11 +8292,13 @@ def compute_source_anchored_diff(previous_data):
                         "anchor_hash": n.get("anchor_hash") or _sha1(f"{source_url}|{raw}|{ctx}"),
                         "source_url": source_url,
                     })
+                    if len(out) >= MAX_NUMS_PER_SOURCE:
+                        break
                 return out
             except Exception:
                 pass
 
-        # Regex fallback + topic gate
+        # Regex fallback + HARD topic gate
         t = clean_text[:MAX_TEXT_CHARS]
         pat = re.compile(
             r"(S\\$|\\$|USD|SGD|EUR|€|GBP|£)?\\s*"
@@ -8409,8 +8359,7 @@ def compute_source_anchored_diff(previous_data):
 
     def _score_candidate(metric_tokens, cand_ctx: str, cand_raw: str):
         ctx = (cand_ctx or "")
-        raw = (cand_raw or "")
-        if _ctx_match:
+        if callable(_ctx_match):
             try:
                 base = float(_ctx_match(metric_tokens, ctx))
             except Exception:
@@ -8420,13 +8369,10 @@ def compute_source_anchored_diff(previous_data):
             hits = sum(1 for t in metric_tokens if t in c)
             base = hits / max(1, len(metric_tokens))
 
-        # slight bonus for longer contexts
         if len(ctx.strip()) >= 40:
             base += 0.06
-        # slight penalty for very short contexts
         if len(ctx.strip()) < 20:
             base -= 0.12
-
         return base
 
     # -------------------------
@@ -8438,10 +8384,8 @@ def compute_source_anchored_diff(previous_data):
         if not isinstance(prev_response, dict):
             prev_response = {}
 
-        # Get question for topic gating
-        question = previous_data.get("question") or ""
-        if not isinstance(question, str):
-            question = str(question)
+        # ---- Robust question extraction (critical) ----
+        question = _get_question_text(previous_data, prev_response)
         topic_terms = _topic_terms_from_question(question)
 
         # Baseline metrics (use original analysis metric names)
@@ -8486,7 +8430,7 @@ def compute_source_anchored_diff(previous_data):
                     if u:
                         urls.append(u)
 
-        # 2) web_sources (usually full URLs)
+        # 2) web_sources
         if not urls:
             ws = previous_data.get("web_sources") or prev_response.get("web_sources") or []
             if isinstance(ws, list):
@@ -8495,7 +8439,7 @@ def compute_source_anchored_diff(previous_data):
                     if u:
                         urls.append(u)
 
-        # 3) sources (may include bare domains; we will reject homepages later)
+        # 3) sources
         if not urls:
             srcs = prev_response.get("sources") or []
             if isinstance(srcs, list):
@@ -8524,20 +8468,14 @@ def compute_source_anchored_diff(previous_data):
                 u = _norm_url_full(sr.get("url") or sr.get("source_url") or "")
                 if not u:
                     continue
-                snapshot_by_url[u] = sr  # keyed by FULL URL
+                snapshot_by_url[u] = sr
 
         # De-dupe urls preserve order
         seen = set()
         urls = [u for u in urls if u and not (u in seen or seen.add(u))]
 
-        # Reject domain-homepages early if there are better URLs available
-        # If all URLs are homepages, we keep them but they will likely be gated out as hub/offtopic.
-        non_home = [u for u in urls if not _is_domain_homepage(u)]
-        if non_home:
-            urls = non_home
-
         # -------------------------
-        # Fetch + extract per source (snapshot reuse + topic/hub gating)
+        # Fetch + extract per source (snapshot reuse + topic/hub gating + homepage hard block)
         # -------------------------
         source_results = []
         all_candidates = []
@@ -8548,13 +8486,77 @@ def compute_source_anchored_diff(previous_data):
             sources_checked += 1
             snap = snapshot_by_url.get(url)
 
+            # ---- HARD BLOCK: domain/homepage URLs unless snapshot has topic contexts ----
+            if _is_domain_homepage(url):
+                snap_nums = (snap.get("extracted_numbers") if isinstance(snap, dict) else []) or []
+                if not _snapshot_has_topic(snap_nums, topic_terms):
+                    source_results.append({
+                        "url": url,
+                        "status": "rejected",
+                        "status_detail": "rejected_homepage_no_topic_snapshot",
+                        "content_type": "",
+                        "numbers_found": 0,
+                        "fingerprint": (snap.get("fingerprint") if isinstance(snap, dict) else None),
+                        "fetched_at": _now_iso(),
+                        "extracted_numbers": [],
+                    })
+                    continue
+                # else allow ONLY snapshot path; do not live-fetch homepages
+                extracted = []
+                fingerprint = (snap.get("fingerprint") if isinstance(snap, dict) else None)
+                used_snapshot = False
+                if isinstance(snap_nums, list) and snap_nums:
+                    used_snapshot = True
+                    for n in snap_nums[:MAX_NUMS_PER_SOURCE]:
+                        if not isinstance(n, dict):
+                            continue
+                        ctx = (n.get("context_snippet") or n.get("context") or "")[:CONTEXT_CHARS]
+                        if topic_terms and not _contains_topic(ctx, topic_terms):
+                            continue
+                        extracted.append({
+                            "value": n.get("value"),
+                            "unit": _safe_normalize_unit(n.get("unit", "")),
+                            "raw": n.get("raw") or "",
+                            "context": ctx,
+                            "anchor_hash": n.get("anchor_hash") or _sha1(f"{url}|{n.get('raw','')}|{ctx}"),
+                            "source_url": url
+                        })
+
+                if extracted:
+                    all_candidates.extend(extracted)
+
+                stored = extracted[:STORE_NUMS_PER_SOURCE] if extracted else []
+                source_results.append({
+                    "url": url,
+                    "status": "snapshot" if stored else "rejected",
+                    "status_detail": "homepage_snapshot_topic_pass" if stored else "homepage_snapshot_empty_after_topic_gate",
+                    "content_type": "",
+                    "numbers_found": int(len(extracted)),
+                    "fingerprint": fingerprint,
+                    "fetched_at": _now_iso(),
+                    "extracted_numbers": [
+                        {
+                            "value": n.get("value"),
+                            "unit": n.get("unit"),
+                            "raw": n.get("raw"),
+                            "context_snippet": (n.get("context") or "")[:CONTEXT_CHARS],
+                            "anchor_hash": n.get("anchor_hash"),
+                            "source_url": n.get("source_url"),
+                        }
+                        for n in stored
+                        if isinstance(n, dict)
+                    ],
+                })
+                continue
+
+            # ---- normal non-homepage flow ----
             raw_text = None
             status = "failed"
             status_detail = "not_fetched"
             content_type = ""
 
             # Live fetch
-            if _fetch_helper:
+            if callable(_fetch_helper):
                 try:
                     got = _fetch_helper(url, timeout=25)
                     if isinstance(got, tuple) and len(got) == 2:
@@ -8613,18 +8615,15 @@ def compute_source_anchored_diff(previous_data):
 
                 fingerprint = _fingerprint(clean_text)
 
-                # Page-level topic gate
+                # Page-level topic gate (ONLY if we successfully derived topic_terms)
                 if topic_terms and not _contains_topic(clean_text, topic_terms):
-                    # treat as off-topic; do not extract
                     extracted = []
                     status_detail = "ignored_offtopic_page"
                 else:
-                    # Hub page rejection
                     if _is_hub_page(clean_text, topic_terms):
                         extracted = []
                         status_detail = "ignored_hub_directory_page"
                     else:
-                        # Extract with topic-gated candidates
                         extracted = _extract_candidates_from_clean_text(clean_text, url, topic_terms)
 
                 # Snapshot override if unchanged (even if live fetch succeeded)
@@ -8684,7 +8683,7 @@ def compute_source_anchored_diff(previous_data):
                 else:
                     status_detail = status_detail or "success_but_no_numbers"
 
-            # Keep candidates
+            # Keep candidates (topic-gated already inside extractor/snapshot loops)
             if extracted:
                 all_candidates.extend(extracted)
 
@@ -8809,7 +8808,7 @@ def compute_source_anchored_diff(previous_data):
                     inc += 1
                 else:
                     status = "decreased"
-                    change_pct = ((cv - prev_num) / max(ABS_EPS, abs(prev_num))) * 100.0
+                    change_pct = ((cv - prev_num) / max(ABS_EPS, abs(prev_num))) * REL_EPS * 100.0
                     dec += 1
 
             conf = max(0.0, min(100.0, float(best_score) * 70.0))
@@ -8838,7 +8837,7 @@ def compute_source_anchored_diff(previous_data):
 
         return {
             "status": "success",
-            "message": "Source-anchored evolution completed (topic-gated, hub-reject, full-URL).",
+            "message": "Source-anchored evolution completed (topic-gated, hub-reject, homepage-hardblock).",
             "sources_checked": int(sources_checked),
             "sources_fetched": int(sources_fetched),
             "numbers_extracted_total": int(numbers_extracted_total),
@@ -8854,8 +8853,8 @@ def compute_source_anchored_diff(previous_data):
             "source_results": source_results,
             "interpretation": (
                 "Deterministic anchor-first matching; extraction aligned to analysis helpers; "
-                "topic gating + hub rejection prevents cross-market contamination; "
-                "snapshot reuse reduces drift."
+                "robust topic gating (never silently disabled) + hub rejection + homepage hard-block "
+                "prevents cross-market contamination; snapshot reuse reduces drift."
             ),
         }
 
@@ -8877,8 +8876,8 @@ def compute_source_anchored_diff(previous_data):
             },
             "metric_changes": [],
             "source_results": [],
-            "interpretation": "Safe-fail wrapper returned an empty evolution payload.",
         }
+
 
 
 
