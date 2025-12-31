@@ -174,6 +174,114 @@ def add_to_history(analysis: dict) -> bool:
             out += ["gross", "domestic", "product"]
         return list(dict.fromkeys(out))[:30]
 
+        # -------------------------
+    # NEW: Structural junk filters + near-context + phrase gating
+    # -------------------------
+    YEAR_RE = re.compile(r"^(19|20)\d{2}$")
+    PHONE_RE = re.compile(r"(\+\d{1,3}\s*)?(\(?\d{2,4}\)?[\s\-\.]){2,}\d{2,4}")
+    PRESS_ID_RE = re.compile(r"\b(press\s*release|media\s*release|release\s*no|no\.|ref\.|reference)\b", re.I)
+
+    def _near_context(ctx: str, raw: str, fallback_span: int = 55) -> str:
+        """
+        Extract a small window around the matched number in ctx.
+        If raw can't be located reliably, return the first 2*fallback_span chars.
+        """
+        if not ctx:
+            return ""
+        c = re.sub(r"\s+", " ", ctx).strip()
+        if not raw:
+            return c[: (fallback_span * 2)]
+        r = re.sub(r"\s+", " ", raw).strip()
+
+        # Try to find the number token inside the context (normalize commas/spaces)
+        c_norm = c
+        r_norm = r.replace(",", "")
+        idx = c_norm.find(r)
+        if idx < 0:
+            idx = c_norm.replace(",", "").find(r_norm)
+        if idx < 0:
+            # last resort: find just the numeric part
+            m = re.search(r"-?\d+(?:\.\d+)?", r_norm)
+            if m:
+                numtok = m.group(0)
+                idx = c_norm.replace(",", "").find(numtok)
+        if idx < 0:
+            return c[: (fallback_span * 2)]
+
+        start = max(0, idx - fallback_span)
+        end = min(len(c_norm), idx + len(r) + fallback_span)
+        return c_norm[start:end].strip()
+
+    def _looks_like_chrome(ctx: str) -> bool:
+        cl = (ctx or "").lower()
+        bad = [
+            "cookie", "privacy policy", "terms", "subscribe", "newsletter", "sign in", "log in",
+            "all news", "sponsors", "footer", "header", "menu", "site map", "copyright",
+            "facebook", "twitter", "linkedin", "instagram", "youtube"
+        ]
+        return any(b in cl for b in bad)
+
+    def _is_structural_candidate(raw: str, unit: str, ctx: str) -> bool:
+        """
+        Drop structural junk: years, phone numbers, press release ids, obvious chrome-only digits.
+        This is applied BEFORE matching.
+        """
+        r = (raw or "").strip()
+        u = (unit or "").strip()
+        c = (ctx or "").strip()
+        cl = c.lower()
+
+        # Years (keep only if it is clearly not "just a year")
+        if (not u) and YEAR_RE.match(r):
+            # If near context doesn't contain strong econ signals, drop it
+            if not any(k in cl for k in ["gdp", "growth", "inflation", "cpi", "unemployment", "deficit", "debt", "fdi"]):
+                return True
+
+        # Phone-ish patterns
+        if PHONE_RE.search(c) or PHONE_RE.search(r):
+            # If it’s obviously contact info / phone, drop
+            if any(x in cl for x in ["tel", "telephone", "phone", "call", "contact", "fax"]):
+                return True
+
+        # Press-release / reference numbers: "2024/007", "No. 12/2025", etc.
+        if PRESS_ID_RE.search(cl):
+            if re.search(r"\b(19|20)\d{2}\s*[/\-]\s*\d+\b", c) or re.search(r"\bno\.\s*\d+\b", cl):
+                return True
+
+        # Pure chrome zones with small integers are almost always noise
+        if _looks_like_chrome(c) and u == "" and re.fullmatch(r"-?\d{1,3}", r):
+            return True
+
+        return False
+
+    def _required_phrase_gate(metric_name: str, near_ctx: str) -> bool:
+        """
+        Hard phrase-gating by metric family.
+        Only candidates whose near-context matches required phrases can win.
+        """
+        mn = (metric_name or "").lower()
+        nc = (near_ctx or "").lower()
+
+        # GDP Growth
+        if ("gdp" in mn and "growth" in mn) or ("economic growth" in mn):
+            return ("gdp" in nc) and ("growth" in nc or "grew" in nc or "expanded" in nc or "contracted" in nc)
+
+        # Inflation
+        if "inflation" in mn or "cpi" in mn:
+            return ("inflation" in nc) or ("cpi" in nc) or ("consumer price" in nc)
+
+        # Unemployment
+        if "unemployment" in mn or "jobless" in mn:
+            return ("unemployment" in nc) or ("jobless" in nc) or ("labour" in nc) or ("labor" in nc)
+
+        # Nominal GDP / GDP level
+        if "gdp" in mn and ("nominal" in mn or "current" in mn or "level" in mn or "value" in mn):
+            return ("gdp" in nc) and (("current price" in nc) or ("nominal" in nc) or _looks_like_currency(nc))
+
+        # Default: no hard gate
+        return True
+
+
     def _ctx_score(tokens: List[str], ctx: str) -> float:
         if not tokens:
             return 0.0
@@ -7276,20 +7384,27 @@ def compute_source_anchored_diff(previous_data):
 
         return score
 
-    def _coerce_extracted(extracted: list, source_url: str) -> list:
+        def _coerce_extracted(extracted: list, source_url: str) -> list:
+        """
+        Normalize analysis-extractor output into evolution candidate schema AND apply
+        global structural filtering. Also compute near-context for better scoring.
+        """
         out = []
         for n in (extracted or []):
             if not isinstance(n, dict):
                 continue
+
             raw = (n.get("raw") or "").strip()
-            ctx = (n.get("context") or "").strip()
+            ctx = (n.get("context") or n.get("context_snippet") or "").strip()
             unit = _normalize_unit(n.get("unit") or "")
             val = n.get("value")
 
             ctx = re.sub(r"\s+", " ", ctx).strip()
             ctx_store = ctx[:CONTEXT_CHARS] if ctx else ""
+            near_ctx = _near_context(ctx_store, raw, fallback_span=55)
 
-            if _is_year_only_candidate(raw, unit, ctx_store):
+            # NEW: global structural junk filter
+            if _is_structural_candidate(raw, unit, near_ctx or ctx_store):
                 continue
 
             pv = _parse_human_number(val, unit) if val is not None else None
@@ -7306,9 +7421,12 @@ def compute_source_anchored_diff(previous_data):
                 "raw": raw or str(val),
                 "source_url": source_url,
                 "context": ctx_store[:180],
+                "near_context": near_ctx[:180],  # NEW: used for scoring/gating
                 "anchor_hash": anchor_hash,
             })
         return out
+
+
 
     # -------------------------
     # Load baseline state
@@ -7471,12 +7589,16 @@ def compute_source_anchored_diff(previous_data):
 
         # helper: hard family gate
         def _family_gate_ok(c) -> bool:
-            cfam = _candidate_family(c.get("unit", ""), c.get("raw", ""), c.get("context", ""))
+            # Use near context because it contains the closest phrasing around the number
+            nc = c.get("near_context") or c.get("context") or ""
+            cfam = _candidate_family(c.get("unit",""), c.get("raw",""), nc)
+
             if prev_family == "PCT":
                 return cfam == "PCT"
             if prev_family == "SCALE":
                 return cfam == "SCALE"
-            return True  # OTHER: allow
+            return True
+
 
         # Phase 1: anchor-first
         anchor = anchors_by_name.get(metric_name) or {}
@@ -7497,7 +7619,12 @@ def compute_source_anchored_diff(previous_data):
                     score += 2.0
 
                 # use full scoring (tokens + econ hints + authority)
-                score += _score_candidate(tokens, c.get("context",""), c.get("raw",""), c.get("source_url",""))
+                nc = c.get("near_context") or c.get("context") or ""
+                # NEW: phrase gating
+                if not _required_phrase_gate(metric_name, nc):
+                    continue
+                score += _score_candidate(tokens, nc, c.get("raw",""), c.get("source_url",""))
+
 
                 # numeric closeness bonus (only if both parse)
                 cv = _parse_human_number(c.get("value"), c.get("unit")) or _parse_human_number(c.get("raw"), c.get("unit"))
@@ -7528,7 +7655,10 @@ def compute_source_anchored_diff(previous_data):
                     except Exception:
                         pass
 
-                score = _score_candidate(tokens, c.get("context",""), c.get("raw",""), c.get("source_url",""))
+                nc = c.get("near_context") or c.get("context") or ""
+                if not _required_phrase_gate(metric_name, nc):
+                    continue
+                score = _score_candidate(tokens, nc, c.get("raw",""), c.get("source_url",""))
                 if score > best_score:
                     best_score = score
                     best = c
@@ -7577,7 +7707,7 @@ def compute_source_anchored_diff(previous_data):
             "change_pct": change_pct,
             "change_type": change_type,
             "match_confidence": float(conf),
-            "context_snippet": (best.get("context") or "")[:200],
+            "context_snippet": (best.get("near_context") or best.get("context") or "")[:200],
             "source_url": best.get("source_url"),
             "anchor_used": bool(used_anchor),
         })
