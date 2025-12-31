@@ -9104,24 +9104,10 @@ def main():
             except Exception:
                 pass
 
-            # Build output
-
-                        output = {
-                "question": query,
-                "question_profile": question_profile,
-                "question_category": question_profile.get("category"),
-                "question_signals": question_signals,
-                "side_questions": question_profile.get("side_questions", []),
-                "timestamp": now_utc().isoformat(),
-                "primary_response": primary_data,
-                "final_confidence": final_conf,
-                "veracity_scores": veracity_scores,
-                "web_sources": web_context.get("sources", []),
-            }
 
             # Save baseline numeric cache if available (existing behavior)
 
-                        # Build output
+            # Build output
             output = {
                 "question": query,
                 "question_profile": question_profile,
@@ -9133,7 +9119,7 @@ def main():
                 "final_confidence": final_conf,
                 "veracity_scores": veracity_scores,
                 "web_sources": web_context.get("sources", []),
-            }
+                }
 
             # ✅ NEW: attach analysis-aligned snapshots (from scraped_meta)
             # This is the stable cache evolution should reuse.
