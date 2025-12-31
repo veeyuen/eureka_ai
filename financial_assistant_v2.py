@@ -1907,6 +1907,52 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
 # 7B. ANCHORED EVOLUTION QUERY
 # =========================================================
 
+def _ensure_metric_labels(metric_changes: list) -> list:
+    """
+    Backward/forward compatible label normalization:
+    - guarantees a non-empty display label
+    - adds aliases so different UIs render correctly: metric_name, metric, label
+    """
+    import re
+
+    def _prettify(s: str) -> str:
+        s = str(s or "").strip()
+        if not s:
+            return ""
+        s = s.replace("__", " ").replace("_", " ")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s[:120]
+
+    out = []
+    for row in (metric_changes or []):
+        if not isinstance(row, dict):
+            continue
+
+        name = row.get("name")
+        if isinstance(name, str):
+            name = name.strip()
+        else:
+            name = ""
+
+        # try to derive a label if name missing (canonical_key or metric_definition.name)
+        if not name:
+            md = row.get("metric_definition") if isinstance(row.get("metric_definition"), dict) else {}
+            name = (md.get("name") or "").strip() if isinstance(md.get("name"), str) else ""
+        if not name:
+            ckey = row.get("canonical_key")
+            name = _prettify(ckey) if ckey else "Unknown Metric"
+
+        # write canonical label + aliases
+        row["name"] = name
+        row.setdefault("metric_name", name)
+        row.setdefault("metric", name)
+        row.setdefault("label", name)
+
+        out.append(row)
+
+    return out
+
+
 def format_previous_metrics(metrics: Dict) -> str:
     """Format previous metrics for prompt"""
     if not metrics:
@@ -7725,13 +7771,19 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
 
 def compute_source_anchored_diff(previous_data):
     """
-    Evolution via analysis pipeline (stable) + snapshot fallback (no brute-force scraping).
+    Source-anchored evolution (analysis-aligned + snapshot-stable).
 
-    ✅ If snapshot exists and fingerprint unchanged -> reuse snapshot even if live fetch works.
-    ✅ If no snapshot -> mark metric as not_found (never guess from raw HTML).
-    ✅ Canonical-first metric matching using primary_metrics_canonical when available.
+    Behavior:
+    - Re-runs analysis pipeline (fetch_web_context + query_perplexity) when possible.
+    - Builds current snapshots from web_context (scraped_meta) and merges with cached snapshots.
+    - If fingerprint unchanged, reuse cached snapshot even if live fetch works.
+    - Canonical-first diff via _diff_metrics_by_name(prev_response, cur_response).
+    - Snapshot-only fallback for missing metrics (never brute-force scrape).
+    - ALWAYS returns a dict (never None) and ensures metric labels are populated.
 
-    Returns backward-compatible keys used by Streamlit evolution UI.
+    Returns backward-compatible keys used by Streamlit evolution UI:
+      status, message, sources_checked, sources_fetched, stability_score,
+      summary{...}, metric_changes[], source_results[]
     """
     import re
     from datetime import datetime
@@ -7742,170 +7794,283 @@ def compute_source_anchored_diff(previous_data):
         except Exception:
             return datetime.now().isoformat()
 
-    previous_data = previous_data or {}
-    prev_response = previous_data.get("primary_response", {}) or {}
-    if not isinstance(prev_response, dict):
-        prev_response = {}
+    def _ensure_metric_labels(metric_changes: list) -> list:
+        """
+        Guarantee every row has a display label and provide aliases so different UIs render correctly.
+        Adds/sets:
+          - name (non-empty)
+          - metric_name, metric, label (aliases)
+        """
+        def _prettify(s: str) -> str:
+            s = str(s or "").strip()
+            if not s:
+                return ""
+            s = s.replace("__", " ").replace("_", " ")
+            s = re.sub(r"\s+", " ", s).strip()
+            return s[:160]
 
-    # Build prev_numbers for snapshot fallback matching (still needed)
-    prev_metrics = prev_response.get("primary_metrics", {}) or {}
-    if not isinstance(prev_metrics, dict):
-        prev_metrics = {}
+        out = []
+        for row in (metric_changes or []):
+            if not isinstance(row, dict):
+                continue
 
-    prev_numbers = {}
-    for _, m in prev_metrics.items():
-        if not isinstance(m, dict):
-            continue
-        name = (m.get("name") or "").strip()
-        if not name:
-            continue
-        unit = (m.get("unit") or "").strip()
-        val = m.get("value")
+            name = row.get("name")
+            name = name.strip() if isinstance(name, str) else ""
 
-        pv = None
-        try:
-            fn = globals().get("parse_human_number")
-            if callable(fn):
-                pv = fn(str(val), unit)
-        except Exception:
+            if not name:
+                md = row.get("metric_definition") if isinstance(row.get("metric_definition"), dict) else {}
+                md_name = md.get("name")
+                if isinstance(md_name, str) and md_name.strip():
+                    name = md_name.strip()
+
+            if not name:
+                ckey = row.get("canonical_key")
+                if ckey:
+                    name = _prettify(ckey)
+
+            if not name:
+                name = "Unknown Metric"
+
+            row["name"] = name
+            row.setdefault("metric_name", name)
+            row.setdefault("metric", name)
+            row.setdefault("label", name)
+
+            out.append(row)
+        return out
+
+    # ---------- Hard guarantee: always return a dict ----------
+    try:
+        previous_data = previous_data or {}
+        prev_response = previous_data.get("primary_response", {}) or {}
+        if not isinstance(prev_response, dict):
+            prev_response = {}
+
+        # Build prev_numbers for snapshot fallback matching
+        prev_metrics = prev_response.get("primary_metrics", {}) or {}
+        if not isinstance(prev_metrics, dict):
+            prev_metrics = {}
+
+        prev_numbers = {}
+        for _, m in prev_metrics.items():
+            if not isinstance(m, dict):
+                continue
+            name = (m.get("name") or "").strip()
+            if not name:
+                continue
+            unit = (m.get("unit") or "").strip()
+            val = m.get("value")
+
             pv = None
+            try:
+                fn = globals().get("parse_human_number")
+                if callable(fn):
+                    pv = fn(str(val), unit)
+            except Exception:
+                pv = None
 
-        prev_numbers[name] = {
-            "value": pv,
-            "unit": unit,
-            "raw": m.get("raw") or (str(val) if val is not None else "N/A"),
-            "keywords": [],
+            prev_numbers[name] = {
+                "value": pv,
+                "unit": unit,
+                "raw": m.get("raw") or (str(val) if val is not None else "N/A"),
+                "keywords": [],
+            }
+
+        # Anchors by metric name (optional)
+        metric_anchors = previous_data.get("metric_anchors") or prev_response.get("metric_anchors") or []
+        anchors_by_name = {}
+        if isinstance(metric_anchors, list):
+            for a in metric_anchors:
+                if isinstance(a, dict) and a.get("metric_name"):
+                    anchors_by_name[str(a["metric_name"])] = a
+
+        # Cached snapshots from previous run
+        baseline_cache = _extract_baseline_cache(previous_data)
+        cached_snapshots = _build_source_snapshots_from_baseline_cache(baseline_cache)
+
+        # Build current analysis context using the analysis pipeline
+        query = _extract_query_from_previous(previous_data)
+        web_context = None
+        current_analysis = {}
+        message_bits = []
+
+        fw = globals().get("fetch_web_context")
+        if query and callable(fw):
+            try:
+                web_context = fw(query, num_sources=3)
+            except Exception as e:
+                web_context = None
+                message_bits.append(f"fetch_web_context failed: {type(e).__name__}")
+        else:
+            if not query:
+                message_bits.append("No saved query found in previous_data; cannot re-run analysis.")
+            else:
+                message_bits.append("fetch_web_context helper not available; using cached snapshots only.")
+
+        # Build current snapshots from web_context (analysis-aligned)
+        current_snapshots = _build_source_snapshots_from_web_context(web_context) if isinstance(web_context, dict) else []
+
+        # Merge policy: reuse cached when fingerprint unchanged / better extraction exists
+        snapshots = _merge_snapshots_prefer_cached_when_unchanged(current_snapshots, cached_snapshots)
+        source_results = snapshots
+
+        # Try to produce current analysis via pipeline
+        if query and isinstance(web_context, dict):
+            try:
+                current_analysis = _safe_parse_current_analysis(query, web_context) or {}
+            except Exception as e:
+                current_analysis = {}
+                message_bits.append(f"safe_parse_current_analysis failed: {type(e).__name__}")
+
+            if current_analysis:
+                message_bits.append("Current analysis generated via analysis pipeline.")
+            else:
+                message_bits.append("Current analysis unavailable; using snapshots fallback.")
+        else:
+            message_bits.append("Using snapshots fallback (no web_context).")
+
+        cur_response = current_analysis.get("primary_response") if isinstance(current_analysis, dict) else None
+        cur_response = cur_response if isinstance(cur_response, dict) else {}
+
+        metric_changes = []
+        unchanged = increased = decreased = 0
+
+        # ---------- Primary diff path (canonical-first inside _diff_metrics_by_name) ----------
+        if cur_response:
+            metric_changes, unchanged, increased, decreased, _found = _diff_metrics_by_name(prev_response, cur_response)
+
+            # Supplement not_found rows via snapshots only (no brute-force scraping)
+            missing = [m for m in metric_changes if isinstance(m, dict) and m.get("change_type") == "not_found"]
+            if missing and snapshots:
+                # ensure keywords exist for fallback scoring
+                for k in list(prev_numbers.keys()):
+                    if not prev_numbers[k].get("keywords"):
+                        toks = re.findall(r"[a-z0-9]+", k.lower())
+                        stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
+                        prev_numbers[k]["keywords"] = [t for t in toks if len(t) > 3 and t not in stop][:24]
+
+                fb = _fallback_match_from_snapshots(prev_numbers, snapshots, anchors_by_name)
+                fb_by_name = {x.get("name"): x for x in fb if isinstance(x, dict) and x.get("name")}
+
+                merged = []
+                for row in metric_changes:
+                    if isinstance(row, dict) and row.get("change_type") == "not_found":
+                        nm = row.get("name")
+                        if nm in fb_by_name:
+                            merged.append(fb_by_name[nm])
+                        else:
+                            merged.append(row)
+                    else:
+                        merged.append(row)
+                metric_changes = merged
+                message_bits.append("Supplemented not_found metrics via snapshots.")
+        else:
+            # ---------- Snapshot-only fallback ----------
+            for k in list(prev_numbers.keys()):
+                toks = re.findall(r"[a-z0-9]+", k.lower())
+                stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
+                prev_numbers[k]["keywords"] = [t for t in toks if len(t) > 3 and t not in stop][:24]
+
+            metric_changes = _fallback_match_from_snapshots(prev_numbers, snapshots, anchors_by_name) if snapshots else []
+
+            for m in metric_changes:
+                if not isinstance(m, dict):
+                    continue
+                ct = m.get("change_type")
+                if ct == "unchanged":
+                    unchanged += 1
+                elif ct == "increased":
+                    increased += 1
+                elif ct == "decreased":
+                    decreased += 1
+
+            if not metric_changes:
+                # If no snapshots exist at all, mark everything not_found (honest > guessing)
+                metric_changes = []
+                for metric_name, prev in prev_numbers.items():
+                    metric_changes.append({
+                        "name": metric_name,
+                        "metric_name": metric_name,
+                        "metric": metric_name,
+                        "label": metric_name,
+                        "previous_value": prev.get("raw"),
+                        "current_value": "N/A",
+                        "change_pct": None,
+                        "change_type": "not_found",
+                        "match_confidence": 0.0,
+                        "context_snippet": None,
+                        "source_url": None,
+                        "anchor_used": False,
+                    })
+                message_bits.append("No snapshots available; all metrics marked not_found.")
+
+        # Ensure labels/aliases exist for Streamlit table
+        metric_changes = _ensure_metric_labels(metric_changes)
+
+        # Recompute stability score based on final metric_changes
+        total = max(1, len(metric_changes))
+        stability_score = (unchanged / total) * 100.0
+
+        sources_checked = len(source_results) if isinstance(source_results, list) else 0
+        sources_fetched = 0
+        numbers_extracted_total = 0
+
+        if isinstance(source_results, list):
+            for s in source_results:
+                if not isinstance(s, dict):
+                    continue
+                if str(s.get("status", "")).startswith("fetched"):
+                    sources_fetched += 1
+                try:
+                    numbers_extracted_total += int(s.get("numbers_found") or 0)
+                except Exception:
+                    pass
+
+        return {
+            "status": "success",
+            "message": " ".join([b for b in message_bits if b]) if message_bits else "Evolution completed.",
+            "sources_checked": int(sources_checked),
+            "sources_fetched": int(sources_fetched),
+            "numbers_extracted_total": int(numbers_extracted_total),
+            "stability_score": float(stability_score),
+            "summary": {
+                "total_metrics": int(len(metric_changes)),
+                "metrics_found": int(sum(1 for m in metric_changes if isinstance(m, dict) and m.get("change_type") != "not_found")),
+                "metrics_increased": int(sum(1 for m in metric_changes if isinstance(m, dict) and m.get("change_type") == "increased")),
+                "metrics_decreased": int(sum(1 for m in metric_changes if isinstance(m, dict) and m.get("change_type") == "decreased")),
+                "metrics_unchanged": int(sum(1 for m in metric_changes if isinstance(m, dict) and m.get("change_type") == "unchanged")),
+            },
+            "metric_changes": metric_changes,
+            "source_results": source_results if isinstance(source_results, list) else [],
+            "interpretation": (
+                "Stable evolution: compare previous vs current analysis outputs (canonical-first). "
+                "Snapshots are reused when fingerprints match; missing metrics are marked not_found (no brute-force scraping)."
+            ),
+            "generated_at": _now_iso(),
         }
 
-    # Anchors by metric name
-    metric_anchors = previous_data.get("metric_anchors") or prev_response.get("metric_anchors") or []
-    anchors_by_name = {}
-    if isinstance(metric_anchors, list):
-        for a in metric_anchors:
-            if isinstance(a, dict) and a.get("metric_name"):
-                anchors_by_name[str(a["metric_name"])] = a
+    except Exception as e:
+        # Absolute safety: ALWAYS return a dict
+        return {
+            "status": "failed",
+            "message": f"Evolution failed safely: {type(e).__name__}",
+            "sources_checked": 0,
+            "sources_fetched": 0,
+            "numbers_extracted_total": 0,
+            "stability_score": 0.0,
+            "summary": {
+                "total_metrics": 0,
+                "metrics_found": 0,
+                "metrics_increased": 0,
+                "metrics_decreased": 0,
+                "metrics_unchanged": 0,
+            },
+            "metric_changes": [],
+            "source_results": [],
+            "interpretation": "Failure-safe evolution: returned an empty dict payload to keep UI stable.",
+            "generated_at": _now_iso(),
+        }
 
-    # Cached snapshots from previous run
-    baseline_cache = _extract_baseline_cache(previous_data)
-    cached_snapshots = _build_source_snapshots_from_baseline_cache(baseline_cache)
-
-    # Build current analysis context using the analysis pipeline
-    query = _extract_query_from_previous(previous_data)
-    web_context = None
-    current_analysis = {}
-
-    message_bits = []
-    fw = globals().get("fetch_web_context")
-
-    if query and callable(fw):
-        try:
-            web_context = fw(query, num_sources=3)
-        except Exception as e:
-            web_context = None
-            message_bits.append(f"fetch_web_context failed: {type(e).__name__}")
-
-    current_snapshots = _build_source_snapshots_from_web_context(web_context) if isinstance(web_context, dict) else []
-
-    # ✅ Merge policy implements snapshot reuse when fingerprint unchanged
-    snapshots = _merge_snapshots_prefer_cached_when_unchanged(current_snapshots, cached_snapshots)
-
-    # Expose snapshots to UI as source_results
-    source_results = snapshots
-
-    # Try to produce current primary_response using the same pipeline
-    if query and isinstance(web_context, dict):
-        current_analysis = _safe_parse_current_analysis(query, web_context) or {}
-        if current_analysis:
-            message_bits.append("Current analysis generated via analysis pipeline.")
-        else:
-            message_bits.append("Current analysis unavailable; using snapshots fallback.")
-    else:
-        message_bits.append("Missing query or web_context; using snapshots fallback.")
-
-    cur_response = current_analysis.get("primary_response") if isinstance(current_analysis, dict) else None
-    cur_response = cur_response if isinstance(cur_response, dict) else {}
-
-    metric_changes = []
-    unchanged = increased = decreased = 0
-
-    # ---------- Primary stable diff path ----------
-    if cur_response:
-        metric_changes, unchanged, increased, decreased, _found = _diff_metrics_by_name(prev_response, cur_response)
-
-        # Supplement any not_found rows using snapshots (still no brute force)
-        missing = [m for m in metric_changes if m.get("change_type") == "not_found"]
-        if missing and snapshots:
-            for k in list(prev_numbers.keys()):
-                if not prev_numbers[k].get("keywords"):
-                    toks = re.findall(r"[a-z0-9]+", k.lower())
-                    stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
-                    prev_numbers[k]["keywords"] = [t for t in toks if len(t) > 3 and t not in stop][:24]
-
-            fb = _fallback_match_from_snapshots(prev_numbers, snapshots, anchors_by_name)
-            fb_by_name = {x.get("name"): x for x in fb if isinstance(x, dict) and x.get("name")}
-
-            merged = []
-            for row in metric_changes:
-                if row.get("change_type") == "not_found" and row.get("name") in fb_by_name:
-                    merged.append(fb_by_name[row["name"]])
-                else:
-                    merged.append(row)
-            metric_changes = merged
-            message_bits.append("Supplemented not_found metrics via snapshots.")
-
-    # ---------- Snapshot-only fallback ----------
-    else:
-        for k in list(prev_numbers.keys()):
-            toks = re.findall(r"[a-z0-9]+", k.lower())
-            stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
-            prev_numbers[k]["keywords"] = [t for t in toks if len(t) > 3 and t not in stop][:24]
-
-        metric_changes = _fallback_match_from_snapshots(prev_numbers, snapshots, anchors_by_name)
-
-        for m in metric_changes:
-            ct = m.get("change_type")
-            if ct == "unchanged":
-                unchanged += 1
-            elif ct == "increased":
-                increased += 1
-            elif ct == "decreased":
-                decreased += 1
-
-    total = max(1, len(metric_changes))
-    stability_score = (unchanged / total) * 100.0
-
-    sources_checked = len(source_results)
-    sources_fetched = sum(1 for s in source_results if isinstance(s, dict) and str(s.get("status","")).startswith("fetched"))
-
-    numbers_extracted_total = 0
-    for s in source_results:
-        if isinstance(s, dict):
-            try:
-                numbers_extracted_total += int(s.get("numbers_found") or 0)
-            except Exception:
-                pass
-
-    return {
-        "status": "success",
-        "message": " ".join(message_bits) if message_bits else "Evolution completed via analysis pipeline + snapshots.",
-        "sources_checked": int(sources_checked),
-        "sources_fetched": int(sources_fetched),
-        "numbers_extracted_total": int(numbers_extracted_total),
-        "stability_score": float(stability_score),
-        "summary": {
-            "total_metrics": int(len(metric_changes)),
-            "metrics_found": int(sum(1 for m in metric_changes if m.get("change_type") != "not_found")),
-            "metrics_increased": int(sum(1 for m in metric_changes if m.get("change_type") == "increased")),
-            "metrics_decreased": int(sum(1 for m in metric_changes if m.get("change_type") == "decreased")),
-            "metrics_unchanged": int(sum(1 for m in metric_changes if m.get("change_type") == "unchanged")),
-        },
-        "metric_changes": metric_changes,
-        "source_results": source_results,
-        "interpretation": (
-            "Stable evolution: canonical-first compare (primary_metrics_canonical). "
-            "If sources unavailable or unchanged, reuse cached analysis-aligned snapshots (no brute-force scraping)."
-        ),
-    }
 
 
 
