@@ -9085,66 +9085,50 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 
     return out[:30]
 
-def extract_numbers_with_context(text: str, source_url: str = "", max_results: int = 600) -> list:
+def extract_numbers_with_context(text, source_url: str = "", max_results: int = 350):
     """
-    Extract numeric candidates with short context snippets.
+    Extract numeric candidates with short context windows, aligned with analysis pipeline.
 
-    Key upgrades:
-    - If input looks like HTML, convert to visible text (strip script/style/noscript/svg/head).
-    - Remove obvious asset URL zones (srcset/resize/quality) before extraction.
-    - Filter junk contexts (JS/CSS/SVG/path/meta/srcset).
-    - Cap output volume (max_results).
+    Tightening changes (v7.29+):
+    - Drop standalone 4-digit years (e.g., "2024") when unit == "" and no currency token.
+      This prevents evolution from matching "years" as metric values.
+    - Keep existing junk filters and HTML visible-text cleaning behavior.
     """
     import re
     import hashlib
 
+    if not text or not str(text).strip():
+        return []
+
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
-    def _clean_html_to_visible_text(html: str) -> str:
-        # Best-effort: BeautifulSoup if available, else regex fallback.
-        try:
-            from bs4 import BeautifulSoup  # type: ignore
-            soup = BeautifulSoup(html or "", "html.parser")
-
-            # Drop common non-content zones
-            for tag in soup(["script", "style", "noscript", "svg", "head"]):
-                try:
-                    tag.decompose()
-                except Exception:
-                    try:
-                        tag.extract()
-                    except Exception:
-                        pass
-
-            visible = soup.get_text(" ", strip=True)
-            return visible
-        except Exception:
-            # Regex fallback: strip scripts/styles and tags
-            s = html or ""
-            s = re.sub(r"(?is)<script.*?>.*?</script>", " ", s)
-            s = re.sub(r"(?is)<style.*?>.*?</style>", " ", s)
-            s = re.sub(r"(?is)<noscript.*?>.*?</noscript>", " ", s)
-            s = re.sub(r"(?is)<svg.*?>.*?</svg>", " ", s)
-            s = re.sub(r"(?is)<head.*?>.*?</head>", " ", s)
-            s = re.sub(r"(?is)<[^>]+>", " ", s)
-            return s
-
     def _preclean(s: str) -> str:
-        s = s or ""
-
-        # Remove common asset URL parameter zones that cause fake % values
-        # e.g. "jpg?resize=770%2C513&quality=80"
-        s = re.sub(r"(?i)\bresize=\d+%2c\d+[^ \t\r\n\"']*", " ", s)
-        s = re.sub(r"(?i)\bquality=\d+[^ \t\r\n\"']*", " ", s)
-        s = re.sub(r"(?i)\bsrcset=[^>]+", " ", s)
-
-        # Remove inline SVG path command sequences that leak as text in some pages
-        s = re.sub(r"(?i)\bd=\"[a-z0-9\.\-,\s]+\"", " ", s)
-
-        # Collapse whitespace
+        s = (s or "").replace("\x00", " ")
         s = re.sub(r"\s+", " ", s).strip()
         return s
+
+    def _clean_html_to_visible_text(html: str) -> str:
+        # Prefer your global helper if available
+        try:
+            fn = globals().get("clean_html_to_visible_text")
+            if callable(fn):
+                return fn(html)
+        except Exception:
+            pass
+
+        # Local fallback: remove script/style + strip tags
+        try:
+            from bs4 import BeautifulSoup  # type: ignore
+            soup = BeautifulSoup(html, "html.parser")
+            for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "header", "footer", "nav"]):
+                tag.decompose()
+            txt = soup.get_text(separator=" ", strip=True)
+            return _preclean(txt)
+        except Exception:
+            s = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\\1>", " ", html)
+            s = re.sub(r"(?is)<[^>]+>", " ", s)
+            return _preclean(s)
 
     # If bytes leaked in, decode best-effort
     if isinstance(text, (bytes, bytearray)):
@@ -9202,12 +9186,30 @@ def extract_numbers_with_context(text: str, source_url: str = "", max_results: i
         except Exception:
             continue
 
-        # Drop obvious “layout/asset junk” % values:
-        # percentages in remaining contexts can still be from resize blocks, etc.
+        # Context window
         start = max(0, m.start() - 110)
         end = min(len(raw), m.end() + 110)
         ctx = raw[start:end].strip()
 
+        # ---------------------------------------------------------
+        # TIGHTENING: Drop standalone 4-digit year-only candidates.
+        # Conditions:
+        #   - no unit (""), no currency token, raw token is exactly 4 digits
+        #   - value in a sane "year" range
+        # ---------------------------------------------------------
+        # NOTE: This intentionally still allows:
+        #   - "$2024" (currency present)
+        #   - "2024%" or "2024B" (unit present)
+        # ---------------------------------------------------------
+        if unit == "" and not cur and re.fullmatch(r"\d{4}", num_s):
+            try:
+                y = int(num_s)
+                if 1900 <= y <= 2100:
+                    continue
+            except Exception:
+                pass
+
+        # Drop obvious “layout/asset junk” % values:
         if "resize=" in ctx.lower() or "srcset" in ctx.lower() or "/wp-content/" in ctx.lower():
             continue
 
@@ -9249,12 +9251,12 @@ def extract_numbers_with_context_pdf(text):
     """
     PDF-specialized extractor wrapper.
 
-    Strategy:
-      - Run normal extraction
-      - Filter boilerplate (ISSN/ISBN/doi/front matter)
-      - Prefer contexts that look economic/metric/table-like
-      - If filtering removes too much, fall back safely
+    Tightening changes (v7.29+):
+    - Inherit the year-only rejection from extract_numbers_with_context().
+    - Keep boilerplate filters; prefer metric/table-like contexts.
     """
+    import re
+
     if not text:
         return []
 
@@ -9272,31 +9274,32 @@ def extract_numbers_with_context_pdf(text):
 
     def _good_pdf_context(ctx):
         c = (ctx or "").lower()
+        # Lightweight heuristic: "table-ish" or "metric-ish"
         good = [
-            "gdp", "growth", "forecast", "projection", "inflation", "unemployment",
-            "exports", "imports", "debt", "deficit", "budget", "interest rate",
-            "table", "figure", "chart", "%", "billion", "million", "trillion"
+            "market", "revenue", "sales", "capacity", "generation", "growth",
+            "cagr", "forecast", "projection", "increase", "decrease",
+            "percent", "%", "billion", "million", "trillion", "usd", "eur", "gbp", "sgd"
         ]
         return any(g in c for g in good)
 
-    cleaned = []
+    filtered = []
     for n in base:
-        ctx = n.get("context", "") or ""
+        if not isinstance(n, dict):
+            continue
+        ctx = n.get("context") or ""
         if _bad_pdf_context(ctx):
             continue
+        filtered.append(n)
 
-        raw = (n.get("raw") or "").lower()
-        u = ""
-        try:
-            u = normalize_unit(n.get("unit", ""))
-        except Exception:
-            u = (n.get("unit") or "")
+    # Prefer contexts that look "metric-like"
+    preferred = [n for n in filtered if _good_pdf_context(n.get("context") or "")]
 
-        # Keep if data-ish context OR has strong marker
-        if _good_pdf_context(ctx) or u == "%" or any(sym in raw for sym in ["€", "eur", "$", "s$"]):
-            cleaned.append(n)
-
-    return cleaned if len(cleaned) >= max(8, len(base) // 4) else base
+    # If we filtered too aggressively, fall back safely
+    if preferred:
+        return preferred
+    if filtered:
+        return filtered
+    return base
 
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
