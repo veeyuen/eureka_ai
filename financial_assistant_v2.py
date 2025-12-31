@@ -46,6 +46,7 @@ import numpy as np
 import difflib
 import gspread
 import google.generativeai as genai
+from urllib.parse import urlparse
 from pypdf import PdfReader
 from pathlib import Path
 from google.oauth2.service_account import Credentials
@@ -6506,66 +6507,87 @@ def fetch_url_content(url: str) -> Optional[str]:
 
     return None
 
+def _clean_html_to_text(html: str) -> str:
+    """
+    Aggressively remove script/style/svg and collapse to visible-ish text.
+    This is intentionally simple (no BeautifulSoup dependency) but very effective
+    against CSS/JS, SVG path noise, and image URL querystrings.
+    """
+    if not html:
+        return ""
+
+    s = html
+
+    # Remove script/style/noscript/svg blocks (major source of junk numbers)
+    s = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", s)
+    s = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", s)
+    s = re.sub(r"(?is)<noscript[^>]*>.*?</noscript>", " ", s)
+    s = re.sub(r"(?is)<svg[^>]*>.*?</svg>", " ", s)
+
+    # Remove common high-noise attributes with lots of numbers
+    s = re.sub(r'(?is)\s(srcset|data-srcset|sizes|style|on\w+)\s*=\s*"[^"]*"', " ", s)
+    s = re.sub(r"(?is)\s(srcset|data-srcset|sizes|style|on\w+)\s*=\s*'[^']*'", " ", s)
+
+    # Drop all tags -> spaces
+    s = re.sub(r"(?is)<[^>]+>", " ", s)
+
+    # Remove URL-ish fragments that carry resize=770%2C513 etc
+    s = re.sub(r"(?i)\bresize=\d+%2C\d+\b", " ", s)
+    s = re.sub(r"(?i)\bquality=\d+\b", " ", s)
+    s = re.sub(r"(?i)\b\d{2,4}w\b", " ", s)  # srcset widths like 375w, 570w
+
+    # Collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
-def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional[Union[str, bytes]], str]:
+def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional[object], str]:
     """
     Fetch URL content and return (content, status_detail).
-    Never raises — always returns a status string.
-
-    status_detail values:
-      - "success"        (HTML/text)
-      - "success_pdf"    (PDF bytes)
-      - "http_<code>"
-      - "exception:<TypeName>"
-      - "empty"
+    - For HTML/text: returns CLEANED TEXT (str), status "success"
+    - For PDF: returns bytes (resp.content), status "success_pdf"
+    Never raises.
     """
     try:
-        u = (url or "").strip()
+        u = _normalize_url(url)
         if not u:
             return None, "empty"
-
-        if not re.match(r"^https?://", u, flags=re.I):
-            u = "https://" + u
 
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.9,*/*;q=0.8",
+            )
         }
 
-        import requests
-        resp = requests.get(u, headers=headers, timeout=timeout)
+        resp = requests.get(u, headers=headers, timeout=timeout, allow_redirects=True)
         if resp.status_code >= 400:
             return None, f"http_{resp.status_code}"
 
         ctype = (resp.headers.get("Content-Type") or "").lower()
 
-        # PDF detection (content-type OR URL suffix OR PDF magic bytes)
-        content_bytes = resp.content or b""
-        is_pdf = (
-            ("application/pdf" in ctype)
-            or u.lower().split("?")[0].endswith(".pdf")
-            or content_bytes[:4] == b"%PDF"
-        )
-
-        if is_pdf:
-            if not content_bytes.strip():
+        # PDF handling
+        if "application/pdf" in ctype or u.lower().endswith(".pdf"):
+            data = resp.content
+            if not data:
                 return None, "empty"
-            return content_bytes, "success_pdf"
+            return data, "success_pdf"
 
-        # default: treat as text/html
+        # HTML/text handling
         text = resp.text or ""
         if not text.strip():
             return None, "empty"
 
-        return text, "success"
+        cleaned = _clean_html_to_text(text)
+        if not cleaned:
+            return None, "empty"
+
+        return cleaned, "success"
 
     except Exception as e:
         return None, f"exception:{type(e).__name__}"
+
 
 
 # ------------------------------
@@ -7020,13 +7042,58 @@ def compute_source_anchored_diff(previous_data):
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
-    def _normalize_url(url: str) -> str:
-        u = (url or "").strip()
-        if not u:
-            return ""
-        if u.startswith("http://") or u.startswith("https://"):
-            return u
-        return "https://" + u.lstrip("/")
+    from urllib.parse import urlparse
+import re
+
+def _normalize_url(u: str):
+    """
+    Strict URL normalizer:
+    - Accepts:
+        * https://example.com/...
+        * http://example.com/...
+        * bare domains like example.com or sub.example.co.uk
+    - Rejects:
+        * strings with spaces (e.g. "Ghana Statistical Service")
+        * obvious non-web schemes
+        * strings without a dot-domain
+    Returns normalized https://... URL or None.
+    """
+    if not u or not isinstance(u, str):
+        return None
+
+    s = u.strip()
+    if not s:
+        return None
+
+    # Reject obvious non-urls quickly
+    if any(s.lower().startswith(p) for p in ("mailto:", "javascript:", "data:", "file:", "ftp:")):
+        return None
+
+    # If it contains whitespace, it is almost certainly a "source name", not a URL
+    if re.search(r"\s", s):
+        return None
+
+    # Remove wrapping punctuation that often appears in lists
+    s = s.strip("()[]{}<>.,;\"'")
+
+    # Already has scheme
+    if re.match(r"^https?://", s, flags=re.I):
+        try:
+            p = urlparse(s)
+            if not p.netloc or "." not in p.netloc:
+                return None
+            return s
+        except Exception:
+            return None
+
+    # Bare domain (must contain a dot, and not end with a dot)
+    if "." in s and not s.endswith("."):
+        # Basic domain-ish validation
+        if re.match(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(:\d+)?(/.*)?$", s):
+            return "https://" + s
+
+    return None
+
 
     def _looks_like_currency(text: str) -> bool:
         t = text or ""
