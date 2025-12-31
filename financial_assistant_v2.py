@@ -7322,18 +7322,15 @@ def _safe_parse_current_analysis(query: str, web_context: dict) -> dict:
 
 def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
     """
-    Canonical-first diff with HARD STOP on canonical mismatches, and guaranteed display names.
+    Canonical-first diff with:
+      - HARD STOP when prev canonical_key is missing in current (no name fallback)
+      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
+          prev_response['metric_schema_frozen'][canonical_key] (preferred)
+          else prev_response['primary_metrics_canonical'][canonical_key]
+      - Backward compatible: still returns 'name' (non-empty) and existing fields.
 
-    Rules:
-      1) If BOTH responses have primary_metrics_canonical:
-         - Compare ONLY metrics with the SAME canonical_key
-         - If a prev canonical_key is missing in current -> not_found (NO name fallback)
-      2) If either side lacks primary_metrics_canonical:
-         - Fall back to name-based matching (legacy behavior)
-
-    Output guarantees:
-      - Every row has a non-empty 'name'
-      - Rows include 'canonical_key' when canonical mode is used
+    Returns:
+      metric_changes, unchanged, increased, decreased, found
     """
     import re
 
@@ -7356,7 +7353,6 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
             return None
 
     def prettify_ckey(ckey: str) -> str:
-        # e.g. "market_size_2025__currency" -> "Market Size 2025 (currency)"
         ckey = str(ckey or "").strip()
         if not ckey:
             return "Unknown Metric"
@@ -7364,32 +7360,45 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
         left = parts[0].replace("_", " ").strip()
         right = parts[1].replace("_", " ").strip() if len(parts) > 1 else ""
         left = " ".join(w.capitalize() for w in left.split())
-        if right:
-            return f"{left} ({right})"
-        return left
+        return f"{left} ({right})" if right else left
 
-    def get_display_name(prev_can_obj: dict, cur_can_obj: dict, ckey: str, prev_response_obj: dict) -> str:
+    def get_metric_definition(prev_resp: dict, ckey: str) -> dict:
         """
-        Always returns a non-empty display name using the best available source:
-          1) prev canonical name/original_name
-          2) current canonical name/original_name
-          3) metric_schema_frozen[ckey].name
-          4) prettified canonical key
+        Pull authoritative definition from the ORIGINAL analysis run (prev_response).
         """
-        # 1) prev canonical
-        for k in ("name", "original_name"):
-            v = prev_can_obj.get(k) if isinstance(prev_can_obj, dict) else None
-            if isinstance(v, str) and v.strip():
-                return v.strip()
+        prev_resp = prev_resp if isinstance(prev_resp, dict) else {}
 
-        # 2) cur canonical
-        for k in ("name", "original_name"):
-            v = cur_can_obj.get(k) if isinstance(cur_can_obj, dict) else None
-            if isinstance(v, str) and v.strip():
-                return v.strip()
+        schema = prev_resp.get("metric_schema_frozen")
+        if isinstance(schema, dict):
+            d = schema.get(ckey)
+            if isinstance(d, dict) and d:
+                # normalize the keys we care about (but keep extras too)
+                out = dict(d)
+                out.setdefault("canonical_key", ckey)
+                return out
 
-        # 3) schema frozen
-        schema = prev_response_obj.get("metric_schema_frozen")
+        prev_can = prev_resp.get("primary_metrics_canonical")
+        if isinstance(prev_can, dict):
+            d = prev_can.get(ckey)
+            if isinstance(d, dict) and d:
+                out = {
+                    "canonical_key": ckey,
+                    "canonical_id": d.get("canonical_id"),
+                    "dimension": d.get("dimension"),
+                    "name": d.get("name") or d.get("original_name"),
+                    "unit": d.get("unit"),
+                    "geo_scope": d.get("geo_scope"),
+                    "geo_name": d.get("geo_name"),
+                    "keywords": d.get("keywords"),
+                }
+                # drop empty keys
+                return {k: v for k, v in out.items() if v not in (None, "", [], {})}
+
+        return {"canonical_key": ckey, "name": prettify_ckey(ckey)}
+
+    def get_display_name(prev_resp: dict, prev_can_obj: dict, cur_can_obj: dict, ckey: str) -> str:
+        # 1) schema frozen name
+        schema = prev_resp.get("metric_schema_frozen")
         if isinstance(schema, dict):
             sm = schema.get(ckey)
             if isinstance(sm, dict):
@@ -7397,7 +7406,20 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 if isinstance(v, str) and v.strip():
                     return v.strip()
 
-        # 4) fallback
+        # 2) prev canonical name/original_name
+        if isinstance(prev_can_obj, dict):
+            for k in ("name", "original_name"):
+                v = prev_can_obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
+        # 3) cur canonical name/original_name
+        if isinstance(cur_can_obj, dict):
+            for k in ("name", "original_name"):
+                v = cur_can_obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
         return prettify_ckey(ckey)
 
     prev_response = prev_response if isinstance(prev_response, dict) else {}
@@ -7414,20 +7436,18 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
         unchanged = increased = decreased = found = 0
 
         for ckey, pm in prev_can.items():
-            if not isinstance(pm, dict):
-                pm = {}
-
+            pm = pm if isinstance(pm, dict) else {}
             cm = cur_can.get(ckey)
-            if not isinstance(cm, dict):
-                cm = {}
+            cm = cm if isinstance(cm, dict) else {}
 
-            display_name = get_display_name(pm, cm, ckey, prev_response)
+            display_name = get_display_name(prev_response, pm, cm, ckey)
+            definition = get_metric_definition(prev_response, ckey)
 
             prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
             prev_unit = pm.get("unit") or ""
             prev_val = parse_num(pm.get("value"), prev_unit)
 
-            # ✅ HARD STOP: if canonical key missing in current, DO NOT fall back to name matching
+            # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
             if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
                 metric_changes.append({
                     "name": display_name,
@@ -7440,6 +7460,7 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     "source_url": None,
                     "anchor_used": False,
                     "canonical_key": ckey,
+                    "metric_definition": definition,   # ✅ original definition attached
                 })
                 continue
 
@@ -7477,12 +7498,13 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 "source_url": None,
                 "anchor_used": False,
                 "canonical_key": ckey,
+                "metric_definition": definition,     # ✅ original definition attached
             })
 
         return metric_changes, unchanged, increased, decreased, found
 
     # =========================
-    # Path B: name-based fallback
+    # Path B: legacy name fallback
     # =========================
     prev_metrics = prev_response.get("primary_metrics") or {}
     cur_metrics = cur_response.get("primary_metrics") or {}
@@ -7561,6 +7583,7 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
         })
 
     return metric_changes, unchanged, increased, decreased, found
+
 
 def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_by_name: dict):
     """
