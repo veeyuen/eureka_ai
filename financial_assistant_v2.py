@@ -6748,9 +6748,14 @@ def fingerprint_text(text: str) -> str:
 def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict:
     """
     Attach analysis-aligned source snapshots into the analysis output.
-    Uses web_context['scraped_meta'] (already contains extracted_numbers + extract_hash/fingerprint).
 
-    Writes:
+    Preferred:
+      - web_context['scraped_meta'][url]['extracted_numbers'] (already aligned to analysis pipeline)
+
+    Fallback:
+      - web_context['scraped_content'][url] -> extract_numbers_with_context(_pdf) to build extracted_numbers
+
+    Writes (backward compatible):
       output['baseline_sources_cache']
       output['results']['source_results']
       output['results']['baseline_sources_cache']
@@ -6766,57 +6771,108 @@ def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict
     if not isinstance(output, dict) or not isinstance(web_context, dict):
         return output
 
-    scraped_meta = web_context.get("scraped_meta") or {}
-    if not isinstance(scraped_meta, dict) or not scraped_meta:
-        return output
-
     snaps = []
-    for url, meta in scraped_meta.items():
-        if not isinstance(meta, dict):
-            continue
 
-        extracted = meta.get("extracted_numbers") or []
-        if not isinstance(extracted, list):
-            extracted = []
+    scraped_meta = web_context.get("scraped_meta") or {}
+    scraped_content = web_context.get("scraped_content") or {}
 
-        # normalize extracted numbers to what evolution expects
-        compact = []
-        for n in extracted:
-            if not isinstance(n, dict):
+    # -------------------------
+    # Preferred: scraped_meta
+    # -------------------------
+    if isinstance(scraped_meta, dict) and scraped_meta:
+        for url, meta in scraped_meta.items():
+            if not url or not isinstance(meta, dict):
                 continue
-            compact.append({
-                "value": n.get("value"),
-                "unit": n.get("unit"),
-                "raw": n.get("raw"),
-                "source_url": n.get("source_url") or url,
-                "context_snippet": (n.get("context") or "")[:200] if isinstance(n.get("context"), str) else "",
+
+            extracted = meta.get("extracted_numbers") or []
+            if not isinstance(extracted, list):
+                extracted = []
+
+            compact = []
+            for n in extracted:
+                if not isinstance(n, dict):
+                    continue
+                compact.append({
+                    "value": n.get("value"),
+                    "unit": n.get("unit"),
+                    "raw": n.get("raw"),
+                    "source_url": n.get("source_url") or url,
+                    "context_snippet": (n.get("context") or n.get("context_snippet") or "")[:200]
+                    if isinstance((n.get("context") or n.get("context_snippet")), str) else "",
+                })
+
+            fp = meta.get("fingerprint") or meta.get("extract_hash")
+            if fp and not isinstance(fp, str):
+                fp = str(fp)
+
+            snaps.append({
+                "url": str(url).strip(),
+                "status": "fetched_extracted" if compact else ("fetched" if str(meta.get("status_detail","")).startswith("success") else "failed"),
+                "status_detail": meta.get("status_detail") or "",
+                "numbers_found": int(meta.get("numbers_found") or len(compact)),
+                "fingerprint": fp,
+                "fetched_at": meta.get("fetched_at") or _now_iso(),
+                "extracted_numbers": compact,
             })
 
-        fp = meta.get("fingerprint") or meta.get("extract_hash")
-        if fp and not isinstance(fp, str):
-            fp = str(fp)
+    # -------------------------
+    # Fallback: scraped_content
+    # -------------------------
+    if not snaps and isinstance(scraped_content, dict) and scraped_content:
+        for url, content in scraped_content.items():
+            if not url or not content:
+                continue
 
-        snaps.append({
-            "url": url,
-            "status": "fetched_extracted" if compact else ("fetched" if str(meta.get("status_detail","")).startswith("success") else "failed"),
-            "status_detail": meta.get("status_detail") or "",
-            "numbers_found": int(meta.get("numbers_found") or len(compact)),
-            "fingerprint": fp,
-            "fetched_at": meta.get("fetched_at") or _now_iso(),
-            "extracted_numbers": compact,
-        })
+            extracted = []
+            try:
+                # Prefer pdf extractor if it exists and content came from PDF path
+                if "extract_numbers_with_context_pdf" in globals() and callable(globals()["extract_numbers_with_context_pdf"]):
+                    extracted = extract_numbers_with_context_pdf(content)
+                else:
+                    extracted = extract_numbers_with_context(content) if callable(globals().get("extract_numbers_with_context")) else []
+            except Exception:
+                extracted = []
+
+            compact = []
+            for n in (extracted or []):
+                if not isinstance(n, dict):
+                    continue
+                compact.append({
+                    "value": n.get("value"),
+                    "unit": n.get("unit"),
+                    "raw": n.get("raw"),
+                    "source_url": url,
+                    "context_snippet": (n.get("context") or "")[:200] if isinstance(n.get("context"), str) else "",
+                })
+
+            fp = ""
+            try:
+                fp = fingerprint_text(content) if callable(globals().get("fingerprint_text")) else ""
+            except Exception:
+                fp = ""
+
+            snaps.append({
+                "url": str(url).strip(),
+                "status": "fetched_extracted" if compact else "fetched",
+                "status_detail": "fallback_scraped_content",
+                "numbers_found": int(len(compact)),
+                "fingerprint": fp,
+                "fetched_at": _now_iso(),
+                "extracted_numbers": compact,
+            })
 
     if not snaps:
         return output
 
-    # Backward-compatible place evolution already looks for
+    # Backward-compatible store
     output["baseline_sources_cache"] = snaps
 
-    # Also store under results.* for newer variants
+    # Also store under results.*
     results = output.get("results")
     if not isinstance(results, dict):
         results = {}
         output["results"] = results
+
     results["source_results"] = snaps
     results["baseline_sources_cache"] = snaps
 
@@ -7264,11 +7320,19 @@ def _safe_parse_current_analysis(query: str, web_context: dict) -> dict:
         return {}
 
 
-def _diff_metrics_by_name(prev_metrics: dict, cur_metrics: dict):
+def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
     """
-    Stable diff when both old and new are produced by the same pipeline.
+    Canonical-first diff:
+      1) If both responses have primary_metrics_canonical -> match by canonical_key
+      2) Else fall back to primary_metrics name normalization
+
+    Returns:
+      metric_changes, unchanged, increased, decreased, found
     """
     import re
+
+    ABS_EPS = 1e-9
+    REL_EPS = 0.0005
 
     def norm_name(s: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
@@ -7285,24 +7349,101 @@ def _diff_metrics_by_name(prev_metrics: dict, cur_metrics: dict):
         except Exception:
             return None
 
+    prev_response = prev_response if isinstance(prev_response, dict) else {}
+    cur_response = cur_response if isinstance(cur_response, dict) else {}
+
+    prev_can = prev_response.get("primary_metrics_canonical")
+    cur_can = cur_response.get("primary_metrics_canonical")
+
+    # ---------- Path A: canonical ----------
+    if isinstance(prev_can, dict) and isinstance(cur_can, dict) and prev_can and cur_can:
+        metric_changes = []
+        unchanged = increased = decreased = found = 0
+
+        for ckey, pm in prev_can.items():
+            if not isinstance(pm, dict):
+                continue
+
+            display_name = pm.get("name") or pm.get("original_name") or ckey
+            prev_raw = pm.get("raw") or pm.get("value")
+            prev_unit = pm.get("unit") or ""
+            prev_val = parse_num(pm.get("value"), prev_unit)
+
+            cm = cur_can.get(ckey)
+            if not isinstance(cm, dict):
+                metric_changes.append({
+                    "name": display_name,
+                    "previous_value": prev_raw,
+                    "current_value": "N/A",
+                    "change_pct": None,
+                    "change_type": "not_found",
+                    "match_confidence": 0.0,
+                    "context_snippet": None,
+                    "source_url": None,
+                    "anchor_used": False,
+                    "canonical_key": ckey,
+                })
+                continue
+
+            found += 1
+            cur_raw = cm.get("raw") or cm.get("value")
+            cur_unit = cm.get("unit") or ""
+            cur_val = parse_num(cm.get("value"), cur_unit)
+
+            change_type = "unknown"
+            change_pct = None
+
+            if prev_val is not None and cur_val is not None:
+                if abs(prev_val - cur_val) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
+                    change_type = "unchanged"
+                    change_pct = 0.0
+                    unchanged += 1
+                elif cur_val > prev_val:
+                    change_type = "increased"
+                    change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+                    increased += 1
+                else:
+                    change_type = "decreased"
+                    change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+                    decreased += 1
+
+            metric_changes.append({
+                "name": display_name,
+                "previous_value": prev_raw,
+                "current_value": cur_raw,
+                "change_pct": change_pct,
+                "change_type": change_type,
+                "match_confidence": 92.0,  # higher confidence: canonical match
+                "context_snippet": None,
+                "source_url": None,
+                "anchor_used": False,
+                "canonical_key": ckey,
+            })
+
+        return metric_changes, unchanged, increased, decreased, found
+
+    # ---------- Path B: name fallback ----------
+    prev_metrics = prev_response.get("primary_metrics") or {}
+    cur_metrics = cur_response.get("primary_metrics") or {}
+    if not isinstance(prev_metrics, dict):
+        prev_metrics = {}
+    if not isinstance(cur_metrics, dict):
+        cur_metrics = {}
+
     prev_index = {}
-    for k, m in (prev_metrics or {}).items():
+    for k, m in prev_metrics.items():
         if isinstance(m, dict):
             name = m.get("name") or k
             prev_index[norm_name(name)] = (name, m)
 
     cur_index = {}
-    for k, m in (cur_metrics or {}).items():
+    for k, m in cur_metrics.items():
         if isinstance(m, dict):
             name = m.get("name") or k
             cur_index[norm_name(name)] = (name, m)
 
     metric_changes = []
-    unchanged = increased = decreased = 0
-    found = 0
-
-    ABS_EPS = 1e-9
-    REL_EPS = 0.0005
+    unchanged = increased = decreased = found = 0
 
     for nk, (display_name, pm) in prev_index.items():
         prev_raw = pm.get("raw") or pm.get("value")
@@ -7352,7 +7493,7 @@ def _diff_metrics_by_name(prev_metrics: dict, cur_metrics: dict):
             "current_value": cur_raw,
             "change_pct": change_pct,
             "change_type": change_type,
-            "match_confidence": 85.0,
+            "match_confidence": 80.0,
             "context_snippet": None,
             "source_url": None,
             "anchor_used": False,
@@ -7503,8 +7644,9 @@ def compute_source_anchored_diff(previous_data):
     """
     Evolution via analysis pipeline (stable) + snapshot fallback (no brute-force scraping).
 
-    ✅ Point A: If snapshot exists and fingerprint unchanged -> reuse snapshot even if live fetch works.
-    ✅ Point B: If no snapshot -> mark metric as not_found (never guess from raw HTML).
+    ✅ If snapshot exists and fingerprint unchanged -> reuse snapshot even if live fetch works.
+    ✅ If no snapshot -> mark metric as not_found (never guess from raw HTML).
+    ✅ Canonical-first metric matching using primary_metrics_canonical when available.
 
     Returns backward-compatible keys used by Streamlit evolution UI.
     """
@@ -7519,11 +7661,14 @@ def compute_source_anchored_diff(previous_data):
 
     previous_data = previous_data or {}
     prev_response = previous_data.get("primary_response", {}) or {}
+    if not isinstance(prev_response, dict):
+        prev_response = {}
+
+    # Build prev_numbers for snapshot fallback matching (still needed)
     prev_metrics = prev_response.get("primary_metrics", {}) or {}
     if not isinstance(prev_metrics, dict):
         prev_metrics = {}
 
-    # Build prev_numbers for snapshot fallback matching
     prev_numbers = {}
     for _, m in prev_metrics.items():
         if not isinstance(m, dict):
@@ -7561,7 +7706,7 @@ def compute_source_anchored_diff(previous_data):
     baseline_cache = _extract_baseline_cache(previous_data)
     cached_snapshots = _build_source_snapshots_from_baseline_cache(baseline_cache)
 
-    # Build current analysis context using the v7.27 analysis pipeline
+    # Build current analysis context using the analysis pipeline
     query = _extract_query_from_previous(previous_data)
     web_context = None
     current_analysis = {}
@@ -7578,13 +7723,13 @@ def compute_source_anchored_diff(previous_data):
 
     current_snapshots = _build_source_snapshots_from_web_context(web_context) if isinstance(web_context, dict) else []
 
-    # ✅ Merge policy implements Point A
+    # ✅ Merge policy implements snapshot reuse when fingerprint unchanged
     snapshots = _merge_snapshots_prefer_cached_when_unchanged(current_snapshots, cached_snapshots)
 
     # Expose snapshots to UI as source_results
     source_results = snapshots
 
-    # Try to produce current primary_metrics
+    # Try to produce current primary_response using the same pipeline
     if query and isinstance(web_context, dict):
         current_analysis = _safe_parse_current_analysis(query, web_context) or {}
         if current_analysis:
@@ -7596,17 +7741,15 @@ def compute_source_anchored_diff(previous_data):
 
     cur_response = current_analysis.get("primary_response") if isinstance(current_analysis, dict) else None
     cur_response = cur_response if isinstance(cur_response, dict) else {}
-    cur_metrics = cur_response.get("primary_metrics") if isinstance(cur_response, dict) else None
-    cur_metrics = cur_metrics if isinstance(cur_metrics, dict) else {}
 
     metric_changes = []
     unchanged = increased = decreased = 0
 
-    # Primary stable diff path if we have current metrics
-    if cur_metrics:
-        metric_changes, unchanged, increased, decreased, _found = _diff_metrics_by_name(prev_metrics, cur_metrics)
+    # ---------- Primary stable diff path ----------
+    if cur_response:
+        metric_changes, unchanged, increased, decreased, _found = _diff_metrics_by_name(prev_response, cur_response)
 
-        # Optionally fill not_found via snapshots (still no brute force)
+        # Supplement any not_found rows using snapshots (still no brute force)
         missing = [m for m in metric_changes if m.get("change_type") == "not_found"]
         if missing and snapshots:
             for k in list(prev_numbers.keys()):
@@ -7626,8 +7769,9 @@ def compute_source_anchored_diff(previous_data):
                     merged.append(row)
             metric_changes = merged
             message_bits.append("Supplemented not_found metrics via snapshots.")
+
+    # ---------- Snapshot-only fallback ----------
     else:
-        # Snapshot-only fallback (✅ Point B: no snapshot -> not_found)
         for k in list(prev_numbers.keys()):
             toks = re.findall(r"[a-z0-9]+", k.lower())
             stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
@@ -7668,17 +7812,18 @@ def compute_source_anchored_diff(previous_data):
         "summary": {
             "total_metrics": int(len(metric_changes)),
             "metrics_found": int(sum(1 for m in metric_changes if m.get("change_type") != "not_found")),
-            "metrics_increased": int(increased),
-            "metrics_decreased": int(decreased),
-            "metrics_unchanged": int(unchanged),
+            "metrics_increased": int(sum(1 for m in metric_changes if m.get("change_type") == "increased")),
+            "metrics_decreased": int(sum(1 for m in metric_changes if m.get("change_type") == "decreased")),
+            "metrics_unchanged": int(sum(1 for m in metric_changes if m.get("change_type") == "unchanged")),
         },
         "metric_changes": metric_changes,
         "source_results": source_results,
         "interpretation": (
-            "Stable evolution: compare previous vs current analysis outputs. "
+            "Stable evolution: canonical-first compare (primary_metrics_canonical). "
             "If sources unavailable or unchanged, reuse cached analysis-aligned snapshots (no brute-force scraping)."
         ),
     }
+
 
 
 def extract_context_keywords(metric_name: str) -> List[str]:
