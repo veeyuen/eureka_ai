@@ -7176,9 +7176,15 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
     """
     Convert fetch_web_context() output (scraped_meta) into evolution snapshots.
     Uses ONLY analysis-pipeline aligned extracted_numbers cached by scraped_meta.
+
+    Tightening:
+      - Detect domain-only/homepage URLs (junk magnets) and label them.
+      - Attach quality_score + skip_reason so matcher can down-weight.
+      - Keep schema backward compatible; only add new fields.
     """
     import hashlib
     from datetime import datetime
+    from urllib.parse import urlparse
 
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
@@ -7188,6 +7194,19 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
             return datetime.utcnow().isoformat() + "+00:00"
         except Exception:
             return datetime.now().isoformat()
+
+    def _is_homepage_url(u: str) -> bool:
+        try:
+            p = urlparse((u or "").strip())
+            path = (p.path or "").strip()
+            if path in ("", "/"):
+                return True
+            low = path.lower().rstrip("/")
+            if low in ("/index", "/index.html", "/index.htm", "/home", "/default", "/default.aspx"):
+                return True
+            return False
+        except Exception:
+            return False
 
     if not isinstance(web_context, dict):
         return []
@@ -7199,6 +7218,10 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
     out = []
     for url, meta in scraped_meta.items():
         if not isinstance(meta, dict):
+            continue
+
+        url_s = str(url or "").strip()
+        if not url_s:
             continue
 
         extracted = meta.get("extracted_numbers") or []
@@ -7213,7 +7236,7 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
                 "value": n.get("value"),
                 "unit": n.get("unit"),
                 "raw": n.get("raw"),
-                "source_url": n.get("source_url") or url,
+                "source_url": n.get("source_url") or url_s,
                 "context": (n.get("context") or "")[:220] if isinstance(n.get("context"), str) else "",
             })
 
@@ -7224,10 +7247,30 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
         if not fp and isinstance(meta.get("clean_text"), str):
             fp = _sha1(meta["clean_text"][:200000])
 
+        status_detail = meta.get("status_detail") or meta.get("status") or ""
+        fetched_ok = str(status_detail).startswith("success")
+
+        # --- homepage labeling (tightening #3) ---
+        is_homepage = _is_homepage_url(url_s)
+        quality_score = 1.0
+        skip_reason = ""
+        if is_homepage:
+            quality_score = 0.15
+            skip_reason = "homepage_url_low_signal"
+
+        host = ""
+        path = ""
+        try:
+            p = urlparse(url_s)
+            host = p.netloc or ""
+            path = p.path or ""
+        except Exception:
+            pass
+
         out.append({
-            "url": url,
-            "status": "fetched_extracted" if cleaned else ("fetched" if str(meta.get("status_detail","")).startswith("success") else "failed"),
-            "status_detail": meta.get("status_detail") or meta.get("status") or "",
+            "url": url_s,
+            "status": "fetched_extracted" if cleaned else ("fetched" if fetched_ok else "failed"),
+            "status_detail": status_detail,
             "numbers_found": int(meta.get("numbers_found") or len(cleaned)),
             "fingerprint": fp,
             "fetched_at": meta.get("fetched_at") or _now(),
@@ -7235,6 +7278,13 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
             "source": meta.get("source"),
             "title": meta.get("title"),
             "date": meta.get("date"),
+
+            # NEW debug fields (safe additions)
+            "is_homepage": bool(is_homepage),
+            "quality_score": float(quality_score),
+            "skip_reason": skip_reason,
+            "host": host,
+            "path": path,
         })
 
     return out
@@ -7243,7 +7293,26 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
 def _build_source_snapshots_from_baseline_cache(baseline_cache: list) -> list:
     """
     Normalize prior cached source_results (from previous run) into a consistent schema.
+
+    Tightening:
+      - Detect domain-only/homepage URLs and label them (same as web_context snapshots)
+      - Keep backward compatible fields; only add new fields.
     """
+    from urllib.parse import urlparse
+
+    def _is_homepage_url(u: str) -> bool:
+        try:
+            p = urlparse((u or "").strip())
+            path = (p.path or "").strip()
+            if path in ("", "/"):
+                return True
+            low = path.lower().rstrip("/")
+            if low in ("/index", "/index.html", "/index.htm", "/home", "/default", "/default.aspx"):
+                return True
+            return False
+        except Exception:
+            return False
+
     out = []
     if not isinstance(baseline_cache, list):
         return out
@@ -7251,8 +7320,12 @@ def _build_source_snapshots_from_baseline_cache(baseline_cache: list) -> list:
     for sr in baseline_cache:
         if not isinstance(sr, dict):
             continue
+
         url = sr.get("url") or sr.get("source_url")
         if not url:
+            continue
+        url_s = str(url).strip()
+        if not url_s:
             continue
 
         extracted = sr.get("extracted_numbers") or []
@@ -7267,7 +7340,7 @@ def _build_source_snapshots_from_baseline_cache(baseline_cache: list) -> list:
                 "value": n.get("value"),
                 "unit": n.get("unit"),
                 "raw": n.get("raw"),
-                "source_url": n.get("source_url") or url,
+                "source_url": n.get("source_url") or url_s,
                 "context": (n.get("context") or n.get("context_snippet") or "")[:220]
                 if isinstance((n.get("context") or n.get("context_snippet")), str) else "",
             })
@@ -7276,14 +7349,39 @@ def _build_source_snapshots_from_baseline_cache(baseline_cache: list) -> list:
         if fp and not isinstance(fp, str):
             fp = str(fp)
 
+        # --- homepage labeling (tightening #3) ---
+        is_homepage = bool(sr.get("is_homepage")) or _is_homepage_url(url_s)
+        quality_score = sr.get("quality_score")
+        if quality_score is None:
+            quality_score = 0.15 if is_homepage else 1.0
+
+        skip_reason = sr.get("skip_reason") or ("homepage_url_low_signal" if is_homepage else "")
+
+        host = sr.get("host") or ""
+        path = sr.get("path") or ""
+        if not host and not path:
+            try:
+                p = urlparse(url_s)
+                host = p.netloc or ""
+                path = p.path or ""
+            except Exception:
+                pass
+
         out.append({
-            "url": url,
+            "url": url_s,
             "status": sr.get("status") or "",
             "status_detail": sr.get("status_detail") or "",
             "numbers_found": int(sr.get("numbers_found") or len(cleaned)),
             "fingerprint": fp,
             "fetched_at": sr.get("fetched_at"),
             "extracted_numbers": cleaned,
+
+            # NEW debug fields (safe additions)
+            "is_homepage": bool(is_homepage),
+            "quality_score": float(quality_score),
+            "skip_reason": skip_reason,
+            "host": host,
+            "path": path,
         })
 
     return out
@@ -7636,9 +7734,23 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
 def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_by_name: dict):
     """
     When current analysis is missing, fall back to cached extracted_numbers only.
-    If there is no snapshot candidate, return not_found ✅ point B.
+    If there is no snapshot candidate, return not_found ✅.
+
+    Tightening implemented:
+      1) Reject obvious year mismatches:
+         - If metric name or prev_raw includes a year (e.g., 2024), require candidate context to contain it.
+         - Also reject candidates that are a bare year if metric is not a year metric.
+      2) Unit-family gating:
+         - percent vs currency vs magnitude vs other (GW/TWh/tons/etc)
+      3) Domain/homepage handling:
+         - Downweight homepage sources heavily unless anchored (or if no non-homepage pool exists)
+
+    Debugging enhancements:
+      - Each metric row includes match_debug with:
+        method, pool sizes, required years, unit families, best score, reject counts, top alternatives (small).
     """
     import re
+
     ABS_EPS = 1e-9
     REL_EPS = 0.0005
 
@@ -7668,6 +7780,47 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
         stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
         return [t for t in toks if len(t) > 3 and t not in stop][:24]
 
+    def unit_family(unit: str, raw: str = "", ctx: str = "") -> str:
+        u = (norm_unit(unit) or "").strip().upper()
+        blob = f"{raw or ''} {ctx or ''}".upper()
+
+        # percent
+        if u == "%" or "%" in blob:
+            return "percent"
+
+        # currency
+        if any(x in blob for x in ["USD", "SGD", "EUR", "GBP", "S$", "$", "€", "£"]):
+            return "currency"
+        if any(x in u for x in ["USD", "SGD", "EUR", "GBP"]) or u.startswith("$") or u.startswith("S$"):
+            return "currency"
+
+        # magnitude suffix
+        if u in ("K", "M", "B", "T") or any(x in blob for x in [" BILLION", " MILLION", " TRILLION", " BN", " MN"]):
+            return "magnitude"
+
+        # otherwise: other units like GW, TWh, tons, units, etc
+        return "other"
+
+    def required_years(metric_name: str, prev_raw: str) -> list:
+        years = set()
+        for s in [metric_name or "", prev_raw or ""]:
+            for y in re.findall(r"\b(19\d{2}|20\d{2})\b", str(s)):
+                years.add(y)
+        return sorted(years)
+
+    def year_ok(req_years: list, ctx: str) -> bool:
+        if not req_years:
+            return True
+        c = (ctx or "").lower()
+        return any(y.lower() in c for y in req_years)
+
+    def is_bare_year(raw: str, unit: str) -> bool:
+        r = (raw or "").strip()
+        if unit and norm_unit(unit) not in ("", None):
+            # If there is a unit, don't treat as bare year
+            return False
+        return bool(re.match(r"^(19\d{2}|20\d{2})$", r))
+
     def ctx_score(tokens, ctx: str) -> float:
         c = (ctx or "").lower()
         if not tokens:
@@ -7675,21 +7828,37 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
         hit = sum(1 for t in tokens if t in c)
         return hit / max(1, len(tokens))
 
-    # Flatten candidates from snapshots ONLY
+    # Flatten candidates from snapshots ONLY, keep snapshot metadata
     candidates = []
     for sr in (snapshots or []):
         if not isinstance(sr, dict):
             continue
         url = sr.get("url")
+        if not url:
+            continue
+        is_home = bool(sr.get("is_homepage"))
+        qs = sr.get("quality_score", 1.0)
+        try:
+            qs = float(qs)
+        except Exception:
+            qs = 1.0
+
         for n in (sr.get("extracted_numbers") or []):
-            if isinstance(n, dict):
-                candidates.append({
-                    "url": url,
-                    "value": n.get("value"),
-                    "unit": norm_unit(n.get("unit") or ""),
-                    "raw": n.get("raw") or "",
-                    "context": n.get("context") or "",
-                })
+            if not isinstance(n, dict):
+                continue
+            candidates.append({
+                "url": url,
+                "value": n.get("value"),
+                "unit": norm_unit(n.get("unit") or ""),
+                "raw": n.get("raw") or "",
+                "context": n.get("context") or "",
+                "is_homepage": is_home,
+                "quality_score": qs,
+            })
+
+    # Pre-split pools for tightening #3
+    non_home = [c for c in candidates if not c.get("is_homepage")]
+    home = [c for c in candidates if c.get("is_homepage")]
 
     out_changes = []
     for metric_name, prev in (prev_numbers or {}).items():
@@ -7698,31 +7867,90 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
         prev_val = prev.get("value")
         toks = prev.get("keywords") or metric_tokens(metric_name)
 
+        req_years = required_years(metric_name, str(prev_raw))
+        prev_fam = unit_family(prev_unit, str(prev_raw), "")
+
         anchor = anchors_by_name.get(metric_name) or {}
         anchor_url = anchor.get("source_url") if isinstance(anchor, dict) else None
 
-        pool = candidates
+        # Pool policy:
+        # - anchored: use anchor_url pool if exists
+        # - else: use non-homepage pool when available; only fall back to homepage if necessary
+        pool_policy = "non_home_preferred"
+        pool = non_home if non_home else candidates
         if anchor_url:
-            pool = [c for c in candidates if c.get("url") == anchor_url] or candidates
+            anchored_pool = [c for c in candidates if c.get("url") == anchor_url]
+            if anchored_pool:
+                pool = anchored_pool
+                pool_policy = "anchored_url"
+            else:
+                pool_policy = "anchored_url_not_present"
 
+        reject_counts = {"year_mismatch": 0, "unit_mismatch": 0, "bare_year_reject": 0}
         best = None
-        best_score = -1.0
+        best_score = -1e9
+        top_alts = []  # store a few near-misses for debugging
 
         for c in pool:
-            score = ctx_score(toks, c.get("context",""))
+            ctx = c.get("context", "") or ""
+            raw = c.get("raw", "") or ""
+            unit = c.get("unit", "") or ""
 
-            # Soft unit gate
-            if prev_unit == "%" and ("%" not in (c.get("raw","") + c.get("context","")) and c.get("unit") != "%"):
-                score -= 1.5
+            # (1) year gating: if required years exist, require them in context
+            if not year_ok(req_years, ctx):
+                reject_counts["year_mismatch"] += 1
+                continue
 
-            cv = parse_num(c.get("value"), c.get("unit")) or parse_num(c.get("raw"), c.get("unit"))
+            # reject bare-year candidates unless the metric itself is a year metric
+            # (prevents "2024" being selected as a value for percent/currency/etc)
+            if is_bare_year(str(raw), unit) and prev_fam != "other":
+                reject_counts["bare_year_reject"] += 1
+                continue
+
+            # (2) unit-family gating
+            cand_fam = unit_family(unit, raw, ctx)
+            if prev_fam != cand_fam:
+                reject_counts["unit_mismatch"] += 1
+                continue
+
+            score = ctx_score(toks, ctx)
+
+            # bonus for numeric closeness
+            cv = parse_num(c.get("value"), unit) or parse_num(raw, unit)
             if prev_val is not None and cv is not None:
                 if abs(prev_val - cv) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
                     score += 0.25
 
+            # (3) homepage penalty unless anchored
+            if c.get("is_homepage") and not anchor_url:
+                score -= 0.35
+
+            # quality_score weighting
+            try:
+                score *= max(0.1, min(1.0, float(c.get("quality_score", 1.0))))
+            except Exception:
+                pass
+
+            # keep top alternatives for debugging
+            if len(top_alts) < 5:
+                top_alts.append({
+                    "raw": raw[:60],
+                    "unit": unit,
+                    "url": c.get("url"),
+                    "score": float(score),
+                    "is_homepage": bool(c.get("is_homepage")),
+                    "ctx": (ctx or "")[:120],
+                })
+
             if score > best_score:
                 best_score = score
                 best = c
+
+        # sort alt candidates by score desc
+        try:
+            top_alts.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        except Exception:
+            pass
 
         if not best:
             out_changes.append({
@@ -7735,6 +7963,18 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
                 "context_snippet": None,
                 "source_url": None,
                 "anchor_used": bool(anchor_url),
+
+                # NEW debug payload
+                "match_debug": {
+                    "method": "snapshots_only",
+                    "pool_policy": pool_policy,
+                    "pool_size": int(len(pool)),
+                    "req_years": req_years,
+                    "prev_unit": prev_unit,
+                    "prev_unit_family": prev_fam,
+                    "reject_counts": reject_counts,
+                    "top_alternatives": top_alts[:3],
+                }
             })
             continue
 
@@ -7766,6 +8006,22 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
             "context_snippet": (best.get("context") or "")[:200] if isinstance(best.get("context"), str) else None,
             "source_url": best.get("url"),
             "anchor_used": bool(anchor_url),
+
+            # NEW debug payload
+            "match_debug": {
+                "method": "snapshots_only",
+                "pool_policy": pool_policy,
+                "pool_size": int(len(pool)),
+                "req_years": req_years,
+                "prev_unit": prev_unit,
+                "prev_unit_family": prev_fam,
+                "best_unit": best.get("unit"),
+                "best_unit_family": unit_family(best.get("unit") or "", best.get("raw") or "", best.get("context") or ""),
+                "best_score": float(best_score),
+                "best_is_homepage": bool(best.get("is_homepage")),
+                "reject_counts": reject_counts,
+                "top_alternatives": top_alts[:3],
+            }
         })
 
     return out_changes
