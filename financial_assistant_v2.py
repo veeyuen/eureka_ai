@@ -1599,7 +1599,80 @@ def scrape_url(url: str) -> Optional[str]:
         return None
 
 def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
-    """Search web and scrape top sources (with per-source meta + cached numeric candidates)."""
+    """
+    Search web and scrape top sources (with per-source meta + cached numeric candidates).
+
+    Upstream tightening patch:
+      - Normalize/reject malformed URLs (e.g., 'https://BBVA Research Dec 2025')
+      - Prefer deep links over domain/homepage URLs
+      - De-duplicate by domain, selecting best/deepest URL per domain
+      - Keep homepages only if no deep links exist for that domain
+      - Provide debug lists of rejected/demoted URLs (optional)
+    """
+    import re
+    from urllib.parse import urlparse
+
+    def _norm_url(u: str) -> str:
+        u = (u or "").strip()
+        if not u:
+            return ""
+        # Reject labels / malformed URLs with whitespace
+        if any(ch.isspace() for ch in u):
+            return ""
+        if re.match(r"^https?://", u, flags=re.I):
+            return u
+        # Allow bare domains
+        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", u, flags=re.I):
+            return "https://" + u
+        return ""
+
+    def _is_homepage(u: str) -> bool:
+        try:
+            p = urlparse(u)
+            path = (p.path or "").strip()
+            # Treat empty path or root path as homepage
+            return (path == "" or path == "/")
+        except Exception:
+            return True
+
+    def _depth_score(u: str, q_terms: list) -> float:
+        """
+        Higher score = more likely a topic-specific deep link.
+        """
+        try:
+            p = urlparse(u)
+            path = (p.path or "").strip("/")
+            segs = [s for s in path.split("/") if s]
+            depth = len(segs)
+
+            # Penalize obvious homepages
+            score = depth * 10.0
+            if _is_homepage(u):
+                score -= 50.0
+
+            # Bonus if query terms appear in path
+            low = (u or "").lower()
+            hits = sum(1 for t in q_terms if t and t in low)
+            score += min(20.0, hits * 4.0)
+
+            # Penalize known directory/search pages that often mix topics
+            if any(x in low for x in ["/search", "?s=", "query=", "results", "/tag/", "/category/", "/topics/"]):
+                score -= 10.0
+
+            return score
+        except Exception:
+            return 0.0
+
+    def _domain_key(u: str) -> str:
+        try:
+            p = urlparse(u)
+            host = (p.netloc or "").lower().strip()
+            host = host[4:] if host.startswith("www.") else host
+            return host
+        except Exception:
+            return (u or "").lower().strip()
+
+    # --- Search ---
     search_results = search_serpapi(query, num_results=10)
 
     source_counts = {
@@ -1623,27 +1696,84 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
             "scraped_meta": {},
             "summary": "",
             "sources": [],
-            "source_reliability": []
+            "source_reliability": [],
+            "sources_rejected": [],
+            "sources_demoted_homepages": []
         }
 
+    # --- Upstream URL tightening: normalize + choose best per domain ---
+    q_terms = re.findall(r"[a-z0-9]+", (query or "").lower())
+    q_stop = {"the", "and", "or", "of", "in", "to", "for", "by", "from", "with", "on", "at", "as", "industry", "market"}
+    q_terms = [t for t in q_terms if len(t) >= 3 and t not in q_stop][:12]
+
+    normalized_results = []
+    sources_rejected = []
+    for r in search_results:
+        u0 = r.get("link") or ""
+        u = _norm_url(u0)
+        if not u:
+            sources_rejected.append(u0)
+            continue
+        rr = dict(r)
+        rr["link"] = u
+        rr["_is_homepage"] = _is_homepage(u)
+        rr["_domain"] = _domain_key(u)
+        rr["_score"] = _depth_score(u, q_terms)
+        normalized_results.append(rr)
+
+    # Group by domain: keep best scored link; keep a homepage only if no deep link exists
+    best_by_domain = {}
+    all_by_domain = {}
+    for r in normalized_results:
+        all_by_domain.setdefault(r["_domain"], []).append(r)
+
+    sources_demoted_homepages = []
+    for dom, items in all_by_domain.items():
+        # Prefer best score
+        items_sorted = sorted(items, key=lambda x: x.get("_score", 0.0), reverse=True)
+        best = items_sorted[0] if items_sorted else None
+
+        # If best is homepage but there exists a non-homepage in this domain, take best non-homepage
+        if best and best.get("_is_homepage"):
+            non_home = [x for x in items_sorted if not x.get("_is_homepage")]
+            if non_home:
+                sources_demoted_homepages.append(best.get("link"))
+                best = non_home[0]
+
+        if best:
+            best_by_domain[dom] = best
+
+    # Keep original order (by first occurrence in SERP), but use best-by-domain
+    ordered = []
+    seen_dom = set()
+    for r in normalized_results:
+        dom = r["_domain"]
+        if dom in seen_dom:
+            continue
+        seen_dom.add(dom)
+        chosen = best_by_domain.get(dom)
+        if chosen:
+            ordered.append(chosen)
+
+    # Replace search_results with tightened ordered list (for downstream summary/sources)
+    search_results_tight = ordered
+
+    # --- Scraping ---
     scraped_content: Dict[str, str] = {}
     scraped_meta: Dict[str, Dict] = {}
 
-    # Best-effort scrape (only if key exists)
     if SCRAPINGDOG_KEY:
         progress = st.progress(0)
-        st.info(f"🔍 Scraping top {num_sources} sources...")
+        st.info(f"🔍 Scraping top {min(num_sources, len(search_results_tight))} sources...")
 
-        for i, result in enumerate(search_results[:num_sources]):
+        for i, result in enumerate(search_results_tight[:num_sources]):
             url = result.get("link")
             if not url:
-                progress.progress((i + 1) / num_sources)
+                progress.progress((i + 1) / max(1, num_sources))
                 continue
 
-            # Use the robust fetcher (records URL_FETCH_META)
             content, status_msg = fetch_url_content_with_status(url)
 
-            # Store meta (headers/fingerprint/etc.)
             meta = {}
             try:
                 meta = dict((globals().get("URL_FETCH_META") or {}).get(url) or {})
@@ -1656,12 +1786,14 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
                 "source": result.get("source"),
                 "title": result.get("title"),
                 "date": result.get("date"),
+                "domain": result.get("_domain"),
+                "is_homepage": bool(result.get("_is_homepage")),
+                "url_score": float(result.get("_score", 0.0)),
             })
 
             if content:
                 scraped_content[url] = content
 
-                # Extract and cache numeric candidates now (so later evolution can reuse)
                 extracted = []
                 try:
                     extracted = extract_numbers_with_context_pdf(content) if status_msg == "success_pdf" else extract_numbers_with_context(content)
@@ -1679,7 +1811,6 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
                 meta["numbers_found"] = len(compact)
                 meta["extracted_numbers"] = compact
 
-                # Ensure an extract_hash exists (fingerprint of cleaned content)
                 if not meta.get("extract_hash"):
                     try:
                         fp = fingerprint_text(content)
@@ -1688,22 +1819,22 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
                     except Exception:
                         pass
 
-                st.success(f"✓ {i+1}/{num_sources}: {result.get('source', '')}")
+                st.success(f"✓ {i+1}/{min(num_sources, len(search_results_tight))}: {result.get('source', '')}")
             else:
                 meta["numbers_found"] = meta.get("numbers_found", 0) or 0
                 meta["extracted_numbers"] = meta.get("extracted_numbers", []) or []
-                st.warning(f"⚠️ {i+1}/{num_sources}: {result.get('source', '')} ({status_msg})")
+                st.warning(f"⚠️ {i+1}/{min(num_sources, len(search_results_tight))}: {result.get('source', '')} ({status_msg})")
 
             scraped_meta[url] = meta
-            progress.progress((i + 1) / num_sources)
+            progress.progress((i + 1) / max(1, num_sources))
 
         progress.empty()
 
-    # Build context summary
+    # --- Build context summary (from tightened list) ---
     context_parts = []
     reliabilities = []
 
-    for r in search_results:
+    for r in search_results_tight:
         date_str = f" ({r.get('date')})" if r.get('date') else ""
         reliability = classify_source_reliability((r.get("link", "") or "") + " " + (r.get("source", "") or ""))
         reliabilities.append(reliability)
@@ -1716,12 +1847,15 @@ def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
         )
 
     return {
-        "search_results": search_results,
+        "search_results": search_results_tight,
         "scraped_content": scraped_content,
-        "scraped_meta": scraped_meta,  # ✅ NEW
+        "scraped_meta": scraped_meta,
         "summary": "\n\n---\n\n".join(context_parts),
-        "sources": [r.get("link") for r in search_results if r.get("link")],
-        "source_reliability": reliabilities
+        "sources": [r.get("link") for r in search_results_tight if r.get("link")],
+        "source_reliability": reliabilities,
+        # Optional debug (safe if ignored)
+        "sources_rejected": sources_rejected[:25],
+        "sources_demoted_homepages": sources_demoted_homepages[:25],
     }
 
 
