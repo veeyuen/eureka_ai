@@ -6541,49 +6541,124 @@ def _clean_html_to_text(html: str) -> str:
     return s
 
 
-def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional[object], str]:
+def fetch_url_content_with_status(url: str, timeout: int = 25) -> Tuple[Optional[str], str]:
     """
-    Fetch URL content and return (content, status_detail).
-    - For HTML/text: returns CLEANED TEXT (str), status "success"
-    - For PDF: returns bytes (resp.content), status "success_pdf"
-    Never raises.
+    Fetch URL content and return (text, status_detail).
+    Never raises — always returns a status string.
+
+    status_detail values:
+      - "success"        (HTML/text extracted successfully)
+      - "success_pdf"    (PDF fetched + text extracted successfully)
+      - "http_<code>"
+      - "exception:<TypeName>"
+      - "empty"
+      - "invalid_url"
+      - "pdf_no_text"    (PDF fetched but no extractable text)
     """
+    import re
+
     try:
-        u = _normalize_url(url)
+        u = (url or "").strip()
         if not u:
             return None, "empty"
+
+        # If someone accidentally passed a non-URL string (spaces, titles), reject early.
+        # (This prevents “https://eda.admin.ch Malaysia Econ Report 2025” style garbage.)
+        if " " in u and not re.search(r"https?://", u, flags=re.I):
+            return None, "invalid_url"
+
+        # Normalize "domain only" like "bank.gov.ua"
+        if not re.match(r"^https?://", u, flags=re.I):
+            # reject if it still has spaces after normalization
+            if " " in u:
+                return None, "invalid_url"
+            u = "https://" + u
 
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
-            )
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
 
-        resp = requests.get(u, headers=headers, timeout=timeout, allow_redirects=True)
+        resp = requests.get(u, headers=headers, timeout=timeout)
         if resp.status_code >= 400:
             return None, f"http_{resp.status_code}"
 
-        ctype = (resp.headers.get("Content-Type") or "").lower()
+        ctype = (resp.headers.get("content-type") or "").lower()
+        is_pdf = ("application/pdf" in ctype) or u.lower().endswith(".pdf")
 
-        # PDF handling
-        if "application/pdf" in ctype or u.lower().endswith(".pdf"):
-            data = resp.content
-            if not data:
-                return None, "empty"
-            return data, "success_pdf"
+        if is_pdf:
+            # PDF: extract real text (avoid binary junk contexts)
+            try:
+                from io import BytesIO
+                import PyPDF2
 
-        # HTML/text handling
-        text = resp.text or ""
-        if not text.strip():
+                data = resp.content or b""
+                if not data:
+                    return None, "empty"
+
+                reader = PyPDF2.PdfReader(BytesIO(data))
+                pages_text = []
+                # Keep a reasonable cap so we don’t explode memory on huge PDFs
+                max_pages = min(len(reader.pages), 40)
+                for i in range(max_pages):
+                    try:
+                        t = reader.pages[i].extract_text() or ""
+                        if t.strip():
+                            pages_text.append(t)
+                    except Exception:
+                        continue
+
+                text = "\n".join(pages_text).strip()
+                if not text:
+                    return None, "pdf_no_text"
+                return text, "success_pdf"
+
+            except Exception:
+                # If PDF parsing fails, don’t return binary; just fail cleanly
+                return None, "pdf_no_text"
+
+        # HTML / text
+        raw = resp.text or ""
+        if not raw.strip():
             return None, "empty"
 
-        cleaned = _clean_html_to_text(text)
-        if not cleaned:
+        # Convert HTML -> visible text (keep numbers; remove JS/CSS)
+        def _html_to_visible_text(html: str) -> str:
+            try:
+                from bs4 import BeautifulSoup
+
+                soup = BeautifulSoup(html, "html.parser")
+                for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe"]):
+                    tag.decompose()
+
+                # Remove obvious boilerplate blocks if present
+                for sel in ["header", "footer", "nav", "aside"]:
+                    for tag in soup.find_all(sel):
+                        tag.decompose()
+
+                text = soup.get_text(separator=" ", strip=True)
+                text = re.sub(r"\s+", " ", text).strip()
+                return text
+            except Exception:
+                # fallback: strip tags crudely
+                t = re.sub(r"<[^>]+>", " ", html)
+                t = re.sub(r"\s+", " ", t).strip()
+                return t
+
+        visible = _html_to_visible_text(raw)
+        if not visible.strip():
             return None, "empty"
 
-        return cleaned, "success"
+        # IMPORTANT: do NOT truncate aggressively — that caused “0 numbers found”.
+        # Keep a generous cap for performance.
+        if len(visible) > 250_000:
+            visible = visible[:250_000]
+
+        return visible, "success"
 
     except Exception as e:
         return None, f"exception:{type(e).__name__}"
@@ -7597,224 +7672,202 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 
     return out[:30]
 
-def extract_numbers_with_context(text: str, source_url: str = "", max_numbers: int = 300):
+def extract_numbers_with_context(text: str) -> List[Dict]:
     """
-    Two-phase numeric extraction designed for evolution stability:
+    Two-phase numeric extraction:
+      1) Clean / normalize text (already mostly visible text from fetcher)
+      2) Extract numeric candidates with context windows
+      3) Filter junk (CSS/JS, image resize %, font weights, px/rem, etc.)
+      4) Score by economic-keyword proximity and return top-N
 
-    Phase A) Clean text for extraction (remove scripts/styles/markup noise)
-    Phase B) Extract numeric candidates + context
-    Phase C) Filter junk contexts (CSS/JS/srcset/pdf garbage)
-    Phase D) Score candidates (keep the most "economic-looking" ones)
-    Phase E) Return only the top `max_numbers` per source (keeps evolution JSON small)
+    Returns items:
+      { value, unit, raw, source_url, context, anchor_hash }
+    NOTE: compute_source_anchored_diff will add source_url and anchor_hash if missing,
+    but we include them when possible if caller injects URL elsewhere.
     """
     import re
     import hashlib
 
-    def _sha1(s: str) -> str:
-        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+    if not text or not str(text).strip():
+        return []
 
-    def _clean_text_for_extraction(raw: str) -> str:
-        if not raw:
-            return ""
+    t = str(text)
 
-        t = raw
+    # Normalize whitespace
+    t = t.replace("\x00", " ")
+    t = re.sub(r"\s+", " ", t).strip()
 
-        # Remove script/style blocks early (largest junk source)
-        t = re.sub(r"(?is)<script.*?>.*?</script>", " ", t)
-        t = re.sub(r"(?is)<style.*?>.*?</style>", " ", t)
+    # Economic-ish keywords (for scoring)
+    econ_kw = [
+        "gdp", "growth", "inflation", "cpi", "unemployment", "interest rate", "policy rate",
+        "exports", "imports", "trade", "deficit", "debt", "fiscal", "budget",
+        "current account", "revenue", "spending", "investment", "consumption",
+        "forecast", "projection", "quarter", "q1", "q2", "q3", "q4", "yoy", "mom",
+        "percent", "%", "billion", "million", "trillion", "usd", "eur", "gbp", "sgd"
+    ]
 
-        # Remove SVG blocks (icons generate many useless numbers)
-        t = re.sub(r"(?is)<svg.*?>.*?</svg>", " ", t)
+    # Junk patterns commonly responsible for your examples
+    junk_ctx_patterns = [
+        r"wp--preset", r"font-size", r"font-weight", r"rem;", r"px;", r"grid__", r"column__",
+        r"slick-slide", r"offscreen(canvas)?", r"srcset=", r"resize=\d+%2c\d+",
+        r"quality=\d+", r"material-icons", r"siteinfo", r"pageuid", r"pageinfo",
+        r"og:image", r"twitter:image", r"dataLayer", r"instrumentationkey",
+        r"aria-label", r"btn-back-to-top"
+    ]
+    junk_ctx_re = re.compile("|".join(junk_ctx_patterns), flags=re.I)
 
-        # Remove HTML comments
-        t = re.sub(r"(?is)<!--.*?-->", " ", t)
+    # Main candidate regex:
+    # - currency optional
+    # - number
+    # - unit suffix optional (K/M/B/T, %, bn/mn words)
+    cand_re = re.compile(
+        r"(?P<cur>S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
+        r"(?P<num>-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*"
+        r"(?P<unit>T|B|M|K|bn|billion|mn|million|%)?",
+        flags=re.I
+    )
 
-        # Remove long base64/data URIs
-        t = re.sub(r"(?is)data:image/[^\\s'\"]{20,}", " ", t)
-
-        # Replace tags with spaces (keep visible text-ish)
-        t = re.sub(r"(?is)<[^>]+>", " ", t)
-
-        # Collapse whitespace
-        t = re.sub(r"[\\r\\n\\t]+", " ", t)
-        t = re.sub(r"\\s{2,}", " ", t).strip()
-
-        return t
-
-    def _normalize_unit(u: str) -> str:
+    def _norm_unit(u: str) -> str:
         u = (u or "").strip()
         ul = u.lower()
         if ul in ("bn", "billion"):
             return "B"
         if ul in ("mn", "mio", "million"):
             return "M"
-        if ul in ("k", "thousand", "000"):
-            return "K"
-        if u == "％":  # fullwidth percent
+        if ul == "%":
             return "%"
-        return u.upper() if u else ""
+        if u.upper() in ("T", "B", "M", "K"):
+            return u.upper()
+        return u
 
-    def _score_candidate(raw_val: str, unit: str, ctx: str) -> float:
-        """
-        Prioritize candidates that look like real economics/statistics text.
-        """
-        score = 0.0
-        cl = (ctx or "").lower()
+    def _sha1(s: str) -> str:
+        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
-        # Reward presence of econ keywords
-        econ_kw = [
-            "gdp", "inflation", "unemployment", "budget", "deficit", "debt",
-            "growth", "cagr", "forecast", "exports", "imports", "fiscal",
-            "interest rate", "policy rate", "ppi", "cpi", "current account",
-            "revenue", "spending", "investment", "consumption", "billion", "million",
-        ]
-        for k in econ_kw:
-            if k in cl:
-                score += 0.08
-
-        # Reward "real" units
-        if unit in ("%", "B", "M", "K", "T"):
-            score += 0.25
-
-        # Penalize tiny integers with no unit (often template noise)
-        try:
-            v = float(str(raw_val).replace(",", ""))
-            if unit == "" and abs(v) < 25 and float(v).is_integer():
-                score -= 0.30
-        except Exception:
-            pass
-
-        # Penalize contexts likely to be junk (re-check)
-        if is_likely_junk_context(ctx):
-            score -= 1.0
-
-        return score
-
-    raw = text or ""
-    if not raw.strip():
-        return []
-
-    cleaned = _clean_text_for_extraction(raw)
-
-    # If cleaning wiped everything (rare), fallback to original
-    haystack = cleaned if len(cleaned) > 50 else raw
-
-    # Regex: currency? number (with commas/decimals) unit? (%, K/M/B/T, bn/mn/billion/million)
-    # We intentionally avoid matching "770%2C513" URL-encoded by requiring a word boundary after the % or unit.
-    pattern = re.compile(
-        r"(?P<cur>S\\$|\\$|USD|SGD|EUR|GBP|€|£)?\\s*"
-        r"(?P<num>-?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?|-?\\d+(?:\\.\\d+)?)\\s*"
-        r"(?P<unit>T|B|M|K|bn|billion|mn|million|%)?"
-        r"\\b",
-        flags=re.I
-    )
+    def _score(ctx: str) -> float:
+        c = (ctx or "").lower()
+        s = 0.0
+        for kw in econ_kw:
+            if kw in c:
+                s += 1.0
+        # prefer longer, readable contexts over tiny fragments
+        if len(c) >= 80:
+            s += 0.5
+        return s
 
     out = []
-    for m in pattern.finditer(haystack):
+    for m in cand_re.finditer(t):
         cur = (m.group("cur") or "").strip()
         num_s = (m.group("num") or "").strip()
-        unit_raw = (m.group("unit") or "").strip()
+        unit = _norm_unit(m.group("unit") or "")
 
-        # Basic numeric sanity
         if not num_s:
             continue
 
-        # Avoid URL encoded junk like "770%2C513" where the percent is followed by '2C'
-        tail = haystack[m.end():m.end() + 4]
-        if unit_raw == "%" and tail.lower().startswith("2c"):
-            continue
-
-        # Convert to float
+        # Parse numeric
         try:
             val = float(num_s.replace(",", ""))
         except Exception:
             continue
 
-        unit = _normalize_unit(unit_raw)
-
-        # Build raw string
-        raw_str = f"{cur}{num_s}{unit_raw}".strip()
+        raw = f"{cur}{num_s}{unit}".strip() if cur else f"{num_s}{unit}".strip()
 
         # Context window
         start = max(0, m.start() - 140)
-        end = min(len(haystack), m.end() + 140)
-        ctx = haystack[start:end].strip()
+        end = min(len(t), m.end() + 140)
+        ctx = t[start:end].strip()
 
-        # Hard junk filter
-        if is_likely_junk_context(ctx):
+        # Junk filters
+        if junk_ctx_re.search(ctx):
             continue
 
-        # Anchor hash (deterministic)
-        anchor_hash = _sha1(f"{source_url}|{raw_str}|{ctx[:220]}")
+        # Filter common “image resize percent” garbage (770%, 375%, etc.)
+        if unit == "%" and val >= 150 and re.search(r"(resize=|srcset=|quality=|\.jpg|\.png|%2c)", ctx, flags=re.I):
+            continue
 
-        score = _score_candidate(num_s, unit, ctx)
+        # Filter CSS-y “50% width” junk
+        if unit == "%" and re.search(r"(width:\s*\d+%|height:\s*\d+%|grid|column__|slick)", ctx, flags=re.I):
+            continue
+
+        # Filter font-weight numbers like “600 32px Arial”
+        if unit == "" and val in (100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0):
+            if re.search(r"(font|arial|px|rem|css|stylesheet)", ctx, flags=re.I):
+                continue
+
+        # Light sanity: if unit is scale and value is weirdly small like "07T" parsed elsewhere,
+        # we keep it here (matching step can discard), but we avoid leading-zero scale artifacts:
+        if unit in ("T", "B", "M", "K"):
+            if re.match(r"^0\d", num_s):
+                # treat as suspicious but keep only if context is strongly economic
+                if _score(ctx) < 3.0:
+                    continue
 
         out.append({
             "value": val,
             "unit": unit,
-            "raw": raw_str,
-            "source_url": source_url,
-            "context_snippet": ctx[:220],
-            "anchor_hash": anchor_hash,
-            "_score": score,
+            "raw": raw,
+            "context": ctx[:260],
+            "anchor_hash": _sha1(f"{raw}|{ctx[:260]}"),
         })
 
-    if not out:
-        return []
+    # Score + cap (this is what shrinks your evolution JSON dramatically)
+    for r in out:
+        r["_score"] = _score(r.get("context", ""))
 
-    # Sort by score descending, then stable tiebreakers
-    out.sort(key=lambda d: (d.get("_score", 0.0), str(d.get("unit","")), abs(float(d.get("value",0.0))) ), reverse=True)
+    out.sort(key=lambda x: (x.get("_score", 0.0), len(x.get("context", ""))), reverse=True)
 
-    # Cap results to keep evolution JSON small
-    capped = out[:max(1, int(max_numbers))]
+    # Keep only top N to avoid multi-MB evolution JSONs
+    MAX_KEEP = 350
+    trimmed = out[:MAX_KEEP]
 
-    # Remove private scoring field
-    for d in capped:
-        d.pop("_score", None)
+    for r in trimmed:
+        r.pop("_score", None)
 
-    return capped
+    return trimmed
 
 
-def extract_numbers_with_context_pdf(content: Union[bytes, str]) -> List[Dict]:
+def extract_numbers_with_context_pdf(text: str) -> List[Dict]:
     """
-    Extract numbers from PDF bytes (preferred) or a fallback string.
-    Adds aggressive cleanup to avoid PDF binary junk in context.
+    PDF-specialized extractor wrapper.
+
+    Adds extra noise filters for:
+      - page numbers / headers
+      - reference/ISBN/ISSN/DOI artifacts
+      - very short contexts dominated by symbols
+
+    Returns the same schema as extract_numbers_with_context().
     """
-    if not content:
-        return []
+    import re
 
-    # If a string slips in, treat as already-extracted text
-    if isinstance(content, str):
-        pdf_text = content
-    else:
-        pdf_text = ""
-        try:
-            import io
-            from PyPDF2 import PdfReader
+    base = extract_numbers_with_context(text)
 
-            reader = PdfReader(io.BytesIO(content))
-            # Cap pages to avoid huge PDFs exploding output
-            max_pages = min(len(reader.pages), 12)
-            parts = []
-            for i in range(max_pages):
-                try:
-                    parts.append(reader.pages[i].extract_text() or "")
-                except Exception:
-                    continue
-            pdf_text = "\n".join(parts)
-        except Exception:
-            pdf_text = ""
+    cleaned = []
+    for r in base:
+        ctx = (r.get("context") or "").strip()
+        raw = (r.get("raw") or "").strip()
 
-    # Clean non-printable junk that creates nonsense contexts
-    pdf_text = re.sub(r"[^\x09\x0a\x0d\x20-\x7E]", " ", pdf_text)   # keep basic ascii + whitespace
-    pdf_text = re.sub(r"\s+", " ", pdf_text).strip()
+        # Remove DOI/ISBN/ISSN-like contexts
+        if re.search(r"\b(doi|isbn|issn)\b", ctx, flags=re.I):
+            continue
 
-    # If still empty, nothing we can do
-    if not pdf_text:
-        return []
+        # Filter “Page 12 of 45” style
+        if re.search(r"\bpage\s+\d+\s+(of|/)\s*\d+\b", ctx, flags=re.I):
+            continue
 
-    # Reuse the same extractor (works well once text is cleaned)
-    return extract_numbers_with_context(pdf_text)
+        # If context is mostly punctuation/garbage, drop
+        letters = len(re.findall(r"[A-Za-z]", ctx))
+        if letters < 8 and len(ctx) > 30:
+            continue
+
+        # Common PDF front-matter numeric noise: standalone years without econ words nearby
+        if raw.isdigit() and len(raw) == 4:
+            if not re.search(r"(gdp|inflation|unemployment|growth|forecast|deficit|debt|budget)", ctx, flags=re.I):
+                continue
+
+        cleaned.append(r)
+
+    return cleaned
+
+
 
 def calculate_context_match(keywords: List[str], context: str) -> float:
     """Calculate how well keywords match the context (deterministic)."""
