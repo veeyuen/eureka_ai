@@ -6737,19 +6737,25 @@ NON_DATA_CONTEXT_HINTS = [
     "subscribe", "newsletter", "login", "sign in", "nav", "footer"
 ]
 
-def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> dict:
-    """
-    Attach analysis-aligned source snapshots to the analysis dict.
-    This uses ONLY the already-extracted numbers produced during fetch_web_context()
-    (web_context['scraped_meta'][url]['extracted_numbers']), so we avoid brute-force scraping.
 
-    It writes snapshots into:
-      analysis['results']['source_results']
-      analysis['results']['baseline_sources_cache']
-      analysis['baseline_sources_cache']
+def fingerprint_text(text: str) -> str:
+    """Stable short fingerprint for fetched content (deterministic)."""
+    if not text:
+        return ""
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
+
+def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict:
+    """
+    Attach analysis-aligned source snapshots into the analysis output.
+    Uses web_context['scraped_meta'] (already contains extracted_numbers + extract_hash/fingerprint).
+
+    Writes:
+      output['baseline_sources_cache']
+      output['results']['source_results']
+      output['results']['baseline_sources_cache']
     """
     from datetime import datetime
-    import hashlib
 
     def _now_iso() -> str:
         try:
@@ -6757,15 +6763,12 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         except Exception:
             return datetime.now().isoformat()
 
-    def _sha1(s: str) -> str:
-        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+    if not isinstance(output, dict) or not isinstance(web_context, dict):
+        return output
 
-    if not isinstance(analysis, dict) or not isinstance(web_context, dict):
-        return analysis
-
-    scraped_meta = web_context.get("scraped_meta")
+    scraped_meta = web_context.get("scraped_meta") or {}
     if not isinstance(scraped_meta, dict) or not scraped_meta:
-        return analysis
+        return output
 
     snaps = []
     for url, meta in scraped_meta.items():
@@ -6776,11 +6779,12 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         if not isinstance(extracted, list):
             extracted = []
 
-        cleaned = []
+        # normalize extracted numbers to what evolution expects
+        compact = []
         for n in extracted:
             if not isinstance(n, dict):
                 continue
-            cleaned.append({
+            compact.append({
                 "value": n.get("value"),
                 "unit": n.get("unit"),
                 "raw": n.get("raw"),
@@ -6788,45 +6792,36 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 "context_snippet": (n.get("context") or "")[:200] if isinstance(n.get("context"), str) else "",
             })
 
-        # fingerprint: prefer existing, else derive from any clean_text
-        fp = meta.get("fingerprint") or meta.get("extract_hash") or meta.get("content_fingerprint")
+        fp = meta.get("fingerprint") or meta.get("extract_hash")
         if fp and not isinstance(fp, str):
             fp = str(fp)
-        if not fp and isinstance(meta.get("clean_text"), str):
-            fp = _sha1(meta["clean_text"][:200000])
 
         snaps.append({
             "url": url,
-            "status": "fetched_extracted" if cleaned else ("fetched" if str(meta.get("status_detail","")).startswith("success") else "failed"),
-            "status_detail": meta.get("status_detail") or meta.get("status") or "",
-            "numbers_found": int(meta.get("numbers_found") or len(cleaned)),
+            "status": "fetched_extracted" if compact else ("fetched" if str(meta.get("status_detail","")).startswith("success") else "failed"),
+            "status_detail": meta.get("status_detail") or "",
+            "numbers_found": int(meta.get("numbers_found") or len(compact)),
             "fingerprint": fp,
             "fetched_at": meta.get("fetched_at") or _now_iso(),
-            "extracted_numbers": cleaned,
+            "extracted_numbers": compact,
         })
 
     if not snaps:
-        return analysis
+        return output
 
-    results = analysis.get("results")
+    # Backward-compatible place evolution already looks for
+    output["baseline_sources_cache"] = snaps
+
+    # Also store under results.* for newer variants
+    results = output.get("results")
     if not isinstance(results, dict):
         results = {}
-        analysis["results"] = results
-
-    # store in multiple keys for compatibility across versions
+        output["results"] = results
     results["source_results"] = snaps
     results["baseline_sources_cache"] = snaps
-    analysis["baseline_sources_cache"] = snaps
 
-    return analysis
+    return output
 
-
-def fingerprint_text(text: str) -> str:
-    """Stable short fingerprint for fetched content (deterministic)."""
-    if not text:
-        return ""
-    normalized = re.sub(r"\s+", " ", text.strip().lower())
-    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
 
 def normalize_unit(unit: str) -> str:
     """Normalize unit to one of: T/B/M/%/'' (deterministic)."""
@@ -9125,42 +9120,27 @@ def main():
             }
 
             # Save baseline numeric cache if available (existing behavior)
-            try:
-                baseline_sources_cache = []
-                for url, meta in (web_context.get("scraped_meta") or {}).items():
-                    if isinstance(meta, dict):
-                        nums = meta.get("extracted_numbers") or []
-                        content = meta.get("content") or meta.get("clean_text") or ""
-                        baseline_sources_cache.append({
-                            "url": url,
-                            "status": "fetched" if str(meta.get("status_detail","")).startswith("success") else "failed",
-                            "status_detail": meta.get("status_detail") or meta.get("status") or "",
-                            "numbers_found": len(nums) if isinstance(nums, list) else 0,
-                            "fetched_at": now_utc().isoformat(),
-                            "fingerprint": fingerprint_text(content),
-                            "extracted_numbers": [
-                                {
-                                    "value": n.get("value"),
-                                    "unit": n.get("unit"),
-                                    "raw": n.get("raw"),
-                                    "context_snippet": (n.get("context") or "")[:200]
-                                }
-                                for n in (nums or [])
-                                if isinstance(n, dict)
-                            ]
-                        })
-                if baseline_sources_cache:
-                    output["baseline_sources_cache"] = baseline_sources_cache
-            except Exception:
-                pass
 
-            # ✅ NEW (exact placement): attach analysis-aligned snapshots for evolution stability
-            # This avoids brute-force evolution scraping later.
+                        # Build output
+            output = {
+                "question": query,
+                "question_profile": question_profile,
+                "question_category": question_profile.get("category"),
+                "question_signals": question_signals,
+                "side_questions": question_profile.get("side_questions", []),
+                "timestamp": now_utc().isoformat(),
+                "primary_response": primary_data,
+                "final_confidence": final_conf,
+                "veracity_scores": veracity_scores,
+                "web_sources": web_context.get("sources", []),
+            }
+
+            # ✅ NEW: attach analysis-aligned snapshots (from scraped_meta)
+            # This is the stable cache evolution should reuse.
             try:
                 output = attach_source_snapshots_to_analysis(output, web_context)
             except Exception:
                 pass
-
 
             with st.spinner("💾 Saving to history..."):
                 if add_to_history(output):
