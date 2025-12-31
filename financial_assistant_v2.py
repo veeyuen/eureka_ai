@@ -6916,55 +6916,65 @@ def run_source_anchored_evolution(previous_data: dict) -> dict:
     """
     Backward-compatible entrypoint used by the Streamlit Evolution UI.
 
-    Annotation-safe:
-    - Uses built-in `dict` instead of `Dict` so it never NameErrors at import time.
+    HARDENED:
+    - Guarantees return type is always dict (never None/tuple/str)
+    - If compute_source_anchored_diff returns non-dict, wraps it in a failed dict payload
+      so the UI doesn't crash and you can see what came back.
     """
     fn = globals().get("compute_source_anchored_diff")
-    if callable(fn):
-        try:
-            out = fn(previous_data)
 
-            # hard guards for the renderer/UI
-            if isinstance(out, dict):
-                if out.get("stability_score") is None:
-                    out["stability_score"] = 0.0
-                if out.get("summary") is None:
-                    out["summary"] = {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0}
-                if out.get("metric_changes") is None:
-                    out["metric_changes"] = []
-                if out.get("source_results") is None:
-                    out["source_results"] = []
-                if out.get("sources_checked") is None:
-                    out["sources_checked"] = 0
-                if out.get("sources_fetched") is None:
-                    out["sources_fetched"] = 0
-                if out.get("status") is None:
-                    out["status"] = "success"
+    def _fail(message: str, raw=None) -> dict:
+        out = {
+            "status": "failed",
+            "message": message,
+            "sources_checked": 0,
+            "sources_fetched": 0,
+            "stability_score": 0.0,
+            "summary": {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0},
+            "metric_changes": [],
+            "source_results": [],
+        }
+        if raw is not None:
+            # keep it small but useful
+            try:
+                out["raw_payload_type"] = str(type(raw))
+                out["raw_payload_preview"] = (str(raw)[:1500] + "…") if len(str(raw)) > 1500 else str(raw)
+            except Exception:
+                out["raw_payload_type"] = "unknown"
+                out["raw_payload_preview"] = "unprintable"
+        return out
 
-            return out
+    if not callable(fn):
+        return _fail("compute_source_anchored_diff() is not defined, so source-anchored evolution cannot run.")
 
-        except Exception as e:
-            return {
-                "status": "failed",
-                "message": f"compute_source_anchored_diff crashed: {e}",
-                "sources_checked": 0,
-                "sources_fetched": 0,
-                "stability_score": 0.0,
-                "summary": {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0},
-                "metric_changes": [],
-                "source_results": [],
-            }
+    try:
+        out = fn(previous_data)
 
-    return {
-        "status": "failed",
-        "message": "compute_source_anchored_diff() is not defined, so source-anchored evolution cannot run.",
-        "sources_checked": 0,
-        "sources_fetched": 0,
-        "stability_score": 0.0,
-        "summary": {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0},
-        "metric_changes": [],
-        "source_results": [],
-    }
+        # ✅ hard guard: ALWAYS return dict
+        if not isinstance(out, dict):
+            return _fail("compute_source_anchored_diff() returned a non-dict payload.", raw=out)
+
+        # normalize required keys for UI safety
+        if out.get("stability_score") is None:
+            out["stability_score"] = 0.0
+        if out.get("summary") is None:
+            out["summary"] = {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0}
+        if out.get("metric_changes") is None:
+            out["metric_changes"] = []
+        if out.get("source_results") is None:
+            out["source_results"] = []
+        if out.get("sources_checked") is None:
+            out["sources_checked"] = 0
+        if out.get("sources_fetched") is None:
+            out["sources_fetched"] = 0
+        if out.get("status") is None:
+            out["status"] = "success"
+
+        return out
+
+    except Exception as e:
+        return _fail(f"compute_source_anchored_diff crashed: {type(e).__name__}: {e}")
+
 
 
 # =========================================================
