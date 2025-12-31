@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.28.5
+# YUREEKA AI RESEARCH ASSISTANT v7.28
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -173,114 +173,6 @@ def add_to_history(analysis: dict) -> bool:
         if "gdp" in toks:
             out += ["gross", "domestic", "product"]
         return list(dict.fromkeys(out))[:30]
-
-        # -------------------------
-    # NEW: Structural junk filters + near-context + phrase gating
-    # -------------------------
-    YEAR_RE = re.compile(r"^(19|20)\d{2}$")
-    PHONE_RE = re.compile(r"(\+\d{1,3}\s*)?(\(?\d{2,4}\)?[\s\-\.]){2,}\d{2,4}")
-    PRESS_ID_RE = re.compile(r"\b(press\s*release|media\s*release|release\s*no|no\.|ref\.|reference)\b", re.I)
-
-    def _near_context(ctx: str, raw: str, fallback_span: int = 55) -> str:
-        """
-        Extract a small window around the matched number in ctx.
-        If raw can't be located reliably, return the first 2*fallback_span chars.
-        """
-        if not ctx:
-            return ""
-        c = re.sub(r"\s+", " ", ctx).strip()
-        if not raw:
-            return c[: (fallback_span * 2)]
-        r = re.sub(r"\s+", " ", raw).strip()
-
-        # Try to find the number token inside the context (normalize commas/spaces)
-        c_norm = c
-        r_norm = r.replace(",", "")
-        idx = c_norm.find(r)
-        if idx < 0:
-            idx = c_norm.replace(",", "").find(r_norm)
-        if idx < 0:
-            # last resort: find just the numeric part
-            m = re.search(r"-?\d+(?:\.\d+)?", r_norm)
-            if m:
-                numtok = m.group(0)
-                idx = c_norm.replace(",", "").find(numtok)
-        if idx < 0:
-            return c[: (fallback_span * 2)]
-
-        start = max(0, idx - fallback_span)
-        end = min(len(c_norm), idx + len(r) + fallback_span)
-        return c_norm[start:end].strip()
-
-    def _looks_like_chrome(ctx: str) -> bool:
-        cl = (ctx or "").lower()
-        bad = [
-            "cookie", "privacy policy", "terms", "subscribe", "newsletter", "sign in", "log in",
-            "all news", "sponsors", "footer", "header", "menu", "site map", "copyright",
-            "facebook", "twitter", "linkedin", "instagram", "youtube"
-        ]
-        return any(b in cl for b in bad)
-
-    def _is_structural_candidate(raw: str, unit: str, ctx: str) -> bool:
-        """
-        Drop structural junk: years, phone numbers, press release ids, obvious chrome-only digits.
-        This is applied BEFORE matching.
-        """
-        r = (raw or "").strip()
-        u = (unit or "").strip()
-        c = (ctx or "").strip()
-        cl = c.lower()
-
-        # Years (keep only if it is clearly not "just a year")
-        if (not u) and YEAR_RE.match(r):
-            # If near context doesn't contain strong econ signals, drop it
-            if not any(k in cl for k in ["gdp", "growth", "inflation", "cpi", "unemployment", "deficit", "debt", "fdi"]):
-                return True
-
-        # Phone-ish patterns
-        if PHONE_RE.search(c) or PHONE_RE.search(r):
-            # If it’s obviously contact info / phone, drop
-            if any(x in cl for x in ["tel", "telephone", "phone", "call", "contact", "fax"]):
-                return True
-
-        # Press-release / reference numbers: "2024/007", "No. 12/2025", etc.
-        if PRESS_ID_RE.search(cl):
-            if re.search(r"\b(19|20)\d{2}\s*[/\-]\s*\d+\b", c) or re.search(r"\bno\.\s*\d+\b", cl):
-                return True
-
-        # Pure chrome zones with small integers are almost always noise
-        if _looks_like_chrome(c) and u == "" and re.fullmatch(r"-?\d{1,3}", r):
-            return True
-
-        return False
-
-    def _required_phrase_gate(metric_name: str, near_ctx: str) -> bool:
-        """
-        Hard phrase-gating by metric family.
-        Only candidates whose near-context matches required phrases can win.
-        """
-        mn = (metric_name or "").lower()
-        nc = (near_ctx or "").lower()
-
-        # GDP Growth
-        if ("gdp" in mn and "growth" in mn) or ("economic growth" in mn):
-            return ("gdp" in nc) and ("growth" in nc or "grew" in nc or "expanded" in nc or "contracted" in nc)
-
-        # Inflation
-        if "inflation" in mn or "cpi" in mn:
-            return ("inflation" in nc) or ("cpi" in nc) or ("consumer price" in nc)
-
-        # Unemployment
-        if "unemployment" in mn or "jobless" in mn:
-            return ("unemployment" in nc) or ("jobless" in nc) or ("labour" in nc) or ("labor" in nc)
-
-        # Nominal GDP / GDP level
-        if "gdp" in mn and ("nominal" in mn or "current" in mn or "level" in mn or "value" in mn):
-            return ("gdp" in nc) and (("current price" in nc) or ("nominal" in nc) or _looks_like_currency(nc))
-
-        # Default: no hard gate
-        return True
-
 
     def _ctx_score(tokens: List[str], ctx: str) -> float:
         if not tokens:
@@ -6626,9 +6518,11 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
       - "http_<code>"
       - "exception:<TypeName>"
       - "empty"
-      - "invalid_url"   (malformed / contains whitespace)
-      - "blocked"       (captcha/access denied)
-      - "success_pdf_skipped_no_extractor" (PDF but no extractor available)
+
+    Key hardening:
+      - Normalizes bare domains to https://
+      - Detects PDF via headers OR .pdf suffix and extracts real text via pdfplumber
+      - Avoids returning binary garbage as "text"
     """
     import re
     import requests
@@ -6637,10 +6531,6 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
         u = (url or "").strip()
         if not u:
             return None, "empty"
-
-        # Reject any whitespace/newlines/tabs inside URL
-        if re.search(r"[\s\r\n\t]", u):
-            return None, "invalid_url"
 
         if not re.match(r"^https?://", u, flags=re.I):
             u = "https://" + u.lstrip("/")
@@ -6661,25 +6551,17 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
         content_type = (resp.headers.get("content-type") or "").lower()
         is_pdf = ("application/pdf" in content_type) or u.lower().endswith(".pdf")
 
-        # Quick block detection
-        low = ""
-        try:
-            low = (resp.text or "").lower()
-        except Exception:
-            low = ""
-        if any(x in low for x in ["captcha", "access denied", "request blocked", "unusual traffic"]):
-            return None, "blocked"
-
+        # ---- PDF handling: extract readable text ----
         if is_pdf:
-            raw = resp.content or b""
-            if not raw:
-                return None, "empty"
-
-            # 1) Prefer pdfplumber if installed
             try:
                 import io
-                import pdfplumber  # type: ignore
+                import pdfplumber
 
+                raw = resp.content or b""
+                if not raw:
+                    return None, "empty"
+
+                # Extract text (cap pages to keep latency + output stable)
                 out = []
                 with pdfplumber.open(io.BytesIO(raw)) as pdf:
                     max_pages = min(len(pdf.pages), 25)
@@ -6693,44 +6575,19 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
 
                 text = "\n".join(out).strip()
                 if not text:
+                    # PDF exists but no extractable text (scanned image etc.)
                     return None, "empty"
+
                 return text, "success_pdf"
-            except ModuleNotFoundError:
-                pass
-            except Exception:
-                # fall through to PyPDF2
-                pass
-
-            # 2) Fallback: PyPDF2 if installed
-            try:
-                import io
-                from PyPDF2 import PdfReader  # type: ignore
-
-                reader = PdfReader(io.BytesIO(raw))
-                parts = []
-                for page in reader.pages[:20]:
-                    try:
-                        t = page.extract_text() or ""
-                        if t.strip():
-                            parts.append(t)
-                    except Exception:
-                        continue
-
-                text = "\n".join(parts).strip()
-                if not text:
-                    return None, "empty"
-                return text, "success_pdf"
-            except ModuleNotFoundError:
-                return None, "success_pdf_skipped_no_extractor"
             except Exception as e:
                 return None, f"exception:{type(e).__name__}"
 
-        # HTML/text
+        # ---- HTML/Text handling ----
         text = resp.text or ""
         if not text.strip():
             return None, "empty"
 
-        # Drop obvious binary-ish junk
+        # If the "text" is mostly non-printable, treat as empty (prevents binary junk contexts)
         sample = text[:4000]
         if sample:
             non_printable = sum(1 for ch in sample if ord(ch) < 9 or (13 < ord(ch) < 32))
@@ -6820,82 +6677,55 @@ def run_source_anchored_evolution(previous_data: dict) -> dict:
     """
     Backward-compatible entrypoint used by the Streamlit Evolution UI.
 
-    FIX:
-    - Never returns None (your current v7_27 returns None on exceptions)
-    - Wraps non-dict payloads into a dict so the UI never trips the type guard
-    - Preserves the keys your UI expects
+    Annotation-safe:
+    - Uses built-in `dict` instead of `Dict` so it never NameErrors at import time.
     """
     fn = globals().get("compute_source_anchored_diff")
+    if callable(fn):
+        try:
+            out = fn(previous_data)
 
-    def _fail(message: str, raw=None) -> dict:
-        out = {
-            "status": "failed",
-            "message": message,
-            "sources_checked": 0,
-            "sources_fetched": 0,
-            "numbers_extracted_total": 0,
-            "stability_score": 0.0,
-            "summary": {
-                "total_metrics": 0,
-                "metrics_found": 0,
-                "metrics_increased": 0,
-                "metrics_decreased": 0,
-                "metrics_unchanged": 0,
-            },
-            "metric_changes": [],
-            "source_results": [],
-        }
-        if raw is not None:
-            try:
-                out["raw_payload_type"] = str(type(raw))
-                s = str(raw)
-                out["raw_payload_preview"] = (s[:1500] + "…") if len(s) > 1500 else s
-            except Exception:
-                out["raw_payload_type"] = "unknown"
-                out["raw_payload_preview"] = "unprintable"
-        return out
+            # hard guards for the renderer/UI
+            if isinstance(out, dict):
+                if out.get("stability_score") is None:
+                    out["stability_score"] = 0.0
+                if out.get("summary") is None:
+                    out["summary"] = {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0}
+                if out.get("metric_changes") is None:
+                    out["metric_changes"] = []
+                if out.get("source_results") is None:
+                    out["source_results"] = []
+                if out.get("sources_checked") is None:
+                    out["sources_checked"] = 0
+                if out.get("sources_fetched") is None:
+                    out["sources_fetched"] = 0
+                if out.get("status") is None:
+                    out["status"] = "success"
 
-    if not callable(fn):
-        return _fail("compute_source_anchored_diff() is not defined.")
+            return out
 
-    try:
-        out = fn(previous_data)
-
-        # IMPORTANT: If compute_source_anchored_diff returns non-dict, wrap it.
-        if not isinstance(out, dict):
-            return _fail("compute_source_anchored_diff() returned a non-dict payload.", raw=out)
-
-        # Normalize keys expected by your UI
-        if out.get("stability_score") is None:
-            out["stability_score"] = 0.0
-        if out.get("summary") is None:
-            out["summary"] = {
-                "total_metrics": 0,
-                "metrics_found": 0,
-                "metrics_increased": 0,
-                "metrics_decreased": 0,
-                "metrics_unchanged": 0,
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"compute_source_anchored_diff crashed: {e}",
+                "sources_checked": 0,
+                "sources_fetched": 0,
+                "stability_score": 0.0,
+                "summary": {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0},
+                "metric_changes": [],
+                "source_results": [],
             }
-        if out.get("metric_changes") is None:
-            out["metric_changes"] = []
-        if out.get("source_results") is None:
-            out["source_results"] = []
-        if out.get("sources_checked") is None:
-            out["sources_checked"] = 0
-        if out.get("sources_fetched") is None:
-            out["sources_fetched"] = 0
-        if out.get("numbers_extracted_total") is None:
-            out["numbers_extracted_total"] = 0
-        if out.get("status") is None:
-            out["status"] = "success"
-        if out.get("message") is None:
-            out["message"] = ""
 
-        return out
-
-    except Exception as e:
-        # Your current v7_27 returns None here — this is the direct cause of your UI error.
-        return _fail(f"run_source_anchored_evolution crashed: {type(e).__name__}: {e}")
+    return {
+        "status": "failed",
+        "message": "compute_source_anchored_diff() is not defined, so source-anchored evolution cannot run.",
+        "sources_checked": 0,
+        "sources_fetched": 0,
+        "stability_score": 0.0,
+        "summary": {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0},
+        "metric_changes": [],
+        "source_results": [],
+    }
 
 
 # =========================================================
@@ -6906,6 +6736,90 @@ NON_DATA_CONTEXT_HINTS = [
     "table of contents", "cookie", "privacy", "terms", "copyright",
     "subscribe", "newsletter", "login", "sign in", "nav", "footer"
 ]
+
+def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> dict:
+    """
+    Attach analysis-aligned source snapshots to the analysis dict.
+    This uses ONLY the already-extracted numbers produced during fetch_web_context()
+    (web_context['scraped_meta'][url]['extracted_numbers']), so we avoid brute-force scraping.
+
+    It writes snapshots into:
+      analysis['results']['source_results']
+      analysis['results']['baseline_sources_cache']
+      analysis['baseline_sources_cache']
+    """
+    from datetime import datetime
+    import hashlib
+
+    def _now_iso() -> str:
+        try:
+            return datetime.utcnow().isoformat() + "+00:00"
+        except Exception:
+            return datetime.now().isoformat()
+
+    def _sha1(s: str) -> str:
+        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+
+    if not isinstance(analysis, dict) or not isinstance(web_context, dict):
+        return analysis
+
+    scraped_meta = web_context.get("scraped_meta")
+    if not isinstance(scraped_meta, dict) or not scraped_meta:
+        return analysis
+
+    snaps = []
+    for url, meta in scraped_meta.items():
+        if not isinstance(meta, dict):
+            continue
+
+        extracted = meta.get("extracted_numbers") or []
+        if not isinstance(extracted, list):
+            extracted = []
+
+        cleaned = []
+        for n in extracted:
+            if not isinstance(n, dict):
+                continue
+            cleaned.append({
+                "value": n.get("value"),
+                "unit": n.get("unit"),
+                "raw": n.get("raw"),
+                "source_url": n.get("source_url") or url,
+                "context_snippet": (n.get("context") or "")[:200] if isinstance(n.get("context"), str) else "",
+            })
+
+        # fingerprint: prefer existing, else derive from any clean_text
+        fp = meta.get("fingerprint") or meta.get("extract_hash") or meta.get("content_fingerprint")
+        if fp and not isinstance(fp, str):
+            fp = str(fp)
+        if not fp and isinstance(meta.get("clean_text"), str):
+            fp = _sha1(meta["clean_text"][:200000])
+
+        snaps.append({
+            "url": url,
+            "status": "fetched_extracted" if cleaned else ("fetched" if str(meta.get("status_detail","")).startswith("success") else "failed"),
+            "status_detail": meta.get("status_detail") or meta.get("status") or "",
+            "numbers_found": int(meta.get("numbers_found") or len(cleaned)),
+            "fingerprint": fp,
+            "fetched_at": meta.get("fetched_at") or _now_iso(),
+            "extracted_numbers": cleaned,
+        })
+
+    if not snaps:
+        return analysis
+
+    results = analysis.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        analysis["results"] = results
+
+    # store in multiple keys for compatibility across versions
+    results["source_results"] = snaps
+    results["baseline_sources_cache"] = snaps
+    analysis["baseline_sources_cache"] = snaps
+
+    return analysis
+
 
 def fingerprint_text(text: str) -> str:
     """Stable short fingerprint for fetched content (deterministic)."""
@@ -7114,557 +7028,437 @@ def build_prev_numbers(prev_metrics: Dict) -> Dict[str, Dict]:
 
     return prev_numbers
 
-
-def compute_source_anchored_diff(previous_data):
+def _extract_baseline_cache(previous_data: dict) -> list:
     """
-    Source-anchored evolution (hybrid, analysis-aligned).
-
-    Improvements vs your current v7_28.5 evolution:
-    - Uses analysis extractors:
-        fetch_url_content_with_status
-        extract_numbers_with_context (HTML)
-        extract_numbers_with_context_pdf (PDF)
-    - Rejects malformed sources ("https://BBVA\\n Research ...")
-    - Suppresses year-only candidates unless strong econ context
-    - Hard unit-family gating even if prev_unit missing (infer from prev_raw)
-    - Source authority weighting + chrome/boilerplate penalties
-    - Always returns a valid dict (never None)
+    Pull prior source snapshots from any known places v7.x stores them.
+    Returns a list of source_result-like dicts, or [].
     """
-    import re
+    pd = previous_data or {}
+    pr = (pd.get("primary_response") or {}) if isinstance(pd.get("primary_response"), dict) else {}
+
+    for obj in [
+        pd.get("baseline_sources_cache"),
+        (pd.get("results") or {}).get("baseline_sources_cache") if isinstance(pd.get("results"), dict) else None,
+        (pd.get("results") or {}).get("source_results") if isinstance(pd.get("results"), dict) else None,
+        pd.get("source_results"),
+        pr.get("baseline_sources_cache"),
+        (pr.get("results") or {}).get("source_results") if isinstance(pr.get("results"), dict) else None,
+    ]:
+        if isinstance(obj, list) and obj:
+            return obj
+
+    return []
+
+
+def _extract_query_from_previous(previous_data: dict) -> str:
+    """
+    Try to recover the original user query/topic from the saved analysis object.
+    v7.27 commonly uses 'question'.
+    """
+    pd = previous_data or {}
+    if isinstance(pd.get("question"), str) and pd["question"].strip():
+        return pd["question"].strip()
+
+    pr = pd.get("primary_response") or {}
+    if isinstance(pr, dict):
+        if isinstance(pr.get("question"), str) and pr["question"].strip():
+            return pr["question"].strip()
+        if isinstance(pr.get("query"), str) and pr["query"].strip():
+            return pr["query"].strip()
+
+    meta = pd.get("meta") or {}
+    if isinstance(meta, dict) and isinstance(meta.get("question"), str) and meta["question"].strip():
+        return meta["question"].strip()
+
+    return ""
+
+
+def _build_source_snapshots_from_web_context(web_context: dict) -> list:
+    """
+    Convert fetch_web_context() output (scraped_meta) into evolution snapshots.
+    Uses ONLY analysis-pipeline aligned extracted_numbers cached by scraped_meta.
+    """
     import hashlib
     from datetime import datetime
-    from urllib.parse import urlparse
 
-    MAX_NUMBERS_PER_SOURCE = 250
-    CONTEXT_CHARS = 220
-    ABS_EPS = 1e-9
-    REL_EPS = 0.0005
+    def _sha1(s: str) -> str:
+        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
-    ECON_HINTS = {
-        "gdp","growth","inflation","cpi","unemployment","rate","interest","policy",
-        "deficit","debt","exports","imports","budget","forecast","projection",
-        "yoy","qoq","annual","quarter","surplus","trade","currency","exchange",
-        "bond","yield","fdi","investment"
-    }
-
-    CHROME_BAD_PHRASES = [
-        "all news", "sponsors", "subscribe", "cookie", "privacy policy", "terms",
-        "sign in", "log in", "footer", "header", "nav", "menu", "search",
-        "regatta", "newsletter", "copyright", "facebook", "twitter", "linkedin"
-    ]
-
-    def _now_iso():
+    def _now() -> str:
         try:
             return datetime.utcnow().isoformat() + "+00:00"
         except Exception:
             return datetime.now().isoformat()
 
-    def _sha1(s: str) -> str:
-        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+    if not isinstance(web_context, dict):
+        return []
 
-    _BAD_URL_WS = re.compile(r"[\s\r\n\t]+")
+    scraped_meta = web_context.get("scraped_meta") or {}
+    if not isinstance(scraped_meta, dict):
+        return []
 
-    def _is_probably_url(s: str) -> bool:
-        if not s or not isinstance(s, str):
-            return False
-        t = s.strip()
-        if not t or _BAD_URL_WS.search(t):
-            return False
-        if t.lower().startswith(("http://", "https://")):
+    out = []
+    for url, meta in scraped_meta.items():
+        if not isinstance(meta, dict):
+            continue
+
+        extracted = meta.get("extracted_numbers") or []
+        if not isinstance(extracted, list):
+            extracted = []
+
+        cleaned = []
+        for n in extracted:
+            if not isinstance(n, dict):
+                continue
+            cleaned.append({
+                "value": n.get("value"),
+                "unit": n.get("unit"),
+                "raw": n.get("raw"),
+                "source_url": n.get("source_url") or url,
+                "context": (n.get("context") or "")[:220] if isinstance(n.get("context"), str) else "",
+            })
+
+        fp = meta.get("fingerprint") or meta.get("extract_hash") or meta.get("content_fingerprint")
+        if fp and not isinstance(fp, str):
+            fp = str(fp)
+
+        if not fp and isinstance(meta.get("clean_text"), str):
+            fp = _sha1(meta["clean_text"][:200000])
+
+        out.append({
+            "url": url,
+            "status": "fetched_extracted" if cleaned else ("fetched" if str(meta.get("status_detail","")).startswith("success") else "failed"),
+            "status_detail": meta.get("status_detail") or meta.get("status") or "",
+            "numbers_found": int(meta.get("numbers_found") or len(cleaned)),
+            "fingerprint": fp,
+            "fetched_at": meta.get("fetched_at") or _now(),
+            "extracted_numbers": cleaned,
+            "source": meta.get("source"),
+            "title": meta.get("title"),
+            "date": meta.get("date"),
+        })
+
+    return out
+
+
+def _build_source_snapshots_from_baseline_cache(baseline_cache: list) -> list:
+    """
+    Normalize prior cached source_results (from previous run) into a consistent schema.
+    """
+    out = []
+    if not isinstance(baseline_cache, list):
+        return out
+
+    for sr in baseline_cache:
+        if not isinstance(sr, dict):
+            continue
+        url = sr.get("url") or sr.get("source_url")
+        if not url:
+            continue
+
+        extracted = sr.get("extracted_numbers") or []
+        if not isinstance(extracted, list):
+            extracted = []
+
+        cleaned = []
+        for n in extracted:
+            if not isinstance(n, dict):
+                continue
+            cleaned.append({
+                "value": n.get("value"),
+                "unit": n.get("unit"),
+                "raw": n.get("raw"),
+                "source_url": n.get("source_url") or url,
+                "context": (n.get("context") or n.get("context_snippet") or "")[:220]
+                if isinstance((n.get("context") or n.get("context_snippet")), str) else "",
+            })
+
+        fp = sr.get("fingerprint")
+        if fp and not isinstance(fp, str):
+            fp = str(fp)
+
+        out.append({
+            "url": url,
+            "status": sr.get("status") or "",
+            "status_detail": sr.get("status_detail") or "",
+            "numbers_found": int(sr.get("numbers_found") or len(cleaned)),
+            "fingerprint": fp,
+            "fetched_at": sr.get("fetched_at"),
+            "extracted_numbers": cleaned,
+        })
+
+    return out
+
+
+def _merge_snapshots_prefer_cached_when_unchanged(current_snaps: list, cached_snaps: list) -> list:
+    """
+    Policy merge:
+      - If current fingerprint matches cached fingerprint for same URL:
+        reuse cached snapshot (even if live fetch worked)  ✅ point A
+      - Else prefer current (fresh).
+      - Add cached snapshots not present in current.
+      - Also: if current numbers_found is 0 but cached has >0, reuse cached.
+    """
+    if not isinstance(current_snaps, list):
+        current_snaps = []
+    if not isinstance(cached_snaps, list):
+        cached_snaps = []
+
+    cached_by_url = {}
+    for s in cached_snaps:
+        if isinstance(s, dict) and s.get("url"):
+            cached_by_url[str(s["url"])] = s
+
+    merged = []
+    seen = set()
+
+    for cs in current_snaps:
+        if not isinstance(cs, dict) or not cs.get("url"):
+            continue
+        url = str(cs["url"])
+        seen.add(url)
+
+        cached = cached_by_url.get(url)
+        if not cached:
+            merged.append(cs)
+            continue
+
+        cur_fp = cs.get("fingerprint")
+        old_fp = cached.get("fingerprint")
+
+        cur_nf = int(cs.get("numbers_found") or 0)
+        old_nf = int(cached.get("numbers_found") or 0)
+
+        # If current extraction is empty but cached had numbers, reuse cached.
+        if cur_nf == 0 and old_nf > 0:
+            merged.append(cached)
+            continue
+
+        # Fingerprint unchanged -> reuse cached even if live fetch worked.
+        if cur_fp and old_fp and str(cur_fp) == str(old_fp):
+            merged.append(cached)
+        else:
+            merged.append(cs)
+
+    for url, cached in cached_by_url.items():
+        if url not in seen:
+            merged.append(cached)
+
+    return merged
+
+
+def _safe_parse_current_analysis(query: str, web_context: dict) -> dict:
+    """
+    Run the same analysis pipeline used in v7.27 to produce primary_response, but safely.
+    Returns dict with at least {primary_response:{primary_metrics:{}}} or {} on failure.
+    """
+    import json
+    qp = globals().get("query_perplexity")
+    if not callable(qp):
+        return {}
+
+    try:
+        raw = qp(query, web_context)
+        if not raw or not isinstance(raw, str):
+            return {}
+        obj = json.loads(raw)
+        if not isinstance(obj, dict):
+            return {}
+        return {"primary_response": obj}
+    except Exception:
+        return {}
+
+
+def _diff_metrics_by_name(prev_metrics: dict, cur_metrics: dict):
+    """
+    Stable diff when both old and new are produced by the same pipeline.
+    """
+    import re
+
+    def norm_name(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    def parse_num(v, unit=""):
+        fn = globals().get("parse_human_number")
+        if callable(fn):
             try:
-                p = urlparse(t)
-                return bool(p.scheme in ("http", "https") and p.netloc and "." in p.netloc)
+                return fn(str(v), unit)
             except Exception:
-                return False
-        return bool(re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", t, flags=re.I))
+                return None
+        try:
+            return float(str(v).replace(",", "").strip())
+        except Exception:
+            return None
 
-    def _normalize_url(s: str) -> str:
-        u = (s or "").strip()
-        if not u or _BAD_URL_WS.search(u):
-            return ""
-        if not re.match(r"^https?://", u, flags=re.I):
-            if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", u, flags=re.I):
-                u = "https://" + u
+    prev_index = {}
+    for k, m in (prev_metrics or {}).items():
+        if isinstance(m, dict):
+            name = m.get("name") or k
+            prev_index[norm_name(name)] = (name, m)
+
+    cur_index = {}
+    for k, m in (cur_metrics or {}).items():
+        if isinstance(m, dict):
+            name = m.get("name") or k
+            cur_index[norm_name(name)] = (name, m)
+
+    metric_changes = []
+    unchanged = increased = decreased = 0
+    found = 0
+
+    ABS_EPS = 1e-9
+    REL_EPS = 0.0005
+
+    for nk, (display_name, pm) in prev_index.items():
+        prev_raw = pm.get("raw") or pm.get("value")
+        prev_unit = pm.get("unit") or ""
+        prev_val = parse_num(pm.get("value"), prev_unit)
+
+        if nk not in cur_index:
+            metric_changes.append({
+                "name": display_name,
+                "previous_value": prev_raw,
+                "current_value": "N/A",
+                "change_pct": None,
+                "change_type": "not_found",
+                "match_confidence": 0.0,
+                "context_snippet": None,
+                "source_url": None,
+                "anchor_used": False,
+            })
+            continue
+
+        found += 1
+        _, cm = cur_index[nk]
+        cur_raw = cm.get("raw") or cm.get("value")
+        cur_unit = cm.get("unit") or ""
+        cur_val = parse_num(cm.get("value"), cur_unit)
+
+        change_type = "unknown"
+        change_pct = None
+
+        if prev_val is not None and cur_val is not None:
+            if abs(prev_val - cur_val) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
+                change_type = "unchanged"
+                change_pct = 0.0
+                unchanged += 1
+            elif cur_val > prev_val:
+                change_type = "increased"
+                change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+                increased += 1
             else:
-                return ""
-        return u
+                change_type = "decreased"
+                change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+                decreased += 1
 
-    def _normalize_unit(u: str) -> str:
-        u = (u or "").strip()
-        try:
-            fn = globals().get("normalize_unit")
-            if callable(fn):
+        metric_changes.append({
+            "name": display_name,
+            "previous_value": prev_raw,
+            "current_value": cur_raw,
+            "change_pct": change_pct,
+            "change_type": change_type,
+            "match_confidence": 85.0,
+            "context_snippet": None,
+            "source_url": None,
+            "anchor_used": False,
+        })
+
+    return metric_changes, unchanged, increased, decreased, found
+
+
+def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_by_name: dict):
+    """
+    When current analysis is missing, fall back to cached extracted_numbers only.
+    If there is no snapshot candidate, return not_found ✅ point B.
+    """
+    import re
+    ABS_EPS = 1e-9
+    REL_EPS = 0.0005
+
+    def norm_unit(u: str) -> str:
+        fn = globals().get("normalize_unit")
+        if callable(fn):
+            try:
                 return fn(u)
-        except Exception:
-            pass
-        ul = u.lower()
-        if ul in ("bn", "billion"):
-            return "B"
-        if ul in ("mn", "mio", "million"):
-            return "M"
-        if ul in ("k", "thousand", "000"):
-            return "K"
-        if ul in ("pct", "percent"):
-            return "%"
-        return u
+            except Exception:
+                pass
+        return (u or "").strip()
 
-    def _parse_human_number(val, unit_hint=""):
+    def parse_num(v, unit=""):
+        fn = globals().get("parse_human_number")
+        if callable(fn):
+            try:
+                return fn(str(v), unit)
+            except Exception:
+                return None
         try:
-            fn = globals().get("parse_human_number")
-            if callable(fn):
-                return fn(str(val), unit_hint)
+            return float(str(v).replace(",", "").strip())
         except Exception:
-            pass
-        s = str(val or "").strip().replace(",", "")
-        if not s:
             return None
-        m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*([KMBT%]?)\s*$", s, flags=re.I)
-        if not m:
-            return None
-        num = float(m.group(1))
-        suf = (m.group(2) or "").upper()
-        uh = _normalize_unit(unit_hint)
-        scale = suf or (uh if uh in ("K","M","B","T") else "")
-        if scale == "K":
-            num *= 1e3
-        elif scale == "M":
-            num *= 1e6
-        elif scale == "B":
-            num *= 1e9
-        elif scale == "T":
-            num *= 1e12
-        return num
 
-    def _looks_like_currency(text: str) -> bool:
-        return bool(re.search(r"(S\$|\$|USD|SGD|EUR|€|GBP|£|RM|MYR)", text or "", flags=re.I))
-
-    def _extract_currency_token(text: str) -> str:
-        t = (text or "")
-        up = t.upper()
-        if "S$" in up or "SGD" in up:
-            return "SGD"
-        if "€" in t or "EUR" in up:
-            return "EUR"
-        if "£" in t or "GBP" in up:
-            return "GBP"
-        if "RM" in up or "MYR" in up:
-            return "MYR"
-        if "$" in t or "USD" in up:
-            return "USD"
-        return ""
-
-    def _compatible_currency(prev_raw: str, cand_raw: str, cand_ctx: str) -> bool:
-        if not _looks_like_currency(prev_raw):
-            return True
-        prev_cur = _extract_currency_token(prev_raw)
-        cand_cur = _extract_currency_token(cand_raw) or _extract_currency_token(cand_ctx)
-        if prev_cur and not cand_cur:
-            return False
-        if prev_cur and cand_cur and prev_cur != cand_cur:
-            return False
-        return True
-
-    def _infer_prev_family(prev_unit: str, prev_raw: str) -> str:
-        # Hard inference if unit is missing but raw contains signal
-        pu = _normalize_unit(prev_unit or "")
-        raw = (prev_raw or "")
-        if pu == "%":
-            return "PCT"
-        if "%" in raw:
-            return "PCT"
-        if any(x in raw for x in ["B", "M", "K", "T"]) and re.search(r"\d", raw):
-            return "SCALE"
-        if _looks_like_currency(raw):
-            return "SCALE"
-        if pu in ("T","B","M","K"):
-            return "SCALE"
-        return "OTHER"
-
-    def _candidate_family(c_unit: str, c_raw: str, c_ctx: str) -> str:
-        cu = _normalize_unit(c_unit or "")
-        if cu == "%":
-            return "PCT"
-        if "%" in (c_raw or "") or "%" in (c_ctx or ""):
-            return "PCT"
-        if cu in ("T","B","M","K"):
-            return "SCALE"
-        if re.search(r"\b(bn|billion|mn|million|thousand)\b", (c_raw or "") + " " + (c_ctx or ""), flags=re.I):
-            return "SCALE"
-        if _looks_like_currency((c_raw or "") + " " + (c_ctx or "")):
-            return "SCALE"
-        return "OTHER"
-
-    def _metric_tokens(name: str):
-        n = (name or "").lower()
-        toks = re.findall(r"[a-z0-9]+", n)
+    def metric_tokens(name: str):
+        toks = re.findall(r"[a-z0-9]+", (name or "").lower())
         stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
-        out = [t for t in toks if len(t) > 3 and t not in stop]
-        if "gdp" in toks:
-            out += ["gross", "domestic", "product"]
-        if "inflation" in toks:
-            out += ["cpi"]
-        if "unemployment" in toks:
-            out += ["jobless"]
-        if "fdi" in toks:
-            out += ["investment", "inflow", "foreign"]
-        return list(dict.fromkeys(out))[:30]
+        return [t for t in toks if len(t) > 3 and t not in stop][:24]
 
-    def _ctx_score(tokens, ctx: str) -> float:
+    def ctx_score(tokens, ctx: str) -> float:
+        c = (ctx or "").lower()
         if not tokens:
             return 0.0
-        c = (ctx or "").lower()
         hit = sum(1 for t in tokens if t in c)
         return hit / max(1, len(tokens))
 
-    def _is_year_only_candidate(raw: str, unit: str, ctx: str) -> bool:
-        r = (raw or "").strip()
-        u = (unit or "").strip()
-        if u:
-            return False
-        if re.fullmatch(r"(19|20)\d{2}", r):
-            cl = (ctx or "").lower()
-            # keep only if strong econ hints exist nearby
-            if any(k in cl for k in ECON_HINTS):
-                return False
-            return True
-        return False
-
-    def _chrome_penalty(ctx: str) -> float:
-        cl = (ctx or "").lower()
-        pen = 0.0
-        for ph in CHROME_BAD_PHRASES:
-            if ph in cl:
-                pen -= 0.20
-        return pen
-
-    def _source_weight(url: str, ctx: str) -> float:
-        """
-        Authority + reliability weighting.
-        Positive = prefer; negative = downrank noisy sources.
-        """
-        u = (url or "").lower()
-        w = 0.0
-
-        # Authority domains
-        if ".gov.my" in u or u.endswith(".gov.my") or ".gov" in u:
-            w += 0.40
-        if "worldbank.org" in u:
-            w += 0.20
-            if any(x in u for x in ["/indicator/", "/data", "api.worldbank.org"]):
-                w += 0.10
-        if "imf.org" in u:
-            w += 0.25
-        if "oecd.org" in u:
-            w += 0.20
-
-        # Noisy/news/marketing pages
-        if any(x in u for x in ["arc-group", "news", "/blog", "/press", "/events"]):
-            w -= 0.15
-
-        # Chrome penalty from context
-        w += _chrome_penalty(ctx)
-
-        return w
-
-    def _score_candidate(metric_tokens, ctx: str, raw: str, url: str) -> float:
-        c = (ctx or "").lower()
-        score = 0.0
-        score += _ctx_score(metric_tokens, c)
-
-        # econ keyword bonus
-        ek = sum(1 for k in ECON_HINTS if k in c)
-        score += min(0.6, ek * 0.05)
-
-        # currency slight boost when not chrome
-        if _looks_like_currency(raw) and _chrome_penalty(ctx) > -0.4:
-            score += 0.08
-
-        # authority weighting
-        score += _source_weight(url, ctx)
-
-        return score
-
-        def _coerce_extracted(extracted: list, source_url: str) -> list:
-        """
-        Normalize analysis-extractor output into evolution candidate schema AND apply
-        global structural filtering. Also compute near-context for better scoring.
-        """
-        out = []
-        for n in (extracted or []):
-            if not isinstance(n, dict):
-                continue
-
-            raw = (n.get("raw") or "").strip()
-            ctx = (n.get("context") or n.get("context_snippet") or "").strip()
-            unit = _normalize_unit(n.get("unit") or "")
-            val = n.get("value")
-
-            ctx = re.sub(r"\s+", " ", ctx).strip()
-            ctx_store = ctx[:CONTEXT_CHARS] if ctx else ""
-            near_ctx = _near_context(ctx_store, raw, fallback_span=55)
-
-            # NEW: global structural junk filter
-            if _is_structural_candidate(raw, unit, near_ctx or ctx_store):
-                continue
-
-            pv = _parse_human_number(val, unit) if val is not None else None
-            if pv is None and raw:
-                pv = _parse_human_number(raw, unit)
-            if pv is None:
-                continue
-
-            anchor_hash = n.get("anchor_hash") or _sha1(f"{source_url}|{raw}|{ctx_store[:180]}")
-
-            out.append({
-                "value": float(pv),
-                "unit": unit,
-                "raw": raw or str(val),
-                "source_url": source_url,
-                "context": ctx_store[:180],
-                "near_context": near_ctx[:180],  # NEW: used for scoring/gating
-                "anchor_hash": anchor_hash,
-            })
-        return out
-
-
-
-    # -------------------------
-    # Load baseline state
-    # -------------------------
-    previous_data = previous_data or {}
-    prev_response = previous_data.get("primary_response", {}) or {}
-
-    prev_metrics = prev_response.get("primary_metrics", {}) or {}
-    evidence_records = previous_data.get("evidence_records") or prev_response.get("evidence_records") or []
-    metric_anchors = previous_data.get("metric_anchors") or prev_response.get("metric_anchors") or []
-
-    # Build baseline numbers dict
-    prev_numbers = {}
-    for _, m in (prev_metrics or {}).items():
-        if not isinstance(m, dict):
+    # Flatten candidates from snapshots ONLY
+    candidates = []
+    for sr in (snapshots or []):
+        if not isinstance(sr, dict):
             continue
-        name = (m.get("name") or "").strip()
-        if not name:
-            continue
-        val = m.get("value")
-        unit = (m.get("unit") or "").strip()
-        prev_raw = m.get("raw") or (str(val) if val is not None else "N/A")
-        pv = _parse_human_number(val, unit)
-        prev_numbers[name] = {
-            "value": pv,
-            "unit": _normalize_unit(unit),
-            "raw": prev_raw,
-            "raw_value": val,
-            "raw_unit": unit,
-            "keywords": _metric_tokens(name),
-        }
+        url = sr.get("url")
+        for n in (sr.get("extracted_numbers") or []):
+            if isinstance(n, dict):
+                candidates.append({
+                    "url": url,
+                    "value": n.get("value"),
+                    "unit": norm_unit(n.get("unit") or ""),
+                    "raw": n.get("raw") or "",
+                    "context": n.get("context") or "",
+                })
 
-    # URLs: prefer evidence_records
-    urls = []
-    if isinstance(evidence_records, list) and evidence_records:
-        for rec in evidence_records:
-            if isinstance(rec, dict) and rec.get("url"):
-                u = str(rec["url"]).strip()
-                if _is_probably_url(u):
-                    nu = _normalize_url(u)
-                    if nu:
-                        urls.append(nu)
-
-    if not urls:
-        prev_sources = prev_response.get("sources", []) or previous_data.get("web_sources", []) or []
-        if isinstance(prev_sources, list):
-            for s in prev_sources:
-                if isinstance(s, str) and _is_probably_url(s):
-                    nu = _normalize_url(s)
-                    if nu:
-                        urls.append(nu)
-
-    # De-dupe
-    seen = set()
-    urls = [u for u in urls if u and not (u in seen or seen.add(u))]
-
-    # Anchors by name
-    anchors_by_name = {}
-    if isinstance(metric_anchors, list):
-        for a in metric_anchors:
-            if isinstance(a, dict) and a.get("metric_name"):
-                anchors_by_name[str(a["metric_name"])] = a
-
-    # -------------------------
-    # Fetch + extract per source (helper-first)
-    # -------------------------
-    source_results = []
-    all_candidates = []
-    sources_checked = 0
-    sources_fetched = 0
-    numbers_extracted_total = 0
-
-    fetch_fn = globals().get("fetch_url_content_with_status")
-    html_extractor = globals().get("extract_numbers_with_context")
-    pdf_extractor = globals().get("extract_numbers_with_context_pdf")
-
-    for u in urls:
-        sources_checked += 1
-        url = _normalize_url(u)
-
-        if not url:
-            source_results.append({
-                "url": u,
-                "status": "failed",
-                "status_detail": "invalid_url",
-                "numbers_found": 0,
-                "fingerprint": None,
-                "fetched_at": _now_iso(),
-                "extracted_numbers": [],
-            })
-            continue
-
-        content = None
-        detail = "failed"
-
-        try:
-            if callable(fetch_fn):
-                content, detail = fetch_fn(url, timeout=25)
-            else:
-                content, detail = None, "missing_fetcher"
-        except Exception as e:
-            content, detail = None, f"exception:{type(e).__name__}"
-
-        extracted = []
-        fingerprint = None
-
-        if isinstance(content, str) and content.strip() and str(detail).startswith("success"):
-            sources_fetched += 1
-
-            try:
-                fingerprint = _sha1(re.sub(r"\s+", " ", content)[:200000])
-            except Exception:
-                fingerprint = None
-
-            try:
-                if detail == "success_pdf" and callable(pdf_extractor):
-                    extracted = _coerce_extracted(pdf_extractor(content) or [], url)
-                elif callable(html_extractor):
-                    extracted = _coerce_extracted(html_extractor(content, source_url=url, max_results=600) or [], url)
-                else:
-                    extracted = []
-            except Exception:
-                extracted = []
-
-            # cap + store
-            extracted = extracted[:MAX_NUMBERS_PER_SOURCE]
-            numbers_extracted_total += len(extracted)
-            all_candidates.extend(extracted)
-
-        source_results.append({
-            "url": url,
-            "status": "fetched_extracted" if (str(detail).startswith("success") and extracted) else ("fetched" if str(detail).startswith("success") else "failed"),
-            "status_detail": str(detail),
-            "numbers_found": int(len(extracted or [])),
-            "fingerprint": fingerprint,
-            "fetched_at": _now_iso(),
-            "extracted_numbers": (extracted or [])[:MAX_NUMBERS_PER_SOURCE],
-        })
-
-    # -------------------------
-    # Anchor-first + fallback matching (hard gates + authority weighting)
-    # -------------------------
-    metric_changes = []
-    unchanged = increased = decreased = 0
-
+    out_changes = []
     for metric_name, prev in (prev_numbers or {}).items():
-        if not isinstance(prev, dict):
-            continue
-
+        prev_raw = prev.get("raw") or prev.get("value") or "N/A"
+        prev_unit = norm_unit(prev.get("unit") or "")
         prev_val = prev.get("value")
-        prev_unit = prev.get("unit", "")
-        prev_raw = prev.get("raw") or (str(prev.get("raw_value")) if prev.get("raw_value") is not None else "N/A")
-        prev_family = _infer_prev_family(prev_unit, prev_raw)
+        toks = prev.get("keywords") or metric_tokens(metric_name)
 
-        tokens = prev.get("keywords") or _metric_tokens(metric_name)
+        anchor = anchors_by_name.get(metric_name) or {}
+        anchor_url = anchor.get("source_url") if isinstance(anchor, dict) else None
+
+        pool = candidates
+        if anchor_url:
+            pool = [c for c in candidates if c.get("url") == anchor_url] or candidates
 
         best = None
         best_score = -1.0
-        used_anchor = False
 
-        # helper: hard family gate
-        def _family_gate_ok(c) -> bool:
-            # Use near context because it contains the closest phrasing around the number
-            nc = c.get("near_context") or c.get("context") or ""
-            cfam = _candidate_family(c.get("unit",""), c.get("raw",""), nc)
+        for c in pool:
+            score = ctx_score(toks, c.get("context",""))
 
-            if prev_family == "PCT":
-                return cfam == "PCT"
-            if prev_family == "SCALE":
-                return cfam == "SCALE"
-            return True
+            # Soft unit gate
+            if prev_unit == "%" and ("%" not in (c.get("raw","") + c.get("context","")) and c.get("unit") != "%"):
+                score -= 1.5
 
+            cv = parse_num(c.get("value"), c.get("unit")) or parse_num(c.get("raw"), c.get("unit"))
+            if prev_val is not None and cv is not None:
+                if abs(prev_val - cv) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
+                    score += 0.25
 
-        # Phase 1: anchor-first
-        anchor = anchors_by_name.get(metric_name) or {}
-        if isinstance(anchor, dict) and anchor.get("source_url"):
-            used_anchor = True
-            anchor_url = _normalize_url(anchor.get("source_url") or "")
-            anchor_hash = anchor.get("anchor_hash")
+            if score > best_score:
+                best_score = score
+                best = c
 
-            anchored = [c for c in all_candidates if c.get("source_url") == anchor_url]
-            for c in anchored:
-                if not _family_gate_ok(c):
-                    continue
-                if not _compatible_currency(prev_raw, c.get("raw",""), c.get("context","")):
-                    continue
-
-                score = 0.0
-                if anchor_hash and c.get("anchor_hash") == anchor_hash:
-                    score += 2.0
-
-                # use full scoring (tokens + econ hints + authority)
-                nc = c.get("near_context") or c.get("context") or ""
-                # NEW: phrase gating
-                if not _required_phrase_gate(metric_name, nc):
-                    continue
-                score += _score_candidate(tokens, nc, c.get("raw",""), c.get("source_url",""))
-
-
-                # numeric closeness bonus (only if both parse)
-                cv = _parse_human_number(c.get("value"), c.get("unit")) or _parse_human_number(c.get("raw"), c.get("unit"))
-                if prev_val is not None and cv is not None:
-                    if abs(prev_val - cv) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
-                        score += 0.25
-
-                if score > best_score:
-                    best_score = score
-                    best = c
-
-        # Phase 2: global fallback
-        if best is None:
-            for c in all_candidates:
-                if not _family_gate_ok(c):
-                    continue
-                if not _compatible_currency(prev_raw, c.get("raw",""), c.get("context","")):
-                    continue
-
-                # extra guard: prevent huge nonsense for % metrics
-                if prev_family == "PCT":
-                    try:
-                        v = float(c.get("value"))
-                        if v < -50 or v > 200:
-                            cl = (c.get("context") or "").lower()
-                            if "hyperinflation" not in cl:
-                                continue
-                    except Exception:
-                        pass
-
-                nc = c.get("near_context") or c.get("context") or ""
-                if not _required_phrase_gate(metric_name, nc):
-                    continue
-                score = _score_candidate(tokens, nc, c.get("raw",""), c.get("source_url",""))
-                if score > best_score:
-                    best_score = score
-                    best = c
-
-        if best is None:
-            metric_changes.append({
+        if not best:
+            out_changes.append({
                 "name": metric_name,
                 "previous_value": prev_raw,
                 "current_value": "N/A",
@@ -7673,51 +7467,205 @@ def compute_source_anchored_diff(previous_data):
                 "match_confidence": 0.0,
                 "context_snippet": None,
                 "source_url": None,
-                "anchor_used": bool(used_anchor),
+                "anchor_used": bool(anchor_url),
             })
             continue
 
-        cur_raw = best.get("raw") or str(best.get("value"))
-        cv = _parse_human_number(best.get("value"), best.get("unit")) or _parse_human_number(cur_raw, best.get("unit"))
+        cur_raw = best.get("raw") or best.get("value")
+        cv = parse_num(best.get("value"), best.get("unit")) or parse_num(cur_raw, best.get("unit"))
 
-        change_pct = None
         change_type = "unknown"
-
+        change_pct = None
         if prev_val is not None and cv is not None:
             if abs(prev_val - cv) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
                 change_type = "unchanged"
-                unchanged += 1
                 change_pct = 0.0
             elif cv > prev_val:
                 change_type = "increased"
-                increased += 1
                 change_pct = ((cv - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
             else:
                 change_type = "decreased"
-                decreased += 1
                 change_pct = ((cv - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
 
-        # confidence
-        conf = max(0.0, min(100.0, best_score * 55.0))
+        conf = max(0.0, min(60.0, best_score * 60.0))
 
-        metric_changes.append({
+        out_changes.append({
             "name": metric_name,
             "previous_value": prev_raw,
             "current_value": cur_raw,
             "change_pct": change_pct,
             "change_type": change_type,
             "match_confidence": float(conf),
-            "context_snippet": (best.get("near_context") or best.get("context") or "")[:200],
-            "source_url": best.get("source_url"),
-            "anchor_used": bool(used_anchor),
+            "context_snippet": (best.get("context") or "")[:200] if isinstance(best.get("context"), str) else None,
+            "source_url": best.get("url"),
+            "anchor_used": bool(anchor_url),
         })
+
+    return out_changes
+
+
+def compute_source_anchored_diff(previous_data):
+    """
+    Evolution via analysis pipeline (stable) + snapshot fallback (no brute-force scraping).
+
+    ✅ Point A: If snapshot exists and fingerprint unchanged -> reuse snapshot even if live fetch works.
+    ✅ Point B: If no snapshot -> mark metric as not_found (never guess from raw HTML).
+
+    Returns backward-compatible keys used by Streamlit evolution UI.
+    """
+    import re
+    from datetime import datetime
+
+    def _now_iso() -> str:
+        try:
+            return datetime.utcnow().isoformat() + "+00:00"
+        except Exception:
+            return datetime.now().isoformat()
+
+    previous_data = previous_data or {}
+    prev_response = previous_data.get("primary_response", {}) or {}
+    prev_metrics = prev_response.get("primary_metrics", {}) or {}
+    if not isinstance(prev_metrics, dict):
+        prev_metrics = {}
+
+    # Build prev_numbers for snapshot fallback matching
+    prev_numbers = {}
+    for _, m in prev_metrics.items():
+        if not isinstance(m, dict):
+            continue
+        name = (m.get("name") or "").strip()
+        if not name:
+            continue
+        unit = (m.get("unit") or "").strip()
+        val = m.get("value")
+
+        pv = None
+        try:
+            fn = globals().get("parse_human_number")
+            if callable(fn):
+                pv = fn(str(val), unit)
+        except Exception:
+            pv = None
+
+        prev_numbers[name] = {
+            "value": pv,
+            "unit": unit,
+            "raw": m.get("raw") or (str(val) if val is not None else "N/A"),
+            "keywords": [],
+        }
+
+    # Anchors by metric name
+    metric_anchors = previous_data.get("metric_anchors") or prev_response.get("metric_anchors") or []
+    anchors_by_name = {}
+    if isinstance(metric_anchors, list):
+        for a in metric_anchors:
+            if isinstance(a, dict) and a.get("metric_name"):
+                anchors_by_name[str(a["metric_name"])] = a
+
+    # Cached snapshots from previous run
+    baseline_cache = _extract_baseline_cache(previous_data)
+    cached_snapshots = _build_source_snapshots_from_baseline_cache(baseline_cache)
+
+    # Build current analysis context using the v7.27 analysis pipeline
+    query = _extract_query_from_previous(previous_data)
+    web_context = None
+    current_analysis = {}
+
+    message_bits = []
+    fw = globals().get("fetch_web_context")
+
+    if query and callable(fw):
+        try:
+            web_context = fw(query, num_sources=3)
+        except Exception as e:
+            web_context = None
+            message_bits.append(f"fetch_web_context failed: {type(e).__name__}")
+
+    current_snapshots = _build_source_snapshots_from_web_context(web_context) if isinstance(web_context, dict) else []
+
+    # ✅ Merge policy implements Point A
+    snapshots = _merge_snapshots_prefer_cached_when_unchanged(current_snapshots, cached_snapshots)
+
+    # Expose snapshots to UI as source_results
+    source_results = snapshots
+
+    # Try to produce current primary_metrics
+    if query and isinstance(web_context, dict):
+        current_analysis = _safe_parse_current_analysis(query, web_context) or {}
+        if current_analysis:
+            message_bits.append("Current analysis generated via analysis pipeline.")
+        else:
+            message_bits.append("Current analysis unavailable; using snapshots fallback.")
+    else:
+        message_bits.append("Missing query or web_context; using snapshots fallback.")
+
+    cur_response = current_analysis.get("primary_response") if isinstance(current_analysis, dict) else None
+    cur_response = cur_response if isinstance(cur_response, dict) else {}
+    cur_metrics = cur_response.get("primary_metrics") if isinstance(cur_response, dict) else None
+    cur_metrics = cur_metrics if isinstance(cur_metrics, dict) else {}
+
+    metric_changes = []
+    unchanged = increased = decreased = 0
+
+    # Primary stable diff path if we have current metrics
+    if cur_metrics:
+        metric_changes, unchanged, increased, decreased, _found = _diff_metrics_by_name(prev_metrics, cur_metrics)
+
+        # Optionally fill not_found via snapshots (still no brute force)
+        missing = [m for m in metric_changes if m.get("change_type") == "not_found"]
+        if missing and snapshots:
+            for k in list(prev_numbers.keys()):
+                if not prev_numbers[k].get("keywords"):
+                    toks = re.findall(r"[a-z0-9]+", k.lower())
+                    stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
+                    prev_numbers[k]["keywords"] = [t for t in toks if len(t) > 3 and t not in stop][:24]
+
+            fb = _fallback_match_from_snapshots(prev_numbers, snapshots, anchors_by_name)
+            fb_by_name = {x.get("name"): x for x in fb if isinstance(x, dict) and x.get("name")}
+
+            merged = []
+            for row in metric_changes:
+                if row.get("change_type") == "not_found" and row.get("name") in fb_by_name:
+                    merged.append(fb_by_name[row["name"]])
+                else:
+                    merged.append(row)
+            metric_changes = merged
+            message_bits.append("Supplemented not_found metrics via snapshots.")
+    else:
+        # Snapshot-only fallback (✅ Point B: no snapshot -> not_found)
+        for k in list(prev_numbers.keys()):
+            toks = re.findall(r"[a-z0-9]+", k.lower())
+            stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
+            prev_numbers[k]["keywords"] = [t for t in toks if len(t) > 3 and t not in stop][:24]
+
+        metric_changes = _fallback_match_from_snapshots(prev_numbers, snapshots, anchors_by_name)
+
+        for m in metric_changes:
+            ct = m.get("change_type")
+            if ct == "unchanged":
+                unchanged += 1
+            elif ct == "increased":
+                increased += 1
+            elif ct == "decreased":
+                decreased += 1
 
     total = max(1, len(metric_changes))
     stability_score = (unchanged / total) * 100.0
 
+    sources_checked = len(source_results)
+    sources_fetched = sum(1 for s in source_results if isinstance(s, dict) and str(s.get("status","")).startswith("fetched"))
+
+    numbers_extracted_total = 0
+    for s in source_results:
+        if isinstance(s, dict):
+            try:
+                numbers_extracted_total += int(s.get("numbers_found") or 0)
+            except Exception:
+                pass
+
     return {
         "status": "success",
-        "message": "Source-anchored evolution completed (analysis-aligned hybrid with hard gates + authority weighting).",
+        "message": " ".join(message_bits) if message_bits else "Evolution completed via analysis pipeline + snapshots.",
         "sources_checked": int(sources_checked),
         "sources_fetched": int(sources_fetched),
         "numbers_extracted_total": int(numbers_extracted_total),
@@ -7732,8 +7680,8 @@ def compute_source_anchored_diff(previous_data):
         "metric_changes": metric_changes,
         "source_results": source_results,
         "interpretation": (
-            "Hybrid evolution: helper-first fetch + HTML/PDF extractors, year-suppression, "
-            "hard unit-family gating, authority weighting, and chrome penalties."
+            "Stable evolution: compare previous vs current analysis outputs. "
+            "If sources unavailable or unchanged, reuse cached analysis-aligned snapshots (no brute-force scraping)."
         ),
     }
 
@@ -9162,7 +9110,8 @@ def main():
                 pass
 
             # Build output
-            output = {
+
+                        output = {
                 "question": query,
                 "question_profile": question_profile,
                 "question_category": question_profile.get("category"),
@@ -9175,32 +9124,43 @@ def main():
                 "web_sources": web_context.get("sources", []),
             }
 
-            # Save baseline numeric cache if available (optional; your codebase may already do this)
+            # Save baseline numeric cache if available (existing behavior)
             try:
                 baseline_sources_cache = []
-                scraped = (web_context or {}).get("scraped_content") or {}
-                for url, content in scraped.items():
-                    if not content:
-                        continue
-                    nums = extract_numbers_with_context(content)
-                    baseline_sources_cache.append({
-                        "url": url,
-                        "fetched_at": now_utc().isoformat(),
-                        "fingerprint": fingerprint_text(content),
-                        "extracted_numbers": [
-                            {
-                                "value": n.get("value"),
-                                "unit": n.get("unit"),
-                                "raw": n.get("raw"),
-                                "context_snippet": (n.get("context") or "")[:200]
-                            }
-                            for n in (nums or [])
-                        ]
-                    })
+                for url, meta in (web_context.get("scraped_meta") or {}).items():
+                    if isinstance(meta, dict):
+                        nums = meta.get("extracted_numbers") or []
+                        content = meta.get("content") or meta.get("clean_text") or ""
+                        baseline_sources_cache.append({
+                            "url": url,
+                            "status": "fetched" if str(meta.get("status_detail","")).startswith("success") else "failed",
+                            "status_detail": meta.get("status_detail") or meta.get("status") or "",
+                            "numbers_found": len(nums) if isinstance(nums, list) else 0,
+                            "fetched_at": now_utc().isoformat(),
+                            "fingerprint": fingerprint_text(content),
+                            "extracted_numbers": [
+                                {
+                                    "value": n.get("value"),
+                                    "unit": n.get("unit"),
+                                    "raw": n.get("raw"),
+                                    "context_snippet": (n.get("context") or "")[:200]
+                                }
+                                for n in (nums or [])
+                                if isinstance(n, dict)
+                            ]
+                        })
                 if baseline_sources_cache:
                     output["baseline_sources_cache"] = baseline_sources_cache
             except Exception:
                 pass
+
+            # ✅ NEW (exact placement): attach analysis-aligned snapshots for evolution stability
+            # This avoids brute-force evolution scraping later.
+            try:
+                output = attach_source_snapshots_to_analysis(output, web_context)
+            except Exception:
+                pass
+
 
             with st.spinner("💾 Saving to history..."):
                 if add_to_history(output):
