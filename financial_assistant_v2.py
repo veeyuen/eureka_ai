@@ -6917,9 +6917,9 @@ def run_source_anchored_evolution(previous_data: dict) -> dict:
     Backward-compatible entrypoint used by the Streamlit Evolution UI.
 
     HARDENED:
-    - Guarantees return type is always dict (never None/tuple/str)
-    - If compute_source_anchored_diff returns non-dict, wraps it in a failed dict payload
-      so the UI doesn't crash and you can see what came back.
+    - Always returns a dict (never None/tuple/str)
+    - If compute_source_anchored_diff returns non-dict, wraps it into a failed dict
+      and includes a preview so you can debug quickly.
     """
     fn = globals().get("compute_source_anchored_diff")
 
@@ -6929,46 +6929,56 @@ def run_source_anchored_evolution(previous_data: dict) -> dict:
             "message": message,
             "sources_checked": 0,
             "sources_fetched": 0,
+            "numbers_extracted_total": 0,
             "stability_score": 0.0,
-            "summary": {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0},
+            "summary": {
+                "total_metrics": 0,
+                "metrics_found": 0,
+                "metrics_increased": 0,
+                "metrics_decreased": 0,
+                "metrics_unchanged": 0,
+            },
             "metric_changes": [],
             "source_results": [],
+            "interpretation": "Evolution wrapper failure (non-dict payload).",
         }
         if raw is not None:
-            # keep it small but useful
             try:
                 out["raw_payload_type"] = str(type(raw))
-                out["raw_payload_preview"] = (str(raw)[:1500] + "…") if len(str(raw)) > 1500 else str(raw)
+                s = str(raw)
+                out["raw_payload_preview"] = (s[:2000] + "…") if len(s) > 2000 else s
             except Exception:
                 out["raw_payload_type"] = "unknown"
                 out["raw_payload_preview"] = "unprintable"
         return out
 
     if not callable(fn):
-        return _fail("compute_source_anchored_diff() is not defined, so source-anchored evolution cannot run.")
+        return _fail("compute_source_anchored_diff() is not defined.")
 
     try:
         out = fn(previous_data)
 
-        # ✅ hard guard: ALWAYS return dict
+        # ✅ key fix: wrap non-dict
         if not isinstance(out, dict):
             return _fail("compute_source_anchored_diff() returned a non-dict payload.", raw=out)
 
-        # normalize required keys for UI safety
-        if out.get("stability_score") is None:
-            out["stability_score"] = 0.0
-        if out.get("summary") is None:
-            out["summary"] = {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0}
-        if out.get("metric_changes") is None:
-            out["metric_changes"] = []
-        if out.get("source_results") is None:
-            out["source_results"] = []
-        if out.get("sources_checked") is None:
-            out["sources_checked"] = 0
-        if out.get("sources_fetched") is None:
-            out["sources_fetched"] = 0
-        if out.get("status") is None:
-            out["status"] = "success"
+        # normalize required keys for renderer safety
+        out.setdefault("status", "success")
+        out.setdefault("message", "")
+        out.setdefault("sources_checked", 0)
+        out.setdefault("sources_fetched", 0)
+        out.setdefault("numbers_extracted_total", 0)
+        out.setdefault("stability_score", 0.0)
+        out.setdefault("summary", {
+            "total_metrics": 0,
+            "metrics_found": 0,
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_unchanged": 0,
+        })
+        out.setdefault("metric_changes", [])
+        out.setdefault("source_results", [])
+        out.setdefault("interpretation", "")
 
         return out
 
