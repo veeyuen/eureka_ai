@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.28.5
+# YUREEKA AI RESEARCH ASSISTANT v7.27
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -6518,7 +6518,11 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
       - "http_<code>"
       - "exception:<TypeName>"
       - "empty"
-      - "invalid_url"   (NEW: malformed / contains whitespace)
+
+    Key hardening:
+      - Normalizes bare domains to https://
+      - Detects PDF via headers OR .pdf suffix and extracts real text via pdfplumber
+      - Avoids returning binary garbage as "text"
     """
     import re
     import requests
@@ -6527,10 +6531,6 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
         u = (url or "").strip()
         if not u:
             return None, "empty"
-
-        # ✅ Reject any whitespace/newlines/tabs inside URL
-        if re.search(r"[\s\r\n\t]", u):
-            return None, "invalid_url"
 
         if not re.match(r"^https?://", u, flags=re.I):
             u = "https://" + u.lstrip("/")
@@ -6551,6 +6551,7 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
         content_type = (resp.headers.get("content-type") or "").lower()
         is_pdf = ("application/pdf" in content_type) or u.lower().endswith(".pdf")
 
+        # ---- PDF handling: extract readable text ----
         if is_pdf:
             try:
                 import io
@@ -6560,6 +6561,7 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
                 if not raw:
                     return None, "empty"
 
+                # Extract text (cap pages to keep latency + output stable)
                 out = []
                 with pdfplumber.open(io.BytesIO(raw)) as pdf:
                     max_pages = min(len(pdf.pages), 25)
@@ -6573,16 +6575,19 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
 
                 text = "\n".join(out).strip()
                 if not text:
+                    # PDF exists but no extractable text (scanned image etc.)
                     return None, "empty"
 
                 return text, "success_pdf"
             except Exception as e:
                 return None, f"exception:{type(e).__name__}"
 
+        # ---- HTML/Text handling ----
         text = resp.text or ""
         if not text.strip():
             return None, "empty"
 
+        # If the "text" is mostly non-printable, treat as empty (prevents binary junk contexts)
         sample = text[:4000]
         if sample:
             non_printable = sum(1 for ch in sample if ord(ch) < 9 or (13 < ord(ch) < 32))
@@ -6672,65 +6677,55 @@ def run_source_anchored_evolution(previous_data: dict) -> dict:
     """
     Backward-compatible entrypoint used by the Streamlit Evolution UI.
 
-    HARDENED:
-    - Always returns a dict (never None/tuple/str)
-    - Wraps non-dict payloads into a failure dict
+    Annotation-safe:
+    - Uses built-in `dict` instead of `Dict` so it never NameErrors at import time.
     """
     fn = globals().get("compute_source_anchored_diff")
+    if callable(fn):
+        try:
+            out = fn(previous_data)
 
-    def _fail(message: str, raw=None) -> dict:
-        out = {
-            "status": "failed",
-            "message": message,
-            "sources_checked": 0,
-            "sources_fetched": 0,
-            "numbers_extracted_total": 0,
-            "stability_score": 0.0,
-            "summary": {
-                "total_metrics": 0,
-                "metrics_found": 0,
-                "metrics_increased": 0,
-                "metrics_decreased": 0,
-                "metrics_unchanged": 0,
-            },
-            "metric_changes": [],
-            "source_results": [],
-        }
-        if raw is not None:
-            try:
-                out["raw_payload_type"] = str(type(raw))
-                s = str(raw)
-                out["raw_payload_preview"] = (s[:1500] + "…") if len(s) > 1500 else s
-            except Exception:
-                out["raw_payload_type"] = "unknown"
-                out["raw_payload_preview"] = "unprintable"
-        return out
+            # hard guards for the renderer/UI
+            if isinstance(out, dict):
+                if out.get("stability_score") is None:
+                    out["stability_score"] = 0.0
+                if out.get("summary") is None:
+                    out["summary"] = {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0}
+                if out.get("metric_changes") is None:
+                    out["metric_changes"] = []
+                if out.get("source_results") is None:
+                    out["source_results"] = []
+                if out.get("sources_checked") is None:
+                    out["sources_checked"] = 0
+                if out.get("sources_fetched") is None:
+                    out["sources_fetched"] = 0
+                if out.get("status") is None:
+                    out["status"] = "success"
 
-    if not callable(fn):
-        return _fail("compute_source_anchored_diff() is not defined, so source-anchored evolution cannot run.")
+            return out
 
-    try:
-        out = fn(previous_data)
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"compute_source_anchored_diff crashed: {e}",
+                "sources_checked": 0,
+                "sources_fetched": 0,
+                "stability_score": 0.0,
+                "summary": {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0},
+                "metric_changes": [],
+                "source_results": [],
+            }
 
-        # ✅ critical: never let non-dict reach UI
-        if not isinstance(out, dict):
-            return _fail("compute_source_anchored_diff() returned a non-dict payload.", raw=out)
-
-        # normalize required keys for renderer/UI safety
-        out.setdefault("status", "success")
-        out.setdefault("message", "")
-        out.setdefault("sources_checked", 0)
-        out.setdefault("sources_fetched", 0)
-        out.setdefault("numbers_extracted_total", 0)
-        out.setdefault("stability_score", 0.0)
-        out.setdefault("summary", {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0})
-        out.setdefault("metric_changes", [])
-        out.setdefault("source_results", [])
-
-        return out
-
-    except Exception as e:
-        return _fail(f"compute_source_anchored_diff crashed: {type(e).__name__}: {e}")
+    return {
+        "status": "failed",
+        "message": "compute_source_anchored_diff() is not defined, so source-anchored evolution cannot run.",
+        "sources_checked": 0,
+        "sources_fetched": 0,
+        "stability_score": 0.0,
+        "summary": {"metrics_increased": 0, "metrics_decreased": 0, "metrics_unchanged": 0},
+        "metric_changes": [],
+        "source_results": [],
+    }
 
 
 # =========================================================
@@ -6949,24 +6944,20 @@ def build_prev_numbers(prev_metrics: Dict) -> Dict[str, Dict]:
 
     return prev_numbers
 
-
 def compute_source_anchored_diff(previous_data):
     """
-    Source-anchored evolution (anchor-first), aligned with analysis pipeline.
+    Source-anchored evolution (anchor-first), with hardened extraction.
 
-    Hybrid approach:
-    - Prefer analysis helpers: fetch_url_content_with_status + extract_numbers_with_context
-    - Use extract_numbers_with_context_pdf for PDFs (status_detail == 'success_pdf')
-    - Harden URL sanitation (reject whitespace/newlines, reject non-URLs)
-    - Keep JSON small: cap extracted_numbers per source
-    - Always returns dict (caught exceptions return failure dict)
+    Upgrades:
+    - Extract from cleaned visible text where possible
+    - Filter junk contexts (srcset/resize/js/svg/pdf garbage)
+    - Cap extracted_numbers per source to keep JSON small
     """
     import re
     import hashlib
     from datetime import datetime
-    from urllib.parse import urlparse
 
-    MAX_NUMBERS_PER_SOURCE = 250
+    MAX_NUMBERS_PER_SOURCE = 250  # keep evolution JSON small & useful
 
     def _now_iso():
         try:
@@ -6977,34 +6968,13 @@ def compute_source_anchored_diff(previous_data):
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
-    _BAD_URL_WS = re.compile(r"[\s\r\n\t]+")
-
-    def _is_probably_url(s: str) -> bool:
-        if not s or not isinstance(s, str):
-            return False
-        t = s.strip()
-        if not t or _BAD_URL_WS.search(t):
-            return False
-        if t.lower().startswith(("http://", "https://")):
-            try:
-                p = urlparse(t)
-                return bool(p.scheme in ("http", "https") and p.netloc and "." in p.netloc)
-            except Exception:
-                return False
-        # bare domains allowed
-        return bool(re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", t, flags=re.I))
-
     def _normalize_url(url: str) -> str:
         u = (url or "").strip()
-        if not u or _BAD_URL_WS.search(u):
+        if not u:
             return ""
-        if not re.match(r"^https?://", u, flags=re.I):
-            if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", u, flags=re.I):
-                u = "https://" + u
-            else:
-                return ""
-        # keep as-is (fetcher will handle final details)
-        return u
+        if u.startswith("http://") or u.startswith("https://"):
+            return u
+        return "https://" + u.lstrip("/")
 
     def _normalize_unit(u: str) -> str:
         u = (u or "").strip()
@@ -7020,8 +6990,6 @@ def compute_source_anchored_diff(previous_data):
             return "M"
         if u.lower() in ("k", "thousand"):
             return "K"
-        if u.lower() in ("pct", "percent"):
-            return "%"
         return u
 
     def _unit_family(u: str) -> str:
@@ -7065,10 +7033,13 @@ def compute_source_anchored_diff(previous_data):
         cu = _normalize_unit(cand_unit)
         pf = _unit_family(pu)
         cf = _unit_family(cu)
+
         if pf == "PCT":
             return (cu == "%") or ("%" in (cand_raw or "")) or ("%" in (cand_ctx or ""))
+
         if pf == "SCALE":
             return cf == "SCALE"
+
         return True
 
     def _metric_tokens(name: str):
@@ -7088,7 +7059,8 @@ def compute_source_anchored_diff(previous_data):
         return hit / max(1, len(tokens))
 
     def _format_raw_display(value, unit) -> str:
-        u = _normalize_unit((unit or "").strip())
+        u = (unit or "").strip()
+        u = _normalize_unit(u)
         if u == "%":
             try:
                 return f"{float(value):g}%"
@@ -7133,14 +7105,16 @@ def compute_source_anchored_diff(previous_data):
     # -------------------------
     # Load baseline state
     # -------------------------
-    previous_data = previous_data or {}
     prev_response = previous_data.get("primary_response", {}) or {}
+    prev_sources = prev_response.get("sources", []) or previous_data.get("web_sources", []) or []
+    prev_sources = [s for s in prev_sources if isinstance(s, str) and s.strip()]
+    prev_sources_norm = [_normalize_url(s) for s in prev_sources if _normalize_url(s)]
 
     prev_metrics = prev_response.get("primary_metrics", {}) or {}
     evidence_records = previous_data.get("evidence_records") or prev_response.get("evidence_records") or []
     metric_anchors = previous_data.get("metric_anchors") or prev_response.get("metric_anchors") or []
 
-    # Build prev_numbers (reuse helper if present)
+    # Build prev_numbers
     prev_numbers = {}
     fn_build_prev = globals().get("build_prev_numbers")
     if callable(fn_build_prev):
@@ -7170,32 +7144,21 @@ def compute_source_anchored_diff(previous_data):
                 "keywords": _metric_tokens(nm),
             }
 
-    # Decide URLs: prefer evidence_records, else sources/web_sources
-    urls: List[str] = []
+    # Decide which URLs to fetch
+    urls = []
     if isinstance(evidence_records, list) and evidence_records:
         for rec in evidence_records:
             if isinstance(rec, dict) and rec.get("url"):
-                u = str(rec["url"]).strip()
-                if _is_probably_url(u):
-                    nu = _normalize_url(u)
-                    if nu:
-                        urls.append(nu)
-
+                urls.append(str(rec["url"]))
     if not urls:
-        prev_sources = prev_response.get("sources", []) or previous_data.get("web_sources", []) or []
-        if isinstance(prev_sources, list):
-            for s in prev_sources:
-                if isinstance(s, str) and _is_probably_url(s):
-                    nu = _normalize_url(s)
-                    if nu:
-                        urls.append(nu)
+        urls = prev_sources_norm[:]
 
-    # De-dupe
+    # de-dupe order-preserving
     seen = set()
     urls = [u for u in urls if u and not (u in seen or seen.add(u))]
 
     # -------------------------
-    # Fetch + extract per source (helper-first)
+    # Fetch + extract per source
     # -------------------------
     source_results = []
     all_candidates = []
@@ -7204,69 +7167,49 @@ def compute_source_anchored_diff(previous_data):
     numbers_extracted_total = 0
 
     fetch_fn = globals().get("fetch_url_content_with_status")
-    html_extractor = globals().get("extract_numbers_with_context")
-    pdf_extractor = globals().get("extract_numbers_with_context_pdf")
 
     for u in urls:
         sources_checked += 1
         url = _normalize_url(u)
 
-        if not url:
-            source_results.append({
-                "url": u,
-                "status": "failed",
-                "status_detail": "invalid_url",
-                "numbers_found": 0,
-                "fingerprint": None,
-                "fetched_at": _now_iso(),
-                "extracted_numbers": [],
-            })
-            continue
-
         content = None
         status_msg = "failed"
-
-        try:
-            if callable(fetch_fn):
+        if callable(fetch_fn):
+            try:
                 content, status_msg = fetch_fn(url)
-            else:
-                content, status_msg = None, "missing_fetcher"
-        except Exception as e:
-            content, status_msg = None, f"exception:{type(e).__name__}"
+            except Exception as e:
+                content, status_msg = None, f"exception:{type(e).__name__}"
+        else:
+            content, status_msg = None, "missing_fetcher"
 
         extracted = []
         fingerprint = None
 
-        if isinstance(content, str) and content and str(status_msg).startswith("success"):
+        if status_msg.startswith("success") and content:
             sources_fetched += 1
 
+            # fingerprint
             try:
-                fingerprint = _sha1(re.sub(r"\s+", " ", content)[:200000])
+                if isinstance(content, (bytes, bytearray)):
+                    fingerprint = _sha1(content[:200000].decode("utf-8", errors="ignore"))
+                else:
+                    fingerprint = _sha1(re.sub(r"\s+", " ", str(content))[:200000])
             except Exception:
                 fingerprint = None
 
-            # ✅ key hybrid behavior: PDF wrapper if fetcher says success_pdf
+            # Extract numbers (HTML cleaning + junk filtering happens inside)
             try:
-                if status_msg == "success_pdf" and callable(pdf_extractor):
-                    extracted = pdf_extractor(content) or []
-                    # ensure source_url carried for anchors
-                    for n in extracted:
-                        if isinstance(n, dict):
-                            n["source_url"] = url
-                elif callable(html_extractor):
-                    extracted = html_extractor(content, source_url=url, max_results=MAX_NUMBERS_PER_SOURCE) or []
-                else:
-                    extracted = []
+                extracted = extract_numbers_with_context(content, source_url=url, max_results=MAX_NUMBERS_PER_SOURCE)
             except Exception:
                 extracted = []
 
-            # normalize + cap
+            # Normalize shape + cap context size
             clean = []
             for n in (extracted or [])[:MAX_NUMBERS_PER_SOURCE]:
                 if not isinstance(n, dict):
                     continue
                 raw = (n.get("raw") or "").strip()
-                ctx = (n.get("context") or "").strip()
+                ctx = (n.get("context") or n.get("context_snippet") or "").strip()
                 val = n.get("value")
                 unit = _normalize_unit(n.get("unit") or "")
                 anchor_hash = n.get("anchor_hash") or _sha1(f"{url}|{raw}|{ctx[:180]}")
@@ -7285,16 +7228,16 @@ def compute_source_anchored_diff(previous_data):
 
         source_results.append({
             "url": url,
-            "status": "fetched_extracted" if (str(status_msg).startswith("success") and extracted) else ("fetched" if str(status_msg).startswith("success") else "failed"),
+            "status": "fetched_extracted" if (status_msg.startswith("success") and extracted) else ("fetched" if status_msg.startswith("success") else "failed"),
             "status_detail": status_msg,
             "numbers_found": int(len(extracted or [])),
             "fingerprint": fingerprint,
             "fetched_at": _now_iso(),
-            "extracted_numbers": (extracted or [])[:MAX_NUMBERS_PER_SOURCE],
+            "extracted_numbers": extracted or [],
         })
 
     # -------------------------
-    # Anchor-first matching (same logic as your original)
+    # Anchor-first matching
     # -------------------------
     anchors_by_name = {}
     if isinstance(metric_anchors, list):
@@ -7304,6 +7247,7 @@ def compute_source_anchored_diff(previous_data):
 
     metric_changes = []
     unchanged = increased = decreased = 0
+
     ABS_EPS = 1e-9
     REL_EPS = 0.0005
 
@@ -7320,6 +7264,7 @@ def compute_source_anchored_diff(previous_data):
         best_score = -1.0
         used_anchor = False
 
+        # Phase 1: anchor-first (restrict to source_url if present)
         if isinstance(anchor, dict) and anchor.get("source_url"):
             used_anchor = True
             anchor_url = _normalize_url(anchor.get("source_url") or "")
@@ -7358,6 +7303,7 @@ def compute_source_anchored_diff(previous_data):
                     best_score = score
                     best = c
 
+        # Phase 2: fallback
         if best is None:
             tokens = prev.get("keywords") or _metric_tokens(metric_name)
             for c in all_candidates:
@@ -7432,7 +7378,7 @@ def compute_source_anchored_diff(previous_data):
 
     return {
         "status": "success",
-        "message": "Source-anchored evolution completed (analysis-aligned hybrid).",
+        "message": "Source-anchored evolution completed (anchor-first, cleaned extraction).",
         "sources_checked": int(sources_checked),
         "sources_fetched": int(sources_fetched),
         "numbers_extracted_total": int(numbers_extracted_total),
@@ -7446,9 +7392,8 @@ def compute_source_anchored_diff(previous_data):
         },
         "metric_changes": metric_changes,
         "source_results": source_results,
-        "interpretation": "Anchor-first evolution matching with analysis-helper-first extraction + PDF wrapper + hardened URL sanitation + capped evidence payload.",
+        "interpretation": "Anchor-first evolution matching with hardened extraction + junk filtering + capped evidence payload."
     }
-
 
 
 
