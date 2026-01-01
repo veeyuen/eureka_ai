@@ -1603,151 +1603,206 @@ def scrape_url(url: str) -> Optional[str]:
         st.warning(f"⚠️ Scraping error for {url[:50]}: {e}")
         return None
 
-def fetch_web_context(query: str, num_sources: int = 3) -> dict:
+def fetch_web_context(
+    query: str,
+    num_sources: int = 3,
+    *,
+    fallback_mode: bool = False,
+    fallback_urls: list = None,
+) -> dict:
     """
     Web context collector used by BOTH analysis + evolution.
 
     Contract (tight + stable):
-      - Always return:
-          web_context["search_results"]: list
-          web_context["scraped_meta"]: dict[url] -> meta
-          web_context["scraped_content"]: dict[url] -> clean_text (fallback artifact)
-          web_context["errors"]: list[str]
+      - Always returns dict with keys:
+          web_sources: List[str]
+          scraped_meta: Dict[url, meta]
+          status: str
+          status_detail: str
 
-      - Always populate scraped_meta[url] with:
-          status, status_detail, fetched_at, fingerprint, clean_text, extracted_numbers (maybe empty)
-
-    This is essential so:
-      - attach_source_snapshots_to_analysis() can prefer scraped_meta extracted_numbers
-      - evolution can reuse the same upstream artifacts and avoid brute-force scraping
+    Enhancements:
+      - fallback_mode + fallback_urls: lets evolution reuse baseline URLs when search is empty.
+      - populates scraped_meta with debug-friendly fields (content lengths, content_type, fingerprint).
     """
-    from datetime import datetime
+    import re
+    from datetime import datetime, timezone
 
-    def _now_iso() -> str:
-        try:
-            return datetime.utcnow().isoformat() + "+00:00"
-        except Exception:
-            return datetime.now().isoformat()
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
 
-    web_context = {
-        "query": query,
-        "search_results": [],
+    def _is_probably_url(s: str) -> bool:
+        if not s or not isinstance(s, str):
+            return False
+        t = s.strip()
+        if " " in t:
+            return False
+        if re.match(r"^https?://", t, flags=re.I):
+            return True
+        # bare domain
+        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", t, flags=re.I):
+            return True
+        return False
+
+    def _normalize_url(s: str) -> str:
+        t = (s or "").strip()
+        if not t:
+            return ""
+        if re.match(r"^https?://", t, flags=re.I):
+            return t
+        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", t, flags=re.I):
+            return "https://" + t
+        return ""
+
+    out = {
+        "web_sources": [],
         "scraped_meta": {},
-        "scraped_content": {},
-        "errors": [],
+        "status": "ok",
+        "status_detail": "",
+        "fetched_at": _now(),
     }
 
-    if not query or not isinstance(query, str) or not query.strip():
-        return web_context
-
-    # ---------- 1) Search ----------
-    try:
-        # Prefer your existing search adapter if present
-        fn_search = globals().get("search_web_sources_for_query")
-        if callable(fn_search):
-            search_results = fn_search(query, num_sources=num_sources)
-        else:
-            fn_serp = globals().get("search_serpapi")
-            search_results = fn_serp(query, num_results=num_sources) if callable(fn_serp) else []
-        if isinstance(search_results, list):
-            web_context["search_results"] = search_results
-        else:
-            web_context["search_results"] = []
-    except Exception as e:
-        web_context["errors"].append(f"search_failed:{type(e).__name__}:{e}")
-        web_context["search_results"] = []
-
-    # Extract URLs in a defensive way
+    # Prefer your existing URL search helper if present (SerpAPI/other)
     urls = []
-    for r in (web_context["search_results"] or [])[: max(1, int(num_sources or 3))]:
-        if isinstance(r, dict):
-            u = (r.get("link") or r.get("url") or "").strip()
-        else:
-            u = ""
-        if u:
-            urls.append(u)
+    if not fallback_mode:
+        try:
+            fn_search = globals().get("search_web_sources") or globals().get("get_web_sources") or globals().get("serpapi_search")
+            if callable(fn_search):
+                got = fn_search(query, num_sources=num_sources) if "num_sources" in fn_search.__code__.co_varnames else fn_search(query)
+                if isinstance(got, list):
+                    urls = got
+        except Exception as e:
+            out["status"] = "partial"
+            out["status_detail"] = f"search_exception:{type(e).__name__}"
 
-    # Dedupe but keep order
+    # Fallback to provided URLs (evolution baseline)
+    if (not urls) and fallback_mode and fallback_urls:
+        urls = list(fallback_urls)
+
+    # Sanitize + normalize
+    normed = []
     seen = set()
-    urls2 = []
-    for u in urls:
-        if u in seen:
+    for u in (urls or []):
+        if not isinstance(u, str):
             continue
-        seen.add(u)
-        urls2.append(u)
-    urls = urls2
+        if not _is_probably_url(u):
+            continue
+        nu = _normalize_url(u)
+        if not nu or nu in seen:
+            continue
+        seen.add(nu)
+        normed.append(nu)
 
-    # ---------- 2) Scrape + extract ----------
-    fn_scrape = globals().get("scrape_url")
-    fn_extract = globals().get("extract_numbers_with_context")
-    fn_extract_pdf = globals().get("extract_numbers_with_context_pdf")
+    out["web_sources"] = normed[: max(0, int(num_sources))] if (not fallback_mode) else normed
+
+    if not out["web_sources"]:
+        out["status"] = "no_sources"
+        out["status_detail"] = out["status_detail"] or "empty_sources"
+        return out
+
+    # Reuse your analysis helpers if present
+    fn_fetch = globals().get("fetch_url_content_with_status")  # may return (text,detail) or (text,status,detail,ct)
+    fn_clean = globals().get("clean_html_to_text") or globals().get("html_to_visible_text") or globals().get("extract_visible_text")
     fn_fp = globals().get("fingerprint_text")
+    fn_extract = globals().get("extract_numeric_candidates") or globals().get("extract_numbers_with_context") or globals().get("extract_numbers_from_text")
 
-    for url in urls:
-        fetched_at = _now_iso()
-        clean_text = ""
-        extracted_numbers = []
-        status_detail = ""
-        status = "failed"
-
-        try:
-            # scrape_url returns clean-ish text (often truncated)
-            if callable(fn_scrape):
-                clean_text = fn_scrape(url) or ""
-            else:
-                clean_text = ""
-        except Exception as e:
-            clean_text = ""
-            status_detail = f"scrape_error:{type(e).__name__}"
-            web_context["errors"].append(f"{status_detail}:{url}")
-
-        # Always store scraped_content if we got any text (even if extraction fails)
-        if isinstance(clean_text, str) and clean_text.strip():
-            web_context["scraped_content"][url] = clean_text
-
-        # Extract numbers with context (prefer PDF extractor if URL hints at pdf)
-        try:
-            if isinstance(clean_text, str) and clean_text.strip() and (callable(fn_extract) or callable(fn_extract_pdf)):
-                is_pdfish = url.lower().endswith(".pdf") or "pdf" in url.lower()
-                if is_pdfish and callable(fn_extract_pdf):
-                    extracted_numbers = fn_extract_pdf(clean_text, source_url=url) or []
-                elif callable(fn_extract):
-                    extracted_numbers = fn_extract(clean_text, source_url=url) or []
-        except Exception as e:
-            extracted_numbers = []
-            # don't fail the whole record: we still want clean_text + fingerprint
-            web_context["errors"].append(f"extract_error:{type(e).__name__}:{url}")
-
-        # Fingerprint should be present whenever clean_text exists
-        fp = ""
-        try:
-            if callable(fn_fp):
-                fp = fn_fp(clean_text or "")
-            else:
-                fp = ""
-        except Exception:
-            fp = ""
-
-        if isinstance(clean_text, str) and clean_text.strip():
-            status = "fetched"
-            status_detail = status_detail or "success:fetched"
-        else:
-            status = "failed"
-            status_detail = status_detail or "failed:no_text"
-
-        # IMPORTANT: Always write scraped_meta entry (even if empty extraction)
-        web_context["scraped_meta"][url] = {
+    for url in out["web_sources"]:
+        meta = {
             "url": url,
-            "status": status,
-            "status_detail": status_detail,
-            "fetched_at": fetched_at,
-            "fingerprint": fp,
-            "clean_text": clean_text if isinstance(clean_text, str) else "",
-            "numbers_found": len(extracted_numbers) if isinstance(extracted_numbers, list) else 0,
-            "extracted_numbers": extracted_numbers if isinstance(extracted_numbers, list) else [],
+            "fetched_at": _now(),
+            "status": "failed",
+            "status_detail": "",
+            "content_type": "",
+            "content_len": 0,
+            "clean_text_len": 0,
+            "fingerprint": None,
+            "numbers_found": 0,
+            "extracted_numbers": [],
+            "content": "",
+            "clean_text": "",
         }
 
-    return web_context
+        raw_text = None
+        status = "failed"
+        detail = ""
+        ctype = ""
+
+        try:
+            if callable(fn_fetch):
+                got = fn_fetch(url, timeout=25)
+                if isinstance(got, tuple) and len(got) == 2:
+                    raw_text, detail = got
+                    status = "fetched" if raw_text else "failed"
+                elif isinstance(got, tuple) and len(got) == 4:
+                    raw_text, status, detail, ctype = got
+                else:
+                    raw_text = None
+                    status = "failed"
+                    detail = "fetch_return_shape"
+            else:
+                # very light fallback
+                import requests
+                r = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+                ctype = r.headers.get("content-type", "") or ""
+                if r.status_code >= 400:
+                    status, detail = "failed", f"http_{r.status_code}"
+                else:
+                    raw_text = r.text or ""
+                    status, detail = ("fetched", "success") if raw_text.strip() else ("failed", "empty")
+        except Exception as e:
+            raw_text = None
+            status, detail = "failed", f"exception:{type(e).__name__}"
+
+        meta["status"] = status
+        meta["status_detail"] = detail
+        meta["content_type"] = ctype or ""
+
+        if status != "fetched" or not raw_text:
+            out["scraped_meta"][url] = meta
+            continue
+
+        meta["content"] = raw_text
+        meta["content_len"] = len(raw_text)
+
+        # Clean HTML -> text (prefer analysis helper)
+        cleaned = raw_text
+        try:
+            if callable(fn_clean):
+                cleaned = fn_clean(raw_text)
+            else:
+                # fallback minimal
+                cleaned = re.sub(r"\s+", " ", re.sub(r"(?is)<[^>]+>", " ", raw_text)).strip()
+        except Exception:
+            cleaned = re.sub(r"\s+", " ", re.sub(r"(?is)<[^>]+>", " ", raw_text)).strip()
+
+        meta["clean_text"] = cleaned
+        meta["clean_text_len"] = len(cleaned)
+
+        # Fingerprint
+        try:
+            if callable(fn_fp):
+                meta["fingerprint"] = fn_fp(cleaned)
+            else:
+                meta["fingerprint"] = fingerprint_text(cleaned) if callable(globals().get("fingerprint_text")) else None
+        except Exception:
+            meta["fingerprint"] = None
+
+        # Numeric extraction (prefer analysis)
+        nums = []
+        try:
+            if callable(fn_extract):
+                nums = fn_extract(cleaned, url=url) if "url" in fn_extract.__code__.co_varnames else fn_extract(cleaned)
+            else:
+                nums = []
+        except Exception:
+            nums = []
+
+        if isinstance(nums, list):
+            meta["extracted_numbers"] = nums
+            meta["numbers_found"] = len(nums)
+
+        out["scraped_meta"][url] = meta
+
+    return out
 
 
 
@@ -6828,186 +6883,149 @@ def fingerprint_text(text: str) -> str:
     normalized = re.sub(r"\s+", " ", text.strip().lower())
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
 
-def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict:
+def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> dict:
     """
-    Attach analysis-aligned source snapshots into the analysis output.
+    Attach stable source snapshots (from web_context.scraped_meta) into analysis.
 
-    IMPORTANT FIX:
-    - Only admit VALID snapshots into baseline_sources_cache.
-      (prevents evolution snapshot_strict from deadlocking on failed/no_text items)
+    Tight but practical snapshot admission:
+      - VALID snapshot if:
+          * fingerprint exists AND
+          * clean text length >= MIN_TEXT_CHARS
+        (numbers may be 0; evolution can re-extract later)
+      - INVALID snapshot otherwise, stored separately for debugging.
 
-    Preferred:
-      - web_context['scraped_meta'][url]['extracted_numbers'] (already analysis-aligned)
-
-    Fallback:
-      - web_context['scraped_content'][url] -> extract_numbers_with_context(_pdf)
-
-    Writes (backward compatible):
-      output['baseline_sources_cache']                 (VALID ONLY)
-      output['results']['source_results']              (VALID ONLY)
-      output['results']['baseline_sources_cache']      (VALID ONLY)
-
-    Debug extras (safe additions):
-      output['results']['baseline_sources_cache_invalid']  (INVALID snapshots, for debugging only)
+    Writes to:
+      - analysis["baseline_sources_cache"]  (top-level convenience for evolution)
+      - analysis["results"]["baseline_sources_cache"]
+      - analysis["results"]["baseline_sources_cache_invalid"]
     """
-    from datetime import datetime
+    import re
+    from datetime import datetime, timezone
 
-    def _now_iso() -> str:
+    MIN_TEXT_CHARS = 800
+    MAX_CONTEXT = 200
+
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _safe_int(x, default=0):
         try:
-            return datetime.utcnow().isoformat() + "+00:00"
+            return int(x)
         except Exception:
-            return datetime.now().isoformat()
+            return default
 
-    def _is_valid_snapshot(snap: dict) -> bool:
-        """A snapshot is valid iff it has usable content for evolution matching."""
-        if not isinstance(snap, dict):
-            return False
-        status = str(snap.get("status") or "")
-        detail = str(snap.get("status_detail") or "")
-        fp = snap.get("fingerprint")
+    def _fingerprint(text: str):
+        try:
+            fn = globals().get("fingerprint_text")
+            if callable(fn):
+                return fn(text or "")
+        except Exception:
+            pass
+        try:
+            return fingerprint_text(text or "")
+        except Exception:
+            return None
 
-        # Must be a fetched-ish snapshot (either status or detail indicates success)
-        fetchedish = status.startswith("fetched") or detail.startswith("success")
-        if not fetchedish:
-            return False
+    def _is_homepage_like(url: str) -> bool:
+        u = (url or "").strip().lower()
+        if not u:
+            return True
+        # treat pure domains / root paths as homepage-like
+        if re.match(r"^https?://[^/]+/?$", u):
+            return True
+        return False
 
-        # Must have a non-empty fingerprint
-        if not isinstance(fp, str) or not fp.strip():
-            return False
+    if not isinstance(analysis, dict):
+        return analysis
 
-        # Must have some extracted_numbers
-        nums = snap.get("extracted_numbers") or []
-        if not isinstance(nums, list) or len(nums) == 0:
-            return False
-
-        return True
-
-    if not isinstance(output, dict) or not isinstance(web_context, dict):
-        return output
+    if not isinstance(web_context, dict):
+        return analysis
 
     scraped_meta = web_context.get("scraped_meta") or {}
-    scraped_content = web_context.get("scraped_content") or {}
+    if not isinstance(scraped_meta, dict) or not scraped_meta:
+        return analysis
+
+    results = analysis.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        analysis["results"] = results
 
     snaps_valid = []
     snaps_invalid = []
 
-    # -------------------------
-    # Preferred: scraped_meta
-    # -------------------------
-    if isinstance(scraped_meta, dict) and scraped_meta:
-        for url, meta in scraped_meta.items():
-            if not url or not isinstance(meta, dict):
-                continue
+    for url, meta in scraped_meta.items():
+        if not isinstance(meta, dict):
+            continue
 
-            extracted = meta.get("extracted_numbers") or []
-            if not isinstance(extracted, list):
-                extracted = []
+        u = (url or meta.get("url") or "").strip()
+        if not u:
+            continue
 
-            compact = []
-            for n in extracted:
-                if not isinstance(n, dict):
-                    continue
-                compact.append({
+        # homepage gating at snapshot layer (safety net)
+        if _is_homepage_like(u):
+            snaps_invalid.append({
+                "url": u,
+                "status": "failed",
+                "status_detail": "rejected_homepage_like",
+                "numbers_found": 0,
+                "fetched_at": _now(),
+                "fingerprint": None,
+                "extracted_numbers": [],
+                "clean_text_len": 0,
+            })
+            continue
+
+        status_detail = meta.get("status_detail") or meta.get("status") or ""
+        content = meta.get("clean_text") or meta.get("content") or ""
+        content = content or ""
+        clean_len = len(content)
+
+        fp = meta.get("fingerprint") or _fingerprint(content)
+
+        nums = meta.get("extracted_numbers") or []
+        if not isinstance(nums, list):
+            nums = []
+
+        snapshot = {
+            "url": u,
+            "status": "fetched" if str(status_detail).startswith("success") or (meta.get("status") == "fetched") else (meta.get("status") or "failed"),
+            "status_detail": status_detail,
+            "numbers_found": _safe_int(meta.get("numbers_found"), default=len(nums)),
+            "fetched_at": meta.get("fetched_at") or _now(),
+            "fingerprint": fp,
+            "content_type": meta.get("content_type") or "",
+            "clean_text_len": clean_len,
+            "extracted_numbers": [
+                {
                     "value": n.get("value"),
                     "unit": n.get("unit"),
                     "raw": n.get("raw"),
-                    "source_url": n.get("source_url") or url,
-                    "context_snippet": (
-                        (n.get("context") or n.get("context_snippet") or "")[:200]
-                        if isinstance((n.get("context") or n.get("context_snippet")), str)
-                        else ""
-                    ),
-                    "anchor_hash": n.get("anchor_hash"),
-                })
+                    "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:MAX_CONTEXT],
+                }
+                for n in nums
+                if isinstance(n, dict)
+            ],
+        }
 
-            fp = meta.get("fingerprint") or meta.get("extract_hash")
-            if fp and not isinstance(fp, str):
-                fp = str(fp)
+        # Admission rule: accept if we have meaningful text + fingerprint
+        if fp and clean_len >= MIN_TEXT_CHARS:
+            snaps_valid.append(snapshot)
+        else:
+            # keep reasoned invalid
+            reason = "failed:no_text" if clean_len == 0 else "failed:text_too_short_or_no_fingerprint"
+            snapshot["status"] = "failed"
+            snapshot["status_detail"] = snapshot.get("status_detail") or reason
+            snaps_invalid.append(snapshot)
 
-            snap = {
-                "url": str(url).strip(),
-                "status": "fetched_extracted" if compact else ("fetched" if str(meta.get("status_detail", "")).startswith("success") else "failed"),
-                "status_detail": meta.get("status_detail") or "",
-                "numbers_found": int(meta.get("numbers_found") or len(compact)),
-                "fingerprint": fp,
-                "fetched_at": meta.get("fetched_at") or _now_iso(),
-                "extracted_numbers": compact,
-            }
-
-            if _is_valid_snapshot(snap):
-                snaps_valid.append(snap)
-            else:
-                snaps_invalid.append(snap)
-
-    # -------------------------
-    # Fallback: scraped_content (ONLY if no valid snapshots from scraped_meta)
-    # -------------------------
-    if not snaps_valid and isinstance(scraped_content, dict) and scraped_content:
-        for url, content in scraped_content.items():
-            if not url or not isinstance(content, str) or not content.strip():
-                continue
-
-            extracted = []
-            try:
-                if "extract_numbers_with_context_pdf" in globals() and callable(globals()["extract_numbers_with_context_pdf"]):
-                    extracted = extract_numbers_with_context_pdf(content)
-                else:
-                    extracted = extract_numbers_with_context(content) if callable(globals().get("extract_numbers_with_context")) else []
-            except Exception:
-                extracted = []
-
-            compact = []
-            for n in (extracted or []):
-                if not isinstance(n, dict):
-                    continue
-                compact.append({
-                    "value": n.get("value"),
-                    "unit": n.get("unit"),
-                    "raw": n.get("raw"),
-                    "source_url": url,
-                    "context_snippet": (n.get("context") or "")[:200] if isinstance(n.get("context"), str) else "",
-                    "anchor_hash": n.get("anchor_hash"),
-                })
-
-            fp = ""
-            try:
-                fp = fingerprint_text(content) if callable(globals().get("fingerprint_text")) else ""
-            except Exception:
-                fp = ""
-
-            snap = {
-                "url": str(url).strip(),
-                "status": "fetched_extracted" if compact else "failed",
-                "status_detail": "fallback_scraped_content",
-                "numbers_found": int(len(compact)),
-                "fingerprint": fp,
-                "fetched_at": _now_iso(),
-                "extracted_numbers": compact,
-            }
-
-            if _is_valid_snapshot(snap):
-                snaps_valid.append(snap)
-            else:
-                snaps_invalid.append(snap)
-
-    # If no VALID snapshots, do not write baseline_sources_cache (prevents evolution deadlock)
-    results = output.get("results")
-    if not isinstance(results, dict):
-        results = {}
-        output["results"] = results
+    if snaps_valid:
+        # Store in both places for backward compatibility
+        results["baseline_sources_cache"] = snaps_valid
+        analysis["baseline_sources_cache"] = snaps_valid
 
     if snaps_invalid:
         results["baseline_sources_cache_invalid"] = snaps_invalid
 
-    if not snaps_valid:
-        return output
-
-    # Backward-compatible store (VALID ONLY)
-    output["baseline_sources_cache"] = snaps_valid
-    results["source_results"] = snaps_valid
-    results["baseline_sources_cache"] = snaps_valid
-
-    return output
+    return analysis
 
 
 
@@ -8167,615 +8185,199 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
 
     return out_changes
 
-def compute_source_anchored_diff(previous_data, web_context: dict = None):
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
     """
-    Source-anchored evolution (snapshot-first, fingerprint freshness gating).
+    Tight source-anchored evolution:
+      - Prefer snapshots from analysis (baseline_sources_cache)
+      - Optionally reconstruct snapshots from web_context.scraped_meta
+      - If no valid snapshots: return not_found (no heuristic junk)
 
-    FIXES:
-      - Filters out invalid snapshots (failed/no_text/no_fp/no_numbers) so snapshot_strict cannot deadlock.
-      - If no valid snapshots: return not_found per metric (no guessing, no junk).
-      - Keeps existing match stages + debug fields.
+    Always returns a dict.
     """
     import re
-    import math
-    import hashlib
-    from datetime import datetime
-    from urllib.parse import urlparse
+    from datetime import datetime, timezone
 
-    # -------------------------
-    # Tunables
-    # -------------------------
-    STORE_CANDS_PER_SOURCE = 140
-    CONTEXT_CHARS = 240
-    ABS_EPS = 1e-9
-    REL_EPS = 0.0005  # 0.05%
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
 
-    LIGHT_CHECK_TIMEOUT = 12
-    LIGHT_CHECK_MAX_BYTES = 450_000
-    FULL_FETCH_TIMEOUT = 25
-
-    SNAPSHOT_STRICT = "snapshot_strict"
-    SNAPSHOT_IF_UNCHANGED = "snapshot_if_unchanged"
-
-    freshness_policy = SNAPSHOT_STRICT
-    try:
-        evo_opts = (previous_data or {}).get("evolution_options") or {}
-        if isinstance(evo_opts, dict) and evo_opts.get("freshness_policy") in (SNAPSHOT_STRICT, SNAPSHOT_IF_UNCHANGED):
-            freshness_policy = evo_opts.get("freshness_policy")
-    except Exception:
-        freshness_policy = SNAPSHOT_STRICT
-
-    STOP = {"the","and","or","of","in","to","for","by","from","with","on","at","as","is","are","was","were","be"}
-    NON_DATA_CONTEXT_HINTS = set(globals().get("NON_DATA_CONTEXT_HINTS") or [
-        "cookie", "privacy", "terms", "subscribe", "newsletter", "login", "sign in",
-        "cart", "checkout", "menu", "categories", "sitemap", "footer", "header",
-        "all rights reserved", "©", "advertise", "advertising", "consent",
-        "accept cookies", "manage cookies",
-    ])
-
-    ECON_BONUS = set([
-        "market","size","value","valuation","cagr","growth","forecast","projected",
-        "revenue","sales","shipments","units","share","percent","%",
-    ])
-
-    # -------------------------
-    # Small helpers
-    # -------------------------
-    def _now_iso() -> str:
+    def _safe_int(x, default=0):
         try:
-            return datetime.utcnow().isoformat() + "+00:00"
+            return int(x)
         except Exception:
-            return datetime.now().isoformat()
+            return default
 
-    def _sha1(s: str) -> str:
-        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
-
-    def _normalize_unit(u: str) -> str:
-        u = (u or "").strip()
+    def _fingerprint(text: str):
         try:
-            fn = globals().get("normalize_unit")
+            fn = globals().get("fingerprint_text")
             if callable(fn):
-                return fn(u)
-        except Exception:
-            pass
-        ul = u.lower()
-        if ul in ("bn", "billion"):
-            return "B"
-        if ul in ("mn", "mio", "million"):
-            return "M"
-        if ul in ("k", "thousand", "000"):
-            return "K"
-        if ul in ("pct", "percent"):
-            return "%"
-        return u
-
-    def _parse_human_number(val, unit_hint: str = ""):
-        try:
-            fn = globals().get("parse_human_number")
-            if callable(fn):
-                return fn(str(val), unit_hint)
-        except Exception:
-            pass
-
-        s = str(val or "").strip().replace(",", "")
-        if not s:
-            return None
-
-        m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*([KMBT%]?)\s*$", s, flags=re.I)
-        if not m:
-            return None
-
-        num = float(m.group(1))
-        suf = (m.group(2) or "").upper()
-        uh = _normalize_unit(unit_hint)
-
-        scale = suf or (uh if uh in ("K","M","B","T") else "")
-        if scale == "K":
-            num *= 1e3
-        elif scale == "M":
-            num *= 1e6
-        elif scale == "B":
-            num *= 1e9
-        elif scale == "T":
-            num *= 1e12
-        return num
-
-    def _format_raw_display(value, unit) -> str:
-        u = _normalize_unit(unit or "")
-        v = value
-        if v is None or v == "":
-            return "N/A"
-        if isinstance(v, str) and (("%" in v) or ("$" in v) or ("S$" in v) or ("B" in v) or ("M" in v) or ("K" in v)):
-            return v.strip()
-
-        currency = ""
-        up = (unit or "").upper()
-        if up.startswith("S$"):
-            currency = "S$"
-            u = _normalize_unit((unit or "")[2:])
-        elif up.startswith("$"):
-            currency = "$"
-            u = _normalize_unit((unit or "")[1:])
-        elif up.startswith("SGD"):
-            currency = "S$"
-            u = _normalize_unit((unit or "")[3:])
-        elif up.startswith("USD"):
-            currency = "$"
-            u = _normalize_unit((unit or "")[3:])
-
-        if u == "%":
-            try:
-                return f"{float(v):g}%"
-            except Exception:
-                return f"{v}%"
-
-        if u in ("T","B","M","K"):
-            try:
-                num = float(v)
-                s = f"{num:.2f}".rstrip("0").rstrip(".")
-                return f"{currency}{s}{u}".strip()
-            except Exception:
-                return f"{currency}{v}{u}".strip()
-
-        try:
-            num = float(v)
-            s = f"{num:.2f}".rstrip("0").rstrip(".")
-            return f"{currency}{s} {u}".strip() if u else f"{currency}{s}".strip()
-        except Exception:
-            return f"{currency}{v} {u}".strip() if u else f"{currency}{v}".strip()
-
-    def _toks(s: str):
-        if not isinstance(s, str):
-            return []
-        out = re.findall(r"[a-z0-9]+", s.lower())
-        return [t for t in out if len(t) > 2 and t not in STOP]
-
-    def _is_homepage_url(u: str) -> bool:
-        try:
-            p = urlparse((u or "").strip())
-            path = (p.path or "").strip()
-            if path in ("", "/"):
-                return True
-            low = path.lower().rstrip("/")
-            if low in ("/index", "/index.html", "/index.htm", "/home", "/default", "/default.aspx"):
-                return True
-        except Exception:
-            pass
-        return False
-
-    def _looks_like_nav_or_chrome(ctx: str) -> bool:
-        c = (ctx or "").lower()
-        if not c:
-            return True
-        if len(c) < 55:
-            return True
-        for h in NON_DATA_CONTEXT_HINTS:
-            if h in c:
-                return True
-        return False
-
-    def _fingerprint_text(text: str) -> str:
-        fn = globals().get("fingerprint_text")
-        if callable(fn):
-            try:
                 return fn(text or "")
-            except Exception:
-                pass
-        # fallback deterministic
-        return _sha1(re.sub(r"\s+", " ", (text or "")).strip()[:250000])
-
-    def _clean_visible_text(raw: str, content_type: str = "") -> str:
-        fn = globals().get("clean_visible_text")
-        if callable(fn):
-            try:
-                return fn(raw, content_type=content_type)
-            except Exception:
-                pass
-        # fallback: cheap strip tags if looks like html
-        if "<html" in (raw or "").lower() or "html" in (content_type or "").lower():
-            try:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(raw, "html.parser")
-                for tag in soup(["script","style","noscript","svg","canvas","iframe","header","footer","nav"]):
-                    tag.decompose()
-                txt = soup.get_text(separator=" ", strip=True)
-                return re.sub(r"\s+", " ", txt).strip()
-            except Exception:
-                pass
-        return re.sub(r"\s+", " ", (raw or "")).strip()
-
-    def _extract_numbers(clean_text: str, source_url: str) -> list:
-        fn = globals().get("extract_numbers_with_context")
-        if callable(fn):
-            try:
-                return fn(clean_text, source_url=source_url) or []
-            except Exception:
-                return []
-        return []
-
-    def _fetch_with_status(url: str, timeout: int = 25):
-        fn = globals().get("fetch_url_content_with_status")
-        if callable(fn):
-            try:
-                got = fn(url, timeout=timeout)
-                if isinstance(got, tuple) and len(got) == 4:
-                    return got
-                if isinstance(got, tuple) and len(got) == 2:
-                    txt, detail = got
-                    status = "fetched" if (txt and str(detail).startswith("success")) else "failed"
-                    return txt, status, str(detail), ""
-            except Exception as e:
-                return None, "failed", f"exception:{type(e).__name__}", ""
-        # fallback requests
+        except Exception:
+            pass
         try:
-            import requests
-            resp = requests.get(url, timeout=timeout, headers={"User-Agent":"Mozilla/5.0"})
-            ct = resp.headers.get("content-type","") or ""
-            if resp.status_code >= 400:
-                return None, "failed", f"http_{resp.status_code}", ct
-            text = resp.text or ""
-            if not text.strip():
-                return None, "failed", "empty", ct
-            return text, "fetched", "success", ct
-        except Exception as e:
-            return None, "failed", f"exception:{type(e).__name__}", ""
+            return fingerprint_text(text or "")
+        except Exception:
+            return None
 
-    def _light_fetch_fingerprint(url: str):
-        try:
-            import requests
-            r = requests.get(url, timeout=LIGHT_CHECK_TIMEOUT, headers={"User-Agent":"Mozilla/5.0"}, stream=True)
-            ct = r.headers.get("content-type","") or ""
-            if r.status_code >= 400:
-                return None, "failed", f"http_{r.status_code}", ct
-            data = r.raw.read(LIGHT_CHECK_MAX_BYTES, decode_content=True)
-            try:
-                raw = data.decode("utf-8", errors="ignore")
-            except Exception:
-                raw = ""
-            cleaned = _clean_visible_text(raw, content_type=ct)
-            fp = _fingerprint_text(cleaned)
-            return fp, "fetched", "success", ct
-        except Exception as e:
-            return None, "failed", f"exception:{type(e).__name__}", ""
-
-    def _snapshot_is_valid(s: dict) -> bool:
-        """Valid snapshot must have fingerprint + non-empty extracted_numbers."""
-        if not isinstance(s, dict):
-            return False
-        fp = s.get("fingerprint")
-        if not isinstance(fp, str) or not fp.strip():
-            return False
-        nums = s.get("extracted_numbers") or []
-        if not isinstance(nums, list) or len(nums) == 0:
-            return False
-        status = str(s.get("status") or "")
-        detail = str(s.get("status_detail") or "")
-        fetchedish = status.startswith("fetched") or detail.startswith("success")
-        return bool(fetchedish)
-
-    # -------------------------
-    # Load baseline metrics (canonical-first if present)
-    # -------------------------
-    prev_response = (previous_data or {}).get("primary_response", {}) or {}
-    canonical = prev_response.get("primary_metrics_canonical") or {}
-    schema = prev_response.get("metric_schema_frozen") or {}
-
-    prev_numbers = {}
-    order = []
-
-    if isinstance(canonical, dict) and canonical:
-        for ck, m in canonical.items():
-            if not isinstance(m, dict):
-                continue
-            canonical_key = str(m.get("canonical_key") or ck)
-            name = (m.get("name") or m.get("original_name") or canonical_key).strip()
-            val = m.get("value")
-            unit = (m.get("unit") or "").strip()
-            pv = _parse_human_number(val, unit)
-            raw = m.get("raw") or _format_raw_display(val, unit)
-
-            sch = schema.get(canonical_key) if isinstance(schema.get(canonical_key), dict) else {}
-            unit_family = (sch.get("unit_family") or "").strip()
-            kw = sch.get("keywords") or []
-            kw_tokens = set(_toks(" ".join([str(x) for x in kw if x is not None])))
-
-            prev_numbers[name] = {
-                "canonical_key": canonical_key,
-                "value": pv,
-                "unit": _normalize_unit(unit),
-                "raw": raw,
-                "raw_value": val,
-                "raw_unit": unit,
-                "unit_family": unit_family,
-                "keywords": list(kw_tokens)[:40] if kw_tokens else list(set(_toks(name)))[:40],
-            }
-            order.append(name)
-    else:
-        prev_metrics = prev_response.get("primary_metrics", {}) or {}
-        if not isinstance(prev_metrics, dict):
-            prev_metrics = {}
-        for _, m in prev_metrics.items():
-            if not isinstance(m, dict):
-                continue
-            name = (m.get("name") or "").strip()
-            if not name:
-                continue
-            val = m.get("value")
-            unit = (m.get("unit") or "").strip()
-            pv = _parse_human_number(val, unit)
-            prev_numbers[name] = {
-                "canonical_key": None,
-                "value": pv,
-                "unit": _normalize_unit(unit),
-                "raw": m.get("raw") or _format_raw_display(val, unit),
-                "raw_value": val,
-                "raw_unit": unit,
-                "unit_family": "",
-                "keywords": list(set(_toks(name)))[:40],
-            }
-            order.append(name)
-
-    metric_anchors = (previous_data or {}).get("metric_anchors") or prev_response.get("metric_anchors") or []
-    anchors_by_key = {}
-    anchors_by_name = {}
-    if isinstance(metric_anchors, list):
-        for a in metric_anchors:
-            if not isinstance(a, dict):
-                continue
-            if a.get("canonical_key"):
-                anchors_by_key[str(a["canonical_key"])] = a
-            if a.get("metric_name"):
-                anchors_by_name[str(a["metric_name"])] = a
-
-    # -------------------------
-    # Acquire snapshots (snapshot-first)
-    # -------------------------
-    snapshots = []
+    # ---------- Pull baseline snapshots (VALID only) ----------
     snapshot_origin = "none"
+    baseline_sources_cache = []
 
-    baseline_cache = (
-        (previous_data or {}).get("baseline_sources_cache")
-        or (prev_response.get("baseline_sources_cache") if isinstance(prev_response, dict) else None)
-        or (previous_data or {}).get("results", {}).get("baseline_sources_cache")
-        or []
-    )
-    if isinstance(baseline_cache, list) and baseline_cache:
-        snapshots = baseline_cache
-        snapshot_origin = "baseline_sources_cache"
-    else:
-        if isinstance(web_context, dict) and (web_context.get("scraped_meta") or {}):
-            try:
-                builder = globals().get("_build_source_snapshots_from_web_context")
-                if callable(builder):
-                    snapshots = builder(web_context) or []
-                    if snapshots:
-                        snapshot_origin = "web_context_scraped_meta"
-            except Exception:
-                snapshots = []
-                snapshot_origin = "none"
+    try:
+        if isinstance(previous_data, dict):
+            # 1) results.baseline_sources_cache (preferred)
+            r = previous_data.get("results")
+            if isinstance(r, dict) and isinstance(r.get("baseline_sources_cache"), list):
+                baseline_sources_cache = r.get("baseline_sources_cache") or []
+                if baseline_sources_cache:
+                    snapshot_origin = "analysis_results_cache"
 
-    # FILTER INVALID SNAPSHOTS (critical)
-    valid_snapshots = [s for s in snapshots if _snapshot_is_valid(s)]
+            # 2) top-level baseline_sources_cache
+            if not baseline_sources_cache and isinstance(previous_data.get("baseline_sources_cache"), list):
+                baseline_sources_cache = previous_data.get("baseline_sources_cache") or []
+                if baseline_sources_cache:
+                    snapshot_origin = "analysis_top_level_cache"
+    except Exception:
+        baseline_sources_cache = []
 
-    if not valid_snapshots:
-        # No snapshots → no guessing (tight mode)
-        metric_changes = []
-        for name in order:
-            prev = prev_numbers.get(name) or {}
-            metric_changes.append({
-                "name": name,
-                "canonical_key": prev.get("canonical_key"),
-                "previous_value": prev.get("raw") or "N/A",
-                "current_value": "N/A",
-                "change_pct": None,
-                "change_type": "not_found",
-                "match_confidence": 0.0,
-                "match_stage": "no_valid_snapshot",
-                "match_score": 0.0,
-                "score_breakdown": {},
-                "matched_candidate": None,
-                "candidates_considered_count": 0,
-                "rejected_reason_counts": {},
-                "source_url": None,
-                "context_snippet": None,
-                "anchor_used": False,
-            })
-
-        return {
-            "status": "success",
-            "message": f"Evolution ran with no valid snapshots (origin={snapshot_origin}).",
-            "sources_checked": 0,
-            "sources_fetched": 0,
-            "numbers_extracted_total": 0,
-            "stability_score": 0.0,
-            "summary": {
-                "total_metrics": int(len(metric_changes)),
-                "metrics_found": 0,
-                "metrics_increased": 0,
-                "metrics_decreased": 0,
-                "metrics_unchanged": 0,
-            },
-            "metric_changes": metric_changes,
-            "source_results": [],
-            "debug": {
-                "snapshot_origin": snapshot_origin,
-                "freshness_policy": freshness_policy,
-                "valid_snapshot_count": 0,
-                "invalid_snapshot_count": int(len(snapshots) if isinstance(snapshots, list) else 0),
-            }
-        }
-
-    # -------------------------
-    # Build source_results + optional freshness checks/refetch
-    # -------------------------
-    source_results = []
-    numbers_extracted_total = 0
-    sources_checked = 0
-    sources_fetched = 0
-    final_snapshots = []
-
-    def _snapshot_url(s: dict) -> str:
-        return (s.get("url") or s.get("source_url") or "").strip()
-
-    for s in valid_snapshots:
-        url = _snapshot_url(s)
-        if not url:
-            continue
-
-        sources_checked += 1
-        snapshot_fp = s.get("fingerprint") or None
-        snap_status = s.get("status") or "fetched"
-        snap_detail = s.get("status_detail") or ""
-        snap_extracted = s.get("extracted_numbers") or []
-        is_homepage = bool(s.get("is_homepage") or _is_homepage_url(url))
-        skip_reason = s.get("skip_reason") or ""
-        quality_score = s.get("quality_score")
-
-        chosen = s
-        live_fp = None
-        freshness_decision = "snapshot_only_valid"
-        checked_at = _now_iso()
-        refetched_at = None
-
-        if freshness_policy == SNAPSHOT_IF_UNCHANGED:
-            try:
-                live_fp, l_status, l_detail, l_ct = _light_fetch_fingerprint(url)
-
-                if live_fp and snapshot_fp and (str(live_fp) == str(snapshot_fp)):
-                    freshness_decision = "snapshot_reused_unchanged"
-                    chosen = s
-
-                elif live_fp and snapshot_fp and (str(live_fp) != str(snapshot_fp)):
-                    raw, f_status, f_detail, f_ct = _fetch_with_status(url, timeout=FULL_FETCH_TIMEOUT)
-                    if f_status == "fetched" and raw:
-                        cleaned = _clean_visible_text(raw, content_type=f_ct)
-                        fp2 = _fingerprint_text(cleaned[:250000])
-                        nums = _extract_numbers(cleaned, url)
-
-                        if nums:
-                            chosen = {
-                                "url": url,
-                                "status": "fetched",
-                                "status_detail": f_detail or "success",
-                                "content_type": f_ct or "",
-                                "fingerprint": fp2,
-                                "fetched_at": _now_iso(),
-                                "is_homepage": is_homepage,
-                                "skip_reason": skip_reason,
-                                "quality_score": quality_score,
-                                "extracted_numbers": nums,
-                            }
-                            freshness_decision = "refetched_changed"
-                            refetched_at = chosen.get("fetched_at")
-                        else:
-                            chosen = s
-                            freshness_decision = "snapshot_used_refetch_no_numbers"
-                    else:
-                        chosen = s
-                        freshness_decision = f"snapshot_used_refetch_failed:{f_detail}"
-
-                else:
-                    chosen = s
-                    freshness_decision = f"snapshot_used_live_check_failed:{l_detail}"
-
-            except Exception as e:
-                chosen = s
-                freshness_decision = f"snapshot_used_live_check_exception:{type(e).__name__}"
-
-        final_snapshots.append(chosen)
-
-        extracted = chosen.get("extracted_numbers") or []
-        if isinstance(extracted, list):
-            numbers_extracted_total += len(extracted)
-
-        status_out = chosen.get("status") or snap_status
-        detail_out = chosen.get("status_detail") or snap_detail
-        fp_out = chosen.get("fingerprint") or snapshot_fp
-
-        if str(status_out).startswith("fetched"):
-            sources_fetched += 1
-
-        stored = []
-        if isinstance(extracted, list):
-            for n in extracted[:STORE_CANDS_PER_SOURCE]:
-                if not isinstance(n, dict):
-                    continue
-                stored.append({
-                    "value": n.get("value"),
-                    "unit": n.get("unit"),
-                    "raw": n.get("raw"),
-                    "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:CONTEXT_CHARS],
-                    "anchor_hash": n.get("anchor_hash"),
-                    "source_url": n.get("source_url") or url,
-                    "quality_score": n.get("quality_score"),
-                    "quality_reasons": n.get("quality_reasons"),
-                    "topic_overlap": n.get("topic_overlap"),
-                })
-
-        source_results.append({
-            "url": url,
-            "status": status_out,
-            "status_detail": detail_out,
-            "numbers_found": len(extracted) if isinstance(extracted, list) else 0,
-            "fingerprint": fp_out,
-            "snapshot_fingerprint": snapshot_fp,
-            "live_fingerprint": live_fp,
-            "freshness_decision": freshness_decision,
-            "checked_at": checked_at,
-            "refetched_at": refetched_at,
-            "is_homepage_like": bool(is_homepage),
-            "skip_reason": skip_reason,
-            "quality_score": quality_score,
-            "extracted_numbers": stored,
-        })
-
-    # -------------------------
-    # Candidate pool
-    # -------------------------
-    all_candidates = []
-    for fs in final_snapshots:
-        nums = fs.get("extracted_numbers") or []
-        if isinstance(nums, list):
-            for n in nums:
-                if isinstance(n, dict):
-                    all_candidates.append(n)
-
-    # -------------------------
-    # Matching (kept as-is from v7_32 logic)
-    # -------------------------
-    # To keep this patch focused on fixing the break (invalid snapshots deadlock),
-    # we reuse your existing matcher via a local call if present.
-    matcher = globals().get("diff_metrics_by_name")
-    if callable(matcher):
+    # 3) reconstruct from web_context.scraped_meta (if provided)
+    if (not baseline_sources_cache) and isinstance(web_context, dict):
         try:
-            diff = matcher(prev_numbers, all_candidates, anchors_by_key=anchors_by_key, anchors_by_name=anchors_by_name)
-        except Exception as e:
-            diff = {"metric_changes": [], "summary": {}, "stability_score": 0.0, "message": f"matcher_failed:{type(e).__name__}"}
-    else:
-        diff = {"metric_changes": [], "summary": {}, "stability_score": 0.0, "message": "diff_metrics_by_name_not_found"}
+            scraped_meta = web_context.get("scraped_meta") or {}
+            rebuilt = []
+            if isinstance(scraped_meta, dict):
+                for url, meta in scraped_meta.items():
+                    if not isinstance(meta, dict):
+                        continue
+                    content = meta.get("clean_text") or meta.get("content") or ""
+                    fp = meta.get("fingerprint") or _fingerprint(content)
+                    if not fp or len(content or "") < 800:
+                        continue
+                    nums = meta.get("extracted_numbers") or []
+                    if not isinstance(nums, list):
+                        nums = []
+                    rebuilt.append({
+                        "url": url,
+                        "status": meta.get("status") or "fetched",
+                        "status_detail": meta.get("status_detail") or "",
+                        "numbers_found": _safe_int(meta.get("numbers_found"), default=len(nums)),
+                        "fetched_at": meta.get("fetched_at") or _now(),
+                        "fingerprint": fp,
+                        "content_type": meta.get("content_type") or "",
+                        "extracted_numbers": [
+                            {
+                                "value": n.get("value"),
+                                "unit": n.get("unit"),
+                                "raw": n.get("raw"),
+                                "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:200],
+                            }
+                            for n in nums if isinstance(n, dict)
+                        ]
+                    })
+            if rebuilt:
+                baseline_sources_cache = rebuilt
+                snapshot_origin = "web_context_scraped_meta"
+        except Exception:
+            pass
 
-    metric_changes = diff.get("metric_changes") or []
-    summary = diff.get("summary") or {}
-    stability_score = diff.get("stability_score") or 0.0
+    # Also count invalid snapshots for debug (if present)
+    invalid_count = 0
+    try:
+        if isinstance(previous_data, dict):
+            r = previous_data.get("results")
+            if isinstance(r, dict) and isinstance(r.get("baseline_sources_cache_invalid"), list):
+                invalid_count = len(r.get("baseline_sources_cache_invalid") or [])
+    except Exception:
+        invalid_count = 0
 
-    return {
+    # ---------- Prepare stable default output ----------
+    output = {
         "status": "success",
-        "message": diff.get("message") or f"Evolution completed (origin={snapshot_origin}, policy={freshness_policy}).",
-        "sources_checked": int(sources_checked),
-        "sources_fetched": int(sources_fetched),
-        "numbers_extracted_total": int(numbers_extracted_total),
-        "stability_score": float(stability_score),
-        "summary": summary if isinstance(summary, dict) else {},
-        "metric_changes": metric_changes if isinstance(metric_changes, list) else [],
-        "source_results": source_results,
-        "debug": {
-            "snapshot_origin": snapshot_origin,
-            "freshness_policy": freshness_policy,
-            "valid_snapshot_count": int(len(valid_snapshots)),
-            "invalid_snapshot_count": int(len(snapshots) - len(valid_snapshots)) if isinstance(snapshots, list) else 0,
-            "candidates_total": int(len(all_candidates)),
-        }
+        "message": "",
+        "sources_checked": 0,
+        "sources_fetched": 0,
+        "numbers_extracted_total": 0,
+        "stability_score": 0.0,
+        "summary": {
+            "total_metrics": 0,
+            "metrics_found": 0,
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_unchanged": 0,
+        },
+        "metric_changes": [],
+        "source_results": [],
+        "interpretation": "",
+        # debug
+        "snapshot_origin": snapshot_origin,
+        "valid_snapshot_count": len(baseline_sources_cache or []),
+        "invalid_snapshot_count": int(invalid_count),
+        "generated_at": _now(),
     }
+
+    # If no valid snapshots, return "not_found" (tight safety net)
+    if not baseline_sources_cache:
+        output["status"] = "failed"
+        output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
+        output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
+        return output
+
+    # ---------- Use your existing deterministic metric diff helper ----------
+    # Pull baseline metrics from previous_data
+    prev_response = (previous_data or {}).get("primary_response", {}) or {}
+    prev_metrics = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
+
+    # Build a minimal current metrics dict from snapshots:
+    # NOTE: we do NOT brute-force match random candidates; we keep it snapshot-only for tightness.
+    # If you have a dedicated analysis extractor to rebuild metrics from snapshots, use it:
+    current_metrics = {}
+
+    try:
+        fn_rebuild = globals().get("rebuild_metrics_from_snapshots")  # optional future hook
+        if callable(fn_rebuild):
+            current_metrics = fn_rebuild(prev_response, baseline_sources_cache)
+    except Exception:
+        current_metrics = {}
+
+    # If we cannot rebuild metrics, return a tight result that still exposes source_results for debugging
+    if not isinstance(current_metrics, dict) or not current_metrics:
+        output["status"] = "failed"
+        output["message"] = "Valid snapshots exist, but no metric rebuild function is wired (rebuild_metrics_from_snapshots missing/empty)."
+        output["source_results"] = baseline_sources_cache[:50]
+        output["sources_checked"] = len(baseline_sources_cache)
+        output["sources_fetched"] = len(baseline_sources_cache)
+        output["interpretation"] = "Snapshot-ready but metric rebuild not implemented; add rebuild_metrics_from_snapshots() to converge evolution with analysis."
+        return output
+
+    # Diff using existing diff helper if present
+    metric_changes = []
+    try:
+        fn_diff = globals().get("diff_metrics_by_name")
+        if callable(fn_diff):
+            metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, {"primary_metrics_canonical": current_metrics})
+        else:
+            metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+    except Exception:
+        metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+
+    output["metric_changes"] = metric_changes or []
+    output["summary"]["total_metrics"] = len(output["metric_changes"])
+    output["summary"]["metrics_found"] = int(found or 0)
+    output["summary"]["metrics_increased"] = int(increased or 0)
+    output["summary"]["metrics_decreased"] = int(decreased or 0)
+    output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+
+    total = max(1, len(output["metric_changes"]))
+    output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
+
+    output["source_results"] = baseline_sources_cache[:50]
+    output["sources_checked"] = len(baseline_sources_cache)
+    output["sources_fetched"] = len(baseline_sources_cache)
+
+    output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
+    output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
+
+    return output
+
 
 
 def extract_context_keywords(metric_name: str) -> List[str]:
