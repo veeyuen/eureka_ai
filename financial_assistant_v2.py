@@ -9284,10 +9284,10 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
 
 
 def render_source_anchored_results(results, query: str):
-    """Render source-anchored evolution results (guarded + backward compatible + clearer failures)."""
+    """Render source-anchored evolution results (guarded + backward compatible + tuned debug UI)."""
     import math
     import re
-    from collections import Counter
+    from collections import Counter, defaultdict
 
     st.header("📈 Source-Anchored Evolution Analysis")
     st.markdown(f"**Query:** {query}")
@@ -9338,16 +9338,20 @@ def render_source_anchored_results(results, query: str):
         except Exception:
             return "-"
 
+    def _short(u: str, n: int = 95) -> str:
+        if not u:
+            return ""
+        return (u[:n] + "…") if len(u) > n else u
+
     if status != "success":
         st.error(f"❌ {message or 'Evolution failed'}")
-        # Still show source results if present (useful for debugging)
         sr = results.get("source_results") or []
         if isinstance(sr, list) and sr:
             st.subheader("🔗 Source Verification")
             for src in sr:
                 if not isinstance(src, dict):
                     continue
-                u = (src.get("url") or "")[:90]
+                u = _short((src.get("url") or ""), 90)
                 st.error(f"❌ {u} - {src.get('status_detail', 'Unknown error')}")
         return
 
@@ -9373,15 +9377,20 @@ def render_source_anchored_results(results, query: str):
     else:
         col4.info("➡️ Stable")
 
+    if message:
+        st.caption(message)
+
     st.markdown("---")
 
+    # -------------------------
     # Source status
+    # -------------------------
     st.subheader("🔗 Source Verification")
     src_results = results.get("source_results") or []
     if not isinstance(src_results, list):
         src_results = []
 
-    # If everything failed, show a small breakdown (THIS is what helps when you see 0 fetched)
+    # If everything failed, show breakdown
     if sources_checked > 0 and sources_fetched == 0 and src_results:
         reasons = []
         for s in src_results:
@@ -9401,35 +9410,51 @@ def render_source_anchored_results(results, query: str):
         ctype = src.get("content_type") or ""
         nfound = _safe_int(src.get("numbers_found"), 0)
 
-        short = (url[:95] + "…") if len(url) > 96 else url
+        short = _short(url, 95)
 
-        if sstatus == "fetched":
-            extra = f" ({nfound} numbers)"
+        # show extra debug flags if present
+        flags = []
+        if src.get("snapshot_origin"):
+            flags.append(f"origin={src.get('snapshot_origin')}")
+        if src.get("is_homepage"):
+            flags.append("homepage")
+        if src.get("skip_reason"):
+            flags.append(f"skip={src.get('skip_reason')}")
+        if src.get("quality_score") is not None:
+            try:
+                flags.append(f"q={float(src.get('quality_score')):.2f}")
+            except Exception:
+                flags.append(f"q={src.get('quality_score')}")
+
+        flag_txt = f" • {' • '.join(flags)}" if flags else ""
+
+        if str(sstatus).startswith("fetched"):
+            extra = f" ({nfound} nums)"
             if ctype:
                 extra += f" • {ctype}"
-            st.success(f"✅ {short}{extra}")
+            st.success(f"✅ {short}{extra}{flag_txt}")
         else:
             extra = f" - {detail}" if detail else ""
             if ctype:
                 extra += f" • {ctype}"
-            st.error(f"❌ {short}{extra}")
+            st.error(f"❌ {short}{extra}{flag_txt}")
 
     st.markdown("---")
 
-    # Metric changes
+    # -------------------------
+    # Metric changes table
+    # -------------------------
     st.subheader("💰 Metric Changes")
     rows = results.get("metric_changes") or []
     if not isinstance(rows, list) or not rows:
         st.info("No metric changes to display.")
         return
 
-    # ✅ tuning columns added: Canonical Key + Match Stage
     table_rows = []
     for r in rows:
         if not isinstance(r, dict):
             continue
 
-        # Backward compatible: some pipelines use 'metric'/'status', others use 'name'/'change_type'
         metric_label = r.get("metric") or r.get("name") or ""
         status_label = r.get("status") or r.get("change_type") or ""
 
@@ -9442,43 +9467,118 @@ def render_source_anchored_results(results, query: str):
             "Δ%": _fmt_change_pct(r.get("change_pct")),
             "Status": status_label,
             "Match": _fmt_pct(r.get("match_confidence")),
+            "Score": ("" if r.get("match_score") is None else f"{_safe_float(r.get('match_score'), 0.0):.2f}"),
             "Anchor": "✅" if r.get("anchor_used") else "",
         })
 
     st.dataframe(table_rows, use_container_width=True)
 
-    # Optional details
-    with st.expander("Show match details (source + context)"):
-        for r in rows[:40]:
+    # -------------------------
+    # Debug / tuning views
+    # -------------------------
+    # Aggregate rejection reasons across all metrics (quick tuning signal)
+    agg_rej = Counter()
+    for r in rows:
+        if isinstance(r, dict) and isinstance(r.get("rejected_reason_counts"), dict):
+            for k, v in r["rejected_reason_counts"].items():
+                try:
+                    agg_rej[k] += int(v or 0)
+                except Exception:
+                    pass
+
+    if agg_rej:
+        with st.expander("🧰 Tuning Summary (aggregate rejects across all metrics)"):
+            st.write(dict(agg_rej.most_common(20)))
+
+    # Full per-metric debug
+    with st.expander("🧾 Per-metric match details (debug)"):
+        for i, r in enumerate(rows, 1):
             if not isinstance(r, dict):
                 continue
 
-            metric_label = r.get("metric") or r.get("name") or ""
-            status_label = r.get("status") or r.get("change_type") or ""
+            metric_label = r.get("metric") or r.get("name") or f"metric_{i}"
+            status_label = r.get("status") or r.get("change_type") or "unknown"
 
-            st.markdown(
-                f"**{metric_label}** — {status_label} "
-                f"(`{r.get('canonical_key','')}` • stage: `{r.get('match_stage','')}`)"
-            )
+            canonical_key = r.get("canonical_key", "") or ""
+            stage = r.get("match_stage", "") or ""
+            conf = r.get("match_confidence", None)
+            score = r.get("match_score", None)
 
-            # Backward compatible fields:
-            # old: matched_source/matched_context
-            # new: source_url/context_snippet
-            src = r.get("matched_source") or r.get("source_url") or None
-            ctx = r.get("matched_context") or r.get("context_snippet") or None
+            header = f"{i}. {metric_label} — {status_label}"
+            meta_bits = []
+            if canonical_key:
+                meta_bits.append(f"ck={canonical_key}")
+            if stage:
+                meta_bits.append(f"stage={stage}")
+            if conf is not None:
+                meta_bits.append(f"conf={_fmt_pct(conf)}")
+            if score is not None:
+                try:
+                    meta_bits.append(f"score={float(score):.2f}")
+                except Exception:
+                    meta_bits.append(f"score={score}")
 
-            if src:
-                st.write("Source:", src)
-            if ctx:
-                st.write("Context:", ctx)
+            if meta_bits:
+                header += f"  ({' • '.join(meta_bits)})"
 
-            # Extra helpful debug if present
-            if r.get("matched_anchor_hash"):
-                st.write("Matched Anchor Hash:", r.get("matched_anchor_hash"))
-            if r.get("match_score") is not None:
-                st.write("Match Score:", r.get("match_score"))
+            with st.expander(header):
+                # Values
+                st.write({
+                    "previous_value": r.get("previous_value"),
+                    "current_value": r.get("current_value"),
+                    "change_pct": r.get("change_pct"),
+                })
 
-            st.markdown("---")
+                # Candidate considered / rejects
+                st.write("Candidates considered:", _safe_int(r.get("candidates_considered_count"), 0))
+
+                rej = r.get("rejected_reason_counts")
+                if isinstance(rej, dict) and rej:
+                    # sort largest first
+                    try:
+                        rej_sorted = dict(sorted(((k, int(v or 0)) for k, v in rej.items()), key=lambda x: x[1], reverse=True))
+                    except Exception:
+                        rej_sorted = rej
+                    st.write("Rejected reason counts:", rej_sorted)
+
+                # Score breakdown (if present)
+                sb = r.get("score_breakdown")
+                if isinstance(sb, dict) and sb:
+                    st.write("Score breakdown:", sb)
+
+                # Matched candidate (new)
+                mc = r.get("matched_candidate")
+                if isinstance(mc, dict) and mc:
+                    st.markdown("**Matched candidate**")
+                    st.write({
+                        "raw": mc.get("raw"),
+                        "value": mc.get("value"),
+                        "unit": mc.get("unit"),
+                        "source_url": mc.get("source_url"),
+                        "anchor_hash": mc.get("anchor_hash"),
+                        "is_homepage": mc.get("is_homepage"),
+                        "skip_reason": mc.get("skip_reason"),
+                        "quality_score": mc.get("quality_score"),
+                    })
+                    ctx = mc.get("context_snippet")
+                    if ctx:
+                        st.write("Context:")
+                        st.code(str(ctx))
+                else:
+                    # Backward-compatible fields
+                    src = r.get("matched_source") or r.get("source_url")
+                    ctx = r.get("matched_context") or r.get("context_snippet")
+                    if src:
+                        st.write("Source:", src)
+                    if ctx:
+                        st.write("Context:")
+                        st.code(str(ctx))
+
+                # Additional anchor hash compatibility
+                if r.get("matched_anchor_hash"):
+                    st.write("Matched Anchor Hash:", r.get("matched_anchor_hash"))
+
+    st.markdown("---")
 
 
 # =========================================================
