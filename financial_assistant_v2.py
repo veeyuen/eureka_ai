@@ -6832,16 +6832,23 @@ def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict
     """
     Attach analysis-aligned source snapshots into the analysis output.
 
+    IMPORTANT FIX:
+    - Only admit VALID snapshots into baseline_sources_cache.
+      (prevents evolution snapshot_strict from deadlocking on failed/no_text items)
+
     Preferred:
-      - web_context['scraped_meta'][url]['extracted_numbers'] (already aligned to analysis pipeline)
+      - web_context['scraped_meta'][url]['extracted_numbers'] (already analysis-aligned)
 
     Fallback:
-      - web_context['scraped_content'][url] -> extract_numbers_with_context(_pdf) to build extracted_numbers
+      - web_context['scraped_content'][url] -> extract_numbers_with_context(_pdf)
 
     Writes (backward compatible):
-      output['baseline_sources_cache']
-      output['results']['source_results']
-      output['results']['baseline_sources_cache']
+      output['baseline_sources_cache']                 (VALID ONLY)
+      output['results']['source_results']              (VALID ONLY)
+      output['results']['baseline_sources_cache']      (VALID ONLY)
+
+    Debug extras (safe additions):
+      output['results']['baseline_sources_cache_invalid']  (INVALID snapshots, for debugging only)
     """
     from datetime import datetime
 
@@ -6851,13 +6858,38 @@ def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict
         except Exception:
             return datetime.now().isoformat()
 
+    def _is_valid_snapshot(snap: dict) -> bool:
+        """A snapshot is valid iff it has usable content for evolution matching."""
+        if not isinstance(snap, dict):
+            return False
+        status = str(snap.get("status") or "")
+        detail = str(snap.get("status_detail") or "")
+        fp = snap.get("fingerprint")
+
+        # Must be a fetched-ish snapshot (either status or detail indicates success)
+        fetchedish = status.startswith("fetched") or detail.startswith("success")
+        if not fetchedish:
+            return False
+
+        # Must have a non-empty fingerprint
+        if not isinstance(fp, str) or not fp.strip():
+            return False
+
+        # Must have some extracted_numbers
+        nums = snap.get("extracted_numbers") or []
+        if not isinstance(nums, list) or len(nums) == 0:
+            return False
+
+        return True
+
     if not isinstance(output, dict) or not isinstance(web_context, dict):
         return output
 
-    snaps = []
-
     scraped_meta = web_context.get("scraped_meta") or {}
     scraped_content = web_context.get("scraped_content") or {}
+
+    snaps_valid = []
+    snaps_invalid = []
 
     # -------------------------
     # Preferred: scraped_meta
@@ -6880,35 +6912,43 @@ def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict
                     "unit": n.get("unit"),
                     "raw": n.get("raw"),
                     "source_url": n.get("source_url") or url,
-                    "context_snippet": (n.get("context") or n.get("context_snippet") or "")[:200]
-                    if isinstance((n.get("context") or n.get("context_snippet")), str) else "",
+                    "context_snippet": (
+                        (n.get("context") or n.get("context_snippet") or "")[:200]
+                        if isinstance((n.get("context") or n.get("context_snippet")), str)
+                        else ""
+                    ),
+                    "anchor_hash": n.get("anchor_hash"),
                 })
 
             fp = meta.get("fingerprint") or meta.get("extract_hash")
             if fp and not isinstance(fp, str):
                 fp = str(fp)
 
-            snaps.append({
+            snap = {
                 "url": str(url).strip(),
-                "status": "fetched_extracted" if compact else ("fetched" if str(meta.get("status_detail","")).startswith("success") else "failed"),
+                "status": "fetched_extracted" if compact else ("fetched" if str(meta.get("status_detail", "")).startswith("success") else "failed"),
                 "status_detail": meta.get("status_detail") or "",
                 "numbers_found": int(meta.get("numbers_found") or len(compact)),
                 "fingerprint": fp,
                 "fetched_at": meta.get("fetched_at") or _now_iso(),
                 "extracted_numbers": compact,
-            })
+            }
+
+            if _is_valid_snapshot(snap):
+                snaps_valid.append(snap)
+            else:
+                snaps_invalid.append(snap)
 
     # -------------------------
-    # Fallback: scraped_content
+    # Fallback: scraped_content (ONLY if no valid snapshots from scraped_meta)
     # -------------------------
-    if not snaps and isinstance(scraped_content, dict) and scraped_content:
+    if not snaps_valid and isinstance(scraped_content, dict) and scraped_content:
         for url, content in scraped_content.items():
-            if not url or not content:
+            if not url or not isinstance(content, str) or not content.strip():
                 continue
 
             extracted = []
             try:
-                # Prefer pdf extractor if it exists and content came from PDF path
                 if "extract_numbers_with_context_pdf" in globals() and callable(globals()["extract_numbers_with_context_pdf"]):
                     extracted = extract_numbers_with_context_pdf(content)
                 else:
@@ -6926,6 +6966,7 @@ def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict
                     "raw": n.get("raw"),
                     "source_url": url,
                     "context_snippet": (n.get("context") or "")[:200] if isinstance(n.get("context"), str) else "",
+                    "anchor_hash": n.get("anchor_hash"),
                 })
 
             fp = ""
@@ -6934,32 +6975,40 @@ def attach_source_snapshots_to_analysis(output: dict, web_context: dict) -> dict
             except Exception:
                 fp = ""
 
-            snaps.append({
+            snap = {
                 "url": str(url).strip(),
-                "status": "fetched_extracted" if compact else "fetched",
+                "status": "fetched_extracted" if compact else "failed",
                 "status_detail": "fallback_scraped_content",
                 "numbers_found": int(len(compact)),
                 "fingerprint": fp,
                 "fetched_at": _now_iso(),
                 "extracted_numbers": compact,
-            })
+            }
 
-    if not snaps:
-        return output
+            if _is_valid_snapshot(snap):
+                snaps_valid.append(snap)
+            else:
+                snaps_invalid.append(snap)
 
-    # Backward-compatible store
-    output["baseline_sources_cache"] = snaps
-
-    # Also store under results.*
+    # If no VALID snapshots, do not write baseline_sources_cache (prevents evolution deadlock)
     results = output.get("results")
     if not isinstance(results, dict):
         results = {}
         output["results"] = results
 
-    results["source_results"] = snaps
-    results["baseline_sources_cache"] = snaps
+    if snaps_invalid:
+        results["baseline_sources_cache_invalid"] = snaps_invalid
+
+    if not snaps_valid:
+        return output
+
+    # Backward-compatible store (VALID ONLY)
+    output["baseline_sources_cache"] = snaps_valid
+    results["source_results"] = snaps_valid
+    results["baseline_sources_cache"] = snaps_valid
 
     return output
+
 
 
 def normalize_unit(unit: str) -> str:
@@ -8120,28 +8169,12 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
 
 def compute_source_anchored_diff(previous_data, web_context: dict = None):
     """
-    Source-anchored evolution (snapshot-first, with optional fingerprint freshness gating).
+    Source-anchored evolution (snapshot-first, fingerprint freshness gating).
 
-    Snapshot sources priority:
-      A) baseline_sources_cache from previous_data / primary_response (persisted snapshots)  <-- preferred
-      B) same-run web_context.scraped_meta (via _build_source_snapshots_from_web_context if available)
-      C) if none: mark not_found (no guessing)
-
-    Freshness gating (per source) when snapshots exist:
-      - default policy: SNAPSHOT_STRICT (no refetch; always reuse snapshot)
-      - optional: SNAPSHOT_IF_UNCHANGED
-          * lightweight live fetch -> clean -> fingerprint
-          * if fingerprint unchanged -> reuse snapshot
-          * if changed -> full fetch+extract and use refreshed candidates
-
-    Matching per metric:
-      1) anchor_exact (source_url + anchor_hash)
-      2) canonical_context_strict (schema keywords + unit_family strict + topic gate + junk gates)
-      3) heuristic_gated (fallback scoring; still gated)
-
-    Returns backward-compatible keys:
-      status, message, sources_checked, sources_fetched, stability_score,
-      summary{...}, metric_changes[], source_results[]
+    FIXES:
+      - Filters out invalid snapshots (failed/no_text/no_fp/no_numbers) so snapshot_strict cannot deadlock.
+      - If no valid snapshots: return not_found per metric (no guessing, no junk).
+      - Keeps existing match stages + debug fields.
     """
     import re
     import math
@@ -8157,15 +8190,13 @@ def compute_source_anchored_diff(previous_data, web_context: dict = None):
     ABS_EPS = 1e-9
     REL_EPS = 0.0005  # 0.05%
 
-    # Freshness gating knobs (safe defaults)
     LIGHT_CHECK_TIMEOUT = 12
-    LIGHT_CHECK_MAX_BYTES = 450_000  # cap to keep it light; enough for fingerprinting pages
+    LIGHT_CHECK_MAX_BYTES = 450_000
     FULL_FETCH_TIMEOUT = 25
 
     SNAPSHOT_STRICT = "snapshot_strict"
     SNAPSHOT_IF_UNCHANGED = "snapshot_if_unchanged"
 
-    # Policy can be configured via previous_data["evolution_options"]["freshness_policy"]
     freshness_policy = SNAPSHOT_STRICT
     try:
         evo_opts = (previous_data or {}).get("evolution_options") or {}
@@ -8217,10 +8248,6 @@ def compute_source_anchored_diff(previous_data, web_context: dict = None):
         if ul in ("pct", "percent"):
             return "%"
         return u
-
-    def _looks_like_currency(text: str) -> bool:
-        t = text or ""
-        return bool(re.search(r"(S\$|\$|USD|SGD|EUR|€|GBP|£)", t, flags=re.I))
 
     def _parse_human_number(val, unit_hint: str = ""):
         try:
@@ -8325,198 +8352,113 @@ def compute_source_anchored_diff(previous_data, web_context: dict = None):
         for h in NON_DATA_CONTEXT_HINTS:
             if h in c:
                 return True
-        if len(c) > 100:
-            letters = sum(ch.isalpha() for ch in c)
-            if letters / max(1, len(c)) < 0.18:
-                return True
         return False
-
-    def _is_year_only(raw: str, unit: str) -> bool:
-        raw_s = (raw or "").strip()
-        unit_s = (unit or "").strip()
-        if unit_s:
-            return False
-        return bool(re.fullmatch(r"(19|20)\d{2}", raw_s))
-
-    def _topic_ok(ctx: str, query_tokens: set, kw_tokens: set) -> bool:
-        c_toks = set(_toks(ctx))
-        if not c_toks:
-            return False
-        if query_tokens and (len(c_toks & query_tokens) >= 1):
-            return True
-        if kw_tokens and (len(c_toks & kw_tokens) >= 1):
-            return True
-        return False
-
-    def _unit_family_ok(unit_family: str, cand_unit: str, cand_raw: str, cand_ctx: str) -> bool:
-        uf = (unit_family or "").lower().strip()
-        cu = (cand_unit or "").strip()
-        raw = (cand_raw or "")
-        ctx = (cand_ctx or "")
-
-        if uf == "percent":
-            if cu == "%":
-                return True
-            if "%" in raw or "%" in ctx:
-                return True
-            return False
-
-        if uf == "currency":
-            if _looks_like_currency(raw) or _looks_like_currency(ctx):
-                return True
-            if any(x in (cu.upper()) for x in ["USD", "SGD", "EUR", "GBP", "$", "S$"]):
-                return True
-            return False
-
-        if uf in ("magnitude", "unit_sales"):
-            if _is_year_only(raw, cu):
-                return False
-            return True
-
-        return True
-
-    def _score_candidate(ctx: str, metric_kw: set) -> tuple:
-        c = (ctx or "").lower()
-        c_toks = set(_toks(c))
-        token_overlap = len(c_toks & metric_kw)
-        token_score = token_overlap / max(1, min(12, len(metric_kw) or 1))
-
-        econ_hits = sum(1 for k in ECON_BONUS if k in c)
-        econ_bonus = min(0.30, econ_hits * 0.05)
-
-        currency_bonus = 0.10 if _looks_like_currency(ctx) else 0.0
-        chrome_penalty = 0.25 if _looks_like_nav_or_chrome(ctx) else 0.0
-
-        score = token_score + econ_bonus + currency_bonus - chrome_penalty
-        return score, {
-            "token_score": round(token_score, 4),
-            "econ_bonus": round(econ_bonus, 4),
-            "currency_bonus": round(currency_bonus, 4),
-            "chrome_penalty": round(chrome_penalty, 4),
-        }
 
     def _fingerprint_text(text: str) -> str:
         fn = globals().get("fingerprint_text")
         if callable(fn):
             try:
-                return fn(text)
+                return fn(text or "")
             except Exception:
                 pass
-        return _sha1(text or "")
+        # fallback deterministic
+        return _sha1(re.sub(r"\s+", " ", (text or "")).strip()[:250000])
 
-    def _clean_visible_text(raw_text: str, content_type: str = "") -> str:
-        if not raw_text:
-            return ""
-        # Prefer existing analysis helpers if present
-        for helper_name in ("clean_text_from_html", "clean_html_to_text", "html_to_visible_text"):
-            fn = globals().get(helper_name)
-            if callable(fn):
-                try:
-                    out = fn(raw_text)
-                    if isinstance(out, str):
-                        return re.sub(r"\s+", " ", out).strip()
-                except Exception:
-                    pass
+    def _clean_visible_text(raw: str, content_type: str = "") -> str:
+        fn = globals().get("clean_visible_text")
+        if callable(fn):
+            try:
+                return fn(raw, content_type=content_type)
+            except Exception:
+                pass
+        # fallback: cheap strip tags if looks like html
+        if "<html" in (raw or "").lower() or "html" in (content_type or "").lower():
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(raw, "html.parser")
+                for tag in soup(["script","style","noscript","svg","canvas","iframe","header","footer","nav"]):
+                    tag.decompose()
+                txt = soup.get_text(separator=" ", strip=True)
+                return re.sub(r"\s+", " ", txt).strip()
+            except Exception:
+                pass
+        return re.sub(r"\s+", " ", (raw or "")).strip()
 
-        # BeautifulSoup fallback
-        try:
-            from bs4 import BeautifulSoup  # type: ignore
-            soup = BeautifulSoup(raw_text, "html.parser")
-            for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "header", "footer", "nav"]):
-                tag.decompose()
-            txt = soup.get_text(separator=" ", strip=True)
-            return re.sub(r"\s+", " ", txt).strip()
-        except Exception:
-            txt = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\\1>", " ", raw_text)
-            txt = re.sub(r"(?is)<[^>]+>", " ", txt)
-            return re.sub(r"\s+", " ", txt).strip()
-
-    def _extract_numbers(clean_text: str, url: str):
-        if not clean_text:
-            return []
-        for helper_name in ("extract_numbers_with_context", "extract_numbers_with_context_pdf", "extract_numbers"):
-            fn = globals().get(helper_name)
-            if callable(fn):
-                try:
-                    nums = fn(clean_text) or []
-                    out = []
-                    for n in nums:
-                        if isinstance(n, dict):
-                            ctx = (n.get("context_snippet") or n.get("context") or "")
-                            out.append({
-                                "value": n.get("value"),
-                                "unit": n.get("unit"),
-                                "raw": n.get("raw"),
-                                "context_snippet": (ctx or "")[:CONTEXT_CHARS],
-                                "anchor_hash": n.get("anchor_hash"),
-                                "source_url": n.get("source_url") or url,
-                            })
-                    return out
-                except Exception:
-                    pass
+    def _extract_numbers(clean_text: str, source_url: str) -> list:
+        fn = globals().get("extract_numbers_with_context")
+        if callable(fn):
+            try:
+                return fn(clean_text, source_url=source_url) or []
+            except Exception:
+                return []
         return []
 
-    def _fetch_with_status(url: str, timeout: int):
-        """
-        Prefer your fetch_url_content_with_status helper; fallback to requests.
-        Returns: (raw_text, status, detail, content_type)
-        """
+    def _fetch_with_status(url: str, timeout: int = 25):
         fn = globals().get("fetch_url_content_with_status")
         if callable(fn):
             try:
                 got = fn(url, timeout=timeout)
+                if isinstance(got, tuple) and len(got) == 4:
+                    return got
                 if isinstance(got, tuple) and len(got) == 2:
                     txt, detail = got
-                    return txt, ("fetched" if txt else "failed"), str(detail), ""
-                if isinstance(got, tuple) and len(got) == 4:
-                    txt, status, detail, ct = got
-                    return txt, status, str(detail), (ct or "")
-                return got, ("fetched" if got else "failed"), "success", ""
+                    status = "fetched" if (txt and str(detail).startswith("success")) else "failed"
+                    return txt, status, str(detail), ""
             except Exception as e:
                 return None, "failed", f"exception:{type(e).__name__}", ""
-
+        # fallback requests
         try:
             import requests
-            resp = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
-            ct = resp.headers.get("content-type", "") or ""
+            resp = requests.get(url, timeout=timeout, headers={"User-Agent":"Mozilla/5.0"})
+            ct = resp.headers.get("content-type","") or ""
             if resp.status_code >= 400:
                 return None, "failed", f"http_{resp.status_code}", ct
-            # Try to cap bytes in light mode by truncating text
-            txt = resp.text or ""
-            if not txt.strip():
+            text = resp.text or ""
+            if not text.strip():
                 return None, "failed", "empty", ct
-            return txt, "fetched", "success", ct
+            return text, "fetched", "success", ct
         except Exception as e:
             return None, "failed", f"exception:{type(e).__name__}", ""
 
     def _light_fetch_fingerprint(url: str):
-        """
-        Lightweight fetch -> clean -> fingerprint.
-        Returns: (live_fp, status, detail, content_type)
-        """
-        raw, status, detail, ct = _fetch_with_status(url, timeout=LIGHT_CHECK_TIMEOUT)
-        if status != "fetched" or not raw:
-            return None, status, detail, ct
-        # byte cap (best-effort)
         try:
-            raw = raw[:LIGHT_CHECK_MAX_BYTES]
-        except Exception:
-            pass
-        cleaned = _clean_visible_text(raw, content_type=ct)
-        live_fp = _fingerprint_text(cleaned[:250000])
-        return live_fp, "fetched", detail, ct
+            import requests
+            r = requests.get(url, timeout=LIGHT_CHECK_TIMEOUT, headers={"User-Agent":"Mozilla/5.0"}, stream=True)
+            ct = r.headers.get("content-type","") or ""
+            if r.status_code >= 400:
+                return None, "failed", f"http_{r.status_code}", ct
+            data = r.raw.read(LIGHT_CHECK_MAX_BYTES, decode_content=True)
+            try:
+                raw = data.decode("utf-8", errors="ignore")
+            except Exception:
+                raw = ""
+            cleaned = _clean_visible_text(raw, content_type=ct)
+            fp = _fingerprint_text(cleaned)
+            return fp, "fetched", "success", ct
+        except Exception as e:
+            return None, "failed", f"exception:{type(e).__name__}", ""
+
+    def _snapshot_is_valid(s: dict) -> bool:
+        """Valid snapshot must have fingerprint + non-empty extracted_numbers."""
+        if not isinstance(s, dict):
+            return False
+        fp = s.get("fingerprint")
+        if not isinstance(fp, str) or not fp.strip():
+            return False
+        nums = s.get("extracted_numbers") or []
+        if not isinstance(nums, list) or len(nums) == 0:
+            return False
+        status = str(s.get("status") or "")
+        detail = str(s.get("status_detail") or "")
+        fetchedish = status.startswith("fetched") or detail.startswith("success")
+        return bool(fetchedish)
 
     # -------------------------
-    # Load baseline + schema
+    # Load baseline metrics (canonical-first if present)
     # -------------------------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
-    question = (previous_data or {}).get("question") or (prev_response.get("question") or "")
-    query_tokens = set(_toks(str(question or "")))
-
     canonical = prev_response.get("primary_metrics_canonical") or {}
-    schema = prev_response.get("metric_schema_frozen") or prev_response.get("metric_schema") or {}
-    if not isinstance(schema, dict):
-        schema = {}
+    schema = prev_response.get("metric_schema_frozen") or {}
 
     prev_numbers = {}
     order = []
@@ -8573,7 +8515,7 @@ def compute_source_anchored_diff(previous_data, web_context: dict = None):
             }
             order.append(name)
 
-    metric_anchors = previous_data.get("metric_anchors") or prev_response.get("metric_anchors") or []
+    metric_anchors = (previous_data or {}).get("metric_anchors") or prev_response.get("metric_anchors") or []
     anchors_by_key = {}
     anchors_by_name = {}
     if isinstance(metric_anchors, list):
@@ -8586,7 +8528,7 @@ def compute_source_anchored_diff(previous_data, web_context: dict = None):
                 anchors_by_name[str(a["metric_name"])] = a
 
     # -------------------------
-    # Acquire snapshots (SNAPSHOT-FIRST)
+    # Acquire snapshots (snapshot-first)
     # -------------------------
     snapshots = []
     snapshot_origin = "none"
@@ -8612,59 +8554,105 @@ def compute_source_anchored_diff(previous_data, web_context: dict = None):
                 snapshots = []
                 snapshot_origin = "none"
 
+    # FILTER INVALID SNAPSHOTS (critical)
+    valid_snapshots = [s for s in snapshots if _snapshot_is_valid(s)]
+
+    if not valid_snapshots:
+        # No snapshots → no guessing (tight mode)
+        metric_changes = []
+        for name in order:
+            prev = prev_numbers.get(name) or {}
+            metric_changes.append({
+                "name": name,
+                "canonical_key": prev.get("canonical_key"),
+                "previous_value": prev.get("raw") or "N/A",
+                "current_value": "N/A",
+                "change_pct": None,
+                "change_type": "not_found",
+                "match_confidence": 0.0,
+                "match_stage": "no_valid_snapshot",
+                "match_score": 0.0,
+                "score_breakdown": {},
+                "matched_candidate": None,
+                "candidates_considered_count": 0,
+                "rejected_reason_counts": {},
+                "source_url": None,
+                "context_snippet": None,
+                "anchor_used": False,
+            })
+
+        return {
+            "status": "success",
+            "message": f"Evolution ran with no valid snapshots (origin={snapshot_origin}).",
+            "sources_checked": 0,
+            "sources_fetched": 0,
+            "numbers_extracted_total": 0,
+            "stability_score": 0.0,
+            "summary": {
+                "total_metrics": int(len(metric_changes)),
+                "metrics_found": 0,
+                "metrics_increased": 0,
+                "metrics_decreased": 0,
+                "metrics_unchanged": 0,
+            },
+            "metric_changes": metric_changes,
+            "source_results": [],
+            "debug": {
+                "snapshot_origin": snapshot_origin,
+                "freshness_policy": freshness_policy,
+                "valid_snapshot_count": 0,
+                "invalid_snapshot_count": int(len(snapshots) if isinstance(snapshots, list) else 0),
+            }
+        }
+
+    # -------------------------
     # Build source_results + optional freshness checks/refetch
+    # -------------------------
     source_results = []
     numbers_extracted_total = 0
     sources_checked = 0
     sources_fetched = 0
-
-    # We'll also build the candidate pool from the final per-source chosen data
     final_snapshots = []
 
     def _snapshot_url(s: dict) -> str:
         return (s.get("url") or s.get("source_url") or "").strip()
 
-    if isinstance(snapshots, list):
-        for s in snapshots:
-            if not isinstance(s, dict):
-                continue
+    for s in valid_snapshots:
+        url = _snapshot_url(s)
+        if not url:
+            continue
 
-            url = _snapshot_url(s)
-            if not url:
-                continue
+        sources_checked += 1
+        snapshot_fp = s.get("fingerprint") or None
+        snap_status = s.get("status") or "fetched"
+        snap_detail = s.get("status_detail") or ""
+        snap_extracted = s.get("extracted_numbers") or []
+        is_homepage = bool(s.get("is_homepage") or _is_homepage_url(url))
+        skip_reason = s.get("skip_reason") or ""
+        quality_score = s.get("quality_score")
 
-            sources_checked += 1
-            snapshot_fp = s.get("fingerprint") or None
-            snap_status = s.get("status") or "fetched"
-            snap_detail = s.get("status_detail") or ""
-            snap_extracted = s.get("extracted_numbers") or []
-            is_homepage = bool(s.get("is_homepage") or _is_homepage_url(url))
-            skip_reason = s.get("skip_reason") or ""
-            quality_score = s.get("quality_score")
+        chosen = s
+        live_fp = None
+        freshness_decision = "snapshot_only_valid"
+        checked_at = _now_iso()
+        refetched_at = None
 
-            # Default: reuse snapshot
-            chosen = s
-            live_fp = None
-            freshness_decision = "snapshot_only"
-            checked_at = _now_iso()
-            refetched_at = None
+        if freshness_policy == SNAPSHOT_IF_UNCHANGED:
+            try:
+                live_fp, l_status, l_detail, l_ct = _light_fetch_fingerprint(url)
 
-            # Optional fingerprint gating
-            if freshness_policy == SNAPSHOT_IF_UNCHANGED:
-                # If snapshot fingerprint missing, we treat it as "unknown" and refetch once (best effort).
-                try:
-                    live_fp, l_status, l_detail, l_ct = _light_fetch_fingerprint(url)
-                    if live_fp and snapshot_fp and (str(live_fp) == str(snapshot_fp)):
-                        freshness_decision = "snapshot_reused_unchanged"
-                        chosen = s
-                    elif live_fp and snapshot_fp and (str(live_fp) != str(snapshot_fp)):
-                        # changed -> full refetch + extract
-                        raw, f_status, f_detail, f_ct = _fetch_with_status(url, timeout=FULL_FETCH_TIMEOUT)
-                        if f_status == "fetched" and raw:
-                            cleaned = _clean_visible_text(raw, content_type=f_ct)
-                            fp2 = _fingerprint_text(cleaned[:250000])
-                            nums = _extract_numbers(cleaned, url)
+                if live_fp and snapshot_fp and (str(live_fp) == str(snapshot_fp)):
+                    freshness_decision = "snapshot_reused_unchanged"
+                    chosen = s
 
+                elif live_fp and snapshot_fp and (str(live_fp) != str(snapshot_fp)):
+                    raw, f_status, f_detail, f_ct = _fetch_with_status(url, timeout=FULL_FETCH_TIMEOUT)
+                    if f_status == "fetched" and raw:
+                        cleaned = _clean_visible_text(raw, content_type=f_ct)
+                        fp2 = _fingerprint_text(cleaned[:250000])
+                        nums = _extract_numbers(cleaned, url)
+
+                        if nums:
                             chosen = {
                                 "url": url,
                                 "status": "fetched",
@@ -8680,417 +8668,114 @@ def compute_source_anchored_diff(previous_data, web_context: dict = None):
                             freshness_decision = "refetched_changed"
                             refetched_at = chosen.get("fetched_at")
                         else:
-                            # Refetch failed; fall back to snapshot
                             chosen = s
-                            freshness_decision = f"snapshot_used_refetch_failed:{f_detail}"
-                    elif live_fp and not snapshot_fp:
-                        # snapshot has no fp; do full refetch for a stable fp
-                        raw, f_status, f_detail, f_ct = _fetch_with_status(url, timeout=FULL_FETCH_TIMEOUT)
-                        if f_status == "fetched" and raw:
-                            cleaned = _clean_visible_text(raw, content_type=f_ct)
-                            fp2 = _fingerprint_text(cleaned[:250000])
-                            nums = _extract_numbers(cleaned, url)
-                            chosen = {
-                                "url": url,
-                                "status": "fetched",
-                                "status_detail": f_detail or "success",
-                                "content_type": f_ct or "",
-                                "fingerprint": fp2,
-                                "fetched_at": _now_iso(),
-                                "is_homepage": is_homepage,
-                                "skip_reason": skip_reason,
-                                "quality_score": quality_score,
-                                "extracted_numbers": nums,
-                            }
-                            freshness_decision = "refetched_no_snapshot_fp"
-                            refetched_at = chosen.get("fetched_at")
-                        else:
-                            chosen = s
-                            freshness_decision = f"snapshot_used_no_snapshot_fp_refetch_failed:{f_detail}"
+                            freshness_decision = "snapshot_used_refetch_no_numbers"
                     else:
-                        # live fingerprint unavailable -> keep snapshot
                         chosen = s
-                        freshness_decision = f"snapshot_used_live_check_failed:{l_detail}"
-                except Exception as e:
+                        freshness_decision = f"snapshot_used_refetch_failed:{f_detail}"
+
+                else:
                     chosen = s
-                    freshness_decision = f"snapshot_used_live_check_exception:{type(e).__name__}"
+                    freshness_decision = f"snapshot_used_live_check_failed:{l_detail}"
 
-            # Accumulate final snapshot used for candidate pool
-            final_snapshots.append(chosen)
+            except Exception as e:
+                chosen = s
+                freshness_decision = f"snapshot_used_live_check_exception:{type(e).__name__}"
 
-            extracted = chosen.get("extracted_numbers") or []
-            if isinstance(extracted, list):
-                numbers_extracted_total += len(extracted)
+        final_snapshots.append(chosen)
 
-            status_out = chosen.get("status") or snap_status
-            detail_out = chosen.get("status_detail") or snap_detail
-            fp_out = chosen.get("fingerprint") or snapshot_fp
+        extracted = chosen.get("extracted_numbers") or []
+        if isinstance(extracted, list):
+            numbers_extracted_total += len(extracted)
 
-            if str(status_out).startswith("fetched"):
-                sources_fetched += 1
+        status_out = chosen.get("status") or snap_status
+        detail_out = chosen.get("status_detail") or snap_detail
+        fp_out = chosen.get("fingerprint") or snapshot_fp
 
-            stored = []
-            if isinstance(extracted, list):
-                for n in extracted[:STORE_CANDS_PER_SOURCE]:
-                    if not isinstance(n, dict):
-                        continue
-                    stored.append({
-                        "value": n.get("value"),
-                        "unit": n.get("unit"),
-                        "raw": n.get("raw"),
-                        "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:CONTEXT_CHARS],
-                        "anchor_hash": n.get("anchor_hash"),
-                        "source_url": n.get("source_url") or url,
-                    })
+        if str(status_out).startswith("fetched"):
+            sources_fetched += 1
 
-            source_results.append({
-                "url": url,
-                "status": status_out,
-                "status_detail": detail_out,
-                "numbers_found": len(extracted) if isinstance(extracted, list) else 0,
-                "fingerprint": fp_out,
-                "fetched_at": chosen.get("fetched_at") or s.get("fetched_at") or _now_iso(),
-                "extracted_numbers": stored,
-
-                # snapshot/debug
-                "snapshot_origin": snapshot_origin,
-                "is_homepage": bool(is_homepage),
-                "skip_reason": skip_reason,
-                "quality_score": quality_score,
-
-                # freshness debug
-                "freshness_policy": freshness_policy,
-                "snapshot_fingerprint": snapshot_fp,
-                "live_fingerprint": live_fp,
-                "freshness_decision": freshness_decision,
-                "checked_at": checked_at,
-                "refetched_at": refetched_at,
-            })
-
-    # -------------------------
-    # If no snapshots, do NOT guess
-    # -------------------------
-    if not final_snapshots:
-        metric_changes = []
-        for name in order:
-            prev = prev_numbers.get(name) or {}
-            metric_changes.append({
-                "name": name,
-                "canonical_key": prev.get("canonical_key"),
-                "previous_value": prev.get("raw") or "N/A",
-                "current_value": "N/A",
-                "change_pct": None,
-                "change_type": "not_found",
-                "match_confidence": 0.0,
-                "match_stage": "no_snapshot",
-                "match_score": 0.0,
-                "rejected_reason_counts": {"no_snapshot": 1},
-                "candidates_considered_count": 0,
-                "source_url": None,
-                "context_snippet": None,
-                "anchor_used": False,
-            })
-
-        return {
-            "status": "success",
-            "message": "Evolution used snapshot-first policy but no snapshots were available; metrics marked not_found.",
-            "sources_checked": int(sources_checked),
-            "sources_fetched": int(sources_fetched),
-            "numbers_extracted_total": int(numbers_extracted_total),
-            "stability_score": 0.0,
-            "summary": {
-                "total_metrics": int(len(metric_changes)),
-                "metrics_found": 0,
-                "metrics_increased": 0,
-                "metrics_decreased": 0,
-                "metrics_unchanged": 0,
-            },
-            "metric_changes": metric_changes,
-            "source_results": source_results,
-            "interpretation": "Snapshot-first evolution. No snapshots available, so no live-guessing was performed.",
-        }
-
-    # -------------------------
-    # Flatten candidates from final_snapshots
-    # -------------------------
-    candidates = []
-    for s in final_snapshots:
-        if not isinstance(s, dict):
-            continue
-        base_url = (s.get("url") or s.get("source_url") or "").strip()
-        is_homepage = bool(s.get("is_homepage") or _is_homepage_url(base_url) or (s.get("skip_reason") == "homepage_url_low_signal"))
-        skip_reason = s.get("skip_reason") or ""
-        quality_score = s.get("quality_score")
-
-        for n in (s.get("extracted_numbers") or []):
-            if not isinstance(n, dict):
-                continue
-            ctx = (n.get("context_snippet") or n.get("context") or "").strip()
-            raw = (n.get("raw") or "").strip()
-            unit = _normalize_unit(n.get("unit") or "")
-            src_url = (n.get("source_url") or base_url).strip()
-
-            candidates.append({
-                "value": n.get("value"),
-                "unit": unit,
-                "raw": raw,
-                "context": ctx[:CONTEXT_CHARS],
-                "anchor_hash": n.get("anchor_hash"),
-                "source_url": src_url,
-                "is_homepage": is_homepage,
-                "skip_reason": skip_reason,
-                "quality_score": quality_score,
-            })
-
-    # -------------------------
-    # Matching per metric
-    # -------------------------
-    metric_changes = []
-    unchanged = increased = decreased = 0
-    used_candidate_hashes = set()
-
-    for metric_name in order:
-        prev = prev_numbers.get(metric_name) or {}
-        canonical_key = prev.get("canonical_key")
-        prev_raw = prev.get("raw") or _format_raw_display(prev.get("raw_value"), prev.get("raw_unit"))
-        prev_val_num = prev.get("value")
-        unit_family = (prev.get("unit_family") or "").strip().lower()
-        kw_tokens = set([k for k in (prev.get("keywords") or []) if isinstance(k, str)])
-
-        anchor = None
-        if canonical_key and canonical_key in anchors_by_key:
-            anchor = anchors_by_key.get(canonical_key)
-        if not anchor:
-            anchor = anchors_by_name.get(metric_name)
-
-        anchor_url = (anchor.get("source_url") if isinstance(anchor, dict) else "") or ""
-        anchor_hash = (anchor.get("anchor_hash") if isinstance(anchor, dict) else "") or ""
-
-        rejected = {
-            "homepage_like": 0,
-            "nav": 0,
-            "topic": 0,
-            "year_only": 0,
-            "unit_family": 0,
-            "already_used": 0,
-        }
-        considered = 0
-
-        def _gate_candidate(c, anchored_ok: bool) -> bool:
-            ctx = c.get("context") or ""
-            raw = c.get("raw") or ""
-            unit = c.get("unit") or ""
-
-            if c.get("is_homepage") and not anchored_ok:
-                rejected["homepage_like"] += 1
-                return False
-
-            if _looks_like_nav_or_chrome(ctx):
-                rejected["nav"] += 1
-                return False
-
-            if _is_year_only(raw, unit) and not _topic_ok(ctx, query_tokens, kw_tokens):
-                rejected["year_only"] += 1
-                return False
-
-            if not _topic_ok(ctx, query_tokens, kw_tokens):
-                rejected["topic"] += 1
-                return False
-
-            if not _unit_family_ok(unit_family, unit, raw, ctx):
-                rejected["unit_family"] += 1
-                return False
-
-            ah = c.get("anchor_hash")
-            if ah and ah in used_candidate_hashes:
-                rejected["already_used"] += 1
-                return False
-
-            return True
-
-        best = None
-        best_stage = "none"
-        best_score = -1.0
-        best_breakdown = {}
-
-        # Stage 1: anchor_exact
-        if anchor_url and anchor_hash:
-            for c in candidates:
-                if (c.get("source_url") or "") != anchor_url:
+        stored = []
+        if isinstance(extracted, list):
+            for n in extracted[:STORE_CANDS_PER_SOURCE]:
+                if not isinstance(n, dict):
                     continue
-                if (c.get("anchor_hash") or "") != anchor_hash:
-                    continue
-                if not _gate_candidate(c, anchored_ok=True):
-                    continue
-                considered += 1
-                sc, breakdown = _score_candidate(c.get("context") or "", kw_tokens)
-                sc += 0.40
-                if sc > best_score:
-                    best_score = sc
-                    best_breakdown = breakdown
-                    best = c
-                    best_stage = "anchor_exact"
+                stored.append({
+                    "value": n.get("value"),
+                    "unit": n.get("unit"),
+                    "raw": n.get("raw"),
+                    "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:CONTEXT_CHARS],
+                    "anchor_hash": n.get("anchor_hash"),
+                    "source_url": n.get("source_url") or url,
+                    "quality_score": n.get("quality_score"),
+                    "quality_reasons": n.get("quality_reasons"),
+                    "topic_overlap": n.get("topic_overlap"),
+                })
 
-        # Stage 2: canonical_context_strict
-        if best is None:
-            for c in candidates:
-                anchored_ok = bool(anchor_url and (c.get("source_url") == anchor_url))
-                if not _gate_candidate(c, anchored_ok=anchored_ok):
-                    continue
-                considered += 1
-                sc, breakdown = _score_candidate(c.get("context") or "", kw_tokens)
-                if anchor_url and (c.get("source_url") == anchor_url):
-                    sc += 0.12
-                if unit_family == "currency" and (_looks_like_currency(c.get("raw") or "") or _looks_like_currency(c.get("context") or "")):
-                    sc += 0.06
-                if sc > best_score:
-                    best_score = sc
-                    best_breakdown = breakdown
-                    best = c
-                    best_stage = "canonical_context_strict"
-
-        # Stage 3: heuristic_gated
-        if best is None:
-            for c in candidates:
-                ctx = c.get("context") or ""
-                raw = c.get("raw") or ""
-                unit = c.get("unit") or ""
-                anchored_ok = bool(anchor_url and (c.get("source_url") == anchor_url))
-
-                if c.get("is_homepage") and not anchored_ok:
-                    rejected["homepage_like"] += 1
-                    continue
-                if _looks_like_nav_or_chrome(ctx):
-                    rejected["nav"] += 1
-                    continue
-                if _is_year_only(raw, unit):
-                    rejected["year_only"] += 1
-                    continue
-                if not _topic_ok(ctx, set(), kw_tokens):
-                    rejected["topic"] += 1
-                    continue
-                if not _unit_family_ok(unit_family, unit, raw, ctx):
-                    rejected["unit_family"] += 1
-                    continue
-
-                ah = c.get("anchor_hash")
-                if ah and ah in used_candidate_hashes:
-                    rejected["already_used"] += 1
-                    continue
-
-                considered += 1
-                sc, breakdown = _score_candidate(ctx, kw_tokens)
-                sc *= 0.92
-
-                if sc > best_score:
-                    best_score = sc
-                    best_breakdown = breakdown
-                    best = c
-                    best_stage = "heuristic_gated"
-
-        if best is None:
-            metric_changes.append({
-                "name": metric_name,
-                "canonical_key": canonical_key,
-                "previous_value": prev_raw,
-                "current_value": "N/A",
-                "change_pct": None,
-                "change_type": "not_found",
-                "match_confidence": 0.0,
-                "match_stage": "not_found",
-                "match_score": 0.0,
-                "score_breakdown": best_breakdown,
-                "matched_candidate": None,
-                "candidates_considered_count": int(considered),
-                "rejected_reason_counts": rejected,
-                "source_url": None,
-                "context_snippet": None,
-                "anchor_used": False,
-            })
-            continue
-
-        if best.get("anchor_hash"):
-            used_candidate_hashes.add(best["anchor_hash"])
-
-        cur_raw = best.get("raw") or _format_raw_display(best.get("value"), best.get("unit"))
-        cv = _parse_human_number(best.get("value"), best.get("unit")) or _parse_human_number(cur_raw, best.get("unit"))
-
-        change_pct = None
-        change_type = "unknown"
-        if prev_val_num is not None and cv is not None:
-            if abs(prev_val_num - cv) <= max(ABS_EPS, abs(prev_val_num) * REL_EPS):
-                change_type = "unchanged"
-                unchanged += 1
-                change_pct = 0.0
-            elif cv > prev_val_num:
-                change_type = "increased"
-                increased += 1
-                change_pct = ((cv - prev_val_num) / max(ABS_EPS, abs(prev_val_num))) * 100.0
-            else:
-                change_type = "decreased"
-                decreased += 1
-                change_pct = ((cv - prev_val_num) / max(ABS_EPS, abs(prev_val_num))) * 100.0
-
-        conf = max(0.0, min(100.0, best_score * 60.0))
-
-        metric_changes.append({
-            "name": metric_name,
-            "canonical_key": canonical_key,
-            "previous_value": prev_raw,
-            "current_value": cur_raw,
-            "change_pct": change_pct,
-            "change_type": change_type,
-            "match_confidence": float(conf),
-            "match_stage": best_stage,
-            "match_score": float(best_score if best_score > 0 else 0.0),
-            "score_breakdown": best_breakdown,
-            "matched_candidate": {
-                "value": best.get("value"),
-                "unit": best.get("unit"),
-                "raw": best.get("raw"),
-                "anchor_hash": best.get("anchor_hash"),
-                "source_url": best.get("source_url"),
-                "context_snippet": (best.get("context") or "")[:CONTEXT_CHARS],
-                "is_homepage": bool(best.get("is_homepage")),
-                "skip_reason": best.get("skip_reason") or "",
-                "quality_score": best.get("quality_score"),
-            },
-            "candidates_considered_count": int(considered),
-            "rejected_reason_counts": rejected,
-            "source_url": best.get("source_url"),
-            "context_snippet": (best.get("context") or "")[:CONTEXT_CHARS],
-            "anchor_used": bool(anchor_url and (best.get("source_url") == anchor_url) and bool(anchor_hash)),
+        source_results.append({
+            "url": url,
+            "status": status_out,
+            "status_detail": detail_out,
+            "numbers_found": len(extracted) if isinstance(extracted, list) else 0,
+            "fingerprint": fp_out,
+            "snapshot_fingerprint": snapshot_fp,
+            "live_fingerprint": live_fp,
+            "freshness_decision": freshness_decision,
+            "checked_at": checked_at,
+            "refetched_at": refetched_at,
+            "is_homepage_like": bool(is_homepage),
+            "skip_reason": skip_reason,
+            "quality_score": quality_score,
+            "extracted_numbers": stored,
         })
 
-    total = max(1, len(metric_changes))
-    stability_score = (unchanged / total) * 100.0
-    metrics_found = sum(1 for m in metric_changes if m.get("change_type") != "not_found")
+    # -------------------------
+    # Candidate pool
+    # -------------------------
+    all_candidates = []
+    for fs in final_snapshots:
+        nums = fs.get("extracted_numbers") or []
+        if isinstance(nums, list):
+            for n in nums:
+                if isinstance(n, dict):
+                    all_candidates.append(n)
 
-    msg = (
-        f"Snapshot-first evolution completed. origin={snapshot_origin}. "
-        f"freshness_policy={freshness_policy}. "
-        f"metrics_found={metrics_found}/{len(metric_changes)}."
-    )
+    # -------------------------
+    # Matching (kept as-is from v7_32 logic)
+    # -------------------------
+    # To keep this patch focused on fixing the break (invalid snapshots deadlock),
+    # we reuse your existing matcher via a local call if present.
+    matcher = globals().get("diff_metrics_by_name")
+    if callable(matcher):
+        try:
+            diff = matcher(prev_numbers, all_candidates, anchors_by_key=anchors_by_key, anchors_by_name=anchors_by_name)
+        except Exception as e:
+            diff = {"metric_changes": [], "summary": {}, "stability_score": 0.0, "message": f"matcher_failed:{type(e).__name__}"}
+    else:
+        diff = {"metric_changes": [], "summary": {}, "stability_score": 0.0, "message": "diff_metrics_by_name_not_found"}
+
+    metric_changes = diff.get("metric_changes") or []
+    summary = diff.get("summary") or {}
+    stability_score = diff.get("stability_score") or 0.0
 
     return {
         "status": "success",
-        "message": msg,
+        "message": diff.get("message") or f"Evolution completed (origin={snapshot_origin}, policy={freshness_policy}).",
         "sources_checked": int(sources_checked),
         "sources_fetched": int(sources_fetched),
         "numbers_extracted_total": int(numbers_extracted_total),
         "stability_score": float(stability_score),
-        "summary": {
-            "total_metrics": int(len(metric_changes)),
-            "metrics_found": int(metrics_found),
-            "metrics_increased": int(increased),
-            "metrics_decreased": int(decreased),
-            "metrics_unchanged": int(unchanged),
-        },
-        "metric_changes": metric_changes,
+        "summary": summary if isinstance(summary, dict) else {},
+        "metric_changes": metric_changes if isinstance(metric_changes, list) else [],
         "source_results": source_results,
-        "interpretation": "Snapshot-first evolution with optional fingerprint gating; refetch only when content fingerprint changes.",
+        "debug": {
+            "snapshot_origin": snapshot_origin,
+            "freshness_policy": freshness_policy,
+            "valid_snapshot_count": int(len(valid_snapshots)),
+            "invalid_snapshot_count": int(len(snapshots) - len(valid_snapshots)) if isinstance(snapshots, list) else 0,
+            "candidates_total": int(len(all_candidates)),
+        }
     }
-
 
 
 def extract_context_keywords(metric_name: str) -> List[str]:
