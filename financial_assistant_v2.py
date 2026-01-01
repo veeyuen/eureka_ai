@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.32
+# YUREEKA AI RESEARCH ASSISTANT v7.34
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -38,6 +38,9 @@
 # Tighten canonical identity + unit-family constraints
 # Fingerprint freshness gating to evolution
 # Fix SerpAPI access and fetching
+# Keeps your snapshot-friendly scraped_meta (with extracted numbers + fingerprint fields)
+# Safe fallback scraper when ScrapingDog is unavailable
+# Prevent caching “empty results” from SerpAPI (no poisoned cache)
 # ================================================================================
 
 import io
@@ -1393,19 +1396,64 @@ def get_search_cache_key(query: str) -> str:
     return hashlib.md5(normalized.encode()).hexdigest()[:16]
 
 def get_cached_search_results(query: str) -> Optional[List[Dict]]:
-    """Get cached search results if still valid"""
-    cache_key = get_search_cache_key(query)
-    if cache_key in _search_cache:
-        cached_results, cached_time = _search_cache[cache_key]
-        if datetime.now() - cached_time < timedelta(hours=SEARCH_CACHE_TTL_HOURS):
-            return cached_results
-        del _search_cache[cache_key]
+    """
+    Get cached search results if still valid.
+
+    IMPORTANT:
+    - Never treat cached empty results as valid.
+      Returning [] here "poisons" the pipeline for hours and makes SerpAPI look broken.
+    """
+    try:
+        cache_key = get_search_cache_key(query)
+        if cache_key in _search_cache:
+            cached_results, cached_time = _search_cache[cache_key]
+            if datetime.now() - cached_time < timedelta(hours=SEARCH_CACHE_TTL_HOURS):
+                # ✅ Do not reuse empty cache entries
+                if isinstance(cached_results, list) and len(cached_results) == 0:
+                    return None
+                return cached_results
+            # expired
+            del _search_cache[cache_key]
+    except Exception:
+        return None
     return None
 
+
 def cache_search_results(query: str, results: List[Dict]):
-    """Cache search results"""
-    cache_key = get_search_cache_key(query)
-    _search_cache[cache_key] = (results, datetime.now())
+    """
+    Cache search results.
+
+    IMPORTANT:
+    - Do NOT cache empty lists
+    - Do NOT cache lists that contain no usable URLs
+      (prevents "poisoned cache" that makes SerpAPI appear broken)
+    """
+    try:
+        if not isinstance(query, str) or not query.strip():
+            return
+        if not isinstance(results, list) or not results:
+            return
+
+        # Require at least one usable url/link
+        has_url = False
+        for r in results:
+            if isinstance(r, dict):
+                u = (r.get("link") or r.get("url") or "").strip()
+                if u:
+                    has_url = True
+                    break
+            elif isinstance(r, str) and r.strip():
+                has_url = True
+                break
+
+        if not has_url:
+            return
+
+        cache_key = get_search_cache_key(query)
+        _search_cache[cache_key] = (results, datetime.now())
+    except Exception:
+        return
+
 
 # =========================================================
 # LLM RESPONSE CACHE - Prevents variance on identical inputs
@@ -1574,35 +1622,86 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
 
 
 def scrape_url(url: str) -> Optional[str]:
-    """Scrape webpage content via ScrapingDog"""
-    if not SCRAPINGDOG_KEY:
+    """
+    Scrape webpage content.
+
+    Priority:
+      1) ScrapingDog (if SCRAPINGDOG_KEY is present)
+      2) Safe fallback: direct requests + BeautifulSoup visible-text extraction
+
+    Returns:
+      - Clean visible text (<= 3000 chars) or None
+    """
+    import re
+
+    url_s = (url or "").strip()
+    if not url_s:
         return None
 
-    params = {
-        "api_key": SCRAPINGDOG_KEY,
-        "url": url,
-        "dynamic": "false"
-    }
+    def _clean_html_to_text(html: str) -> str:
+        try:
+            from bs4 import BeautifulSoup  # type: ignore
+            soup = BeautifulSoup(html or "", "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form"]):
+                try:
+                    tag.decompose()
+                except Exception:
+                    pass
+            txt = soup.get_text(separator="\n")
+        except Exception:
+            # fallback: strip tags
+            txt = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", html or "")
+            txt = re.sub(r"(?is)<[^>]+>", " ", txt)
+        # normalize whitespace
+        lines = [ln.strip() for ln in (txt or "").splitlines() if ln.strip()]
+        out = "\n".join(lines)
+        out = re.sub(r"\n{3,}", "\n\n", out)
+        return out.strip()
 
-    try:
-        resp = requests.get("https://api.scrapingdog.com/scrape", params=params, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, 'html.parser')
+    def _direct_fetch(u: str) -> Optional[str]:
+        try:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+            }
+            resp = requests.get(u, headers=headers, timeout=12, allow_redirects=True)
+            if resp.status_code >= 400:
+                return None
 
-        # Remove noise
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-            tag.decompose()
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "application/pdf" in ctype:
+                return None
 
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        clean_text = '\n'.join(chunk for chunk in chunks if chunk)
+            cleaned = _clean_html_to_text(resp.text or "")
+            cleaned = cleaned.strip()
+            if not cleaned:
+                return None
+            return cleaned[:3000]
+        except Exception:
+            return None
 
-        return clean_text[:3000]
+    # 1) ScrapingDog path (if configured)
+    if globals().get("SCRAPINGDOG_KEY"):
+        try:
+            params = {"api_key": SCRAPINGDOG_KEY, "url": url_s, "dynamic": "false"}
+            resp = requests.get("https://api.scrapingdog.com/scrape", params=params, timeout=15)
+            if resp.status_code < 400:
+                cleaned = _clean_html_to_text(resp.text or "").strip()
+                if cleaned:
+                    return cleaned[:3000]
+        except Exception:
+            pass  # fall through to direct fetch
 
-    except Exception as e:
-        st.warning(f"⚠️ Scraping error for {url[:50]}: {e}")
-        return None
+    # 2) Safe fallback
+    return _direct_fetch(url_s)
+
 
 def fetch_web_context(
     query: str,
@@ -1614,15 +1713,16 @@ def fetch_web_context(
     """
     Web context collector used by BOTH analysis + evolution.
 
-    IMPORTANT: v7_32 downstream expects web_context["sources"].
-    This function populates BOTH:
-      - sources (legacy, used throughout UI + prompts)
-      - web_sources (newer, for evolution/snapshots)
+    Enhancements:
+    - Dashboard telemetry (sources found / HQ / admitted / scraped / success)
+    - Keeps snapshot-friendly scraped_meta (fingerprint + extracted_numbers + numbers_found)
+    - Uses scrape_url() which now has ScrapingDog + safe fallback scraper
+    - Restores legacy contract: web_context["sources"] AND ["web_sources"]
     """
     import re
     from datetime import datetime, timezone
 
-    def _now():
+    def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
     def _is_probably_url(s: str) -> bool:
@@ -1647,96 +1747,158 @@ def fetch_web_context(
             return "https://" + t
         return ""
 
-    web_context = {
+    out = {
         "query": query,
-        "sources": [],        # ✅ legacy key used everywhere downstream
-        "web_sources": [],    # ✅ your newer key
+        "sources": [],        # ✅ legacy key many downstream blocks expect
+        "web_sources": [],    # ✅ newer key used by evolution/snapshots
         "search_results": [],
         "scraped_meta": {},
         "scraped_content": {},
         "errors": [],
         "status": "ok",
         "status_detail": "",
-        "fetched_at": _now(),
+        "fetched_at": _now_iso(),
+        "debug_counts": {},   # ✅ telemetry for dashboard + JSON debugging
     }
 
-    urls = []
+    q = (query or "").strip()
+    if not q:
+        out["status"] = "no_query"
+        out["status_detail"] = "empty_query"
+        return out
 
     # -----------------------------
-    # 1) Search (prefer SerpAPI)
+    # 1) Search (SerpAPI) OR fallback_urls
     # -----------------------------
+    search_results = []
+    urls_raw = []
+
     if not fallback_mode:
         try:
-            fn_search = globals().get("search_serpapi")  # ✅ correct function name in v7_32
-            if callable(fn_search):
-                sr = fn_search(query, num_results=max(10, int(num_sources) * 4))
-                if isinstance(sr, list):
-                    web_context["search_results"] = sr
-
-                    # Handle common shapes:
-                    # - list[str urls]
-                    # - list[dict] with "link"/"url"
-                    for item in sr:
-                        if isinstance(item, str) and _is_probably_url(item):
-                            urls.append(item)
-                        elif isinstance(item, dict):
-                            u = item.get("link") or item.get("url")
-                            if isinstance(u, str) and _is_probably_url(u):
-                                urls.append(u)
-            else:
-                web_context["status"] = "partial"
-                web_context["status_detail"] = "missing_search_serpapi"
+            sr = search_serpapi(q, num_results=10) or []
+            if isinstance(sr, list):
+                search_results = sr
         except Exception as e:
-            web_context["status"] = "partial"
-            web_context["status_detail"] = f"search_exception:{type(e).__name__}"
-            web_context["errors"].append(web_context["status_detail"])
+            out["errors"].append(f"search_failed:{type(e).__name__}")
+            search_results = []
+
+        out["search_results"] = search_results
+
+        # Extract urls from results
+        for r in (search_results or []):
+            if isinstance(r, dict):
+                u = (r.get("link") or r.get("url") or "").strip()
+                if _is_probably_url(u):
+                    urls_raw.append(u)
+            elif isinstance(r, str):
+                if _is_probably_url(r):
+                    urls_raw.append(r.strip())
+
+    else:
+        # Evolution fallback: use provided URLs
+        if isinstance(fallback_urls, list):
+            for u in fallback_urls:
+                if isinstance(u, str) and _is_probably_url(u.strip()):
+                    urls_raw.append(u.strip())
 
     # -----------------------------
-    # 2) Fallback URLs (evolution)
+    # 2) Compute "HQ" counts (like old version)
     # -----------------------------
-    if (not urls) and fallback_mode and fallback_urls:
-        urls = list(fallback_urls)
+    total_found = len(search_results) if not fallback_mode else len(urls_raw)
+    hq_count = 0
+
+    try:
+        fn_rel = globals().get("classify_source_reliability")
+        if callable(fn_rel) and not fallback_mode:
+            for r in (search_results or []):
+                if not isinstance(r, dict):
+                    continue
+                u = (r.get("link") or "").strip()
+                if not u:
+                    continue
+                label = fn_rel(u) or ""
+                if "✅" in str(label):
+                    hq_count += 1
+    except Exception:
+        hq_count = 0
 
     # -----------------------------
-    # 3) Sanitize + normalize + cap
+    # 3) Sanitize + normalize + dedupe
     # -----------------------------
     normed = []
     seen = set()
-    for u in (urls or []):
-        if not isinstance(u, str):
-            continue
-        if not _is_probably_url(u):
-            continue
+    for u in (urls_raw or []):
         nu = _normalize_url(u)
-        if not nu or nu in seen:
+        if not nu:
+            continue
+        if nu in seen:
             continue
         seen.add(nu)
         normed.append(nu)
 
-    # Use top N for live analysis search; in fallback_mode keep all
-    picked = normed[: max(0, int(num_sources))] if not fallback_mode else normed
+    # admitted for scraping (top N)
+    try:
+        n = int(num_sources or 3)
+    except Exception:
+        n = 3
+    n = max(1, min(12, n))
+    admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
 
-    # ✅ restore legacy contract expected downstream
-    web_context["sources"] = picked
-    web_context["web_sources"] = picked
+    out["sources"] = admitted
+    out["web_sources"] = admitted
 
-    if not picked:
-        web_context["status"] = "no_sources"
-        web_context["status_detail"] = web_context["status_detail"] or "empty_sources"
-        return web_context
+    # Telemetry before scrape
+    out["debug_counts"].update({
+        "total_found": int(total_found),
+        "high_quality": int(hq_count),
+        "admitted_for_scraping": int(len(admitted)),
+        "fallback_mode": bool(fallback_mode),
+    })
+
+    # Dashboard info (restored)
+    try:
+        if not fallback_mode:
+            st.info(
+                f"🔍 Sources Found: **{out['debug_counts']['total_found']} total** | "
+                f"**{out['debug_counts']['high_quality']} high-quality** | "
+                f"Scraping **{out['debug_counts']['admitted_for_scraping']}**"
+            )
+        else:
+            st.info(
+                f"🧩 Fallback Sources: **{out['debug_counts']['admitted_for_scraping']}** (no SerpAPI search)"
+            )
+    except Exception:
+        pass
+
+    if not admitted:
+        out["status"] = "no_sources"
+        out["status_detail"] = "empty_sources_after_filter"
+        return out
 
     # -----------------------------
-    # 4) Fetch + clean + extract meta
+    # 4) Scrape + extract numbers (snapshot-friendly scraped_meta)
     # -----------------------------
-    fn_fetch = globals().get("fetch_url_content_with_status")
-    fn_clean = globals().get("clean_html_to_text") or globals().get("html_to_visible_text") or globals().get("extract_visible_text")
     fn_fp = globals().get("fingerprint_text")
     fn_extract = globals().get("extract_numbers_with_context") or globals().get("extract_numeric_candidates") or globals().get("extract_numbers_from_text")
 
-    for url in picked:
+    scraped_attempted = 0
+    scraped_ok_text = 0
+    scraped_ok_numbers = 0
+    scraped_failed = 0
+
+    # optional progress bar
+    progress = None
+    try:
+        progress = st.progress(0)
+    except Exception:
+        progress = None
+
+    for i, url in enumerate(admitted):
+        scraped_attempted += 1
+
         meta = {
             "url": url,
-            "fetched_at": _now(),
+            "fetched_at": _now_iso(),
             "status": "failed",
             "status_detail": "",
             "content_type": "",
@@ -1749,91 +1911,92 @@ def fetch_web_context(
             "clean_text": "",
         }
 
-        raw_text = None
-        detail = ""
-        status = "failed"
-        content_type = ""
-
         try:
-            if callable(fn_fetch):
-                got = fn_fetch(url, timeout=25)
-
-                # v7_32 helper returns (text, status_detail)
-                if isinstance(got, tuple) and len(got) == 2:
-                    raw_text, detail = got
-                    status = "fetched" if raw_text else "failed"
-                # tolerate richer returns if you later upgrade it
-                elif isinstance(got, tuple) and len(got) == 4:
-                    raw_text, status, detail, content_type = got
-                else:
-                    raw_text = None
-                    status = "failed"
-                    detail = "fetch_return_shape"
+            text = scrape_url(url)  # ✅ ScrapingDog + fallback inside scrape_url
+            if not text or not str(text).strip():
+                meta["status"] = "failed"
+                meta["status_detail"] = "failed:no_text"
+                scraped_failed += 1
+                out["scraped_meta"][url] = meta
             else:
-                # Minimal fallback
-                import requests
-                r = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
-                content_type = r.headers.get("content-type", "") or ""
-                if r.status_code >= 400:
-                    status, detail = "failed", f"http_{r.status_code}"
-                else:
-                    raw_text = r.text or ""
-                    status, detail = ("fetched", "success") if raw_text.strip() else ("failed", "empty")
+                cleaned = str(text).strip()
+                meta["status"] = "fetched"
+                meta["status_detail"] = "success"
+                meta["content"] = cleaned
+                meta["clean_text"] = cleaned
+                meta["content_len"] = len(cleaned)
+                meta["clean_text_len"] = len(cleaned)
+
+                # fingerprint
+                try:
+                    if callable(fn_fp):
+                        meta["fingerprint"] = fn_fp(cleaned)
+                    else:
+                        meta["fingerprint"] = fingerprint_text(cleaned) if callable(globals().get("fingerprint_text")) else None
+                except Exception:
+                    meta["fingerprint"] = None
+
+                # numeric extraction (analysis-aligned if fn exists)
+                nums = []
+                try:
+                    if callable(fn_extract):
+                        nums = fn_extract(cleaned, url=url) if "url" in fn_extract.__code__.co_varnames else fn_extract(cleaned)
+                except Exception:
+                    nums = []
+
+                if isinstance(nums, list):
+                    meta["extracted_numbers"] = nums
+                    meta["numbers_found"] = len(nums)
+
+                out["scraped_meta"][url] = meta
+                out["scraped_content"][url] = cleaned
+
+                scraped_ok_text += 1
+                if meta["numbers_found"] > 0:
+                    scraped_ok_numbers += 1
+
         except Exception as e:
-            raw_text = None
-            status, detail = "failed", f"exception:{type(e).__name__}"
+            meta["status"] = "failed"
+            meta["status_detail"] = f"failed:exception:{type(e).__name__}"
+            scraped_failed += 1
+            out["scraped_meta"][url] = meta
+            out["errors"].append(meta["status_detail"])
 
-        meta["status"] = status
-        meta["status_detail"] = detail
-        meta["content_type"] = content_type
+        if progress:
+            try:
+                progress.progress((i + 1) / max(1, len(admitted)))
+            except Exception:
+                pass
 
-        if status != "fetched" or not raw_text:
-            web_context["scraped_meta"][url] = meta
-            continue
+    out["debug_counts"].update({
+        "scraped_attempted": int(scraped_attempted),
+        "scraped_ok_text": int(scraped_ok_text),
+        "scraped_ok_numbers": int(scraped_ok_numbers),
+        "scraped_failed": int(scraped_failed),
+    })
 
-        meta["content"] = raw_text
-        meta["content_len"] = len(raw_text)
+    # Dashboard scrape summary
+    try:
+        st.info(
+            f"🧽 Scrape Results: **{out['debug_counts']['scraped_ok_text']} ok-text** | "
+            f"**{out['debug_counts']['scraped_ok_numbers']} ok-numbers** | "
+            f"**{out['debug_counts']['scraped_failed']} failed**"
+        )
+    except Exception:
+        pass
 
-        # Clean
-        cleaned = raw_text
-        try:
-            if callable(fn_clean):
-                cleaned = fn_clean(raw_text)
-            else:
-                cleaned = re.sub(r"\s+", " ", re.sub(r"(?is)<[^>]+>", " ", raw_text)).strip()
-        except Exception:
-            cleaned = re.sub(r"\s+", " ", re.sub(r"(?is)<[^>]+>", " ", raw_text)).strip()
+    # status summarization
+    if scraped_ok_text == 0:
+        out["status"] = "failed"
+        out["status_detail"] = "no_usable_text"
+    elif scraped_ok_numbers == 0:
+        out["status"] = "partial"
+        out["status_detail"] = "text_ok_numbers_empty"
+    else:
+        out["status"] = "success"
+        out["status_detail"] = "ok"
 
-        meta["clean_text"] = cleaned
-        meta["clean_text_len"] = len(cleaned)
-
-        # Fingerprint
-        try:
-            if callable(fn_fp):
-                meta["fingerprint"] = fn_fp(cleaned)
-        except Exception:
-            meta["fingerprint"] = None
-
-        # Extract numbers (optional)
-        nums = []
-        try:
-            if callable(fn_extract):
-                # support extractors that accept url=
-                if "url" in getattr(fn_extract, "__code__", type("x", (), {"co_varnames": ()})) .co_varnames:
-                    nums = fn_extract(cleaned, url=url)
-                else:
-                    nums = fn_extract(cleaned)
-        except Exception:
-            nums = []
-
-        if isinstance(nums, list):
-            meta["extracted_numbers"] = nums
-            meta["numbers_found"] = len(nums)
-
-        web_context["scraped_meta"][url] = meta
-        web_context["scraped_content"][url] = cleaned
-
-    return web_context
+    return out
 
 
 def fingerprint_text(text: str) -> str:
