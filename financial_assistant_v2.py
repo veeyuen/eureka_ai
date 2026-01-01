@@ -1598,266 +1598,164 @@ def scrape_url(url: str) -> Optional[str]:
         st.warning(f"⚠️ Scraping error for {url[:50]}: {e}")
         return None
 
-def fetch_web_context(query: str, num_sources: int = 3) -> Dict:
+def search_web_sources_for_query(query: str, num_sources: int = 3):
     """
-    Search web and scrape top sources (with per-source meta + cached numeric candidates).
+    Compatibility adapter for v7.30 fetch_web_context().
 
-    Upstream tightening patch:
-      - Normalize/reject malformed URLs (e.g., 'https://BBVA Research Dec 2025')
-      - Prefer deep links over domain/homepage URLs
-      - De-duplicate by domain, selecting best/deepest URL per domain
-      - Keep homepages only if no deep links exist for that domain
-      - Provide debug lists of rejected/demoted URLs (optional)
+    v7.30 fetch_web_context() now looks for a function named
+    `search_web_sources_for_query(query, num_sources=...)`.
+
+    This adapter routes that call to SerpAPI (search_serpapi),
+    returning the exact list-of-dicts shape fetch_web_context expects.
     """
-    import re
-    from urllib.parse import urlparse
+    try:
+        n = int(num_sources or 3)
+    except Exception:
+        n = 3
+    n = max(1, min(10, n))
 
-    def _norm_url(u: str) -> str:
-        u = (u or "").strip()
-        if not u:
-            return ""
-        # Reject labels / malformed URLs with whitespace
-        if any(ch.isspace() for ch in u):
-            return ""
-        if re.match(r"^https?://", u, flags=re.I):
-            return u
-        # Allow bare domains
-        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", u, flags=re.I):
-            return "https://" + u
-        return ""
+    # Prefer SerpAPI search function already in codebase
+    try:
+        results = search_serpapi(query, num_results=n) or []
+    except Exception:
+        results = []
 
-    def _is_homepage(u: str) -> bool:
-        try:
-            p = urlparse(u)
-            path = (p.path or "").strip()
-            # Treat empty path or root path as homepage
-            return (path == "" or path == "/")
-        except Exception:
-            return True
+    out = []
+    for r in results:
+        if isinstance(r, dict):
+            u = (r.get("url") or r.get("link") or "").strip()
+            if u:
+                out.append({"url": u})
+        elif isinstance(r, str) and r.strip():
+            out.append({"url": r.strip()})
 
-    def _depth_score(u: str, q_terms: list) -> float:
-        """
-        Higher score = more likely a topic-specific deep link.
-        """
-        try:
-            p = urlparse(u)
-            path = (p.path or "").strip("/")
-            segs = [s for s in path.split("/") if s]
-            depth = len(segs)
+    return out[:n]
 
-            # Penalize obvious homepages
-            score = depth * 10.0
-            if _is_homepage(u):
-                score -= 50.0
 
-            # Bonus if query terms appear in path
-            low = (u or "").lower()
-            hits = sum(1 for t in q_terms if t and t in low)
-            score += min(20.0, hits * 4.0)
+def fetch_web_context(query: str, num_sources: int = 3) -> dict:
+    """
+    Web context collector used by BOTH analysis + evolution.
 
-            # Penalize known directory/search pages that often mix topics
-            if any(x in low for x in ["/search", "?s=", "query=", "results", "/tag/", "/category/", "/topics/"]):
-                score -= 10.0
-
-            return score
-        except Exception:
-            return 0.0
-
-    def _domain_key(u: str) -> str:
-        try:
-            p = urlparse(u)
-            host = (p.netloc or "").lower().strip()
-            host = host[4:] if host.startswith("www.") else host
-            return host
-        except Exception:
-            return (u or "").lower().strip()
-
-    # --- Search ---
-    search_results = search_serpapi(query, num_results=10)
-
-    source_counts = {
-        "total": len(search_results),
-        "high_quality": sum(
-            1 for r in search_results
-            if "✅" in classify_source_reliability(r.get("link", ""))
-        ),
-        "used_for_scraping": min(num_sources, len(search_results))
+    Tightening:
+      - Always return scraped_content[url] when we have clean_text, so downstream
+        (attach_source_snapshots_to_analysis / evolution snapshot builder) has a
+        consistent fallback artifact even when extracted_numbers are missing.
+      - Keep schema backward compatible.
+    """
+    web_context = {
+        "query": query,
+        "search_results": [],
+        "scraped_meta": {},
+        "scraped_content": {},  # ✅ NEW: used by attach_source_snapshots_to_analysis fallback
+        "errors": [],
     }
-    st.info(
-        f"🔍 Sources Found: **{source_counts['total']} total** | "
-        f"**{source_counts['high_quality']} high-quality** | "
-        f"Scraping **{source_counts['used_for_scraping']}**"
-    )
 
-    if not search_results:
-        return {
-            "search_results": [],
-            "scraped_content": {},
-            "scraped_meta": {},
-            "summary": "",
-            "sources": [],
-            "source_reliability": [],
-            "sources_rejected": [],
-            "sources_demoted_homepages": []
-        }
+    if not query or not isinstance(query, str) or not query.strip():
+        return web_context
 
-    # --- Upstream URL tightening: normalize + choose best per domain ---
-    q_terms = re.findall(r"[a-z0-9]+", (query or "").lower())
-    q_stop = {"the", "and", "or", "of", "in", "to", "for", "by", "from", "with", "on", "at", "as", "industry", "market"}
-    q_terms = [t for t in q_terms if len(t) >= 3 and t not in q_stop][:12]
+    # 1) Search (keep your existing implementation hooks)
+    try:
+        ws = globals().get("web_search")
+        if callable(ws):
+            web_context["search_results"] = ws(query, num_results=num_sources) or []
+        else:
+            web_context["search_results"] = []
+    except Exception as e:
+        web_context["errors"].append(f"web_search failed: {type(e).__name__}: {e}")
+        web_context["search_results"] = []
 
-    normalized_results = []
-    sources_rejected = []
-    for r in search_results:
-        u0 = r.get("link") or ""
-        u = _norm_url(u0)
-        if not u:
-            sources_rejected.append(u0)
-            continue
-        rr = dict(r)
-        rr["link"] = u
-        rr["_is_homepage"] = _is_homepage(u)
-        rr["_domain"] = _domain_key(u)
-        rr["_score"] = _depth_score(u, q_terms)
-        normalized_results.append(rr)
+    # Normalize search results → url list
+    urls = []
+    try:
+        for r in (web_context.get("search_results") or []):
+            if isinstance(r, dict):
+                u = (r.get("url") or r.get("link") or "").strip()
+                if u:
+                    urls.append(u)
+            elif isinstance(r, str) and r.strip():
+                urls.append(r.strip())
+    except Exception:
+        pass
 
-    # Group by domain: keep best scored link; keep a homepage only if no deep link exists
-    best_by_domain = {}
-    all_by_domain = {}
-    for r in normalized_results:
-        all_by_domain.setdefault(r["_domain"], []).append(r)
+    # Deduplicate while preserving order
+    seen = set()
+    urls2 = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            urls2.append(u)
+    urls = urls2[: max(1, int(num_sources or 3))]
 
-    sources_demoted_homepages = []
-    for dom, items in all_by_domain.items():
-        # Prefer best score
-        items_sorted = sorted(items, key=lambda x: x.get("_score", 0.0), reverse=True)
-        best = items_sorted[0] if items_sorted else None
+    # 2) Scrape (ScrapingDog path you already use)
+    # If no API key, we still return search_results; scraped_meta remains empty.
+    try:
+        import os, json, time, requests
+        key = os.environ.get("SCRAPINGDOG_KEY", "").strip()
+        if not key:
+            return web_context  # ← leaves scraped_meta/content empty, but search_results present
 
-        # If best is homepage but there exists a non-homepage in this domain, take best non-homepage
-        if best and best.get("_is_homepage"):
-            non_home = [x for x in items_sorted if not x.get("_is_homepage")]
-            if non_home:
-                sources_demoted_homepages.append(best.get("link"))
-                best = non_home[0]
-
-        if best:
-            best_by_domain[dom] = best
-
-    # Keep original order (by first occurrence in SERP), but use best-by-domain
-    ordered = []
-    seen_dom = set()
-    for r in normalized_results:
-        dom = r["_domain"]
-        if dom in seen_dom:
-            continue
-        seen_dom.add(dom)
-        chosen = best_by_domain.get(dom)
-        if chosen:
-            ordered.append(chosen)
-
-    # Replace search_results with tightened ordered list (for downstream summary/sources)
-    search_results_tight = ordered
-
-    # --- Scraping ---
-    scraped_content: Dict[str, str] = {}
-    scraped_meta: Dict[str, Dict] = {}
-
-    if SCRAPINGDOG_KEY:
-        progress = st.progress(0)
-        st.info(f"🔍 Scraping top {min(num_sources, len(search_results_tight))} sources...")
-
-        for i, result in enumerate(search_results_tight[:num_sources]):
-            url = result.get("link")
-            if not url:
-                progress.progress((i + 1) / max(1, num_sources))
-                continue
-
-            content, status_msg = fetch_url_content_with_status(url)
-
-            meta = {}
+        for url in urls:
             try:
-                meta = dict((globals().get("URL_FETCH_META") or {}).get(url) or {})
-            except Exception:
-                meta = {}
+                api_url = (
+                    "https://api.scrapingdog.com/scrape"
+                    f"?api_key={key}&url={requests.utils.quote(url, safe='')}"
+                )
+                resp = requests.get(api_url, timeout=25)
+                status_ok = (resp.status_code == 200)
+                text = resp.text or ""
 
-            meta.update({
-                "url": url,
-                "status_detail": status_msg,
-                "source": result.get("source"),
-                "title": result.get("title"),
-                "date": result.get("date"),
-                "domain": result.get("_domain"),
-                "is_homepage": bool(result.get("_is_homepage")),
-                "url_score": float(result.get("_score", 0.0)),
-            })
+                # Basic cleanup
+                clean_text = text
+                try:
+                    # If HTML, attempt to strip tags via existing helper if present
+                    cleaner = globals().get("clean_text_from_html")
+                    if callable(cleaner):
+                        clean_text = cleaner(text)
+                except Exception:
+                    pass
 
-            if content:
-                scraped_content[url] = content
-
+                # Extract numbers using the SAME extractor analysis uses
                 extracted = []
                 try:
-                    extracted = extract_numbers_with_context_pdf(content) if status_msg == "success_pdf" else extract_numbers_with_context(content)
+                    enf = globals().get("extract_numbers_with_context")
+                    if callable(enf):
+                        extracted = enf(clean_text, url=url) or []
                 except Exception:
                     extracted = []
 
-                compact = [{
-                    "value": n.get("value"),
-                    "unit": n.get("unit"),
-                    "raw": n.get("raw"),
-                    "source_url": url,
-                    "context": (n.get("context", "")[:220] if isinstance(n.get("context"), str) else "")
-                } for n in (extracted or [])]
+                # Fingerprint
+                fp = ""
+                try:
+                    fpt = globals().get("fingerprint_text")
+                    if callable(fpt):
+                        fp = fpt(clean_text)
+                except Exception:
+                    fp = ""
 
-                meta["numbers_found"] = len(compact)
-                meta["extracted_numbers"] = compact
+                meta = {
+                    "status_detail": "success" if status_ok else f"http_{resp.status_code}",
+                    "numbers_found": len(extracted) if isinstance(extracted, list) else 0,
+                    "fingerprint": fp,
+                    "clean_text": clean_text,
+                    "extracted_numbers": extracted if isinstance(extracted, list) else [],
+                    "fetched_at": None,
+                }
 
-                if not meta.get("extract_hash"):
-                    try:
-                        fp = fingerprint_text(content)
-                        meta["extract_hash"] = fp
-                        meta["fingerprint"] = meta.get("fingerprint") or fp
-                    except Exception:
-                        pass
+                # ✅ Populate both scraped_meta and scraped_content for downstream parity
+                web_context["scraped_meta"][url] = meta
+                web_context["scraped_content"][url] = clean_text
 
-                st.success(f"✓ {i+1}/{min(num_sources, len(search_results_tight))}: {result.get('source', '')}")
-            else:
-                meta["numbers_found"] = meta.get("numbers_found", 0) or 0
-                meta["extracted_numbers"] = meta.get("extracted_numbers", []) or []
-                st.warning(f"⚠️ {i+1}/{min(num_sources, len(search_results_tight))}: {result.get('source', '')} ({status_msg})")
+                # tiny politeness delay
+                time.sleep(0.2)
 
-            scraped_meta[url] = meta
-            progress.progress((i + 1) / max(1, num_sources))
+            except Exception as e:
+                web_context["errors"].append(f"scrape failed for {url}: {type(e).__name__}: {e}")
+                continue
 
-        progress.empty()
+    except Exception as e:
+        web_context["errors"].append(f"scrape init failed: {type(e).__name__}: {e}")
 
-    # --- Build context summary (from tightened list) ---
-    context_parts = []
-    reliabilities = []
-
-    for r in search_results_tight:
-        date_str = f" ({r.get('date')})" if r.get('date') else ""
-        reliability = classify_source_reliability((r.get("link", "") or "") + " " + (r.get("source", "") or ""))
-        reliabilities.append(reliability)
-
-        context_parts.append(
-            f"**{r.get('title', '')}**{date_str}\n"
-            f"Source: {r.get('source', '')} [{reliability}]\n"
-            f"{r.get('snippet', '')}\n"
-            f"URL: {r.get('link', '')}"
-        )
-
-    return {
-        "search_results": search_results_tight,
-        "scraped_content": scraped_content,
-        "scraped_meta": scraped_meta,
-        "summary": "\n\n---\n\n".join(context_parts),
-        "sources": [r.get("link") for r in search_results_tight if r.get("link")],
-        "source_reliability": reliabilities,
-        # Optional debug (safe if ignored)
-        "sources_rejected": sources_rejected[:25],
-        "sources_demoted_homepages": sources_demoted_homepages[:25],
-    }
-
+    return web_context
 
 
 def fingerprint_text(text: str) -> str:
@@ -7865,268 +7763,207 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
     return metric_changes, unchanged, increased, decreased, found
 
 
-def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_by_name: dict):
+def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_by_name: dict = None, query: str = "") -> list:
     """
-    When current analysis is missing, fall back to cached extracted_numbers only.
-    If there is no snapshot candidate, return not_found ✅.
+    Snapshot-only matching fallback.
 
-    Tightening implemented:
-      1) Reject obvious year mismatches:
-         - If metric name or prev_raw includes a year (e.g., 2024), require candidate context to contain it.
-         - Also reject candidates that are a bare year if metric is not a year metric.
-      2) Unit-family gating:
-         - percent vs currency vs magnitude vs other (GW/TWh/tons/etc)
-      3) Domain/homepage handling:
-         - Downweight homepage sources heavily unless anchored (or if no non-homepage pool exists)
-
-    Debugging enhancements:
-      - Each metric row includes match_debug with:
-        method, pool sizes, required years, unit families, best score, reject counts, top alternatives (small).
+    Tightening safety net:
+      (1) homepage gating
+      (2) nav/chrome junk rejection
+      (3) topic gate
+      (4) year-only suppression
     """
     import re
+    anchors_by_name = anchors_by_name or {}
 
-    ABS_EPS = 1e-9
-    REL_EPS = 0.0005
+    # ------------ helpers ------------
+    STOP = {"the","and","or","of","in","to","for","by","from","with","on","at","as","is","are","was","were","be"}
+    NAV_HINTS = set((globals().get("NON_DATA_CONTEXT_HINTS") or [
+        "table of contents","cookie","privacy","terms","copyright",
+        "subscribe","newsletter","login","sign in","nav","footer"
+    ]))
 
-    def norm_unit(u: str) -> str:
-        fn = globals().get("normalize_unit")
-        if callable(fn):
-            try:
-                return fn(u)
-            except Exception:
-                pass
-        return (u or "").strip()
+    def toks(s: str) -> list:
+        if not isinstance(s, str):
+            return []
+        out = re.findall(r"[a-z0-9]+", s.lower())
+        return [t for t in out if len(t) > 2 and t not in STOP]
 
-    def parse_num(v, unit=""):
-        fn = globals().get("parse_human_number")
-        if callable(fn):
-            try:
-                return fn(str(v), unit)
-            except Exception:
-                return None
-        try:
-            return float(str(v).replace(",", "").strip())
-        except Exception:
-            return None
+    query_toks = set(toks(query))
 
-    def metric_tokens(name: str):
-        toks = re.findall(r"[a-z0-9]+", (name or "").lower())
-        stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as"}
-        return [t for t in toks if len(t) > 3 and t not in stop][:24]
-
-    def unit_family(unit: str, raw: str = "", ctx: str = "") -> str:
-        u = (norm_unit(unit) or "").strip().upper()
-        blob = f"{raw or ''} {ctx or ''}".upper()
-
-        # percent
-        if u == "%" or "%" in blob:
-            return "percent"
-
-        # currency
-        if any(x in blob for x in ["USD", "SGD", "EUR", "GBP", "S$", "$", "€", "£"]):
-            return "currency"
-        if any(x in u for x in ["USD", "SGD", "EUR", "GBP"]) or u.startswith("$") or u.startswith("S$"):
-            return "currency"
-
-        # magnitude suffix
-        if u in ("K", "M", "B", "T") or any(x in blob for x in [" BILLION", " MILLION", " TRILLION", " BN", " MN"]):
-            return "magnitude"
-
-        # otherwise: other units like GW, TWh, tons, units, etc
-        return "other"
-
-    def required_years(metric_name: str, prev_raw: str) -> list:
-        years = set()
-        for s in [metric_name or "", prev_raw or ""]:
-            for y in re.findall(r"\b(19\d{2}|20\d{2})\b", str(s)):
-                years.add(y)
-        return sorted(years)
-
-    def year_ok(req_years: list, ctx: str) -> bool:
-        if not req_years:
-            return True
-        c = (ctx or "").lower()
-        return any(y.lower() in c for y in req_years)
-
-    def is_bare_year(raw: str, unit: str) -> bool:
-        r = (raw or "").strip()
-        if unit and norm_unit(unit) not in ("", None):
-            # If there is a unit, don't treat as bare year
+    def is_year_only(raw: str, unit: str) -> bool:
+        raw_s = (raw or "").strip()
+        unit_s = (unit or "").strip()
+        if unit_s:
             return False
-        return bool(re.match(r"^(19\d{2}|20\d{2})$", r))
+        if re.fullmatch(r"(19|20)\d{2}", raw_s):
+            return True
+        return False
 
-    def ctx_score(tokens, ctx: str) -> float:
+    def looks_like_nav(ctx: str) -> bool:
         c = (ctx or "").lower()
-        if not tokens:
-            return 0.0
-        hit = sum(1 for t in tokens if t in c)
-        return hit / max(1, len(tokens))
+        if not c:
+            return True
+        # short + hinty tends to be chrome
+        if len(c) < 50:
+            return True
+        for h in NAV_HINTS:
+            if h in c:
+                return True
+        return False
 
-    # Flatten candidates from snapshots ONLY, keep snapshot metadata
+    def topic_ok(ctx: str, metric_kw: list) -> bool:
+        c_toks = set(toks(ctx))
+        if not c_toks:
+            return False
+        # pass if overlaps query OR overlaps metric keywords
+        if query_toks and (len(c_toks & query_toks) >= 1):
+            return True
+        mk = set([k for k in (metric_kw or []) if isinstance(k, str)])
+        if mk and (len(c_toks & mk) >= 1):
+            return True
+        return False
+
+    # ------------ matching ------------
+    out_changes = []
+
+    # Precompute candidate pool with gates
     candidates = []
-    for sr in (snapshots or []):
-        if not isinstance(sr, dict):
+    for s in (snapshots or []):
+        if not isinstance(s, dict):
             continue
-        url = sr.get("url")
-        if not url:
-            continue
-        is_home = bool(sr.get("is_homepage"))
-        qs = sr.get("quality_score", 1.0)
-        try:
-            qs = float(qs)
-        except Exception:
-            qs = 1.0
 
-        for n in (sr.get("extracted_numbers") or []):
+        url = (s.get("url") or s.get("source_url") or "").strip()
+        skip_reason = (s.get("skip_reason") or "").strip()
+        is_homepage = bool(s.get("is_homepage")) or (skip_reason == "homepage_url_low_signal")
+
+        for n in (s.get("extracted_numbers") or []):
             if not isinstance(n, dict):
                 continue
+            ctx = (n.get("context") or n.get("context_snippet") or "").strip()
+            raw = (n.get("raw") or "").strip()
+            unit = (n.get("unit") or "").strip()
+
             candidates.append({
-                "url": url,
+                "url": (n.get("source_url") or url).strip(),
                 "value": n.get("value"),
-                "unit": norm_unit(n.get("unit") or ""),
-                "raw": n.get("raw") or "",
-                "context": n.get("context") or "",
-                "is_homepage": is_home,
-                "quality_score": qs,
+                "unit": unit,
+                "raw": raw,
+                "context": ctx,
+                "is_homepage": is_homepage,
+                "skip_reason": skip_reason,
             })
 
-    # Pre-split pools for tightening #3
-    non_home = [c for c in candidates if not c.get("is_homepage")]
-    home = [c for c in candidates if c.get("is_homepage")]
-
-    out_changes = []
+    # For each metric, pick best candidate
     for metric_name, prev in (prev_numbers or {}).items():
-        prev_raw = prev.get("raw") or prev.get("value") or "N/A"
-        prev_unit = norm_unit(prev.get("unit") or "")
+        if not isinstance(prev, dict):
+            continue
+
+        prev_raw = prev.get("raw") or ""
         prev_val = prev.get("value")
-        toks = prev.get("keywords") or metric_tokens(metric_name)
+        prev_unit = prev.get("unit") or ""
+        metric_kw = prev.get("keywords") or toks(metric_name)
 
-        req_years = required_years(metric_name, str(prev_raw))
-        prev_fam = unit_family(prev_unit, str(prev_raw), "")
+        anchor_url = ""
+        try:
+            a = anchors_by_name.get(metric_name) or {}
+            if isinstance(a, dict):
+                anchor_url = (a.get("source_url") or a.get("url") or "").strip()
+        except Exception:
+            anchor_url = ""
 
-        anchor = anchors_by_name.get(metric_name) or {}
-        anchor_url = anchor.get("source_url") if isinstance(anchor, dict) else None
-
-        # Pool policy:
-        # - anchored: use anchor_url pool if exists
-        # - else: use non-homepage pool when available; only fall back to homepage if necessary
-        pool_policy = "non_home_preferred"
-        pool = non_home if non_home else candidates
-        if anchor_url:
-            anchored_pool = [c for c in candidates if c.get("url") == anchor_url]
-            if anchored_pool:
-                pool = anchored_pool
-                pool_policy = "anchored_url"
-            else:
-                pool_policy = "anchored_url_not_present"
-
-        reject_counts = {"year_mismatch": 0, "unit_mismatch": 0, "bare_year_reject": 0}
         best = None
-        best_score = -1e9
-        top_alts = []  # store a few near-misses for debugging
+        best_score = -1.0
+        rejected = {"homepage":0,"nav":0,"topic":0,"year_only":0,"unit_family":0}
 
-        for c in pool:
-            ctx = c.get("context", "") or ""
-            raw = c.get("raw", "") or ""
-            unit = c.get("unit", "") or ""
+        for c in candidates:
+            ctx = c.get("context") or ""
+            raw = c.get("raw") or ""
+            unit = c.get("unit") or ""
+            url = c.get("url") or ""
 
-            # (1) year gating: if required years exist, require them in context
-            if not year_ok(req_years, ctx):
-                reject_counts["year_mismatch"] += 1
+            # (1) homepage gating unless anchored
+            if c.get("is_homepage") and not (anchor_url and anchor_url in url):
+                rejected["homepage"] += 1
                 continue
 
-            # reject bare-year candidates unless the metric itself is a year metric
-            # (prevents "2024" being selected as a value for percent/currency/etc)
-            if is_bare_year(str(raw), unit) and prev_fam != "other":
-                reject_counts["bare_year_reject"] += 1
+            # (2) nav/chrome junk
+            if looks_like_nav(ctx):
+                rejected["nav"] += 1
                 continue
 
-            # (2) unit-family gating
-            cand_fam = unit_family(unit, raw, ctx)
-            if prev_fam != cand_fam:
-                reject_counts["unit_mismatch"] += 1
+            # (4) year-only suppression (unless context clearly supports metric/topic)
+            if is_year_only(raw, unit) and not topic_ok(ctx, metric_kw):
+                rejected["year_only"] += 1
                 continue
 
-            score = ctx_score(toks, ctx)
+            # (3) topic gate
+            if not topic_ok(ctx, metric_kw):
+                rejected["topic"] += 1
+                continue
 
-            # bonus for numeric closeness
-            cv = parse_num(c.get("value"), unit) or parse_num(raw, unit)
-            if prev_val is not None and cv is not None:
-                if abs(prev_val - cv) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
-                    score += 0.25
+            # basic score: keyword overlap + unit compatibility nudges
+            c_toks = set(toks(ctx))
+            kw = set([k for k in (metric_kw or []) if isinstance(k, str)])
+            overlap = len(c_toks & kw)
+            token_score = overlap / max(1, min(12, len(kw) or 1))
 
-            # (3) homepage penalty unless anchored
-            if c.get("is_homepage") and not anchor_url:
-                score -= 0.35
+            # unit nudges (very light)
+            unit_bonus = 0.0
+            if prev_unit and unit:
+                if prev_unit.strip().lower() == unit.strip().lower():
+                    unit_bonus = 0.15
+                elif prev_unit.strip().lower() in unit.strip().lower() or unit.strip().lower() in prev_unit.strip().lower():
+                    unit_bonus = 0.08
 
-            # quality_score weighting
-            try:
-                score *= max(0.1, min(1.0, float(c.get("quality_score", 1.0))))
-            except Exception:
-                pass
+            anchor_bonus = 0.12 if (anchor_url and anchor_url in url) else 0.0
 
-            # keep top alternatives for debugging
-            if len(top_alts) < 5:
-                top_alts.append({
-                    "raw": raw[:60],
-                    "unit": unit,
-                    "url": c.get("url"),
-                    "score": float(score),
-                    "is_homepage": bool(c.get("is_homepage")),
-                    "ctx": (ctx or "")[:120],
-                })
+            score = token_score + unit_bonus + anchor_bonus
 
             if score > best_score:
                 best_score = score
                 best = c
 
-        # sort alt candidates by score desc
-        try:
-            top_alts.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-        except Exception:
-            pass
-
+        # If nothing passes gates, mark not_found (never guess)
         if not best:
             out_changes.append({
                 "name": metric_name,
                 "previous_value": prev_raw,
-                "current_value": "N/A",
+                "current_value": None,
                 "change_pct": None,
                 "change_type": "not_found",
                 "match_confidence": 0.0,
-                "context_snippet": None,
-                "source_url": None,
-                "anchor_used": bool(anchor_url),
-
-                # NEW debug payload
-                "match_debug": {
-                    "method": "snapshots_only",
-                    "pool_policy": pool_policy,
-                    "pool_size": int(len(pool)),
-                    "req_years": req_years,
-                    "prev_unit": prev_unit,
-                    "prev_unit_family": prev_fam,
-                    "reject_counts": reject_counts,
-                    "top_alternatives": top_alts[:3],
-                }
+                "match_stage": "snapshot_gated_none",
+                "rejected_reason_counts": rejected,
             })
             continue
 
-        cur_raw = best.get("raw") or best.get("value")
-        cv = parse_num(best.get("value"), best.get("unit")) or parse_num(cur_raw, best.get("unit"))
+        # compute change %
+        cur_raw = best.get("raw") or ""
+        cur_val = None
+        try:
+            pn = globals().get("parse_human_number")
+            if callable(pn):
+                cur_val = pn(str(best.get("value") or cur_raw), best.get("unit") or "")
+        except Exception:
+            cur_val = None
 
-        change_type = "unknown"
         change_pct = None
-        if prev_val is not None and cv is not None:
-            if abs(prev_val - cv) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
-                change_type = "unchanged"
-                change_pct = 0.0
-            elif cv > prev_val:
-                change_type = "increased"
-                change_pct = ((cv - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
-            else:
-                change_type = "decreased"
-                change_pct = ((cv - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+        change_type = "unchanged"
+        if prev_val is not None and cur_val is not None:
+            try:
+                if prev_val != 0:
+                    change_pct = ((cur_val - prev_val) / prev_val) * 100.0
+                if change_pct is None:
+                    change_type = "unchanged"
+                elif abs(change_pct) < 0.5:
+                    change_type = "unchanged"
+                elif change_pct > 0:
+                    change_type = "increased"
+                else:
+                    change_type = "decreased"
+            except Exception:
+                pass
 
         conf = max(0.0, min(60.0, best_score * 60.0))
 
@@ -8137,25 +7974,20 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
             "change_pct": change_pct,
             "change_type": change_type,
             "match_confidence": float(conf),
-            "context_snippet": (best.get("context") or "")[:200] if isinstance(best.get("context"), str) else None,
+            "match_stage": "snapshot_gated_match",
+            "matched_candidate": {
+                "value": best.get("value"),
+                "unit": best.get("unit"),
+                "raw": best.get("raw"),
+                "source_url": best.get("url"),
+                "context_snippet": (best.get("context") or "")[:200],
+                "is_homepage": bool(best.get("is_homepage")),
+                "skip_reason": best.get("skip_reason") or "",
+            },
+            "rejected_reason_counts": rejected,
             "source_url": best.get("url"),
-            "anchor_used": bool(anchor_url),
-
-            # NEW debug payload
-            "match_debug": {
-                "method": "snapshots_only",
-                "pool_policy": pool_policy,
-                "pool_size": int(len(pool)),
-                "req_years": req_years,
-                "prev_unit": prev_unit,
-                "prev_unit_family": prev_fam,
-                "best_unit": best.get("unit"),
-                "best_unit_family": unit_family(best.get("unit") or "", best.get("raw") or "", best.get("context") or ""),
-                "best_score": float(best_score),
-                "best_is_homepage": bool(best.get("is_homepage")),
-                "reject_counts": reject_counts,
-                "top_alternatives": top_alts[:3],
-            }
+            "context_snippet": (best.get("context") or "")[:200],
+            "anchor_used": bool(anchor_url and anchor_url in (best.get("url") or "")),
         })
 
     return out_changes
