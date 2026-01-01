@@ -9502,6 +9502,9 @@ def render_dashboard(
     # -------------------------
     # Helper: metric value formatting (currency + compact units)
     # -------------------------
+        # -------------------------
+    # Helper: metric value formatting (currency + compact units) + RANGE SUPPORT
+    # -------------------------
     def _format_metric_value(m: Any) -> str:
         """
         Format metric values cleanly, with RANGE SUPPORT:
@@ -9513,9 +9516,9 @@ def render_dashboard(
                 return "N/A"
             return str(m)
 
-    # -------------------------
-    # Helper: format a single numeric endpoint (val+unit) using the same rules
-    # -------------------------
+        # -------------------------
+        # Helper: format a single numeric endpoint (val+unit)
+        # -------------------------
         def _format_point(val: Any, unit: str) -> str:
             if val is None or val == "":
                 return "N/A"
@@ -9526,10 +9529,7 @@ def render_dashboard(
             try:
                 num = float(raw_val.replace(",", ""))
             except Exception:
-                # If we can't parse as float, just glue value+unit neatly
-                if unit:
-                    return f"{raw_val}{unit}".strip()
-                return raw_val
+                return f"{raw_val}{unit}".strip() if unit else raw_val
 
             unit = unit.replace(" ", "")
             currency_prefix = ""
@@ -9577,36 +9577,34 @@ def render_dashboard(
 
             return f"{currency_prefix}{formatted}".strip()
 
-    # -------------------------
-    # RANGE: prefer value_range if present and meaningful
-    # -------------------------
-    vr = m.get("value_range")
-    if isinstance(vr, dict):
-        vmin = vr.get("min")
-        vmax = vr.get("max")
-        if vmin is not None and vmax is not None:
-            unit = (m.get("unit") or "").strip()
-            left = _format_point(vmin, unit)
-            right = _format_point(vmax, unit)
-            if left != "N/A" and right != "N/A" and left != right:
-                return f"{left}–{right}"
+        # -------------------------
+        # RANGE: prefer value_range if present and meaningful
+        # -------------------------
+        vr = m.get("value_range")
+        unit = (m.get("unit") or "").strip()
 
-    # If someone precomputed a display string, use it (but still try to add currency formatting if possible)
-    vr_disp = m.get("value_range_display")
-    if isinstance(vr_disp, str) and vr_disp.strip():
-        # Keep as-is (it’s a safe fallback)
-        return vr_disp.strip()
+        if isinstance(vr, dict):
+            vmin = vr.get("min")
+            vmax = vr.get("max")
+            if vmin is not None and vmax is not None:
+                left = _format_point(vmin, unit)
+                right = _format_point(vmax, unit)
+                if left != "N/A" and right != "N/A" and left != right:
+                    return f"{left}–{right}"
 
-    # -------------------------
-    # POINT VALUE (existing behavior)
-    # -------------------------
-    val = m.get("value")
-    unit = (m.get("unit") or "").strip()
+        # Precomputed display (optional)
+        vr_disp = m.get("value_range_display")
+        if isinstance(vr_disp, str) and vr_disp.strip():
+            return vr_disp.strip()
 
-    if val is None or val == "":
-        return "N/A"
+        # -------------------------
+        # POINT VALUE fallback
+        # -------------------------
+        val = m.get("value")
+        if val is None or val == "":
+            return "N/A"
 
-    return _format_point(val, unit)
+        return _format_point(val, unit)
 
     # -------------------------
     # Header + confidence row
