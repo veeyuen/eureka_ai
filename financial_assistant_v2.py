@@ -139,6 +139,11 @@ def add_to_history(analysis: dict) -> bool:
         * metric_anchors (baseline metrics anchored to evidence)
     This is used by evolution to improve matching determinism and stability.
 
+    Additional (safe, additive):
+    - Prevent Google Sheets 50,000-char single-cell limit errors by shrinking only
+      the JSON payload written into the single "analysis json" cell when necessary.
+      The in-memory `analysis` object is NOT destroyed; we only write a reduced copy.
+
     Notes:
     - Backward compatible: only adds keys; does not change existing schema.
     - Robust: finds baseline cache in multiple likely locations.
@@ -146,6 +151,9 @@ def add_to_history(analysis: dict) -> bool:
     - Safe: Sheets open failure falls back to session state.
     """
 
+    # -----------------------
+    # Existing helper block (unchanged)
+    # -----------------------
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
@@ -379,11 +387,99 @@ def add_to_history(analysis: dict) -> bool:
         return anchors
 
     # -----------------------
-    # Enrich the analysis dict (safe, additive)
+    # NEW (additive): Sheet cell size guard
+    # -----------------------
+    SHEETS_CELL_LIMIT = 50000
+
+    def _try_make_sheet_json(obj: dict) -> str:
+        """Best-effort JSON for Sheets cell using existing helper if present."""
+        try:
+            return make_sheet_safe_json(obj)  # type: ignore
+        except Exception:
+            # last resort; keep small-ish
+            try:
+                return json.dumps(obj, ensure_ascii=False, default=str)
+            except Exception:
+                return str(obj)
+
+    def _shrink_for_sheets(original: dict) -> Dict[str, Any]:
+        """
+        Return a COPY of analysis, potentially reduced, to fit within Sheets cell limit.
+        This does NOT modify the original analysis object.
+        """
+        if not isinstance(original, dict):
+            return {"_error": "analysis_not_dict"}
+
+        # If already safe, return shallow copy
+        base_copy = dict(original)
+        s = _try_make_sheet_json(base_copy)
+        if isinstance(s, str) and len(s) <= SHEETS_CELL_LIMIT:
+            return base_copy
+
+        reduced = dict(base_copy)
+        removed: List[str] = []
+
+        # Remove the biggest usual offenders (only from the payload written to Sheets)
+        for k in [
+            "evidence_records",
+            "baseline_sources_cache",
+            "metric_anchors",
+            "baseline_sources_cache_full",
+            "source_results",
+            "web_context",
+            "scraped_meta",
+            "raw_sources",
+            "raw_text",
+            "debug",
+        ]:
+            if k in reduced:
+                reduced.pop(k, None)
+                removed.append(k)
+
+        # Also trim nested bulky fields if present
+        try:
+            pr = reduced.get("primary_response")
+            if isinstance(pr, dict):
+                # keep primary_response, but trim huge long lists if present
+                for k in ["sources", "web_sources"]:
+                    v = pr.get(k)
+                    if isinstance(v, list) and len(v) > 50:
+                        pr[k] = v[:50]
+                        removed.append(f"primary_response.{k}[:50]")
+                reduced["primary_response"] = pr
+        except Exception:
+            pass
+
+        # Add a small marker so you know it was truncated
+        reduced.setdefault("_sheet_write", {})
+        if isinstance(reduced["_sheet_write"], dict):
+            reduced["_sheet_write"]["truncated"] = True
+            reduced["_sheet_write"]["removed_keys"] = removed[:50]
+
+        # If still too big, progressively fallback to a minimal summary
+        s2 = _try_make_sheet_json(reduced)
+        if not isinstance(s2, str) or len(s2) <= SHEETS_CELL_LIMIT:
+            return reduced
+
+        minimal = {
+            "question": original.get("question"),
+            "timestamp": original.get("timestamp"),
+            "final_confidence": original.get("final_confidence"),
+            "question_profile": original.get("question_profile"),
+            "primary_response": (original.get("primary_response") or {}),
+            "_sheet_write": {
+                "truncated": True,
+                "mode": "minimal_fallback",
+                "note": "Full analysis too large for single Google Sheets cell (50k limit).",
+            },
+        }
+        return minimal
+
+    # -----------------------
+    # Enrich the analysis dict (safe, additive)  (unchanged)
     # -----------------------
     try:
         if not analysis.get("evidence_layer_version"):
-            # baseline cache can be stored in multiple places depending on pipeline stage
             baseline_cache = (
                 analysis.get("baseline_sources_cache")
                 or (analysis.get("results", {}) or {}).get("baseline_sources_cache")
@@ -419,12 +515,21 @@ def add_to_history(analysis: dict) -> bool:
 
     try:
         analysis_id = generate_analysis_id()
+
+        # NEW (additive): write a reduced COPY if needed; do not mutate original
+        payload_for_sheets = _shrink_for_sheets(analysis)
+        payload_json = _try_make_sheet_json(payload_for_sheets)
+
+        # extra safeguard: final hard truncation if still slightly over (rare)
+        if isinstance(payload_json, str) and len(payload_json) > SHEETS_CELL_LIMIT:
+            payload_json = payload_json[: (SHEETS_CELL_LIMIT - 200)] + '... {"_sheet_write":{"truncated":true,"note":"hard_truncation"}}'
+
         row = [
             analysis_id,
             analysis.get("timestamp", datetime.now().isoformat()),
-            analysis.get("question", "")[:100],
+            (analysis.get("question", "") or "")[:100],
             str(analysis.get("final_confidence", "")),
-            make_sheet_safe_json(analysis),
+            payload_json,
         ]
         sheet.append_row(row, value_input_option="RAW")
         return True
@@ -4145,13 +4250,34 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
 def normalize_unit_tag(u: str) -> str:
     """
     Normalize unit to a compact tag for matching:
+    - Energy units (NEW): TWh/GWh/MWh/kWh
     - Currency magnitudes: T/B/M
     - Percent: %
     - Unknown: ""
     """
     if not u:
         return ""
+
     ul = str(u).strip().lower()
+
+    # --------------------------------------------------
+    # NEW (additive): explicit energy-unit short circuit
+    # --------------------------------------------------
+    # Must come BEFORE generic "endswith(t/m/b)" logic
+    if "twh" in ul:
+        return "TWh"
+    if "gwh" in ul:
+        return "GWh"
+    if "mwh" in ul:
+        return "MWh"
+    if "kwh" in ul:
+        return "kWh"
+    if ul == "wh":
+        return "Wh"
+
+    # --------------------------------------------------
+    # EXISTING BEHAVIOR (unchanged)
+    # --------------------------------------------------
     if "%" in ul:
         return "%"
 
@@ -4172,6 +4298,9 @@ def normalize_unit_tag(u: str) -> str:
         return "M"
 
     return ""
+
+
+
 
 
 def to_billions(value: float, unit_tag: str) -> Optional[float]:
@@ -8810,6 +8939,22 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     def _normalize_unit(u: str) -> str:
         u = (u or "").strip()
         ul = u.lower()
+
+        # --------------------------------------------------
+        # NEW (additive): energy units short-circuit
+        # --------------------------------------------------
+        if "twh" in ul:
+            return "TWh"
+        if "gwh" in ul:
+            return "GWh"
+        if "mwh" in ul:
+            return "MWh"
+        if "kwh" in ul:
+            return "kWh"
+        if ul == "wh":
+            return "Wh"
+
+        # existing behavior
         if ul in ("bn", "billion"):
             return "B"
         if ul in ("mn", "mio", "million"):
@@ -8915,7 +9060,10 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     pat = re.compile(
         r"(S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
         r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*"
-        r"(T|B|M|K|trillion|billion|million|bn|mn|%|percent)?",
+        # --------------------------------------------------
+        # NEW (additive): energy units in the captured unit group
+        # --------------------------------------------------
+        r"(TWh|GWh|MWh|kWh|Wh|T|B|M|K|trillion|billion|million|bn|mn|%|percent)?",
         flags=re.I
     )
 
