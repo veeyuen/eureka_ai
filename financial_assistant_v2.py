@@ -1603,394 +1603,152 @@ def scrape_url(url: str) -> Optional[str]:
         st.warning(f"⚠️ Scraping error for {url[:50]}: {e}")
         return None
 
-def fetch_web_context(query: str, num_sources: int = 6) -> dict:
+def fetch_web_context(query: str, num_sources: int = 3) -> dict:
     """
-    v7.31 patched: fetch_web_context() with robust fallback mode.
+    Web context collector used by BOTH analysis + evolution.
 
-    Goals:
-      - Keep existing SerpAPI search behavior.
-      - If SCRAPINGDOG_KEY is present: use it as before (preferred).
-      - If SCRAPINGDOG_KEY is missing: still scrape using requests-based fetch_url_content_with_status()
-        (or lightweight direct requests fallback), then clean + extract numbers so snapshots exist.
-      - Populate: web_context["scraped_meta"][url]["extracted_numbers"], "clean_text", "fingerprint", etc.
-      - Provide "baseline_sources_cache" compatible fields via attach_source_snapshots_to_analysis() later.
+    Contract (tight + stable):
+      - Always return:
+          web_context["search_results"]: list
+          web_context["scraped_meta"]: dict[url] -> meta
+          web_context["scraped_content"]: dict[url] -> clean_text (fallback artifact)
+          web_context["errors"]: list[str]
 
-    Returns:
-      web_context dict containing:
-        query, search_results, sources, summary,
-        scraped_content{url: clean_text}, scraped_meta{url: meta}, errors[]
+      - Always populate scraped_meta[url] with:
+          status, status_detail, fetched_at, fingerprint, clean_text, extracted_numbers (maybe empty)
+
+    This is essential so:
+      - attach_source_snapshots_to_analysis() can prefer scraped_meta extracted_numbers
+      - evolution can reuse the same upstream artifacts and avoid brute-force scraping
     """
-    import re
-    import time
-    from urllib.parse import urlparse
+    from datetime import datetime
 
-    # -------------------------
-    # helpers (local)
-    # -------------------------
     def _now_iso() -> str:
         try:
-            from datetime import datetime
             return datetime.utcnow().isoformat() + "+00:00"
         except Exception:
-            return ""
+            return datetime.now().isoformat()
 
-    def _normalize_url(u: str) -> str:
-        u = (u or "").strip()
-        if not u:
-            return ""
-        if re.match(r"^https?://", u, flags=re.I):
-            return u
-        # bare domains
-        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", u, flags=re.I):
-            return "https://" + u
-        return ""
-
-    def _is_homepage(u: str) -> bool:
-        try:
-            p = urlparse(u)
-            path = (p.path or "").strip()
-            if path in ("", "/"):
-                return True
-            low = path.lower().rstrip("/")
-            if low in ("/index", "/index.html", "/index.htm", "/home", "/default", "/default.aspx"):
-                return True
-        except Exception:
-            pass
-        return False
-
-    def _fingerprint_text(text: str) -> str:
-        fn = globals().get("fingerprint_text")
-        if callable(fn):
-            try:
-                return fn(text)
-            except Exception:
-                pass
-        # fallback sha1
-        import hashlib
-        return hashlib.sha1((text or "").encode("utf-8", errors="ignore")).hexdigest()
-
-    def _clean_visible_text(raw_text: str, content_type: str = "") -> str:
-        """
-        Prefer your analysis pipeline helper(s) if present, fallback to BeautifulSoup, then regex strip.
-        """
-        if not raw_text:
-            return ""
-
-        # If PDF text already extracted upstream, just normalize whitespace.
-        if "application/pdf" in (content_type or "").lower():
-            return re.sub(r"\s+", " ", raw_text).strip()
-
-        # Prefer app helper if present
-        for helper_name in ("clean_text_from_html", "clean_html_to_text", "html_to_visible_text"):
-            fn = globals().get(helper_name)
-            if callable(fn):
-                try:
-                    return (fn(raw_text) or "").strip()
-                except Exception:
-                    pass
-
-        # BeautifulSoup fallback
-        try:
-            from bs4 import BeautifulSoup  # type: ignore
-            soup = BeautifulSoup(raw_text, "html.parser")
-            for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "header", "footer", "nav"]):
-                tag.decompose()
-            txt = soup.get_text(separator=" ", strip=True)
-            txt = re.sub(r"\s+", " ", txt).strip()
-            return txt
-        except Exception:
-            # Regex fallback
-            txt = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\\1>", " ", raw_text)
-            txt = re.sub(r"(?is)<[^>]+>", " ", txt)
-            txt = re.sub(r"\s+", " ", txt).strip()
-            return txt
-
-    def _extract_numbers(clean_text: str, url: str):
-        """
-        Prefer analysis-aligned extractor if present. Return list[dict] with keys:
-          value, unit, raw, context/context_snippet, anchor_hash, source_url
-        """
-        if not clean_text:
-            return []
-
-        # Prefer analysis helpers
-        for helper_name in ("extract_numbers_with_context", "extract_numbers_with_context_pdf", "extract_numbers"):
-            fn = globals().get(helper_name)
-            if callable(fn):
-                try:
-                    nums = fn(clean_text) or []
-                    # Normalize output dicts
-                    out = []
-                    for n in nums:
-                        if isinstance(n, dict):
-                            out.append({
-                                "value": n.get("value"),
-                                "unit": n.get("unit"),
-                                "raw": n.get("raw"),
-                                "context": n.get("context") or n.get("context_snippet") or "",
-                                "context_snippet": n.get("context_snippet") or n.get("context") or "",
-                                "anchor_hash": n.get("anchor_hash"),
-                                "source_url": n.get("source_url") or url,
-                            })
-                    return out
-                except Exception:
-                    pass
-
-        # Minimal regex fallback if no helper exists (should be rare in your codebase)
-        pattern = re.compile(
-            r"(S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
-            r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*"
-            r"(T|B|M|K|bn|billion|mn|million|%)?",
-            flags=re.I
-        )
-        out = []
-        for m in pattern.finditer(clean_text[:200000]):
-            cur = (m.group(1) or "").strip()
-            num_s = (m.group(2) or "").strip()
-            unit_s = (m.group(3) or "").strip()
-            raw = (cur + " " + num_s + (unit_s or "")).strip()
-            try:
-                val = float(num_s.replace(",", ""))
-            except Exception:
-                continue
-            start = max(0, m.start() - 120)
-            end = min(len(clean_text), m.end() + 120)
-            ctx = re.sub(r"\s+", " ", clean_text[start:end]).strip()
-            out.append({
-                "value": val,
-                "unit": (unit_s or "").strip(),
-                "raw": raw,
-                "context": ctx,
-                "context_snippet": ctx[:240],
-                "anchor_hash": None,
-                "source_url": url,
-            })
-        return out
-
-    def _requests_fetch(url: str, timeout: int = 25):
-        """
-        Fallback fetch when fetch_url_content_with_status isn't available.
-        Returns: (text, status, status_detail, content_type)
-        """
-        try:
-            import requests
-            resp = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
-            ct = resp.headers.get("content-type", "") or ""
-            if resp.status_code >= 400:
-                return None, "failed", f"http_{resp.status_code}", ct
-            # attempt pdf text extraction if pdf
-            if "application/pdf" in ct.lower() or url.lower().endswith(".pdf"):
-                try:
-                    import io
-                    from PyPDF2 import PdfReader  # type: ignore
-                    reader = PdfReader(io.BytesIO(resp.content))
-                    parts = []
-                    for p in reader.pages[:15]:
-                        try:
-                            parts.append(p.extract_text() or "")
-                        except Exception:
-                            pass
-                    txt = re.sub(r"\s+", " ", " ".join(parts)).strip()
-                    if not txt:
-                        return None, "failed", "success_pdf_empty", ct
-                    return txt, "fetched", "success_pdf", ct
-                except Exception:
-                    return None, "failed", "success_pdf_not_parsed", ct
-            txt = resp.text or ""
-            if not txt.strip():
-                return None, "failed", "empty", ct
-            return txt, "fetched", "success", ct
-        except Exception as e:
-            return None, "failed", f"exception:{type(e).__name__}", ""
-
-    # -------------------------
-    # init web_context
-    # -------------------------
     web_context = {
         "query": query,
         "search_results": [],
-        "search_count": 0,
-        "sources": [],
-        "source_reliability": [],
-        "summary": "",
-        "scraped_content": {},
         "scraped_meta": {},
+        "scraped_content": {},
         "errors": [],
     }
 
     if not query or not isinstance(query, str) or not query.strip():
         return web_context
 
-    # -------------------------
-    # 1) SERP SEARCH (SerpAPI)
-    # -------------------------
+    # ---------- 1) Search ----------
     try:
-        search_results = search_serpapi(query, num_results=10) or []
+        # Prefer your existing search adapter if present
+        fn_search = globals().get("search_web_sources_for_query")
+        if callable(fn_search):
+            search_results = fn_search(query, num_sources=num_sources)
+        else:
+            fn_serp = globals().get("search_serpapi")
+            search_results = fn_serp(query, num_results=num_sources) if callable(fn_serp) else []
+        if isinstance(search_results, list):
+            web_context["search_results"] = search_results
+        else:
+            web_context["search_results"] = []
     except Exception as e:
-        web_context["errors"].append(f"serpapi search failed: {type(e).__name__}: {e}")
-        search_results = []
+        web_context["errors"].append(f"search_failed:{type(e).__name__}:{e}")
+        web_context["search_results"] = []
 
-    # normalize search_results to expected shape
-    norm_results = []
-    for r in search_results:
+    # Extract URLs in a defensive way
+    urls = []
+    for r in (web_context["search_results"] or [])[: max(1, int(num_sources or 3))]:
         if isinstance(r, dict):
-            link = _normalize_url(r.get("link") or r.get("url") or "")
-            if not link:
-                continue
-            norm_results.append({
-                "title": (r.get("title") or "").strip(),
-                "link": link,
-                "source": (r.get("source") or "").strip(),
-                "date": (r.get("date") or "").strip(),
-            })
-        elif isinstance(r, str) and r.strip():
-            link = _normalize_url(r.strip())
-            if link:
-                norm_results.append({"title": "", "link": link, "source": "", "date": ""})
+            u = (r.get("link") or r.get("url") or "").strip()
+        else:
+            u = ""
+        if u:
+            urls.append(u)
 
-    web_context["search_results"] = norm_results
-    web_context["search_count"] = len(norm_results)
-
-    # pick top N sources
-    try:
-        n = int(num_sources or 6)
-    except Exception:
-        n = 6
-    n = max(1, min(10, n))
-
-    top = norm_results[:n]
-    urls = [r.get("link") for r in top if isinstance(r, dict) and r.get("link")]
-    web_context["sources"] = urls
-
-    # reliability labels (if helper exists)
-    cls = globals().get("classify_source_reliability")
+    # Dedupe but keep order
+    seen = set()
+    urls2 = []
     for u in urls:
-        try:
-            web_context["source_reliability"].append(str(cls(u)) if callable(cls) else "")
-        except Exception:
-            web_context["source_reliability"].append("")
-
-    # -------------------------
-    # 2) SCRAPE + EXTRACT
-    # -------------------------
-    # Prefer your existing helper
-    fetcher = globals().get("fetch_url_content_with_status")
-
-    # We support two modes:
-    #   Preferred: SCRAPINGDOG_KEY present -> fetcher likely uses it
-    #   Fallback: no SCRAPINGDOG_KEY -> still fetch via fetcher if it works, else requests
-    has_scrapingdog = bool(globals().get("SCRAPINGDOG_KEY"))
-
-    for idx, row in enumerate(top):
-        url = (row.get("link") or "").strip()
-        if not url:
+        if u in seen:
             continue
+        seen.add(u)
+        urls2.append(u)
+    urls = urls2
 
-        meta = {
+    # ---------- 2) Scrape + extract ----------
+    fn_scrape = globals().get("scrape_url")
+    fn_extract = globals().get("extract_numbers_with_context")
+    fn_extract_pdf = globals().get("extract_numbers_with_context_pdf")
+    fn_fp = globals().get("fingerprint_text")
+
+    for url in urls:
+        fetched_at = _now_iso()
+        clean_text = ""
+        extracted_numbers = []
+        status_detail = ""
+        status = "failed"
+
+        try:
+            # scrape_url returns clean-ish text (often truncated)
+            if callable(fn_scrape):
+                clean_text = fn_scrape(url) or ""
+            else:
+                clean_text = ""
+        except Exception as e:
+            clean_text = ""
+            status_detail = f"scrape_error:{type(e).__name__}"
+            web_context["errors"].append(f"{status_detail}:{url}")
+
+        # Always store scraped_content if we got any text (even if extraction fails)
+        if isinstance(clean_text, str) and clean_text.strip():
+            web_context["scraped_content"][url] = clean_text
+
+        # Extract numbers with context (prefer PDF extractor if URL hints at pdf)
+        try:
+            if isinstance(clean_text, str) and clean_text.strip() and (callable(fn_extract) or callable(fn_extract_pdf)):
+                is_pdfish = url.lower().endswith(".pdf") or "pdf" in url.lower()
+                if is_pdfish and callable(fn_extract_pdf):
+                    extracted_numbers = fn_extract_pdf(clean_text, source_url=url) or []
+                elif callable(fn_extract):
+                    extracted_numbers = fn_extract(clean_text, source_url=url) or []
+        except Exception as e:
+            extracted_numbers = []
+            # don't fail the whole record: we still want clean_text + fingerprint
+            web_context["errors"].append(f"extract_error:{type(e).__name__}:{url}")
+
+        # Fingerprint should be present whenever clean_text exists
+        fp = ""
+        try:
+            if callable(fn_fp):
+                fp = fn_fp(clean_text or "")
+            else:
+                fp = ""
+        except Exception:
+            fp = ""
+
+        if isinstance(clean_text, str) and clean_text.strip():
+            status = "fetched"
+            status_detail = status_detail or "success:fetched"
+        else:
+            status = "failed"
+            status_detail = status_detail or "failed:no_text"
+
+        # IMPORTANT: Always write scraped_meta entry (even if empty extraction)
+        web_context["scraped_meta"][url] = {
             "url": url,
-            "title": row.get("title"),
-            "source": row.get("source"),
-            "date": row.get("date"),
-            "status": "failed",
-            "status_detail": "",
-            "content_type": "",
-            "fingerprint": None,
-            "numbers_found": 0,
-            "extracted_numbers": [],
-            "clean_text": "",
-            "fetched_at": _now_iso(),
-            "is_homepage": _is_homepage(url),
-            "skip_reason": "homepage_url_low_signal" if _is_homepage(url) else "",
-            "quality_score": None,
+            "status": status,
+            "status_detail": status_detail,
+            "fetched_at": fetched_at,
+            "fingerprint": fp,
+            "clean_text": clean_text if isinstance(clean_text, str) else "",
+            "numbers_found": len(extracted_numbers) if isinstance(extracted_numbers, list) else 0,
+            "extracted_numbers": extracted_numbers if isinstance(extracted_numbers, list) else [],
         }
 
-        # fetch content
-        raw_text = None
-        status = "failed"
-        detail = ""
-        content_type = ""
-
-        # If ScrapingDog exists, allow normal path; if not, still try fetcher then requests
-        try:
-            if callable(fetcher):
-                got = fetcher(url, timeout=25) if "timeout" in getattr(fetcher, "__code__", type("x",(object,),{"co_varnames":()})).co_varnames else fetcher(url)
-                if isinstance(got, tuple) and len(got) == 2:
-                    raw_text, detail = got
-                    status = "fetched" if raw_text else "failed"
-                    content_type = ""
-                elif isinstance(got, tuple) and len(got) == 4:
-                    raw_text, status, detail, content_type = got
-                else:
-                    raw_text = got
-                    status = "fetched" if raw_text else "failed"
-                    detail = "success" if raw_text else "empty"
-                    content_type = ""
-            else:
-                raw_text, status, detail, content_type = _requests_fetch(url, timeout=25)
-        except Exception as e:
-            # try direct requests fallback
-            raw_text, status, detail, content_type = _requests_fetch(url, timeout=25)
-
-        meta["status"] = status
-        meta["status_detail"] = detail
-        meta["content_type"] = content_type
-
-        # If fetch succeeded, clean and extract numbers
-        if status == "fetched" and raw_text:
-            clean_text = _clean_visible_text(raw_text, content_type=content_type)
-            meta["clean_text"] = clean_text
-
-            fp = _fingerprint_text(clean_text[:250000]) if clean_text else None
-            meta["fingerprint"] = fp
-
-            nums = _extract_numbers(clean_text, url)
-            # compact output for snapshots
-            compact = []
-            for nobj in nums:
-                if not isinstance(nobj, dict):
-                    continue
-                ctx = (nobj.get("context_snippet") or nobj.get("context") or "")[:CONTEXT_CHARS]
-                compact.append({
-                    "value": nobj.get("value"),
-                    "unit": nobj.get("unit"),
-                    "raw": nobj.get("raw"),
-                    "context": ctx,
-                    "context_snippet": ctx,
-                    "anchor_hash": nobj.get("anchor_hash"),
-                    "source_url": nobj.get("source_url") or url,
-                })
-
-            meta["extracted_numbers"] = compact
-            meta["numbers_found"] = len(compact)
-
-            if clean_text:
-                web_context["scraped_content"][url] = clean_text
-
-        else:
-            # if homepage and failed, keep skip_reason explicit
-            if meta["is_homepage"] and not meta.get("skip_reason"):
-                meta["skip_reason"] = "homepage_url_low_signal"
-
-        web_context["scraped_meta"][url] = meta
-
-        # small delay
-        time.sleep(0.12)
-
-    # -------------------------
-    # 3) Build model-ready summary from cleaned content
-    # -------------------------
-    parts = []
-    for u in urls[:6]:
-        txt = web_context["scraped_content"].get(u) or ""
-        if txt:
-            parts.append(f"{u}:\n{txt[:900]}")
-    web_context["summary"] = "\n\n".join(parts).strip()
-
-    # Add a note about which mode was used (useful for debugging)
-    if not has_scrapingdog:
-        web_context["errors"].append("info: SCRAPINGDOG_KEY not set; used fallback scraping mode (requests-based)")
-
     return web_context
+
 
 
 def fingerprint_text(text: str) -> str:
@@ -7448,20 +7206,23 @@ def _extract_query_from_previous(previous_data: dict) -> str:
 
     return ""
 
-
 def _build_source_snapshots_from_web_context(web_context: dict) -> list:
     """
     Convert fetch_web_context() output (scraped_meta) into evolution snapshots.
-    Uses ONLY analysis-pipeline aligned extracted_numbers cached by scraped_meta.
 
-    Tightening:
-      - Detect domain-only/homepage URLs (junk magnets) and label them.
-      - Attach quality_score + skip_reason so matcher can down-weight.
-      - Keep schema backward compatible; only add new fields.
+    Preferred inputs:
+      - web_context["scraped_meta"][url]["extracted_numbers"] (analysis-aligned)
+
+    Safety-net hard gates (small set):
+      1) homepage-like URLs downweighted + tagged
+      2) nav/chrome/junk context downweighted
+      3) year-only suppression (e.g., raw == "2024" and no unit/context)
+      4) light topic gate (requires minimal overlap with query tokens)
     """
     import hashlib
     from datetime import datetime
     from urllib.parse import urlparse
+    import re
 
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
@@ -7485,19 +7246,51 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
         except Exception:
             return False
 
+    def _tokenize(s: str) -> list:
+        toks = re.findall(r"[a-z0-9]+", (s or "").lower())
+        stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as","a","an","is","are","this","that"}
+        return [t for t in toks if len(t) >= 4 and t not in stop]
+
+    def _looks_like_year_only(n: dict) -> bool:
+        try:
+            raw = str(n.get("raw") or "").strip()
+            unit = str(n.get("unit") or "").strip()
+            ctx = str(n.get("context") or n.get("context_snippet") or "").strip()
+            # exactly 4 digits year and nothing else
+            if re.fullmatch(r"(19|20)\d{2}", raw) and not unit:
+                # if context is empty or super short, treat as junk
+                if len(ctx) < 12:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _is_chrome_ctx(ctx: str) -> bool:
+        if not ctx:
+            return False
+        low = ctx.lower()
+        for h in globals().get("NON_DATA_CONTEXT_HINTS", []) or []:
+            if h in low:
+                return True
+        return False
+
     if not isinstance(web_context, dict):
         return []
 
     scraped_meta = web_context.get("scraped_meta") or {}
-    if not isinstance(scraped_meta, dict):
+    if not isinstance(scraped_meta, dict) or not scraped_meta:
         return []
 
+    query = (web_context.get("query") or "")
+    q_toks = set(_tokenize(query))
+
     out = []
+
     for url, meta in scraped_meta.items():
         if not isinstance(meta, dict):
             continue
 
-        url_s = str(url or "").strip()
+        url_s = str(url or meta.get("url") or "").strip()
         if not url_s:
             continue
 
@@ -7505,66 +7298,88 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
         if not isinstance(extracted, list):
             extracted = []
 
-        cleaned = []
-        for n in extracted:
-            if not isinstance(n, dict):
-                continue
-            cleaned.append({
-                "value": n.get("value"),
-                "unit": n.get("unit"),
-                "raw": n.get("raw"),
-                "source_url": n.get("source_url") or url_s,
-                "context": (n.get("context") or "")[:220] if isinstance(n.get("context"), str) else "",
-            })
-
         fp = meta.get("fingerprint") or meta.get("extract_hash") or meta.get("content_fingerprint")
         if fp and not isinstance(fp, str):
             fp = str(fp)
-
         if not fp and isinstance(meta.get("clean_text"), str):
             fp = _sha1(meta["clean_text"][:200000])
 
         status_detail = meta.get("status_detail") or meta.get("status") or ""
-        fetched_ok = str(status_detail).startswith("success")
+        fetched_ok = str(status_detail).startswith("success") or meta.get("status") == "fetched"
 
-        # --- homepage labeling (tightening #3) ---
         is_homepage = _is_homepage_url(url_s)
-        quality_score = 1.0
-        skip_reason = ""
-        if is_homepage:
-            quality_score = 0.15
-            skip_reason = "homepage_url_low_signal"
 
-        host = ""
-        path = ""
-        try:
-            p = urlparse(url_s)
-            host = p.netloc or ""
-            path = p.path or ""
-        except Exception:
-            pass
+        cleaned_numbers = []
+        for n in extracted:
+            if not isinstance(n, dict):
+                continue
+
+            # ---- Hard gate: year-only suppression ----
+            if _looks_like_year_only(n):
+                continue
+
+            value = n.get("value")
+            raw = n.get("raw")
+            unit = n.get("unit")
+            ctx = n.get("context") or n.get("context_snippet") or ""
+
+            # normalize context
+            ctx_s = ctx if isinstance(ctx, str) else ""
+            ctx_s = ctx_s.strip()
+
+            # ---- Hard gate: chrome/nav rejection (soft) ----
+            chrome_ctx = _is_chrome_ctx(ctx_s)
+
+            # ---- Light topic gate (soft): require some overlap with query tokens ----
+            # This is intentionally mild: it *downweights* rather than drops everything.
+            ctx_toks = set(_tokenize(ctx_s))
+            tok_overlap = len(q_toks.intersection(ctx_toks)) if q_toks and ctx_toks else 0
+
+            # quality scoring (small + interpretable)
+            quality = 1.0
+            reasons = []
+
+            if is_homepage:
+                quality *= 0.25
+                reasons.append("homepage_like")
+
+            if chrome_ctx:
+                quality *= 0.40
+                reasons.append("chrome_context")
+
+            if q_toks and tok_overlap == 0:
+                quality *= 0.55
+                reasons.append("topic_miss")
+
+            # cap/trim context snippet for JSON size
+            ctx_snip = ctx_s[:240]
+
+            cleaned_numbers.append({
+                "value": value,
+                "unit": unit,
+                "raw": raw,
+                "source_url": n.get("source_url") or url_s,
+                "context_snippet": ctx_snip,
+                "anchor_hash": n.get("anchor_hash") or _sha1(f"{url_s}|{ctx_snip}|{raw}|{unit}"),
+                # Debug fields for tuning:
+                "quality_score": round(float(quality), 3),
+                "quality_reasons": reasons,
+                "topic_overlap": tok_overlap,
+            })
 
         out.append({
             "url": url_s,
-            "status": "fetched_extracted" if cleaned else ("fetched" if fetched_ok else "failed"),
+            "status": "fetched_extracted" if cleaned_numbers else ("fetched" if fetched_ok else "failed"),
             "status_detail": status_detail,
-            "numbers_found": int(meta.get("numbers_found") or len(cleaned)),
-            "fingerprint": fp,
+            "numbers_found": len(cleaned_numbers),
+            "fingerprint": fp or "",
             "fetched_at": meta.get("fetched_at") or _now(),
-            "extracted_numbers": cleaned,
-            "source": meta.get("source"),
-            "title": meta.get("title"),
-            "date": meta.get("date"),
-
-            # NEW debug fields (safe additions)
-            "is_homepage": bool(is_homepage),
-            "quality_score": float(quality_score),
-            "skip_reason": skip_reason,
-            "host": host,
-            "path": path,
+            "is_homepage_like": bool(is_homepage),
+            "extracted_numbers": cleaned_numbers,
         })
 
     return out
+
 
 
 def _build_source_snapshots_from_baseline_cache(baseline_cache: list) -> list:
