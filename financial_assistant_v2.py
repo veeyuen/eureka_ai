@@ -1569,13 +1569,10 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
 
 def search_web_sources_for_query(query: str, num_sources: int = 3):
     """
-    Compatibility adapter for v7.30 fetch_web_context().
+    Adapter used by v7.30 fetch_web_context().
 
-    v7.30 fetch_web_context() now looks for a function named
-    `search_web_sources_for_query(query, num_sources=...)`.
-
-    This adapter routes that call to SerpAPI (search_serpapi),
-    returning the exact list-of-dicts shape fetch_web_context expects.
+    Returns a list of dicts: [{"url": "...", "title": "...", "source": "...", "date": "..."}...]
+    using SerpAPI (search_serpapi).
     """
     try:
         n = int(num_sources or 3)
@@ -1583,22 +1580,37 @@ def search_web_sources_for_query(query: str, num_sources: int = 3):
         n = 3
     n = max(1, min(10, n))
 
-    # Prefer SerpAPI search function already in codebase
     try:
-        results = search_serpapi(query, num_results=n) or []
+        results = search_serpapi(query, num_results=max(10, n)) or []
     except Exception:
         results = []
 
     out = []
     for r in results:
         if isinstance(r, dict):
-            u = (r.get("url") or r.get("link") or "").strip()
-            if u:
-                out.append({"url": u})
+            url = (r.get("link") or r.get("url") or "").strip()
+            if not url:
+                continue
+            out.append({
+                "url": url,
+                "title": (r.get("title") or "").strip(),
+                "source": (r.get("source") or "").strip(),
+                "date": (r.get("date") or "").strip(),
+            })
         elif isinstance(r, str) and r.strip():
-            out.append({"url": r.strip()})
+            out.append({"url": r.strip(), "title": "", "source": "", "date": ""})
 
-    return out[:n]
+    # Deduplicate preserve order
+    seen = set()
+    dedup = []
+    for r in out:
+        u = r.get("url")
+        if u and u not in seen:
+            seen.add(u)
+            dedup.append(r)
+
+    return dedup[:n]
+
 
 
 
@@ -1635,126 +1647,201 @@ def scrape_url(url: str) -> Optional[str]:
 
 def fetch_web_context(query: str, num_sources: int = 3) -> dict:
     """
-    Web context collector used by BOTH analysis + evolution.
+    Search web and scrape top sources.
 
-    Tightening:
-      - Always return scraped_content[url] when we have clean_text, so downstream
-        (attach_source_snapshots_to_analysis / evolution snapshot builder) has a
-        consistent fallback artifact even when extracted_numbers are missing.
-      - Keep schema backward compatible.
+    Returns (backward compatible with your UI + veracity + evolution):
+      {
+        "query": str,
+        "search_results": [ {title, link, source, date} ... ],
+        "search_count": int,
+        "sources": [url...],                  # urls used for scraping
+        "source_reliability": [str...],       # parallel list / per-result labels
+        "summary": str,                       # short text summary for LLM context
+        "scraped_content": {url: clean_text},
+        "scraped_meta": {url: {status_detail, fingerprint, extracted_numbers, ...}},
+        "errors": [str...],
+      }
     """
+    import time
+    import json
+
     web_context = {
         "query": query,
         "search_results": [],
+        "search_count": 0,
+        "sources": [],
+        "source_reliability": [],
+        "summary": "",
+        "scraped_content": {},
         "scraped_meta": {},
-        "scraped_content": {},  # ✅ NEW: used by attach_source_snapshots_to_analysis fallback
         "errors": [],
     }
 
     if not query or not isinstance(query, str) or not query.strip():
         return web_context
 
-    # 1) Search (keep your existing implementation hooks)
+    # --- 1) Search (SerpAPI via adapter; fallback to direct search_serpapi) ---
+    results = []
     try:
-        ws = globals().get("web_search")
-        if callable(ws):
-            web_context["search_results"] = ws(query, num_results=num_sources) or []
+        fn = globals().get("search_web_sources_for_query")
+        if callable(fn):
+            results = fn(query, num_sources=max(10, int(num_sources or 3))) or []
         else:
-            web_context["search_results"] = []
-    except Exception as e:
-        web_context["errors"].append(f"web_search failed: {type(e).__name__}: {e}")
-        web_context["search_results"] = []
-
-    # Normalize search results → url list
-    urls = []
-    try:
-        for r in (web_context.get("search_results") or []):
-            if isinstance(r, dict):
-                u = (r.get("url") or r.get("link") or "").strip()
-                if u:
-                    urls.append(u)
-            elif isinstance(r, str) and r.strip():
-                urls.append(r.strip())
+            results = []
     except Exception:
-        pass
+        results = []
 
-    # Deduplicate while preserving order
-    seen = set()
-    urls2 = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            urls2.append(u)
-    urls = urls2[: max(1, int(num_sources or 3))]
+    # If adapter returned nothing, fall back directly to search_serpapi
+    if not results:
+        try:
+            results = search_serpapi(query, num_results=10) or []
+            # normalize into adapter shape
+            norm = []
+            for r in results:
+                if isinstance(r, dict):
+                    url = (r.get("link") or r.get("url") or "").strip()
+                    if not url:
+                        continue
+                    norm.append({
+                        "url": url,
+                        "title": (r.get("title") or "").strip(),
+                        "source": (r.get("source") or "").strip(),
+                        "date": (r.get("date") or "").strip(),
+                    })
+                elif isinstance(r, str) and r.strip():
+                    norm.append({"url": r.strip(), "title": "", "source": "", "date": ""})
+            results = norm
+        except Exception as e:
+            web_context["errors"].append(f"serpapi search failed: {type(e).__name__}: {e}")
+            results = []
 
-    # 2) Scrape (ScrapingDog path you already use)
-    # If no API key, we still return search_results; scraped_meta remains empty.
-    try:
-        import os, json, time, requests
-        key = os.environ.get("SCRAPINGDOG_KEY", "").strip()
-        if not key:
-            return web_context  # ← leaves scraped_meta/content empty, but search_results present
-
-        for url in urls:
-            try:
-                api_url = (
-                    "https://api.scrapingdog.com/scrape"
-                    f"?api_key={key}&url={requests.utils.quote(url, safe='')}"
-                )
-                resp = requests.get(api_url, timeout=25)
-                status_ok = (resp.status_code == 200)
-                text = resp.text or ""
-
-                # Basic cleanup
-                clean_text = text
-                try:
-                    # If HTML, attempt to strip tags via existing helper if present
-                    cleaner = globals().get("clean_text_from_html")
-                    if callable(cleaner):
-                        clean_text = cleaner(text)
-                except Exception:
-                    pass
-
-                # Extract numbers using the SAME extractor analysis uses
-                extracted = []
-                try:
-                    enf = globals().get("extract_numbers_with_context")
-                    if callable(enf):
-                        extracted = enf(clean_text, url=url) or []
-                except Exception:
-                    extracted = []
-
-                # Fingerprint
-                fp = ""
-                try:
-                    fpt = globals().get("fingerprint_text")
-                    if callable(fpt):
-                        fp = fpt(clean_text)
-                except Exception:
-                    fp = ""
-
-                meta = {
-                    "status_detail": "success" if status_ok else f"http_{resp.status_code}",
-                    "numbers_found": len(extracted) if isinstance(extracted, list) else 0,
-                    "fingerprint": fp,
-                    "clean_text": clean_text,
-                    "extracted_numbers": extracted if isinstance(extracted, list) else [],
-                    "fetched_at": None,
-                }
-
-                # ✅ Populate both scraped_meta and scraped_content for downstream parity
-                web_context["scraped_meta"][url] = meta
-                web_context["scraped_content"][url] = clean_text
-
-                # tiny politeness delay
-                time.sleep(0.2)
-
-            except Exception as e:
-                web_context["errors"].append(f"scrape failed for {url}: {type(e).__name__}: {e}")
+    # Convert to the "search_results" shape used across the app
+    search_results = []
+    for r in results:
+        if isinstance(r, dict):
+            url = (r.get("url") or r.get("link") or "").strip()
+            if not url:
                 continue
+            search_results.append({
+                "title": (r.get("title") or "").strip(),
+                "link": url,
+                "source": (r.get("source") or "").strip(),
+                "date": (r.get("date") or "").strip(),
+            })
+        elif isinstance(r, str) and r.strip():
+            search_results.append({"title": "", "link": r.strip(), "source": "", "date": ""})
 
-    except Exception as e:
-        web_context["errors"].append(f"scrape init failed: {type(e).__name__}: {e}")
+    web_context["search_results"] = search_results
+    web_context["search_count"] = len(search_results)
+
+    # --- 2) Decide which sources to scrape ---
+    top = search_results[: max(1, int(num_sources or 3))]
+    urls = [r.get("link") for r in top if isinstance(r, dict) and r.get("link")]
+    web_context["sources"] = urls
+
+    # Reliability labels (optional)
+    for r in top:
+        url = (r.get("link") or "")
+        try:
+            cls = globals().get("classify_source_reliability")
+            if callable(cls):
+                web_context["source_reliability"].append(str(cls(url)))
+            else:
+                web_context["source_reliability"].append("")
+        except Exception:
+            web_context["source_reliability"].append("")
+
+    # --- 3) Scrape each source using your existing fetcher ---
+    fetcher = globals().get("fetch_url_content_with_status")
+    extractor = globals().get("extract_numbers_with_context")
+    fp_fn = globals().get("fingerprint_text")
+    clean_html = globals().get("clean_text_from_html")
+
+    for i, r in enumerate(top):
+        url = (r.get("link") or "").strip()
+        if not url:
+            continue
+
+        try:
+            content = None
+            status_detail = "failed"
+            if callable(fetcher):
+                got = fetcher(url)
+                if isinstance(got, tuple) and len(got) == 2:
+                    content, status_detail = got
+                else:
+                    content = got
+                    status_detail = "success" if content else "failed"
+            else:
+                # No fetcher installed: fail explicitly
+                content = None
+                status_detail = "no_fetch_helper"
+
+            # Clean text if HTML cleaner available
+            clean_text = content or ""
+            try:
+                if clean_text and callable(clean_html):
+                    clean_text = clean_html(clean_text)
+            except Exception:
+                pass
+
+            # Extract numbers using analysis-aligned extractor (if present)
+            extracted = []
+            try:
+                if clean_text and callable(extractor):
+                    extracted = extractor(clean_text) or []
+            except Exception:
+                extracted = []
+
+            # Compact extracted numbers for storage
+            compact = []
+            for n in (extracted or []):
+                if isinstance(n, dict):
+                    compact.append({
+                        "value": n.get("value"),
+                        "unit": n.get("unit"),
+                        "raw": n.get("raw"),
+                        "context": (n.get("context") or n.get("context_snippet") or "")[:240],
+                        "anchor_hash": n.get("anchor_hash"),
+                        "source_url": n.get("source_url") or url,
+                    })
+
+            fingerprint = ""
+            try:
+                if callable(fp_fn) and clean_text:
+                    fingerprint = fp_fn(clean_text)
+            except Exception:
+                fingerprint = ""
+
+            meta = {
+                "url": url,
+                "status_detail": status_detail,
+                "title": r.get("title"),
+                "source": r.get("source"),
+                "date": r.get("date"),
+                "fingerprint": fingerprint,
+                "numbers_found": len(compact),
+                "extracted_numbers": compact,
+                "clean_text": clean_text,
+            }
+
+            if clean_text:
+                web_context["scraped_content"][url] = clean_text
+            web_context["scraped_meta"][url] = meta
+
+        except Exception as e:
+            web_context["errors"].append(f"scrape failed for {url}: {type(e).__name__}: {e}")
+
+        # small delay to be polite / reduce throttling
+        time.sleep(0.15)
+
+    # --- 4) Build a compact summary for the model ---
+    context_parts = []
+    for url in urls[:6]:
+        t = (web_context["scraped_content"].get(url) or "")
+        if t:
+            context_parts.append(f"{url}:\n{t[:900]}")
+    web_context["summary"] = "\n\n".join(context_parts).strip()
 
     return web_context
 
