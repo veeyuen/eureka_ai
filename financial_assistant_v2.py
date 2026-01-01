@@ -424,7 +424,7 @@ def add_to_history(analysis: dict) -> bool:
             analysis.get("timestamp", datetime.now().isoformat()),
             analysis.get("question", "")[:100],
             str(analysis.get("final_confidence", "")),
-            json.dumps(analysis, default=str),
+            make_sheet_safe_json(analysis),
         ]
         sheet.append_row(row, value_input_option="RAW")
         return True
@@ -7067,6 +7067,84 @@ NON_DATA_CONTEXT_HINTS = [
     "table of contents", "cookie", "privacy", "terms", "copyright",
     "subscribe", "newsletter", "login", "sign in", "nav", "footer"
 ]
+
+
+def _truncate_for_sheets(s: str, max_chars: int = 45000) -> str:
+    """Hard cap to stay under Google Sheets 50k/cell limit."""
+    if s is None:
+        return ""
+    s = str(s)
+    if len(s) <= max_chars:
+        return s
+    head = s[: int(max_chars * 0.75)]
+    tail = s[- int(max_chars * 0.20):]
+    return head + "\n...\n[TRUNCATED FOR GOOGLE SHEETS]\n...\n" + tail
+
+
+def _summarize_heavy_fields_for_sheets(obj: dict) -> dict:
+    """
+    Summarize fields that commonly exceed the per-cell limit while keeping debug utility.
+    Only used for Sheets serialization; does NOT modify your in-memory analysis dict.
+    """
+    if not isinstance(obj, dict):
+        return {"_type": str(type(obj)), "value": str(obj)[:500]}
+
+    out = dict(obj)
+
+    # Common bloat fields
+    if "scraped_meta" in out:
+        sm = out.get("scraped_meta")
+        if isinstance(sm, dict):
+            compact = {}
+            for url, meta in list(sm.items())[:12]:
+                if isinstance(meta, dict):
+                    compact[url] = {
+                        "status": meta.get("status"),
+                        "status_detail": meta.get("status_detail"),
+                        "numbers_found": meta.get("numbers_found"),
+                        "fingerprint": meta.get("fingerprint"),
+                        "clean_text_len": meta.get("clean_text_len"),
+                    }
+            out["scraped_meta"] = {"_summary": True, "count": len(sm), "sample": compact}
+        else:
+            out["scraped_meta"] = {"_summary": True, "type": str(type(sm))}
+
+    for big_key in ("source_results", "baseline_sources_cache", "baseline_sources_cache_compact"):
+        if big_key in out:
+            sr = out.get(big_key)
+            if isinstance(sr, list):
+                sample = []
+                for item in sr[:2]:
+                    if isinstance(item, dict):
+                        item2 = dict(item)
+                        if isinstance(item2.get("extracted_numbers"), list):
+                            item2["extracted_numbers"] = {"_summary": True, "count": len(item2["extracted_numbers"])}
+                        sample.append(item2)
+                out[big_key] = {"_summary": True, "count": len(sr), "sample": sample}
+            else:
+                out[big_key] = {"_summary": True, "type": str(type(sr))}
+
+    # If you store full scraped_content anywhere, summarize it too
+    if "scraped_content" in out:
+        sc = out.get("scraped_content")
+        if isinstance(sc, dict):
+            out["scraped_content"] = {"_summary": True, "count": len(sc), "keys_sample": list(sc.keys())[:10]}
+        else:
+            out["scraped_content"] = {"_summary": True, "type": str(type(sc))}
+
+    return out
+
+
+def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
+    """Serialize sheet-safe JSON under the cell limit."""
+    import json
+    compact = _summarize_heavy_fields_for_sheets(obj if isinstance(obj, dict) else {"value": obj})
+    compact["_sheets_safe"] = True
+    try:
+        s = json.dumps(compact, ensure_ascii=False, default=str)
+    except Exception:
+        s = str(compact)
+    return _truncate_for_sheets(s, max_chars=max_chars)
 
 
 def fingerprint_text(text: str) -> str:
