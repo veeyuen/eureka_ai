@@ -9500,9 +9500,6 @@ def render_dashboard(
         return
 
     # -------------------------
-    # Helper: metric value formatting (currency + compact units)
-    # -------------------------
-        # -------------------------
     # Helper: metric value formatting (currency + compact units) + RANGE SUPPORT
     # -------------------------
     def _format_metric_value(m: Any) -> str:
@@ -9526,15 +9523,19 @@ def render_dashboard(
             unit = (unit or "").strip()
             raw_val = str(val).strip()
 
+            # Try parse numeric
             try:
                 num = float(raw_val.replace(",", ""))
             except Exception:
+                # If we can't parse as float, just glue value+unit neatly
                 return f"{raw_val}{unit}".strip() if unit else raw_val
 
+            # Normalize unit spacing
             unit = unit.replace(" ", "")
             currency_prefix = ""
             u_upper = unit.upper()
 
+            # Common patterns: "S$B", "SGDB", "USD B", "$B"
             if u_upper.startswith("S$"):
                 currency_prefix = "S$"
                 unit = unit[2:]
@@ -9550,9 +9551,11 @@ def render_dashboard(
 
             unit = unit.strip()
 
+            # Percent
             if unit == "%":
                 return f"{num:.1f}%"
 
+            # Compact units
             unit_upper = unit.upper()
             if unit_upper in ("B", "BILLION"):
                 formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "B"
@@ -9564,6 +9567,7 @@ def render_dashboard(
                 formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "K"
                 return f"{currency_prefix}{formatted}".strip()
 
+            # Plain number formatting
             if abs(num) >= 1000:
                 if float(num).is_integer():
                     formatted = f"{int(num):,}"
@@ -9572,6 +9576,7 @@ def render_dashboard(
             else:
                 formatted = f"{num:g}"
 
+            # Unit glue
             if unit:
                 formatted = f"{formatted} {unit}".strip()
 
@@ -9580,8 +9585,8 @@ def render_dashboard(
         # -------------------------
         # RANGE: prefer value_range if present and meaningful
         # -------------------------
-        vr = m.get("value_range")
         unit = (m.get("unit") or "").strip()
+        vr = m.get("value_range")
 
         if isinstance(vr, dict):
             vmin = vr.get("min")
@@ -9592,7 +9597,7 @@ def render_dashboard(
                 if left != "N/A" and right != "N/A" and left != right:
                     return f"{left}–{right}"
 
-        # Precomputed display (optional)
+        # Precomputed range display (optional)
         vr_disp = m.get("value_range_display")
         if isinstance(vr_disp, str) and vr_disp.strip():
             return vr_disp.strip()
@@ -9631,7 +9636,6 @@ def render_dashboard(
     # Optional: expand summary if side-questions exist
     side_questions = data.get("side_questions") or (data.get("question_profile", {}) or {}).get("side_questions", [])
     if side_questions:
-        # Add a few extra lines without inventing facts: just expose what the system detected
         st.markdown("")
         st.markdown("**Also addressed:**")
         for sq in side_questions[:6]:
@@ -9654,257 +9658,88 @@ def render_dashboard(
 
     if question_category:
         metric_rows.append({"Metric": "Question Category", "Value": str(question_category)})
+    if isinstance(question_signals, dict) and question_signals:
+        metric_rows.append({"Metric": "Signals", "Value": ", ".join([str(x) for x in (question_signals.get("signals") or [])][:10])})
+    if expected_ids:
+        metric_rows.append({"Metric": "Expected Metrics", "Value": ", ".join([str(x) for x in expected_ids][:10])})
 
-    if isinstance(question_signals, dict):
-        years = question_signals.get("years")
-        regions = question_signals.get("regions")
-        if years:
-            metric_rows.append({"Metric": "Question Years (detected)", "Value": ", ".join(map(str, years))})
-        if regions:
-            metric_rows.append({"Metric": "Regions (detected)", "Value": ", ".join(map(str, regions))})
-
-    if side_questions:
-        metric_rows.append({"Metric": "Side Question(s)", "Value": "; ".join(map(str, side_questions))})
-
-    # Try canonicalization if the function exists in your codebase
-    canon = metrics
-    try:
-        if isinstance(metrics, dict) and "canonicalize_metrics" in globals():
-            canon = canonicalize_metrics(metrics)
-    except Exception:
-        canon = metrics
-
-    # Order by expected ids first, then rest
-    if isinstance(canon, dict) and canon:
-        by_base: Dict[str, List[Dict]] = {}
-        for cid, m in canon.items():
-            base = re.sub(r"_\d{4}(?:_\d{4})*$", "", str(cid))
+    # Render primary metrics
+    if isinstance(metrics, dict) and metrics:
+        for _, m in metrics.items():
             if isinstance(m, dict):
-                by_base.setdefault(base, []).append(m)
+                name = m.get("name") or "Metric"
+                metric_rows.append({"Metric": str(name), "Value": _format_metric_value(m)})
 
-        if expected_ids:
-            for base_id in expected_ids:
-                candidates = by_base.get(str(base_id), [])
-                if candidates:
-                    m = candidates[0]
-                    metric_rows.append({"Metric": m.get("name", str(base_id)), "Value": _format_metric_value(m)})
-                else:
-                    metric_rows.append({"Metric": str(base_id).replace("_", " ").title(), "Value": "N/A"})
-
-            expected_set = set(map(str, expected_ids))
-            for cid, m in canon.items():
-                base = re.sub(r"_\d{4}(?:_\d{4})*$", "", str(cid))
-                if base in expected_set:
-                    continue
-                if isinstance(m, dict):
-                    metric_rows.append({"Metric": m.get("name", str(cid)), "Value": _format_metric_value(m)})
-        else:
-            for cid, m in canon.items():
-                if isinstance(m, dict):
-                    metric_rows.append({"Metric": m.get("name", str(cid)), "Value": _format_metric_value(m)})
-
+    # Display metrics table
     if metric_rows:
-        default_n = 10
-        st.table(pd.DataFrame(metric_rows[:default_n]))
-        if len(metric_rows) > default_n:
-            with st.expander(f"Show all key metrics ({len(metric_rows)})"):
-                st.dataframe(pd.DataFrame(metric_rows), hide_index=True, width="stretch")
-    else:
-        st.info("No metrics available")
+        try:
+            import pandas as pd  # optional dependency in your environment
+            df_metrics = pd.DataFrame(metric_rows)
+            st.dataframe(df_metrics, use_container_width=True, hide_index=True)
+        except Exception:
+            for r in metric_rows:
+                st.write(f"**{r.get('Metric','')}**: {r.get('Value','')}")
 
     st.markdown("---")
 
     # -------------------------
     # Key Findings
     # -------------------------
-    st.subheader("🔍 Key Findings")
-    findings = data.get("key_findings", []) or []
-    default_n = 8
-
-    for i, finding in enumerate(findings[:default_n], 1):
-        if finding:
-            st.markdown(f"**{i}.** {finding}")
-
-    if len(findings) > default_n:
-        with st.expander(f"Show all key findings ({len(findings)})"):
-            for i, finding in enumerate(findings, 1):
-                if finding:
-                    st.markdown(f"**{i}.** {finding}")
-
-    st.markdown("---")
-
-    # -------------------------
-    # Top Entities
-    # -------------------------
-    entities = data.get("top_entities") or []
-    if entities:
-        st.subheader("🏢 Top Market Players")
-        df_ent = pd.DataFrame(
-            [
-                {
-                    "Entity": e.get("name", "N/A"),
-                    "Share": e.get("share", "N/A"),
-                    "Growth": e.get("growth", "N/A"),
-                }
-                for e in entities
-                if isinstance(e, dict)
-            ]
-        )
-
-        if not df_ent.empty:
-            st.dataframe(df_ent.head(8), hide_index=True, width="stretch")
-            if len(df_ent) > 8:
-                with st.expander(f"Show all market players ({len(df_ent)})"):
-                    st.dataframe(df_ent, hide_index=True, width="stretch")
-
-    st.markdown("---")
-
-    # -------------------------
-    # Trends & Forecast
-    # -------------------------
-    trends = data.get("trends_forecast") or []
-    if trends:
-        st.subheader("📈 Trends & Forecast")
-        df_trends = pd.DataFrame(
-            [
-                {
-                    "Trend": t.get("trend", "N/A"),
-                    "Direction": t.get("direction", "→"),
-                    "Timeline": t.get("timeline", "N/A"),
-                }
-                for t in trends
-                if isinstance(t, dict)
-            ]
-        )
-
-        if not df_trends.empty:
-            st.table(df_trends.head(8))
-            if len(df_trends) > 8:
-                with st.expander(f"Show all trends ({len(df_trends)})"):
-                    st.dataframe(df_trends, hide_index=True, width="stretch")
-
-    st.markdown("---")
-
-    # -------------------------
-    # Visualization
-    # -------------------------
-    st.subheader("📊 Data Visualization")
-    viz = data.get("visualization_data")
-
-    if isinstance(viz, dict):
-        labels = viz.get("chart_labels") or []
-        values = viz.get("chart_values") or []
-        title = viz.get("chart_title", "Trend Analysis")
-        chart_type = viz.get("chart_type", "line")
-
-        if labels and values and len(labels) == len(values):
-            try:
-                df_viz = pd.DataFrame({"x": labels[:10], "y": [float(v) for v in values[:10]]})
-                fig = px.bar(df_viz, x="x", y="y", title=title) if chart_type == "bar" else px.line(
-                    df_viz, x="x", y="y", title=title, markers=True
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.info(f"⚠️ Chart rendering failed: {e}")
-        else:
-            st.info("📊 Visualization data incomplete")
+    st.subheader("🧠 Key Findings")
+    kf = data.get("key_findings") or []
+    if isinstance(kf, list) and kf:
+        for item in kf[:12]:
+            if item:
+                st.markdown(f"- {item}")
     else:
-        st.info("📊 No visualization data available")
+        st.info("No key findings available.")
 
     st.markdown("---")
 
     # -------------------------
-    # Sources & Reliability
+    # Trends / Forecast
     # -------------------------
-    st.subheader("🔗 Sources & Reliability")
-    sources = data.get("sources") or (web_context.get("sources") if isinstance(web_context, dict) else []) or []
-
-    if not sources:
-        st.info("No sources found")
+    st.subheader("📈 Trends & Forecast")
+    tf = data.get("trends_forecast") or []
+    if isinstance(tf, list) and tf:
+        for t in tf[:12]:
+            if isinstance(t, dict):
+                trend = t.get("trend") or ""
+                direction = t.get("direction") or ""
+                timeline = t.get("timeline") or ""
+                st.markdown(f"- **{trend}** {direction} ({timeline})")
+            elif t:
+                st.markdown(f"- {t}")
     else:
-        st.success(f"📊 Found {len(sources)} sources")
-
-        default_n = 10
-        cols = st.columns(2)
-
-        for i, src in enumerate(sources[:default_n], 1):
-            col = cols[(i - 1) % 2]
-            src_str = str(src)
-            short_url = (src_str[:60] + "...") if len(src_str) > 60 else src_str
-            reliability = classify_source_reliability(src_str) if "classify_source_reliability" in globals() else ""
-            col.markdown(
-                f"**{i}.** [{short_url}]({src_str})"
-                + (f"<br><small>{reliability}</small>" if reliability else ""),
-                unsafe_allow_html=True,
-            )
-
-        if len(sources) > default_n:
-            with st.expander(f"Show all sources ({len(sources)})"):
-                src_rows = []
-                for i, s in enumerate(sources, 1):
-                    s_str = str(s)
-                    src_rows.append(
-                        {
-                            "#": i,
-                            "Source": s_str,
-                            "Reliability": classify_source_reliability(s_str)
-                            if "classify_source_reliability" in globals()
-                            else "",
-                        }
-                    )
-                st.dataframe(pd.DataFrame(src_rows), hide_index=True, width="stretch")
+        st.info("No trends forecast available.")
 
     st.markdown("---")
 
     # -------------------------
-    # Evidence Quality Scores
+    # Sources / Web Context summary
     # -------------------------
-    if isinstance(veracity_scores, dict):
-        st.subheader("✅ Evidence Quality Scores")
-        cols = st.columns(5)
-        metrics_display = [
-            ("Sources", "source_quality"),
-            ("Numbers", "numeric_consistency"),
-            ("Citations", "citation_density"),
-            ("Consensus", "source_consensus"),
-            ("Overall", "overall"),
-        ]
-        for i, (label, key) in enumerate(metrics_display):
-            v = veracity_scores.get(key, 0) or 0
-            cols[i].metric(label, f"{float(v):.0f}%")
+    st.subheader("🔎 Sources & Evidence")
+    sources = data.get("sources") or data.get("web_sources") or []
+    if isinstance(sources, list) and sources:
+        with st.expander(f"Show sources ({len(sources)})"):
+            for s in sources[:50]:
+                if s:
+                    st.markdown(f"- {s}")
+            if len(sources) > 50:
+                st.markdown(f"... (+{len(sources)-50} more)")
 
-    # -------------------------
-    # Web Search Details
-    # -------------------------
-    if isinstance(web_context, dict) and web_context.get("search_results"):
-        with st.expander("🌐 Web Search Details"):
-            sr = web_context.get("search_results", []) or []
-            default_n = 8
+    # Web context debug counters if present
+    if isinstance(web_context, dict):
+        dbg = web_context.get("debug_counts") or {}
+        if isinstance(dbg, dict) and dbg:
+            with st.expander("Collector debug counts"):
+                st.json(dbg)
 
-            for i, result in enumerate(sr[:default_n], 1):
-                st.markdown(f"**{i}. {result.get('title', '')}**")
-                st.caption(f"{result.get('source', '')} - {result.get('date', '')}")
-                st.write(result.get("snippet", ""))
-                link = result.get("link")
-                if link:
-                    st.caption(f"[{link}]({link})")
-                st.markdown("---")
-
-            if len(sr) > default_n:
-                with st.expander(f"Show all web results ({len(sr)})"):
-                    sr_rows = []
-                    for i, r in enumerate(sr, 1):
-                        sr_rows.append(
-                            {
-                                "#": i,
-                                "Title": r.get("title", ""),
-                                "Source": r.get("source", ""),
-                                "Date": r.get("date", ""),
-                                "Snippet": r.get("snippet", ""),
-                                "Link": r.get("link", ""),
-                            }
-                        )
-                    st.dataframe(pd.DataFrame(sr_rows), hide_index=True, width="stretch")
+    # Source reliability badges (if provided)
+    if isinstance(source_reliability, list) and source_reliability:
+        with st.expander("Source reliability"):
+            for line in source_reliability[:80]:
+                st.write(line)
 
 
 
