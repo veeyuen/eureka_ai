@@ -9503,15 +9503,15 @@ def render_dashboard(
     # Helper: metric value formatting (currency + compact units)
     # -------------------------
     def _format_metric_value(m: Any) -> str:
-    """
-    Format metric values cleanly, with RANGE SUPPORT:
-    - If value_range exists (min/max), show min–max using the same currency/unit rules
-    - Otherwise show the point value as before
-    """
-    if not isinstance(m, dict):
-        if m is None:
-            return "N/A"
-        return str(m)
+        """
+        Format metric values cleanly, with RANGE SUPPORT:
+        - If value_range exists (min/max), show min–max using the same currency/unit rules
+        - Otherwise show the point value as before
+        """
+        if not isinstance(m, dict):
+            if m is None:
+                return "N/A"
+            return str(m)
 
     # -------------------------
     # Helper: format a single numeric endpoint (val+unit) using the same rules
