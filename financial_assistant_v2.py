@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.34
+# YUREEKA AI RESEARCH ASSISTANT v7.35
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -23,9 +23,7 @@
 # Guardrails For Main + Side Topic Handling
 # Numeric Consistency Scores
 # Multi-Side Enumerations
-# Show More Detail in Dashboard
 # Dashboard Unit Presentation Fixes (Main + Evolution)
-# More Precise Extractor
 # Domain-Agnostic Question Profiling
 # Baseline Caching Contains HTTP Validators + Numeric Data
 # URL canonicalization
@@ -41,6 +39,7 @@
 # Keeps your snapshot-friendly scraped_meta (with extracted numbers + fingerprint fields)
 # Safe fallback scraper when ScrapingDog is unavailable
 # Prevent caching “empty results” from SerpAPI (no poisoned cache)
+# Restoration of Range Estimates For Metrics
 # ================================================================================
 
 import io
@@ -6952,45 +6951,16 @@ def _fetch_via_scrapingdog(url: str, timeout: int = 25) -> str:
 
 
 def extract_numbers_from_text(text: str) -> List[Dict]:
-    """Extract all numbers with context from text"""
-    if not text:
+    """
+    Backward-compatible wrapper.
+
+    v7_34 tightening:
+    - Delegate to extract_numbers_with_context() so junk suppression is applied consistently.
+    """
+    try:
+        return extract_numbers_with_context(text or "", source_url="", max_results=600) or []
+    except Exception:
         return []
-
-    numbers = []
-
-    # Pattern: number with optional unit, capture surrounding context
-    pattern = r'(\$?\d+(?:\.\d+)?)\s*(trillion|billion|million|%|T|B|M)?'
-
-    for match in re.finditer(pattern, text, re.IGNORECASE):
-        value_str = match.group(1).replace('$', '')
-        unit = match.group(2) or ''
-
-        try:
-            value = float(value_str)
-        except:
-            continue
-
-        # Skip very small or very large unlikely values
-        if value == 0 or value > 1000000:
-            continue
-
-        # Get context (150 chars before and after)
-        start = max(0, match.start() - 150)
-        end = min(len(text), match.end() + 150)
-        context = text[start:end].lower()
-
-        # Normalize unit
-        unit_map = {'trillion': 'T', 't': 'T', 'billion': 'B', 'b': 'B', 'million': 'M', 'm': 'M', '%': '%'}
-        unit_norm = unit_map.get(unit.lower(), '') if unit else ''
-
-        numbers.append({
-            'value': value,
-            'unit': unit_norm,
-            'context': context,
-            'raw': f"{value_str}{unit}"
-        })
-
-    return numbers
 
 
 def _parse_iso_dt(ts: Optional[str]) -> Optional[datetime]:
@@ -7110,143 +7080,204 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     """
     Attach stable source snapshots (from web_context.scraped_meta) into analysis.
 
-    Tight but practical snapshot admission:
-      - VALID snapshot if:
-          * fingerprint exists AND
-          * clean text length >= MIN_TEXT_CHARS
-        (numbers may be 0; evolution can re-extract later)
-      - INVALID snapshot otherwise, stored separately for debugging.
-
-    Writes to:
-      - analysis["baseline_sources_cache"]  (top-level convenience for evolution)
-      - analysis["results"]["baseline_sources_cache"]
-      - analysis["results"]["baseline_sources_cache_invalid"]
+    Enhancements (v7_34 patch):
+    - Ensures scraped_meta.extracted_numbers is always list-like
+    - Adds RANGE capture per canonical metric using admitted snapshots:
+        primary_metrics_canonical[ckey]["value_range"] = {min,max,n,examples}
+      This restores earlier "range vs point estimate" behavior in a compatible way.
     """
     import re
     from datetime import datetime, timezone
 
-    MIN_TEXT_CHARS = 800
-    MAX_CONTEXT = 200
-
-    def _now():
+    def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def _safe_int(x, default=0):
-        try:
-            return int(x)
-        except Exception:
-            return default
-
-    def _fingerprint(text: str):
+    def _fingerprint(text: str) -> str:
         try:
             fn = globals().get("fingerprint_text")
             if callable(fn):
-                return fn(text or "")
+                return fn(text)
         except Exception:
             pass
         try:
-            return fingerprint_text(text or "")
+            import hashlib
+            t = re.sub(r"\s+", " ", (text or "").strip().lower())
+            return hashlib.md5(t.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        except Exception:
+            return ""
+
+    def _parse_num(value, unit_hint=""):
+        try:
+            fn = globals().get("parse_human_number")
+            if callable(fn):
+                return fn(str(value), unit_hint)
+        except Exception:
+            pass
+        # fallback
+        try:
+            s = str(value).strip().replace(",", "")
+            if not s:
+                return None
+            return float(re.findall(r"-?\d+(?:\.\d+)?", s)[0])
         except Exception:
             return None
 
-    def _is_homepage_like(url: str) -> bool:
-        u = (url or "").strip().lower()
-        if not u:
-            return True
-        # treat pure domains / root paths as homepage-like
-        if re.match(r"^https?://[^/]+/?$", u):
-            return True
-        return False
+    def _unit_family_from_metric(mdef: dict) -> str:
+        # prefer metric schema
+        uf = (mdef or {}).get("unit_family") or ""
+        uf = str(uf).lower().strip()
+        if uf in ("percent", "pct"):
+            return "PCT"
+        if uf in ("currency",):
+            return "CUR"
+        if uf in ("magnitude", "unit_sales", "other"):
+            return "MAG"
+        return "OTHER"
 
-    if not isinstance(analysis, dict):
-        return analysis
+    def _cand_unit_family(cunit: str, craw: str) -> str:
+        u = (cunit or "").strip()
+        r = (craw or "")
+        if u == "%":
+            return "PCT"
+        if any(x in r.upper() for x in ["$", "USD", "SGD", "EUR", "GBP", "S$"]) or any(x in (u.upper()) for x in ["USD", "SGD", "EUR", "GBP"]):
+            return "CUR"
+        if u in ("K", "M", "B", "T"):
+            return "MAG"
+        return "OTHER"
 
-    if not isinstance(web_context, dict):
-        return analysis
+    def _tokenize(s: str):
+        return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
 
-    scraped_meta = web_context.get("scraped_meta") or {}
-    if not isinstance(scraped_meta, dict) or not scraped_meta:
-        return analysis
+    # -----------------------------
+    # Build baseline_sources_cache from scraped_meta (snapshot-friendly)
+    # -----------------------------
+    baseline_sources_cache = []
+    scraped_meta = (web_context or {}).get("scraped_meta") or {}
+    if isinstance(scraped_meta, dict):
+        for url, meta in scraped_meta.items():
+            if not isinstance(meta, dict):
+                continue
+            nums = meta.get("extracted_numbers") or []
+            if nums is None or not isinstance(nums, list):
+                nums = []
 
-    results = analysis.get("results")
-    if not isinstance(results, dict):
-        results = {}
-        analysis["results"] = results
+            content = meta.get("content") or meta.get("clean_text") or (web_context.get("scraped_content", {}) or {}).get(url, "") or ""
 
-    snaps_valid = []
-    snaps_invalid = []
-
-    for url, meta in scraped_meta.items():
-        if not isinstance(meta, dict):
-            continue
-
-        u = (url or meta.get("url") or "").strip()
-        if not u:
-            continue
-
-        # homepage gating at snapshot layer (safety net)
-        if _is_homepage_like(u):
-            snaps_invalid.append({
-                "url": u,
-                "status": "failed",
-                "status_detail": "rejected_homepage_like",
-                "numbers_found": 0,
-                "fetched_at": _now(),
-                "fingerprint": None,
-                "extracted_numbers": [],
-                "clean_text_len": 0,
+            baseline_sources_cache.append({
+                "url": url,
+                "status": "fetched" if str(meta.get("status_detail", "")).startswith("success") or meta.get("status") == "fetched" else "failed",
+                "status_detail": meta.get("status_detail") or meta.get("status") or "",
+                "numbers_found": int(meta.get("numbers_found") or (len(nums) if isinstance(nums, list) else 0)),
+                "fetched_at": meta.get("fetched_at") or _now_iso(),
+                "fingerprint": meta.get("fingerprint") or _fingerprint(content),
+                "extracted_numbers": [
+                    {
+                        "value": n.get("value"),
+                        "unit": n.get("unit"),
+                        "raw": n.get("raw"),
+                        "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:240],
+                        "anchor_hash": n.get("anchor_hash"),
+                        "source_url": n.get("source_url") or url,
+                    }
+                    for n in nums
+                    if isinstance(n, dict)
+                ]
             })
-            continue
 
-        status_detail = meta.get("status_detail") or meta.get("status") or ""
-        content = meta.get("clean_text") or meta.get("content") or ""
-        content = content or ""
-        clean_len = len(content)
+    if baseline_sources_cache:
+        analysis["baseline_sources_cache"] = baseline_sources_cache
 
-        fp = meta.get("fingerprint") or _fingerprint(content)
+    # -----------------------------
+    # RANGE capture for canonical metrics
+    # -----------------------------
+    pmc = analysis.get("primary_response", {}).get("primary_metrics_canonical") if isinstance(analysis.get("primary_response"), dict) else analysis.get("primary_metrics_canonical")
+    schema = analysis.get("primary_response", {}).get("metric_schema_frozen") if isinstance(analysis.get("primary_response"), dict) else analysis.get("metric_schema_frozen")
 
-        nums = meta.get("extracted_numbers") or []
-        if not isinstance(nums, list):
-            nums = []
+    # Support both placements (your JSON seems to store these at top-level primary_response)
+    if pmc is None and isinstance(analysis.get("primary_response"), dict):
+        pmc = analysis["primary_response"].get("primary_metrics_canonical")
+    if schema is None and isinstance(analysis.get("primary_response"), dict):
+        schema = analysis["primary_response"].get("metric_schema_frozen")
 
-        snapshot = {
-            "url": u,
-            "status": "fetched" if str(status_detail).startswith("success") or (meta.get("status") == "fetched") else (meta.get("status") or "failed"),
-            "status_detail": status_detail,
-            "numbers_found": _safe_int(meta.get("numbers_found"), default=len(nums)),
-            "fetched_at": meta.get("fetched_at") or _now(),
-            "fingerprint": fp,
-            "content_type": meta.get("content_type") or "",
-            "clean_text_len": clean_len,
-            "extracted_numbers": [
-                {
-                    "value": n.get("value"),
-                    "unit": n.get("unit"),
-                    "raw": n.get("raw"),
-                    "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:MAX_CONTEXT],
-                }
-                for n in nums
-                if isinstance(n, dict)
-            ],
-        }
+    if isinstance(pmc, dict) and isinstance(schema, dict) and baseline_sources_cache:
+        # flatten candidates
+        all_cands = []
+        for sr in baseline_sources_cache:
+            for n in (sr.get("extracted_numbers") or []):
+                if isinstance(n, dict):
+                    all_cands.append(n)
 
-        # Admission rule: accept if we have meaningful text + fingerprint
-        if fp and clean_len >= MIN_TEXT_CHARS:
-            snaps_valid.append(snapshot)
-        else:
-            # keep reasoned invalid
-            reason = "failed:no_text" if clean_len == 0 else "failed:text_too_short_or_no_fingerprint"
-            snapshot["status"] = "failed"
-            snapshot["status_detail"] = snapshot.get("status_detail") or reason
-            snaps_invalid.append(snapshot)
+        for ckey, m in pmc.items():
+            if not isinstance(m, dict):
+                continue
+            mdef = schema.get(ckey) or {}
+            uf = _unit_family_from_metric(mdef)
+            keywords = mdef.get("keywords") or []
+            # keywords might include phrases; tokenize everything
+            kw_tokens = []
+            for k in (keywords or []):
+                kw_tokens.extend(_tokenize(str(k)))
 
-    if snaps_valid:
-        # Store in both places for backward compatibility
-        results["baseline_sources_cache"] = snaps_valid
-        analysis["baseline_sources_cache"] = snaps_valid
+            # also include the metric name tokens
+            kw_tokens.extend(_tokenize(m.get("name") or m.get("original_name") or ""))
 
-    if snaps_invalid:
-        results["baseline_sources_cache_invalid"] = snaps_invalid
+            kw_tokens = list(dict.fromkeys([t for t in kw_tokens if len(t) > 2]))[:40]
+
+            vals = []
+            examples = []
+
+            for cand in all_cands:
+                craw = str(cand.get("raw") or "")
+                cunit = str(cand.get("unit") or "")
+                ctx = str(cand.get("context_snippet") or cand.get("context") or "")
+
+                # family gate
+                cf = _cand_unit_family(cunit, craw)
+                if uf == "PCT" and cf != "PCT":
+                    continue
+                if uf == "CUR" and cf != "CUR":
+                    continue
+                # MAG: allow MAG/OTHER but avoid CUR/PCT
+                if uf == "MAG" and cf in ("CUR", "PCT"):
+                    continue
+
+                # token overlap gate (tight enough to avoid random “beryllium”)
+                c_tokens = set(_tokenize(ctx))
+                if kw_tokens:
+                    overlap = sum(1 for t in kw_tokens if t in c_tokens)
+                    if overlap < max(1, min(3, len(kw_tokens) // 8)):
+                        continue
+
+                v = _parse_num(cand.get("value"), cunit) or _parse_num(craw, cunit)
+                if v is None:
+                    continue
+
+                vals.append(float(v))
+                if len(examples) < 5:
+                    examples.append({
+                        "raw": craw[:32],
+                        "source_url": cand.get("source_url"),
+                        "context_snippet": ctx[:180]
+                    })
+
+            if len(vals) >= 2:
+                vmin = min(vals)
+                vmax = max(vals)
+                # Only add a range if it’s meaningfully different (avoid 0.1% noise)
+                if abs(vmax - vmin) > max(1e-9, abs(vmin) * 0.02):
+                    m["value_range"] = {
+                        "min": vmin,
+                        "max": vmax,
+                        "n": len(vals),
+                        "examples": examples,
+                        "method": "snapshot_candidates"
+                    }
+                    # optional display helper (won’t break anything if unused)
+                    try:
+                        unit_disp = m.get("unit") or ""
+                        m["value_range_display"] = f"{vmin:g}–{vmax:g} {unit_disp}".strip()
+                    except Exception:
+                        pass
 
     return analysis
 
@@ -8675,12 +8706,16 @@ def extract_context_keywords(metric_name: str) -> List[str]:
 
 def extract_numbers_with_context(text, source_url: str = "", max_results: int = 350):
     """
-    Extract numeric candidates with short context windows, aligned with analysis pipeline.
+    Extract numeric candidates with context windows (analysis-aligned, hardened).
 
-    Tightening changes (v7.29+):
-    - Drop standalone 4-digit years (e.g., "2024") when unit == "" and no currency token.
-      This prevents evolution from matching "years" as metric values.
-    - Keep existing junk filters and HTML visible-text cleaning behavior.
+    Fixes / tightening:
+    - ALWAYS returns a list (never None)  ✅ critical for snapshots & evolution
+    - Strips HTML tags/scripts/styles if HTML-like
+    - Nav/chrome/junk rejection (analytics, cookie banners, menus, footers, etc.)
+    - Suppress year-only candidates (e.g., "2024") unless clearly a metric
+    - Suppress ID-like long integers, phone-like patterns, DOI/ISBN-like contexts
+    - Captures currency + scale + percent + common magnitude suffixes
+    - Adds anchor_hash for stable matching
     """
     import re
     import hashlib
@@ -8688,148 +8723,175 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     if not text or not str(text).strip():
         return []
 
+    raw = str(text)
+
+    # ---------- helpers ----------
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
-    def _preclean(s: str) -> str:
-        s = (s or "").replace("\x00", " ")
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
+    def _normalize_unit(u: str) -> str:
+        u = (u or "").strip()
+        ul = u.lower()
+        if ul in ("bn", "billion"):
+            return "B"
+        if ul in ("mn", "mio", "million"):
+            return "M"
+        if ul in ("k", "thousand", "000"):
+            return "K"
+        if ul in ("trillion", "tn"):
+            return "T"
+        if ul in ("pct", "percent"):
+            return "%"
+        return u
 
-    def _clean_html_to_visible_text(html: str) -> str:
-        # Prefer your global helper if available
-        try:
-            fn = globals().get("clean_html_to_visible_text")
-            if callable(fn):
-                return fn(html)
-        except Exception:
-            pass
+    def _looks_html(s: str) -> bool:
+        sl = s.lower()
+        return ("<html" in sl) or ("<div" in sl) or ("<p" in sl) or ("<script" in sl) or ("</" in sl)
 
-        # Local fallback: remove script/style + strip tags
+    def _html_to_text(s: str) -> str:
+        # Prefer BeautifulSoup if available
         try:
             from bs4 import BeautifulSoup  # type: ignore
-            soup = BeautifulSoup(html, "html.parser")
-            for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "header", "footer", "nav"]):
-                tag.decompose()
+            soup = BeautifulSoup(s, "html.parser")
+            for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "header", "footer", "nav", "form"]):
+                try:
+                    tag.decompose()
+                except Exception:
+                    pass
             txt = soup.get_text(separator=" ", strip=True)
-            return _preclean(txt)
+            txt = re.sub(r"\s+", " ", txt).strip()
+            return txt
         except Exception:
-            s = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\\1>", " ", html)
-            s = re.sub(r"(?is)<[^>]+>", " ", s)
-            return _preclean(s)
+            # fallback: cheap strip
+            s2 = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", s)
+            s2 = re.sub(r"(?is)<[^>]+>", " ", s2)
+            s2 = re.sub(r"\s+", " ", s2).strip()
+            return s2
 
-    # If bytes leaked in, decode best-effort
-    if isinstance(text, (bytes, bytearray)):
-        try:
-            text = text.decode("utf-8", errors="ignore")
-        except Exception:
-            text = str(text)
+    def _is_phone_like(ctx: str, rawnum: str) -> bool:
+        # strict phone pattern or phone keywords nearby
+        if re.search(r"\b\d{3}-\d{3}-\d{4}\b", rawnum):
+            return True
+        c = (ctx or "").lower()
+        if any(k in c for k in ["call", "phone", "tel:", "telephone", "contact us", "whatsapp"]):
+            if re.search(r"\b\d{7,}\b", rawnum):
+                return True
+        return False
 
-    raw = text or ""
-    looks_like_html = ("<html" in raw.lower()) or ("</" in raw and "<" in raw)
+    def _is_id_like(val_str: str, ctx: str) -> bool:
+        # very long digit strings typically IDs, unless explicitly monetary with symbols
+        digits = re.sub(r"\D", "", val_str or "")
+        if len(digits) >= 13:
+            c = (ctx or "").lower()
+            if any(k in c for k in ["isbn", "doi", "issn", "arxiv", "repec", "id:", "order", "invoice", "reference"]):
+                return True
+            # generic ID-like (too many digits)
+            return True
+        return False
 
-    if looks_like_html:
-        raw = _clean_html_to_visible_text(raw)
+    def _chrome_junk(ctx: str) -> bool:
+        c = (ctx or "").lower()
+        # common site chrome / analytics / cookie / nav junk
+        bad = [
+            "googleanalyticsobject", "gtag(", "googletagmanager", "analytics", "doubleclick",
+            "cookie", "consent", "privacy", "terms", "copyright", "all rights reserved",
+            "subscribe", "newsletter", "sign in", "login", "menu", "search", "breadcrumb",
+            "share this", "follow us", "social media", "footer", "header", "nav", "sitemap"
+        ]
+        if any(b in c for b in bad):
+            return True
+        # css/js-like
+        if any(b in c for b in ["function(", "var ", "const ", "let ", "webpack", "sourcemappingurl", ".css", "{", "};"]):
+            return True
+        # low alpha ratio
+        if len(c) > 80:
+            letters = sum(ch.isalpha() for ch in c)
+            if letters / max(1, len(c)) < 0.18:
+                return True
+        return False
 
-    raw = _preclean(raw)
+    def _year_only_suppression(num: float, unit: str, rawnum: str, ctx: str) -> bool:
+        # suppress standalone 4-digit years like 2024 with no unit/currency
+        if unit:
+            return False
+        s = (rawnum or "").strip()
+        if re.fullmatch(r"\d{4}", s):
+            year = int(s)
+            if 1900 <= year <= 2099:
+                c = (ctx or "").lower()
+                # allow if context clearly indicates metric like "CAGR 2024" etc
+                allow_kw = ["cagr", "growth", "inflation", "gdp", "revenue", "market", "sales", "shipments", "capacity"]
+                if not any(k in c for k in allow_kw):
+                    return True
+        return False
 
-    # Candidate patterns:
-    # - optional currency token
-    # - number (with commas)
-    # - optional scale or percent
-    # Avoid matching inside long alphanumeric strings.
-    num_pat = re.compile(
-        r"(?<![A-Za-z0-9_])"
+    # ---------- normalize to visible text ----------
+    if _looks_html(raw):
+        raw = _html_to_text(raw)
+
+    # cap huge pages
+    raw = raw[:250_000]
+
+    # ---------- extraction pattern ----------
+    # currency token (optional) + number + optional scale/%/words
+    pat = re.compile(
         r"(S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
         r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*"
-        r"(T|B|M|K|bn|billion|mn|million|%)?"
-        r"(?![A-Za-z0-9_])",
+        r"(T|B|M|K|trillion|billion|million|bn|mn|%|percent)?",
         flags=re.I
     )
 
     out = []
-    for m in num_pat.finditer(raw):
+    for m in pat.finditer(raw):
         cur = (m.group(1) or "").strip()
         num_s = (m.group(2) or "").strip()
-        suf = (m.group(3) or "").strip()
+        unit_s = (m.group(3) or "").strip()
 
         if not num_s:
             continue
 
-        # Normalize unit
-        unit = ""
-        suf_l = suf.lower()
-        if suf_l in ("bn", "billion"):
-            unit = "B"
-        elif suf_l in ("mn", "million"):
-            unit = "M"
-        elif suf in ("T", "B", "M", "K", "%"):
-            unit = suf.upper()
-        else:
-            unit = ""
+        # context window
+        start = max(0, m.start() - 160)
+        end = min(len(raw), m.end() + 160)
+        ctx = raw[start:end].replace("\n", " ")
+        ctx = re.sub(r"\s+", " ", ctx).strip()
+        ctx_store = ctx[:240]
 
-        # Parse numeric value
+        # numeric parse
         try:
-            value = float(num_s.replace(",", ""))
+            val = float(num_s.replace(",", ""))
         except Exception:
             continue
 
-        # Context window
-        start = max(0, m.start() - 110)
-        end = min(len(raw), m.end() + 110)
-        ctx = raw[start:end].strip()
+        unit = _normalize_unit(unit_s)
 
-        # ---------------------------------------------------------
-        # TIGHTENING: Drop standalone 4-digit year-only candidates.
-        # Conditions:
-        #   - no unit (""), no currency token, raw token is exactly 4 digits
-        #   - value in a sane "year" range
-        # ---------------------------------------------------------
-        # NOTE: This intentionally still allows:
-        #   - "$2024" (currency present)
-        #   - "2024%" or "2024B" (unit present)
-        # ---------------------------------------------------------
-        if unit == "" and not cur and re.fullmatch(r"\d{4}", num_s):
-            try:
-                y = int(num_s)
-                if 1900 <= y <= 2100:
-                    continue
-            except Exception:
-                pass
+        # raw display
+        raw_disp = f"{cur} {num_s}{unit_s}".strip()
+        raw_num_only = (cur + num_s).strip()
 
-        # Drop obvious “layout/asset junk” % values:
-        if "resize=" in ctx.lower() or "srcset" in ctx.lower() or "/wp-content/" in ctx.lower():
+        # hard rejections
+        if _chrome_junk(ctx_store):
+            continue
+        if _is_phone_like(ctx_store, raw_disp):
+            continue
+        if _is_id_like(raw_disp, ctx_store):
+            continue
+        if _year_only_suppression(val, unit, num_s, ctx_store):
             continue
 
-        # Drop 0T / 0B / 0M etc (almost always junk artifacts)
-        if unit in ("T", "B", "M", "K") and abs(value) == 0.0:
-            continue
-
-        # Drop extremely tiny “SVG-ish” decimals near commands (if any leaked)
-        if re.search(r"(?:^|[^a-z0-9])[a-z]\d", ctx.lower()):
-            continue
-
-        # Final junk context filter
-        try:
-            if "is_likely_junk_context" in globals() and callable(globals()["is_likely_junk_context"]):
-                if is_likely_junk_context(ctx):
-                    continue
-        except Exception:
-            pass
-
-        raw_disp = (cur + " " + num_s + (unit or "")).strip()
-        anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx[:180]}")
+        anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx_store}")
 
         out.append({
-            "value": value,
+            "value": val,
             "unit": unit,
             "raw": raw_disp,
-            "context": ctx[:180],
-            "anchor_hash": anchor_hash,
             "source_url": source_url,
+            "context": ctx_store,
+            "context_snippet": ctx_store,
+            "anchor_hash": anchor_hash,
         })
 
-        if len(out) >= max_results:
+        if len(out) >= int(max_results or 350):
             break
 
     return out
@@ -9441,91 +9503,110 @@ def render_dashboard(
     # Helper: metric value formatting (currency + compact units)
     # -------------------------
     def _format_metric_value(m: Any) -> str:
-        """
-        Format metric values cleanly:
-        - Currency before number: S$29.8B, $204.7B
-        - Compact units (B, M, K) with no awkward spacing
-        - Percent as 12.3%
-        - Fallbacks safely when input isn't numeric
-        """
-        if not isinstance(m, dict):
-            # Allow passing raw primitives sometimes
-            if m is None:
-                return "N/A"
-            return str(m)
-
-        val = m.get("value")
-        unit = (m.get("unit") or "").strip()
-
-        if val is None or val == "":
+    """
+    Format metric values cleanly, with RANGE SUPPORT:
+    - If value_range exists (min/max), show min–max using the same currency/unit rules
+    - Otherwise show the point value as before
+    """
+    if not isinstance(m, dict):
+        if m is None:
             return "N/A"
+        return str(m)
 
-        # Normalize numeric
-        raw_val = str(val).strip()
-        try:
-            num = float(raw_val.replace(",", ""))
-        except Exception:
-            # If we can't parse as float, just glue value+unit neatly
-            if unit:
-                # If unit already includes currency prefix like "S$B", avoid space
-                return f"{raw_val}{unit}".strip()
-            return raw_val
+    # -------------------------
+    # Helper: format a single numeric endpoint (val+unit) using the same rules
+    # -------------------------
+        def _format_point(val: Any, unit: str) -> str:
+            if val is None or val == "":
+                return "N/A"
 
-        # Normalize unit spacing
-        unit = unit.replace(" ", "")
+            unit = (unit or "").strip()
+            raw_val = str(val).strip()
 
-        # ---- Currency handling ----
-        currency_prefix = ""
-        u_upper = unit.upper()
+            try:
+                num = float(raw_val.replace(",", ""))
+            except Exception:
+                # If we can't parse as float, just glue value+unit neatly
+                if unit:
+                    return f"{raw_val}{unit}".strip()
+                return raw_val
 
-        # Common patterns we’ve seen in your outputs: "S$B", "S$M", "SGD B", "USD B", "$B"
-        if u_upper.startswith("S$"):
-            currency_prefix = "S$"
-            unit = unit[2:]  # remove S$
-        elif u_upper.startswith("SGD"):
-            currency_prefix = "S$"
-            unit = unit[3:]  # remove SGD
-        elif u_upper.startswith("USD"):
-            currency_prefix = "$"
-            unit = unit[3:]  # remove USD
-        elif u_upper.startswith("$"):
-            currency_prefix = "$"
-            unit = unit[1:]  # remove $
+            unit = unit.replace(" ", "")
+            currency_prefix = ""
+            u_upper = unit.upper()
 
-        unit = unit.strip()
+            if u_upper.startswith("S$"):
+                currency_prefix = "S$"
+                unit = unit[2:]
+            elif u_upper.startswith("SGD"):
+                currency_prefix = "S$"
+                unit = unit[3:]
+            elif u_upper.startswith("USD"):
+                currency_prefix = "$"
+                unit = unit[3:]
+            elif u_upper.startswith("$"):
+                currency_prefix = "$"
+                unit = unit[1:]
 
-        # ---- Percent ----
-        if unit == "%":
-            return f"{num:.1f}%"
+            unit = unit.strip()
 
-        # ---- Compact units ----
-        unit_upper = unit.upper()
-        if unit_upper in ("B", "BILLION"):
-            formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "B"
-            return f"{currency_prefix}{formatted}".strip()
-        if unit_upper in ("M", "MILLION"):
-            formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "M"
-            return f"{currency_prefix}{formatted}".strip()
-        if unit_upper in ("K", "THOUSAND"):
-            formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "K"
-            return f"{currency_prefix}{formatted}".strip()
+            if unit == "%":
+                return f"{num:.1f}%"
 
-        # Plain number formatting
-        if abs(num) >= 1000:
-            # If it’s essentially an integer, show commas nicely
-            if float(num).is_integer():
-                formatted = f"{int(num):,}"
+            unit_upper = unit.upper()
+            if unit_upper in ("B", "BILLION"):
+                formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "B"
+                return f"{currency_prefix}{formatted}".strip()
+            if unit_upper in ("M", "MILLION"):
+                formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "M"
+                return f"{currency_prefix}{formatted}".strip()
+            if unit_upper in ("K", "THOUSAND"):
+                formatted = f"{num:.2f}".rstrip("0").rstrip(".") + "K"
+                return f"{currency_prefix}{formatted}".strip()
+
+            if abs(num) >= 1000:
+                if float(num).is_integer():
+                    formatted = f"{int(num):,}"
+                else:
+                    formatted = f"{num:,.2f}".rstrip("0").rstrip(".")
             else:
-                formatted = f"{num:,.2f}".rstrip("0").rstrip(".")
-        else:
-            formatted = f"{num:g}"
+                formatted = f"{num:g}"
 
-        # Unit glue
-        if unit:
-            # If unit is something like "yrs" or "points", keep a space
-            formatted = f"{formatted} {unit}".strip()
+            if unit:
+                formatted = f"{formatted} {unit}".strip()
 
-        return f"{currency_prefix}{formatted}".strip()
+            return f"{currency_prefix}{formatted}".strip()
+
+    # -------------------------
+    # RANGE: prefer value_range if present and meaningful
+    # -------------------------
+    vr = m.get("value_range")
+    if isinstance(vr, dict):
+        vmin = vr.get("min")
+        vmax = vr.get("max")
+        if vmin is not None and vmax is not None:
+            unit = (m.get("unit") or "").strip()
+            left = _format_point(vmin, unit)
+            right = _format_point(vmax, unit)
+            if left != "N/A" and right != "N/A" and left != right:
+                return f"{left}–{right}"
+
+    # If someone precomputed a display string, use it (but still try to add currency formatting if possible)
+    vr_disp = m.get("value_range_display")
+    if isinstance(vr_disp, str) and vr_disp.strip():
+        # Keep as-is (it’s a safe fallback)
+        return vr_disp.strip()
+
+    # -------------------------
+    # POINT VALUE (existing behavior)
+    # -------------------------
+    val = m.get("value")
+    unit = (m.get("unit") or "").strip()
+
+    if val is None or val == "":
+        return "N/A"
+
+    return _format_point(val, unit)
 
     # -------------------------
     # Header + confidence row
