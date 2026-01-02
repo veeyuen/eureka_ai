@@ -376,7 +376,7 @@ def add_to_history(analysis: dict) -> bool:
                     ctx = (n.get("context_snippet") or n.get("context") or "").strip()
                     val = n.get("value")
                     unit = n.get("unit")
-                    anchor_hash = _sha1(f"{url}|{raw}|{ctx[:220]}")
+                    anchor_hash = n.get("anchor_hash") or _sha1(f"{url}|{raw}|{ctx[:220]}")
                     clean_nums.append(
                         {
                             "value": val,
@@ -384,6 +384,12 @@ def add_to_history(analysis: dict) -> bool:
                             "raw": raw,
                             "context_snippet": ctx[:220],
                             "anchor_hash": anchor_hash,
+                            # ---- ADDITIVE: preserve stable identity and offsets for deterministic anchoring ----
+                            "extracted_number_id": n.get("extracted_number_id"),
+                            "source_url": n.get("source_url") or url,
+                            "start_idx": n.get("start_idx"),
+                            "end_idx": n.get("end_idx"),
+                            # ------------------------------------------------------------------------------
                         }
                     )
 
@@ -395,134 +401,165 @@ def add_to_history(analysis: dict) -> bool:
                     "numbers": clean_nums,
                 }
             )
+
+        # ---- ADDITIVE: stable ordering of evidence records (Change #2 / 3A) ----
+        records = sort_evidence_records(records)
+        # -----------------------------------------------------------------------
         return records
 
 
     def _build_metric_anchors(primary_metrics: Any, evidence_records: List[Dict]) -> List[Dict]:
         """
         For each baseline metric, pick the best matching evidence number and store anchor.
-        This is baseline-time anchoring: metric -> (source_url, anchor_hash, snippet).
+        Deterministic: unit-family gating + stable tie-breakers.
         """
         anchors: List[Dict] = []
         if not isinstance(primary_metrics, dict):
             return anchors
 
-        # Flatten evidence numbers
-        all_nums: List[Dict] = []
-        for rec in (evidence_records or []):
-            if not isinstance(rec, dict):
+    def _is_number(x: Any) -> bool:
+        try:
+            float(x)
+            return True
+        except Exception:
+            return False
+
+    def _safe_float(x: Any) -> float:
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+
+    # Flatten all evidence candidates
+    all_nums: List[Dict] = []
+    for rec in (evidence_records or []):
+        if not isinstance(rec, dict):
+            continue
+        url = rec.get("url") or ""
+        fp = rec.get("fingerprint")
+        for n in rec.get("numbers", []) or []:
+            if not isinstance(n, dict):
                 continue
-            url = rec.get("url") or ""
-            fp = rec.get("fingerprint")
-            for n in rec.get("numbers", []) or []:
-                if not isinstance(n, dict):
-                    continue
-                all_nums.append(
-                    {
-                        "source_url": url,
-                        "fingerprint": fp,
-                        "value": n.get("value"),
-                        "unit": (n.get("unit") or "").strip(),
-                        "raw": n.get("raw") or "",
-                        "context_snippet": n.get("context_snippet") or "",
-                        "anchor_hash": n.get("anchor_hash"),
-                        # Optional but useful deterministic tiebreakers if present:
-                        "start_idx": n.get("start_idx"),
-                        "end_idx": n.get("end_idx"),
-                    }
-                )
+            all_nums.append({
+                "source_url": url,
+                "fingerprint": fp,
+                "value": n.get("value"),
+                "unit": (n.get("unit") or "").strip(),
+                "raw": n.get("raw") or "",
+                "context_snippet": n.get("context_snippet") or "",
+                "anchor_hash": n.get("anchor_hash"),
+                "start_idx": n.get("start_idx"),
+                "end_idx": n.get("end_idx"),
+                "extracted_number_id": n.get("extracted_number_id"),
+            })
 
-        for mid, m in primary_metrics.items():
-            if not isinstance(m, dict):
+    compat_v2 = globals().get("_compatible_units_v2")
+    compat_legacy = globals().get("_compatible_units")
+    compat_ccy = globals().get("_compatible_currency")
+
+    for mid, m in primary_metrics.items():
+        if not isinstance(m, dict):
+            continue
+
+        mname = m.get("name") or str(mid)
+        mval = m.get("value")
+        munit = (m.get("unit") or "").strip()
+        prev_raw = m.get("raw") or _format_prev_raw(mval, munit)
+
+        tokens = _metric_tokens(mname)
+
+        best = None
+        best_key = None
+        best_score = -1.0
+
+        for cand in all_nums:
+            cctx = cand.get("context_snippet") or ""
+            craw = cand.get("raw") or ""
+            cunit = (cand.get("unit") or "").strip()
+
+            # 1) unit-family compatibility (v2 preferred)
+            ok = True
+            try:
+                if callable(compat_v2):
+                    ok = bool(compat_v2(munit, cunit, prev_raw, craw, cctx))
+                elif callable(compat_legacy):
+                    ok = bool(compat_legacy(munit, cunit, prev_raw, craw, cctx))
+            except Exception:
+                ok = True
+            if not ok:
                 continue
 
-            mname = m.get("name") or str(mid)
-            mval = m.get("value")
-            munit = (m.get("unit") or "").strip()
-            prev_unit = munit
-            prev_raw = m.get("raw") or _format_prev_raw(mval, munit)
-
-            tokens = _metric_tokens(mname)
-
-            best = None
-            best_key = None  # deterministic composite key
-            best_score = -1.0
-
-            for cand in all_nums:
-                cctx = cand.get("context_snippet") or ""
-                craw = cand.get("raw") or ""
-                cunit = (cand.get("unit") or "").strip()
-
-                # ✅ unit-family compatibility gate (v2)
-                if not _compatible_units_v2(prev_unit, cunit, prev_raw, craw, cctx):
+            # 2) preserve any existing currency compatibility filter
+            try:
+                if callable(compat_ccy) and not compat_ccy(prev_raw, craw, cctx):
                     continue
+            except Exception:
+                pass
 
-                s_ctx = _ctx_score(tokens, cctx)
+            s_ctx = _ctx_score(tokens, cctx)
 
-                bonus = 0.0
+            bonus = 0.0
+            try:
                 if _looks_like_currency(prev_raw) and _looks_like_currency(craw):
                     bonus += 0.05
+            except Exception:
+                pass
 
-                score = s_ctx + bonus
+            score = float(s_ctx + bonus)
 
-                # Deterministic tie-breakers: higher score wins; then prefer same-unit; then stable ordering
-                same_unit = 1 if (normalize_unit(prev_unit) and normalize_unit(prev_unit) == normalize_unit(cunit)) else 0
-                # Use url + indices + raw as stable fallback
-                tie_url = cand.get("source_url") or ""
-                tie_start = cand.get("start_idx")
-                tie_end = cand.get("end_idx")
-                tie_raw = craw
+            same_unit = 1 if (normalize_unit(munit) and normalize_unit(munit) == normalize_unit(cunit)) else 0
 
-                key = (
-                    float(score),
-                    int(same_unit),
-                    -abs(_safe_float(mval) - _safe_float(cand.get("value"))) if _is_number(mval) and _is_number(cand.get("value")) else float("-inf"),
-                    tie_url,
-                    tie_start if isinstance(tie_start, int) else 10**18,
-                    tie_end if isinstance(tie_end, int) else 10**18,
-                    tie_raw,
-                )
+            abs_delta = None
+            if _is_number(mval) and _is_number(cand.get("value")):
+                abs_delta = abs(_safe_float(mval) - _safe_float(cand.get("value")))
 
-                # Compare keys lexicographically (best is max)
-                if (best_key is None) or (key > best_key):
-                    best_key = key
-                    best_score = float(score)
-                    best = cand
+            # Stable tie-breaker tuple (most important first)
+            key = (
+                score,                               # highest wins
+                same_unit,                            # prefer exact unit matches
+                -(abs_delta if isinstance(abs_delta, (int, float)) else 1e18),  # closer numeric wins
+                str(cand.get("source_url") or ""),    # stable
+                cand.get("start_idx") if isinstance(cand.get("start_idx"), int) else 10**18,
+                cand.get("end_idx") if isinstance(cand.get("end_idx"), int) else 10**18,
+                str(cand.get("extracted_number_id") or ""),  # stable if present
+                str(craw),
+            )
 
-            if best and best_score >= 0.20:
-                anchors.append(
-                    {
-                        "metric_id": str(mid),
-                        "metric_name": mname,
-                        "baseline_raw": prev_raw,
-                        "source_url": best.get("source_url"),
-                        "fingerprint": best.get("fingerprint"),
-                        "anchor_hash": best.get("anchor_hash"),
-                        "matched_raw": best.get("raw"),
-                        "matched_value": best.get("value"),
-                        "matched_unit": best.get("unit"),
-                        "context_snippet": best.get("context_snippet"),
-                        "anchor_confidence": float(min(100.0, best_score * 100.0)),
-                    }
-                )
-            else:
-                anchors.append(
-                    {
-                        "metric_id": str(mid),
-                        "metric_name": mname,
-                        "baseline_raw": prev_raw,
-                        "source_url": None,
-                        "fingerprint": None,
-                        "anchor_hash": None,
-                        "matched_raw": None,
-                        "matched_value": None,
-                        "matched_unit": None,
-                        "context_snippet": None,
-                        "anchor_confidence": 0.0,
-                    }
-                )
+            if best_key is None or key > best_key:
+                best_key = key
+                best_score = score
+                best = cand
 
-        return anchors
+        if best and best_score >= 0.20:
+            anchors.append({
+                "metric_id": str(mid),
+                "metric_name": mname,
+                "baseline_raw": prev_raw,
+                "source_url": best.get("source_url"),
+                "fingerprint": best.get("fingerprint"),
+                "anchor_hash": best.get("anchor_hash"),
+                "matched_raw": best.get("raw"),
+                "matched_value": best.get("value"),
+                "matched_unit": best.get("unit"),
+                "context_snippet": best.get("context_snippet"),
+                "anchor_confidence": float(min(100.0, best_score * 100.0)),
+            })
+        else:
+            anchors.append({
+                "metric_id": str(mid),
+                "metric_name": mname,
+                "baseline_raw": prev_raw,
+                "source_url": None,
+                "fingerprint": None,
+                "anchor_hash": None,
+                "matched_raw": None,
+                "matched_value": None,
+                "matched_unit": None,
+                "context_snippet": None,
+                "anchor_confidence": 0.0,
+            })
+
+    return anchors
 
 
     # --- Additive helpers used above (safe, small) ---
@@ -646,7 +683,17 @@ def add_to_history(analysis: dict) -> bool:
 
             if isinstance(baseline_cache, list) and baseline_cache:
                 evidence_records = _build_evidence_records_from_baseline_cache(baseline_cache)
+
+
+                # ---- ADDITIVE: stable ordering of evidence records (Change #2 / boundary seal) ----
+                evidence_records = sort_evidence_records(evidence_records)
+                # ---------------------------------------------------------------------------------
+
                 metric_anchors = _build_metric_anchors(primary_metrics, evidence_records)
+
+                # ---- ADDITIVE: stable ordering of metric anchors (Change #2 / 3B) ----
+                metric_anchors = sort_metric_anchors(metric_anchors)
+                # --------------------------------------------------------------------
 
                 analysis["evidence_layer_version"] = 1
                 analysis["evidence_records"] = evidence_records
@@ -666,6 +713,13 @@ def add_to_history(analysis: dict) -> bool:
         if "analysis_history" not in st.session_state:
             st.session_state.analysis_history = []
         st.session_state.analysis_history.append(analysis)
+
+        # ---- ADDITIVE: persist last analysis for snapshot reuse (Change #3 wiring) ----
+        try:
+            st.session_state["last_analysis"] = analysis
+        except Exception:
+            pass
+        # ---------------------------------------------------------------------------
         return False
 
     try:
@@ -687,12 +741,27 @@ def add_to_history(analysis: dict) -> bool:
             payload_json,
         ]
         sheet.append_row(row, value_input_option="RAW")
+
+        # ---- ADDITIVE: persist last analysis for snapshot reuse (Change #3 wiring) ----
+        try:
+            st.session_state["last_analysis"] = analysis
+        except Exception:
+            pass
+        # ---------------------------------------------------------------------------
+
         return True
     except Exception as e:
         st.warning(f"⚠️ Failed to save to Google Sheets: {e}")
         if "analysis_history" not in st.session_state:
             st.session_state.analysis_history = []
         st.session_state.analysis_history.append(analysis)
+
+        # ---- ADDITIVE: persist last analysis for snapshot reuse (Change #3 wiring) ----
+        try:
+            st.session_state["last_analysis"] = analysis
+        except Exception:
+            pass
+        # ---------------------------------------------------------------------------
         return False
 
 
@@ -1968,7 +2037,9 @@ def fetch_web_context(
     *,
     fallback_mode: bool = False,
     fallback_urls: list = None,
+    existing_snapshots: Any = None,   # <-- ADDITIVE
 ) -> dict:
+
     """
     Web context collector used by BOTH analysis + evolution.
 
@@ -2006,6 +2077,7 @@ def fetch_web_context(
             return "https://" + t
         return ""
 
+
     out = {
         "query": query,
         "sources": [],        # ✅ legacy key many downstream blocks expect
@@ -2019,6 +2091,19 @@ def fetch_web_context(
         "fetched_at": _now_iso(),
         "debug_counts": {},   # ✅ telemetry for dashboard + JSON debugging
     }
+
+    # ---- ADDITIVE: snapshot reuse lookup (Change #3) ----
+    snap_lookup = {}
+    if isinstance(existing_snapshots, dict):
+        snap_lookup = existing_snapshots
+    elif isinstance(existing_snapshots, list):
+        for s in existing_snapshots:
+            if isinstance(s, dict) and s.get("url"):
+                snap_lookup[str(s.get("url")).strip()] = s
+
+    extractor_fp = get_extractor_fingerprint()
+    # ----------------------------------------------------
+
 
     q = (query or "").strip()
     if not q:
@@ -2195,6 +2280,34 @@ def fetch_web_context(
                 except Exception:
                     meta["fingerprint"] = None
 
+                # ---- ADDITIVE: reuse extracted_numbers when unchanged (Change #3) ----
+                meta["extractor_fingerprint"] = extractor_fp
+                prev = snap_lookup.get(url) if isinstance(snap_lookup, dict) else None
+                if isinstance(prev, dict):
+                    if prev.get("fingerprint") == meta.get("fingerprint") and prev.get("extractor_fingerprint") == extractor_fp:
+                        prev_nums = prev.get("extracted_numbers")
+                        if isinstance(prev_nums, list) and prev_nums:
+                            meta["extracted_numbers"] = prev_nums
+                            meta["numbers_found"] = len(prev_nums)
+                            meta["reused_snapshot"] = True
+
+                            out["scraped_meta"][url] = meta
+                            out["scraped_content"][url] = cleaned
+
+                            scraped_ok_text += 1
+                            if meta["numbers_found"] > 0:
+                                scraped_ok_numbers += 1
+
+                            if progress:
+                                try:
+                                    progress.progress((i + 1) / max(1, len(admitted)))
+                                except Exception:
+                                    pass
+
+                            continue
+                meta["reused_snapshot"] = False
+                # ---------------------------------------------------------------
+
                 # numeric extraction (analysis-aligned if fn exists)
                 nums = []
                 try:
@@ -2206,6 +2319,21 @@ def fetch_web_context(
                 if isinstance(nums, list):
                     meta["extracted_numbers"] = nums
                     meta["numbers_found"] = len(nums)
+
+                    # ---- ADDITIVE: stable IDs + ordering (Change #2 / Part 1) ----
+                    urlv = meta.get("url") or url
+                    fpv = meta.get("fingerprint") or ""
+
+                    for n in (meta["extracted_numbers"] or []):
+                        if isinstance(n, dict):
+                            if "extracted_number_id" not in n:
+                                n["extracted_number_id"] = make_extracted_number_id(urlv, fpv, n)
+                            if not n.get("source_url"):
+                                n["source_url"] = urlv
+
+                    meta["extracted_numbers"] = sort_snapshot_numbers(meta["extracted_numbers"])
+                    meta["numbers_found"] = len(meta["extracted_numbers"])
+                    # --------------------------------------------------------------
 
                 out["scraped_meta"][url] = meta
                 out["scraped_content"][url] = cleaned
@@ -2256,6 +2384,7 @@ def fetch_web_context(
         out["status_detail"] = "ok"
 
     return out
+
 
 
 def fingerprint_text(text: str) -> str:
@@ -4401,6 +4530,46 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
 # =========================================================
 # RANGE + SOURCE ATTRIBUTION (DETERMINISTIC, NO LLM)
 # =========================================================
+
+def stable_json_hash(obj: Any) -> str:
+    import hashlib, json
+    try:
+        s = json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        s = str(obj)
+    return hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()
+
+def make_extracted_number_id(source_url: str, fingerprint: str, n: Dict) -> str:
+    payload = {
+        "url": source_url or "",
+        "fp": fingerprint or "",
+        "start": n.get("start_idx"),
+        "end": n.get("end_idx"),
+        "value": n.get("value"),
+        "unit": normalize_unit(n.get("unit") or ""),
+        "raw": n.get("raw") or "",
+        "ctx": " ".join((n.get("context_snippet") or "").split())[:240],
+    }
+    return stable_json_hash(payload)
+
+def sort_snapshot_numbers(numbers: List[Dict]) -> List[Dict]:
+    def k(n: Dict):
+        return (
+            n.get("start_idx") if isinstance(n.get("start_idx"), int) else 10**18,
+            n.get("end_idx") if isinstance(n.get("end_idx"), int) else 10**18,
+            str(normalize_unit(n.get("unit") or "")),
+            str(n.get("value")),
+            str(n.get("raw") or ""),
+            str(n.get("anchor_hash") or ""),
+        )
+    return sorted((numbers or []), key=k)
+
+def sort_evidence_records(records: List[Dict]) -> List[Dict]:
+    return sorted((records or []), key=lambda r: (str((r or {}).get("url") or ""), str((r or {}).get("fingerprint") or "")))
+
+def sort_metric_anchors(anchors: List[Dict]) -> List[Dict]:
+    return sorted((anchors or []), key=lambda a: (str((a or {}).get("metric_id") or ""), str((a or {}).get("metric_name") or ""), str((a or {}).get("source_url") or "")))
+
 
 def normalize_unit(unit: str) -> str:
     """
@@ -7236,6 +7405,14 @@ def _fetch_via_scrapingdog(url: str, timeout: int = 25) -> str:
     except Exception:
         return ""
 
+def get_extractor_fingerprint() -> str:
+    """
+    Bump this string whenever you change extraction or normalization behavior.
+    Used to decide whether cached extracted_numbers are still valid.
+    """
+    return "extract_v2_normunits_2026-01-02"
+
+
 
 def extract_numbers_from_text(text: str) -> List[Dict]:
     """
@@ -7354,6 +7531,8 @@ NON_DATA_CONTEXT_HINTS = [
     "table of contents", "cookie", "privacy", "terms", "copyright",
     "subscribe", "newsletter", "login", "sign in", "nav", "footer"
 ]
+
+
 
 
 def _truncate_for_sheets(s: str, max_chars: int = 45000) -> str:
@@ -7564,6 +7743,19 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             })
 
     if baseline_sources_cache:
+
+        # ---- ADDITIVE: stable ordering of snapshots (Change #2) ----
+        for s in (baseline_sources_cache or []):
+            if isinstance(s, dict) and isinstance(s.get("extracted_numbers"), list):
+                s["extracted_numbers"] = sort_snapshot_numbers(s["extracted_numbers"])
+                s["numbers_found"] = len(s["extracted_numbers"])
+
+        baseline_sources_cache = sorted(
+            baseline_sources_cache,
+            key=lambda x: str((x or {}).get("url") or "")
+        )
+        # -----------------------------------------------------------
+
         analysis["baseline_sources_cache"] = baseline_sources_cache
 
     # -----------------------------
@@ -10426,7 +10618,39 @@ def main():
             web_context = {}
             if use_web:
                 with st.spinner("🌐 Searching the web..."):
-                    web_context = fetch_web_context(query, num_sources=3)
+
+                    # ---- ADDITIVE: pass existing snapshots for reuse (Change #3 wiring) ----
+                    existing_snapshots = None
+
+                    # If you have an analysis dict already in scope, reuse its cache
+                    try:
+                        if isinstance(locals().get("analysis"), dict):
+                            existing_snapshots = (
+                                analysis.get("baseline_sources_cache")
+                                or (analysis.get("results", {}) or {}).get("baseline_sources_cache")
+                                or (analysis.get("results", {}) or {}).get("source_results")
+                            )
+                    except Exception:
+                        existing_snapshots = None
+
+                    # Optional: if you keep a prior analysis in session_state, reuse it
+                    try:
+                        prev = st.session_state.get("last_analysis")
+                        if existing_snapshots is None and isinstance(prev, dict):
+                            existing_snapshots = (
+                                prev.get("baseline_sources_cache")
+                                or (prev.get("results", {}) or {}).get("baseline_sources_cache")
+                                or (prev.get("results", {}) or {}).get("source_results")
+                            )
+                    except Exception:
+                        pass
+
+                    web_context = fetch_web_context(
+                        query,
+                        num_sources=3,
+                        existing_snapshots=existing_snapshots,
+                    )
+                    # ----------------------------------------------------------------------
 
             if not web_context or not web_context.get("search_results"):
                 st.info("💡 Using AI knowledge without web search")
@@ -10681,7 +10905,27 @@ def main():
                     return
 
                 with st.spinner("🌐 Fetching current data..."):
-                    web_context = fetch_web_context(query, num_sources=3)
+                    # ---- ADDITIVE: pass existing snapshots for reuse (Change #3 wiring) ----
+                    existing_snapshots = None
+
+                    try:
+                        prev = st.session_state.get("last_analysis")
+                        if isinstance(prev, dict):
+                            existing_snapshots = (
+                                prev.get("baseline_sources_cache")
+                                or (prev.get("results", {}) or {}).get("baseline_sources_cache")
+                                or (prev.get("results", {}) or {}).get("source_results")
+                            )
+                    except Exception:
+                        existing_snapshots = None
+
+                    web_context = fetch_web_context(
+                        query,
+                        num_sources=3,
+                        existing_snapshots=existing_snapshots,
+                    )
+                    # ----------------------------------------------------------------------
+
 
                 if not web_context:
                     web_context = {
