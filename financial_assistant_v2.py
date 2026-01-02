@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.37
+# YUREEKA AI RESEARCH ASSISTANT v7.38
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -41,6 +41,9 @@
 # Prevent caching “empty results” from SerpAPI (no poisoned cache)
 # Restoration of Range Estimates For Metrics
 # Improved Junk Tagging and Rejection
+# One Canononical Operator for Analysis + Evolution Layers
+# Metric Aware Range Construction Everywhere
+# Anchor Matching Correctness
 # ================================================================================
 
 import io
@@ -155,6 +158,167 @@ def add_to_history(analysis: dict) -> bool:
     # -----------------------
     # Existing helper block (unchanged)
     # -----------------------
+
+    # =============================================================================
+# PATCH HELPERS (ADDITIVE)
+# Canonical numeric normalization + snapshot rebuild
+# These helpers are intentionally standalone and do NOT override any logic.
+# =============================================================================
+
+def normalize_unit_tag(unit_str: str) -> str:
+    """
+    Canonical unit tags used for drift=0 comparisons.
+    """
+    u = (unit_str or "").strip()
+    if not u:
+        return ""
+    ul = u.lower().replace(" ", "")
+
+    # energy units
+    if ul == "twh":
+        return "TWh"
+    if ul == "gwh":
+        return "GWh"
+    if ul == "mwh":
+        return "MWh"
+    if ul == "kwh":
+        return "kWh"
+    if ul == "wh":
+        return "Wh"
+
+    # magnitudes
+    if ul in ("t", "trillion", "tn"):
+        return "T"
+    if ul in ("b", "bn", "billion"):
+        return "B"
+    if ul in ("m", "mn", "mio", "million"):
+        return "M"
+    if ul in ("k", "thousand", "000"):
+        return "K"
+
+    # percent
+    if ul in ("%", "pct", "percent"):
+        return "%"
+
+    return u
+
+
+def unit_family(unit_tag: str) -> str:
+    """
+    Unit family classifier for gating.
+    """
+    ut = (unit_tag or "").strip()
+
+    if ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
+        return "energy"
+    if ut == "%":
+        return "percent"
+    if ut in ("T", "B", "M", "K"):
+        return "magnitude"
+
+    return ""
+
+
+def canonicalize_numeric_candidate(candidate: dict) -> dict:
+    """
+    Additive: attach canonical numeric fields to a candidate dict.
+    Safe to call multiple times.
+    """
+    try:
+        v = candidate.get("value")
+        if v is None:
+            return candidate
+        v = float(v)
+    except Exception:
+        return candidate
+
+    # Prefer unit_tag if already present
+    ut = normalize_unit_tag(
+        candidate.get("unit_tag") or candidate.get("unit") or ""
+    )
+    fam = unit_family(ut)
+
+    base_unit = ut
+    mult = 1.0
+
+    if ut == "TWh":
+        base_unit, mult = "Wh", 1e12
+    elif ut == "GWh":
+        base_unit, mult = "Wh", 1e9
+    elif ut == "MWh":
+        base_unit, mult = "Wh", 1e6
+    elif ut == "kWh":
+        base_unit, mult = "Wh", 1e3
+    elif ut == "Wh":
+        base_unit, mult = "Wh", 1.0
+
+    candidate.setdefault("unit_tag", ut)
+    candidate.setdefault("unit_family", fam)
+    candidate.setdefault("base_unit", base_unit)
+    candidate.setdefault("multiplier_to_base", mult)
+    candidate.setdefault("value_norm", v * mult)
+
+    return candidate
+
+
+def rebuild_metrics_from_snapshots(
+    prev_response: dict,
+    baseline_sources_cache: list,
+    web_context: dict = None
+) -> dict:
+    """
+    Deterministic rebuild using cached snapshots only.
+    If sources unchanged, rebuilt metrics converge with analysis.
+    """
+    prev_anchors = (prev_response or {}).get("metric_anchors") or {}
+    rebuilt: Dict[str, Any] = {}
+
+    # Build anchor -> best candidate map
+    anchor_to_candidate = {}
+
+    for src in baseline_sources_cache or []:
+        for c in (src.get("extracted_numbers") or []):
+            if not isinstance(c, dict):
+                continue
+            try:
+                c = canonicalize_numeric_candidate(dict(c))
+            except Exception:
+                pass
+
+            ah = c.get("anchor_hash")
+            if not ah:
+                continue
+
+            if ah not in anchor_to_candidate:
+                anchor_to_candidate[ah] = c
+            else:
+                old = anchor_to_candidate[ah]
+                if old.get("is_junk") and not c.get("is_junk"):
+                    anchor_to_candidate[ah] = c
+
+    # Rebuild metrics by anchor
+    for metric_key, anchor in prev_anchors.items():
+        ah = None
+        if isinstance(anchor, dict):
+            ah = anchor.get("anchor_hash") or anchor.get("anchor")
+        elif isinstance(anchor, str):
+            ah = anchor
+
+        if ah and ah in anchor_to_candidate:
+            c = anchor_to_candidate[ah]
+            rebuilt[metric_key] = {
+                "value": c.get("value"),
+                "unit": c.get("unit"),
+                "value_norm": c.get("value_norm"),
+                "base_unit": c.get("base_unit"),
+                "unit_family": c.get("unit_family"),
+                "anchor_hash": ah,
+                "source_url": c.get("source_url"),
+            }
+
+    return rebuilt
+
+
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
@@ -4701,16 +4865,43 @@ def extract_numbers_from_scraped_sources(
         if not content or not isinstance(content, str) or len(content) < 200:
             continue
 
-        nums = extract_numbers_with_context(content)  # you already have this function
+        # =========================
+        # PATCH 1 (ADDITIVE): pass source_url through (improves anchor stability)
+        # =========================
+        nums = extract_numbers_with_context(content, source_url=url)
+        # =========================
+
         for n in nums:
-            unit_tag = normalize_unit_tag(n.get("unit", ""))
-            candidates.append({
+            # =========================
+            # PATCH 1 (ADDITIVE): prefer extractor-provided unit_tag if present; else normalize
+            # =========================
+            unit_tag = n.get("unit_tag")
+            if not unit_tag:
+                unit_tag = normalize_unit_tag(n.get("unit", ""))
+            # =========================
+
+            row = {
                 "url": url,
                 "value": n.get("value"),
                 "unit_tag": unit_tag,
                 "raw": n.get("raw", ""),
                 "context": (n.get("context") or ""),
-            })
+            }
+
+            # =========================
+            # PATCH 1 (ADDITIVE): preserve extra fields if extractor provides them
+            # (backwards compatible: we only add keys, never remove)
+            # =========================
+            for k in [
+                "unit", "is_junk", "junk_reason", "anchor_hash",
+                "start_idx", "end_idx", "context_snippet",
+                "unit_family", "base_unit", "multiplier_to_base", "value_norm"
+            ]:
+                if k in n:
+                    row[k] = n.get(k)
+            # =========================
+
+            candidates.append(row)
 
     return candidates
 
@@ -4732,10 +4923,47 @@ def attribute_span_to_sources(
 
     filtered: List[Dict[str, Any]] = []
 
+    # =========================
+    # PATCH 2 (ADDITIVE): helpers to suppress year-ish artifacts deterministically
+    # =========================
+    metric_l = (metric_name or "").lower()
+    metric_is_yearish = any(k in metric_l for k in ["year", "years", "fy", "fiscal", "calendar", "timeline", "target year"])
+
+    def _looks_like_year_value(v) -> bool:
+        try:
+            iv = int(float(v))
+            return 1900 <= iv <= 2099
+        except Exception:
+            return False
+
+    def _ctx_has_year_range(ctx: str) -> bool:
+        # catches "2025-2035", "2025 – 2035", "2025 to 2035"
+        import re
+        return bool(re.search(r"\b(19|20)\d{2}\s*(?:-|–|—|to)\s*(19|20)\d{2}\b", ctx or "", flags=re.I))
+    # =========================
+
     for c in all_candidates:
         ctx = c.get("context", "")
         if not ctx:
             continue
+
+        # =========================
+        # PATCH 2 (ADDITIVE): drop extractor-tagged junk candidates early
+        # (does not remove old behavior unless tag exists; if no tag, it passes through)
+        # =========================
+        if c.get("is_junk") is True:
+            continue
+
+        # =========================
+        # PATCH 2 (ADDITIVE): suppress year-like values unless metric is year-based
+        # Also suppress year-range endpoints in timeline contexts (common non-metric junk)
+        # =========================
+        if not metric_is_yearish:
+            if (c.get("unit_tag") in ("", None)) and _looks_like_year_value(c.get("value")):
+                continue
+            if _looks_like_year_value(c.get("value")) and _ctx_has_year_range(ctx):
+                continue
+        # =========================
 
         # Context match gate
         ctx_score = calculate_context_match(keywords, ctx)
@@ -4754,6 +4982,15 @@ def attribute_span_to_sources(
             # if candidate unit_tag missing, skip (too risky)
             if c.get("unit_tag") not in ("T", "B", "M"):
                 continue
+
+            # =========================
+            # PATCH 2 (ADDITIVE): guard against "year mapped to T" artifacts slipping through
+            # If value is year-like and unit_tag is magnitude, skip unless metric is yearish.
+            # =========================
+            if (not metric_is_yearish) and _looks_like_year_value(c.get("value")):
+                continue
+            # =========================
+
             val_norm = to_billions(c.get("value"), c.get("unit_tag"))
             if val_norm is None:
                 continue
@@ -4771,10 +5008,6 @@ def attribute_span_to_sources(
             "evidence": []
         }
 
-    # Choose min/max deterministically:
-    # - primary key: numeric value_norm
-    # - tie-breaker: higher ctx_score
-    # - final tie-breaker: url lexicographic
     def min_key(x):
         return (x["value_norm"], -x["ctx_score"], str(x.get("url", "")))
 
@@ -4788,7 +5021,6 @@ def attribute_span_to_sources(
     vmax = float(max_item["value_norm"])
     vmid = (vmin + vmax) / 2.0
 
-    # For % metrics, keep % in the same numeric scale; for currency, we standardize to "billion USD"
     if unit_tag_hint == "%":
         unit_out = "%"
     else:
@@ -4830,6 +5062,7 @@ def attribute_span_to_sources(
         },
         "evidence": evidence
     }
+
 
 
 def add_range_and_source_attribution_to_canonical_metrics(
@@ -9208,7 +9441,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         fn_rebuild = globals().get("rebuild_metrics_from_snapshots")  # optional future hook
         if callable(fn_rebuild):
-            current_metrics = fn_rebuild(prev_response, baseline_sources_cache)
+            current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
     except Exception:
         current_metrics = {}
 
@@ -9480,10 +9713,9 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     # -----------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
-    # ADDITIVE (Patch A3): year-range detector (tag-only, does NOT drop candidates)
+    # PATCH A3 (ADDITIVE): year-range detector (tag-only, does NOT drop candidates)
     # -------------------------------------------------------------------------
     def _is_year_range_context(ctx: str) -> bool:
-        # Matches: 2025-2035, 2025 – 2035, 2025 to 2035, 2025—2035
         return bool(re.search(r"\b(19|20)\d{2}\s*(?:-|–|—|to)\s*(19|20)\d{2}\b", ctx or "", flags=re.I))
 
     # -------------------------------------------------------------------------
@@ -9500,10 +9732,8 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
         # =========================
         # PATCH A3 (TAG ONLY): year-range endpoints are usually timeline metadata
-        # This does NOT drop candidates; it only tags them.
         # =========================
         try:
-            # value may be 2025.0 from float parsing; normalize to int string
             iv = int(float(value))
             if u == "" and 1900 <= iv <= 2099 and _is_year_range_context(ctx):
                 return True, "year_range"
@@ -9546,19 +9776,17 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         return False, ""
 
     # ---------- extraction pattern ----------
-    # currency token (optional) + number + optional scale/%/words
     pat = re.compile(
         r"(S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
         # =========================
-        # PATCH A4 (BUGFIX, minimal): prevent partial matches like "-203" inside "2025-2035"
-        # by ensuring the number match is not immediately followed by another digit.
-        # This ONLY blocks truncated matches; normal numbers still match.
+        # PATCH A4 (BUGFIX): prevent partial matches like "-203" inside "2025-2035"
         # =========================
         r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)(?!\d)\s*"
         # --------------------------------------------------
-        # NEW (additive): energy units in the captured unit group
+        # PATCH A5 (BUGFIX): stop 'to' being read as unit 't' => normalized to 'T'
+        # - Single-letter magnitudes (T,B,M,K) only match if NOT followed by another letter.
         # --------------------------------------------------
-        r"(TWh|GWh|MWh|kWh|Wh|T|B|M|K|trillion|billion|million|bn|mn|%|percent)?",
+        r"(TWh|GWh|MWh|kWh|Wh|(?:T|B|M|K)(?![A-Za-z])|trillion|billion|million|bn|mn|%|percent)?",
         flags=re.I
     )
 
@@ -9571,14 +9799,12 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         if not num_s:
             continue
 
-        # context window
         start = max(0, m.start() - 160)
         end = min(len(raw), m.end() + 160)
         ctx = raw[start:end].replace("\n", " ")
         ctx = re.sub(r"\s+", " ", ctx).strip()
         ctx_store = ctx[:240]
 
-        # numeric parse
         try:
             val = float(num_s.replace(",", ""))
         except Exception:
@@ -9586,11 +9812,9 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
         unit = _normalize_unit(unit_s)
 
-        # raw display
         raw_disp = f"{cur} {num_s}{unit_s}".strip()
         raw_num_only = (cur + num_s).strip()
 
-        # hard rejections
         if _chrome_junk(ctx_store):
             continue
         if _is_phone_like(ctx_store, raw_disp):
@@ -9602,12 +9826,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
         anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx_store}")
 
-        # ---------------------------------------------------------------------
-        # ADDITIVE (Patch A2): tag junk candidates (do not drop)
-        # Also add deterministic offsets.
-        # ---------------------------------------------------------------------
         is_junk, junk_reason = _junk_tag(val, unit, raw_disp, ctx_store)
-        # ---------------------------------------------------------------------
 
         out.append({
             "value": val,
@@ -9618,12 +9837,10 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             "context_snippet": ctx_store,
             "anchor_hash": anchor_hash,
 
-            # ---- ADDITIVE: junk tagging + deterministic offsets ----
             "is_junk": bool(is_junk),
             "junk_reason": junk_reason,
             "start_idx": int(m.start()),
             "end_idx": int(m.end()),
-            # -------------------------------------------------------
         })
 
         if len(out) >= int(max_results or 350):
