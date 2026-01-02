@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.40
+# YUREEKA AI RESEARCH ASSISTANT v7.41
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -271,34 +271,169 @@ def rebuild_metrics_from_snapshots(
     """
     Deterministic rebuild using cached snapshots only.
     If sources unchanged, rebuilt metrics converge with analysis.
+
+    Behavior:
+      1) Primary: anchor_hash match via prev_response.metric_anchors
+      2) Fallback: schema-first deterministic selection when anchor missing
+         using metric_schema_frozen + context match + deterministic tie-break.
+
+    NOTE: Dead/unreachable legacy code previously below an early return has been removed
+    (explicitly approved).
     """
-    prev_anchors = (prev_response or {}).get("metric_anchors") or {}
+    import re
+    import hashlib
+
+    prev_response = prev_response if isinstance(prev_response, dict) else {}
+    prev_anchors = prev_response.get("metric_anchors") or {}
+    if not isinstance(prev_anchors, dict):
+        prev_anchors = {}
+
     rebuilt: Dict[str, Any] = {}
 
-    # Build anchor -> best candidate map
-    anchor_to_candidate = {}
+    # ---------- schema + canonical lookup ----------
+    metric_schema = prev_response.get("metric_schema_frozen") or {}
+    if not isinstance(metric_schema, dict):
+        metric_schema = {}
+    prev_can = prev_response.get("primary_metrics_canonical") or {}
+    if not isinstance(prev_can, dict):
+        prev_can = {}
+
+    # ---------- deterministic candidate id (tie-breaker) ----------
+    def _candidate_id(c: dict) -> str:
+        try:
+            url = str(c.get("source_url") or c.get("url") or "")
+            ah = str(c.get("anchor_hash") or "")
+            vn = c.get("value_norm")
+            bu = str(c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "")
+            mk = str(c.get("measure_kind") or "")
+            vn_s = ""
+            if vn is not None:
+                try:
+                    vn_s = f"{float(vn):.12g}"
+                except Exception:
+                    vn_s = str(vn)
+            s = f"{url}|{ah}|{vn_s}|{bu}|{mk}"
+            return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+        except Exception:
+            return ""
+
+    # ---------- collect candidates + anchor map ----------
+    anchor_to_candidate: Dict[str, Dict[str, Any]] = {}
+    all_candidates: List[Dict[str, Any]] = []
 
     for src in baseline_sources_cache or []:
+        if not isinstance(src, dict):
+            continue
+        src_url = src.get("url") or src.get("source_url") or ""
+
         for c in (src.get("extracted_numbers") or []):
             if not isinstance(c, dict):
                 continue
+
+            # canonicalize if available (safe if repeated)
             try:
                 c = canonicalize_numeric_candidate(dict(c))
             except Exception:
-                pass
+                c = dict(c)
+
+            # ensure stable url carried through
+            if not c.get("source_url"):
+                c["source_url"] = src_url
 
             ah = c.get("anchor_hash")
-            if not ah:
-                continue
-
-            if ah not in anchor_to_candidate:
-                anchor_to_candidate[ah] = c
-            else:
-                old = anchor_to_candidate[ah]
-                if old.get("is_junk") and not c.get("is_junk"):
+            if ah:
+                if ah not in anchor_to_candidate:
                     anchor_to_candidate[ah] = c
+                else:
+                    old = anchor_to_candidate[ah]
+                    if old.get("is_junk") and not c.get("is_junk"):
+                        anchor_to_candidate[ah] = c
 
-    # Rebuild metrics by anchor
+            all_candidates.append(c)
+
+    # ---------- schema-first helpers ----------
+    def _schema_for_key(metric_key: str) -> dict:
+        d = metric_schema.get(metric_key)
+        return d if isinstance(d, dict) else {}
+
+    def _expected_from_schema(metric_key: str):
+        d = _schema_for_key(metric_key)
+
+        unit_family_s = str(d.get("unit_family") or "").strip().lower()
+        dim_s = str(d.get("dimension") or "").strip().lower()
+        unit_s = str(d.get("unit") or "").strip()
+        name_l = str(d.get("name") or "").lower()
+
+        expected_family = ""
+        if unit_family_s in ("percent", "currency", "energy"):
+            expected_family = unit_family_s
+        else:
+            ut = normalize_unit_tag(unit_s)
+            if ut == "%":
+                expected_family = "percent"
+            elif ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
+                expected_family = "energy"
+            elif dim_s == "currency":
+                expected_family = "currency"
+
+        currencyish = (unit_family_s == "currency" or dim_s == "currency")
+
+        expected_kind = None
+        if expected_family == "percent":
+            if any(k in name_l for k in ["growth", "cagr", "increase", "decrease", "yoy", "qoq", "mom", "rate"]):
+                expected_kind = "growth_pct"
+            else:
+                expected_kind = "share_pct"
+        if currencyish or expected_family == "currency":
+            expected_kind = "money"
+        if expected_kind is None and any(k in name_l for k in [
+            "units", "unit sales", "vehicle sales", "vehicles sold", "sold",
+            "deliveries", "shipments", "registrations", "volume"
+        ]):
+            expected_kind = "count_units"
+
+        kw = d.get("keywords")
+        schema_keywords = [str(x).strip() for x in kw] if isinstance(kw, list) else []
+        schema_keywords = [x for x in schema_keywords if x]
+
+        return expected_family, currencyish, expected_kind, schema_keywords, unit_s
+
+    def _ctx_match_score(tokens: List[str], ctx: str) -> float:
+        fn = globals().get("calculate_context_match")
+        if callable(fn):
+            try:
+                return float(fn(tokens, ctx))
+            except Exception:
+                pass
+
+        c = (ctx or "").lower()
+        toks = [t.lower() for t in (tokens or []) if t and len(t) >= 2]
+        if not toks:
+            return 0.0
+        hit = sum(1 for t in toks if t in c)
+        return hit / max(1, len(toks))
+
+    def _currency_evidence(raw: str, ctx: str) -> bool:
+        r = (raw or "")
+        c = (ctx or "").lower()
+        if any(s in r for s in ["$", "S$", "€", "£"]):
+            return True
+        if any(code in c for code in [" usd", "sgd", " eur", " gbp", " aud", " cad", " jpy", " cny", " rmb"]):
+            return True
+        if any(k in c for k in ["revenue", "turnover", "valuation", "market size", "market value", "profit", "earnings", "ebitda"]):
+            return True
+        return False
+
+    def _is_yearish_value(v) -> bool:
+        try:
+            iv = int(float(v))
+            return 1900 <= iv <= 2099
+        except Exception:
+            return False
+
+    # ---------- 1) primary rebuild by anchor ----------
+    rebuilt_by_anchor = set()
+
     for metric_key, anchor in prev_anchors.items():
         ah = None
         if isinstance(anchor, dict):
@@ -316,649 +451,138 @@ def rebuild_metrics_from_snapshots(
                 "unit_family": c.get("unit_family"),
                 "anchor_hash": ah,
                 "source_url": c.get("source_url"),
+                "rebuild_method": "anchor",
+            }
+            rebuilt_by_anchor.add(metric_key)
+
+    # ---------- 2) fallback rebuild when anchor missing ----------
+    for metric_key in prev_anchors.keys():
+        if metric_key in rebuilt_by_anchor:
+            continue
+
+        expected_family, currencyish, expected_kind, schema_keywords, schema_unit = _expected_from_schema(metric_key)
+
+        # conservative fallback if schema is thin
+        if not expected_family and metric_key in prev_can and isinstance(prev_can.get(metric_key), dict):
+            pm = prev_can.get(metric_key) or {}
+            ut = normalize_unit_tag(pm.get("unit") or schema_unit or "")
+            if ut == "%":
+                expected_family = "percent"
+            elif ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
+                expected_family = "energy"
+
+        # tokens for context scoring
+        tokens = []
+        if schema_keywords:
+            tokens = schema_keywords
+        else:
+            # fallback to build_metric_keywords(schema_name)
+            schema_name = ""
+            try:
+                schema_name = str(_schema_for_key(metric_key).get("name") or "")
+            except Exception:
+                schema_name = ""
+            fn_bmk = globals().get("build_metric_keywords")
+            if callable(fn_bmk):
+                try:
+                    tokens = fn_bmk(schema_name or metric_key) or []
+                except Exception:
+                    tokens = []
+            else:
+                tokens = []
+
+        best = None
+        best_key = None
+        best_score = -1.0
+
+        for c in all_candidates:
+            if not isinstance(c, dict):
+                continue
+
+            # fallback skips junk (anchor path already handled above)
+            if c.get("is_junk") is True:
+                continue
+
+            ctx = (c.get("context") or c.get("context_snippet") or "").strip()
+            if not ctx:
+                continue
+
+            # stop timeline years contaminating non-year metrics
+            if expected_family not in ("percent", "energy") and not (currencyish or expected_family == "currency"):
+                if (c.get("unit_tag") in ("", None)) and _is_yearish_value(c.get("value")):
+                    continue
+
+            cand_ut = c.get("unit_tag") or normalize_unit_tag(c.get("unit") or "")
+            cand_fam = (c.get("unit_family") or unit_family(cand_ut) or "").strip().lower()
+            mk = c.get("measure_kind")
+
+            # unit-family gating
+            if expected_family == "percent":
+                if cand_fam != "percent" and cand_ut != "%":
+                    continue
+            elif expected_family == "energy":
+                if cand_fam != "energy":
+                    continue
+            elif currencyish or expected_family == "currency":
+                if cand_fam not in ("currency", "magnitude"):
+                    continue
+                if not _currency_evidence(c.get("raw", ""), ctx):
+                    continue
+                if mk == "count_units":
+                    continue
+
+            # measure-kind gating (only if candidate provides it)
+            if expected_kind and mk and mk != expected_kind:
+                continue
+
+            # normalize value for ranking
+            try:
+                c2 = canonicalize_numeric_candidate(dict(c))
+            except Exception:
+                c2 = c
+
+            val_norm = c2.get("value_norm")
+            if val_norm is None:
+                try:
+                    val_norm = float(c2.get("value"))
+                except Exception:
+                    continue
+
+            ctx_score = _ctx_match_score(tokens, ctx)
+            if ctx_score <= 0.0:
+                continue
+
+            url = str(c2.get("source_url") or c2.get("url") or "")
+            cid = c2.get("candidate_id") or _candidate_id({**c2, "value_norm": val_norm})
+
+            # deterministic tie-break (max)
+            key = (
+                float(ctx_score),
+                float(val_norm),
+                url,
+                str(cid),
+            )
+
+            if best_key is None or key > best_key:
+                best_key = key
+                best_score = float(ctx_score)
+                best = {**c2, "value_norm": val_norm, "candidate_id": cid}
+
+        if best:
+            rebuilt[metric_key] = {
+                "value": best.get("value"),
+                "unit": best.get("unit") or best.get("unit_tag"),
+                "value_norm": best.get("value_norm"),
+                "base_unit": best.get("base_unit"),
+                "unit_family": best.get("unit_family"),
+                "anchor_hash": best.get("anchor_hash"),
+                "source_url": best.get("source_url") or best.get("url"),
+                "rebuild_method": "schema_fallback",
+                "fallback_ctx_score": round(best_score, 6),
+                "candidate_id": best.get("candidate_id"),
             }
 
     return rebuilt
-
-
-    def _sha1(s: str) -> str:
-        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
-
-    def _looks_like_currency(text: str) -> bool:
-        t = (text or "")
-        return bool(re.search(r"(S\$|\$|USD|SGD|EUR|€|GBP|£)", t, flags=re.I))
-
-    def _extract_currency_token(text: str) -> str:
-        t = (text or "")
-        up = t.upper()
-        if "S$" in up or "SGD" in up:
-            return "SGD"
-        if "€" in t or "EUR" in up:
-            return "EUR"
-        if "£" in t or "GBP" in up:
-            return "GBP"
-        if "$" in t or "USD" in up:
-            return "USD"
-        return ""
-
-    def _norm_unit(u: str) -> str:
-        u = (u or "").strip()
-        try:
-            if "normalize_unit" in globals() and callable(globals()["normalize_unit"]):
-                return normalize_unit(u)
-        except Exception:
-            pass
-        return u
-
-    def _metric_tokens(name: str) -> List[str]:
-        n = (name or "").lower()
-        toks = re.findall(r"[a-z0-9]+", n)
-        stop = {"the", "and", "or", "of", "in", "to", "for", "by", "from", "with", "on", "at", "as"}
-        out = [t for t in toks if len(t) > 3 and t not in stop]
-        if "gdp" in toks:
-            out += ["gross", "domestic", "product"]
-        return list(dict.fromkeys(out))[:30]
-
-    def _ctx_score(tokens: List[str], ctx: str) -> float:
-        if not tokens:
-            return 0.0
-        c = (ctx or "").lower()
-        hit = sum(1 for t in tokens if t in c)
-        return hit / max(1, len(tokens))
-
-    def _compatible_currency(prev_raw: str, cand_raw: str, cand_ctx: str) -> bool:
-        if not _looks_like_currency(prev_raw):
-            return True
-        prev_cur = _extract_currency_token(prev_raw)
-        cand_cur = _extract_currency_token(cand_raw) or _extract_currency_token(cand_ctx)
-        if prev_cur and not cand_cur:
-            return False
-        if prev_cur and cand_cur and prev_cur != cand_cur:
-            return False
-        return True
-
-    def _unit_family(u: str) -> str:
-        """
-        Deterministic unit-family classifier for anchor matching.
-        Keep it strict: only classify what we can confidently identify.
-        """
-        uu = normalize_unit(u or "")
-        ul = (uu or "").strip().lower()
-
-        # Percent
-        if uu == "%":
-            return "PCT"
-
-        # Energy
-        if ul in ("twh", "gwh", "mwh", "kwh", "wh") or ul.endswith("wh"):
-            return "ENERGY"
-
-        # Magnitude tags
-        if uu in ("T", "B", "M", "K"):
-            return "MAG"
-
-        return "OTHER"
-
-    def _compatible_units(prev_unit: str, cand_unit: str, prev_raw: str, cand_raw: str, cand_ctx: str) -> bool:
-        """
-        Deterministic unit compatibility gate for metric anchors.
-
-        Principle: if the baseline metric has a meaningful unit family
-        (PCT / ENERGY / MAG), the candidate must match that family.
-        This prevents cross-unit anchors (e.g., energy metric anchoring to currency).
-        """
-        pu = normalize_unit(prev_unit or "")
-        cu = normalize_unit(cand_unit or "")
-
-        pf = _unit_family(pu)
-        cf = _unit_family(cu)
-
-        prev_raw_l = (prev_raw or "").lower()
-        cand_raw_l = (cand_raw or "").lower()
-        cand_ctx_l = (cand_ctx or "").lower()
-
-        # Helper signals from raw/context when cand_unit is empty
-        cand_has_pct = ("%" in cand_raw_l) or ("%" in cand_ctx_l) or (" pct" in cand_ctx_l) or ("percent" in cand_ctx_l)
-        cand_has_energy = any(x in cand_raw_l or x in cand_ctx_l for x in ["twh", "gwh", "mwh", "kwh", " wh"])
-        cand_has_mag = normalize_unit_tag(cu or cand_raw or cand_ctx) in ("K", "M", "B", "T")
-
-        prev_has_energy = any(x in prev_raw_l for x in ["twh", "gwh", "mwh", "kwh", " wh"])
-        prev_has_mag = normalize_unit_tag(pu or prev_raw) in ("K", "M", "B", "T")
-
-        # PCT: must be percent-like
-        if pf == "PCT":
-            return (cf == "PCT") or cand_has_pct
-
-        # ENERGY: must be energy-like (unit OR raw/context)
-        if pf == "ENERGY" or prev_has_energy:
-            return (cf == "ENERGY") or cand_has_energy
-
-        # MAG: must be magnitude-like (unit tag OR raw/context tag)
-        if pf == "MAG" or prev_has_mag:
-            return (cf == "MAG") or cand_has_mag
-
-        # If baseline has no meaningful unit, don't block (backward compatible)
-        return True
-
-    # ==========================================================
-    # ADDITIVE: Strict unit-family compatibility for anchors (v2)
-    # Keeps legacy behavior as fallback for backward compatibility
-    # ==========================================================
-
-    def _unit_family_v2(u: str) -> str:
-        """
-        Deterministic unit-family classifier for anchor matching.
-        Only classify when confidently recognized.
-        """
-        uu = normalize_unit(u or "")
-        ul = (uu or "").strip().lower()
-
-        if uu == "%":
-            return "PCT"
-
-        # ENERGY (keep strict; do not infer beyond wh-family)
-        if ul in ("twh", "gwh", "mwh", "kwh", "wh") or ul.endswith("wh"):
-            return "ENERGY"
-
-        # Magnitude tags
-        if uu in ("T", "B", "M", "K"):
-            return "MAG"
-
-        return "OTHER"
-
-
-    def _compatible_units_v2(prev_unit: str, cand_unit: str, prev_raw: str, cand_raw: str, cand_ctx: str) -> bool:
-        """
-        Strict unit compatibility gate for anchors.
-        If baseline metric has a meaningful unit family (PCT/ENERGY/MAG),
-        candidate must match the same family (unit OR raw/context signal).
-
-        Returns True if compatible; False if confidently incompatible.
-        """
-        pu = normalize_unit(prev_unit or "")
-        cu = normalize_unit(cand_unit or "")
-
-        pf = _unit_family_v2(pu)
-        cf = _unit_family_v2(cu)
-
-        prev_raw_l = (prev_raw or "").lower()
-        cand_raw_l = (cand_raw or "").lower()
-        cand_ctx_l = (cand_ctx or "").lower()
-
-        # Signals from raw/context when cand_unit is missing/empty
-        cand_has_pct = ("%" in cand_raw_l) or ("%" in cand_ctx_l) or (" pct" in cand_ctx_l) or ("percent" in cand_ctx_l)
-        cand_has_energy = any(x in cand_raw_l or x in cand_ctx_l for x in ["twh", "gwh", "mwh", "kwh", " wh"])
-        cand_has_mag = normalize_unit_tag(cu or cand_raw or cand_ctx) in ("K", "M", "B", "T")
-
-        prev_has_energy = any(x in prev_raw_l for x in ["twh", "gwh", "mwh", "kwh", " wh"])
-        prev_has_mag = normalize_unit_tag(pu or prev_raw) in ("K", "M", "B", "T")
-
-        # PCT: candidate must be percent-like
-        if pf == "PCT":
-            return (cf == "PCT") or cand_has_pct
-
-        # ENERGY: candidate must be energy-like
-        if pf == "ENERGY" or prev_has_energy:
-            return (cf == "ENERGY") or cand_has_energy
-
-        # MAG: candidate must be magnitude-like
-        if pf == "MAG" or prev_has_mag:
-            return (cf == "MAG") or cand_has_mag
-
-        # Baseline has no meaningful unit family -> do not block
-        return True
-
-
-    def _format_prev_raw(v, u) -> str:
-        if v is None or v == "":
-            return "N/A"
-        u = (u or "").strip()
-        if u == "%":
-            return f"{v} %"
-        return f"{v} {u}".strip() if u else str(v)
-
-    def _build_evidence_records_from_baseline_cache(baseline_cache: Any) -> List[Dict]:
-        """
-        Convert baseline_sources_cache (existing) into stable evidence_records.
-        Keeps fields small and deterministic.
-        """
-        records: List[Dict] = []
-        if not isinstance(baseline_cache, list):
-            return records
-
-        for sr in baseline_cache:
-            if not isinstance(sr, dict):
-                continue
-            url = sr.get("url") or ""
-            fp = sr.get("fingerprint")
-            fetched_at = sr.get("fetched_at")
-
-            nums = sr.get("extracted_numbers") or []
-            clean_nums: List[Dict] = []
-            if isinstance(nums, list):
-                for n in nums:
-                    if not isinstance(n, dict):
-                        continue
-                    raw = (n.get("raw") or "").strip()
-                    ctx = (n.get("context_snippet") or n.get("context") or "").strip()
-                    val = n.get("value")
-                    unit = n.get("unit")
-
-                    # Prefer existing extractor anchor_hash if present (more stable); fallback if missing
-                    anchor_hash = n.get("anchor_hash") or _sha1(f"{url}|{raw}|{ctx[:220]}")
-
-                    clean_nums.append(
-                        {
-                            "value": val,
-                            "unit": unit,
-                            "raw": raw,
-                            "context_snippet": ctx[:220],
-                            "anchor_hash": anchor_hash,
-
-                            # ---- ADDITIVE: preserve stable identity + offsets (Change #2 support) ----
-                            "extracted_number_id": n.get("extracted_number_id"),
-                            "source_url": n.get("source_url") or url,
-                            "start_idx": n.get("start_idx"),
-                            "end_idx": n.get("end_idx"),
-                            # --------------------------------------------------------------------------
-
-                            # ---- ADDITIVE (Patch B): preserve junk tags ----
-                            "is_junk": bool(n.get("is_junk")) if isinstance(n.get("is_junk"), bool) else False,
-                            "junk_reason": n.get("junk_reason") or "",
-                            # ---------------------------------------------
-                        }
-                    )
-
-            records.append(
-                {
-                    "url": url,
-                    "fetched_at": fetched_at,
-                    "fingerprint": fp,
-                    "numbers": clean_nums,
-                }
-            )
-
-        # ---- ADDITIVE: stable ordering of evidence records (Change #2 / 3A) ----
-        records = sort_evidence_records(records)
-        # -----------------------------------------------------------------------
-
-        return records
-
-
-    def _build_metric_anchors(primary_metrics: Any, evidence_records: List[Dict]) -> List[Dict]:
-        """
-        For each baseline metric, pick the best matching evidence number and store anchor.
-        Deterministic: unit-family gating + stable tie-breakers.
-        """
-        anchors: List[Dict] = []
-        if not isinstance(primary_metrics, dict):
-            return anchors
-
-        def _is_number(x: Any) -> bool:
-            try:
-                float(x)
-                return True
-            except Exception:
-                return False
-
-        def _safe_float(x: Any) -> float:
-            try:
-                return float(x)
-            except Exception:
-                return 0.0
-
-        # Flatten all evidence candidates
-        all_nums: List[Dict] = []
-        for rec in (evidence_records or []):
-            if not isinstance(rec, dict):
-                continue
-            url = rec.get("url") or ""
-            fp = rec.get("fingerprint")
-            for n in rec.get("numbers", []) or []:
-                if not isinstance(n, dict):
-                    continue
-                all_nums.append(
-                    {
-                        "source_url": url,
-                        "fingerprint": fp,
-                        "value": n.get("value"),
-                        "unit": (n.get("unit") or "").strip(),
-                        "raw": n.get("raw") or "",
-                        "context_snippet": n.get("context_snippet") or "",
-                        "anchor_hash": n.get("anchor_hash"),
-                        "start_idx": n.get("start_idx"),
-                        "end_idx": n.get("end_idx"),
-                        "extracted_number_id": n.get("extracted_number_id"),
-
-                        # ---- ADDITIVE (Patch C prerequisite): carry junk tag into candidates ----
-                        "is_junk": n.get("is_junk"),
-                        "junk_reason": n.get("junk_reason"),
-                        # ------------------------------------------------------------------------
-                    }
-                )
-
-        compat_v2 = globals().get("_compatible_units_v2")
-        compat_legacy = globals().get("_compatible_units")
-        compat_ccy = globals().get("_compatible_currency")
-
-        for mid, m in primary_metrics.items():
-            if not isinstance(m, dict):
-                continue
-
-            mname = m.get("name") or str(mid)
-            mval = m.get("value")
-            munit = (m.get("unit") or "").strip()
-            prev_raw = m.get("raw") or _format_prev_raw(mval, munit)
-
-            tokens = _metric_tokens(mname)
-
-            best = None
-            best_key = None
-            best_score = -1.0
-
-            for cand in all_nums:
-                cctx = cand.get("context_snippet") or ""
-                craw = cand.get("raw") or ""
-                cunit = (cand.get("unit") or "").strip()
-
-                # ---- ADDITIVE (Patch C): exclude junk candidates by default ----
-                if cand.get("is_junk") is True:
-                    # Allow only if the baseline metric itself is clearly "a year" (rare case)
-                    br = (prev_raw or "").strip()
-                    if not (br.isdigit() and len(br) == 4):
-                        continue
-                # ---------------------------------------------------------------
-
-                # 1) unit-family compatibility (v2 preferred)
-                ok = True
-                try:
-                    if callable(compat_v2):
-                        ok = bool(compat_v2(munit, cunit, prev_raw, craw, cctx))
-                    elif callable(compat_legacy):
-                        ok = bool(compat_legacy(munit, cunit, prev_raw, craw, cctx))
-                except Exception:
-                    ok = True
-                if not ok:
-                    continue
-
-                # 2) preserve any existing currency compatibility filter
-                try:
-                    if callable(compat_ccy) and not compat_ccy(prev_raw, craw, cctx):
-                        continue
-                except Exception:
-                    pass
-
-                s_ctx = _ctx_score(tokens, cctx)
-
-                bonus = 0.0
-                try:
-                    if _looks_like_currency(prev_raw) and _looks_like_currency(craw):
-                        bonus += 0.05
-                except Exception:
-                    pass
-
-                score = float(s_ctx + bonus)
-
-                same_unit = 1 if (normalize_unit(munit) and normalize_unit(munit) == normalize_unit(cunit)) else 0
-
-                abs_delta = None
-                if _is_number(mval) and _is_number(cand.get("value")):
-                    abs_delta = abs(_safe_float(mval) - _safe_float(cand.get("value")))
-
-                # Stable tie-breaker tuple
-                key = (
-                    score,
-                    same_unit,
-                    -(abs_delta if isinstance(abs_delta, (int, float)) else 1e18),
-                    str(cand.get("source_url") or ""),
-                    cand.get("start_idx") if isinstance(cand.get("start_idx"), int) else 10**18,
-                    cand.get("end_idx") if isinstance(cand.get("end_idx"), int) else 10**18,
-                    str(cand.get("extracted_number_id") or ""),
-                    str(craw),
-                )
-
-                if best_key is None or key > best_key:
-                    best_key = key
-                    best_score = score
-                    best = cand
-
-            if best and best_score >= 0.20:
-                anchors.append(
-                    {
-                        "metric_id": str(mid),
-                        "metric_name": mname,
-                        "baseline_raw": prev_raw,
-                        "source_url": best.get("source_url"),
-                        "fingerprint": best.get("fingerprint"),
-                        "anchor_hash": best.get("anchor_hash"),
-                        "matched_raw": best.get("raw"),
-                        "matched_value": best.get("value"),
-                        "matched_unit": best.get("unit"),
-                        "context_snippet": best.get("context_snippet"),
-                        "anchor_confidence": float(min(100.0, best_score * 100.0)),
-                    }
-                )
-            else:
-                anchors.append(
-                    {
-                        "metric_id": str(mid),
-                        "metric_name": mname,
-                        "baseline_raw": prev_raw,
-                        "source_url": None,
-                        "fingerprint": None,
-                        "anchor_hash": None,
-                        "matched_raw": None,
-                        "matched_value": None,
-                        "matched_unit": None,
-                        "context_snippet": None,
-                        "anchor_confidence": 0.0,
-                    }
-                )
-
-        return anchors
-
-
-    # --- Additive helpers used above (safe, small) ---
-    def _is_number(x: Any) -> bool:
-        try:
-            float(x)
-            return True
-        except Exception:
-            return False
-
-    def _safe_float(x: Any) -> float:
-        try:
-            return float(x)
-        except Exception:
-            return 0.0
-
-
-
-    # -----------------------
-    # NEW (additive): Sheet cell size guard
-    # -----------------------
-    SHEETS_CELL_LIMIT = 50000
-
-    def _try_make_sheet_json(obj: dict) -> str:
-        """Best-effort JSON for Sheets cell using existing helper if present."""
-        try:
-            return make_sheet_safe_json(obj)  # type: ignore
-        except Exception:
-            # last resort; keep small-ish
-            try:
-                return json.dumps(obj, ensure_ascii=False, default=str)
-            except Exception:
-                return str(obj)
-
-    def _shrink_for_sheets(original: dict) -> Dict[str, Any]:
-        """
-        Return a COPY of analysis, potentially reduced, to fit within Sheets cell limit.
-        This does NOT modify the original analysis object.
-        """
-        if not isinstance(original, dict):
-            return {"_error": "analysis_not_dict"}
-
-        # If already safe, return shallow copy
-        base_copy = dict(original)
-        s = _try_make_sheet_json(base_copy)
-        if isinstance(s, str) and len(s) <= SHEETS_CELL_LIMIT:
-            return base_copy
-
-        reduced = dict(base_copy)
-        removed: List[str] = []
-
-        # Remove the biggest usual offenders (only from the payload written to Sheets)
-        for k in [
-            "evidence_records",
-            "baseline_sources_cache",
-            "metric_anchors",
-            "baseline_sources_cache_full",
-            "source_results",
-            "web_context",
-            "scraped_meta",
-            "raw_sources",
-            "raw_text",
-            "debug",
-        ]:
-            if k in reduced:
-                reduced.pop(k, None)
-                removed.append(k)
-
-        # Also trim nested bulky fields if present
-        try:
-            pr = reduced.get("primary_response")
-            if isinstance(pr, dict):
-                # keep primary_response, but trim huge long lists if present
-                for k in ["sources", "web_sources"]:
-                    v = pr.get(k)
-                    if isinstance(v, list) and len(v) > 50:
-                        pr[k] = v[:50]
-                        removed.append(f"primary_response.{k}[:50]")
-                reduced["primary_response"] = pr
-        except Exception:
-            pass
-
-        # Add a small marker so you know it was truncated
-        reduced.setdefault("_sheet_write", {})
-        if isinstance(reduced["_sheet_write"], dict):
-            reduced["_sheet_write"]["truncated"] = True
-            reduced["_sheet_write"]["removed_keys"] = removed[:50]
-
-        # If still too big, progressively fallback to a minimal summary
-        s2 = _try_make_sheet_json(reduced)
-        if not isinstance(s2, str) or len(s2) <= SHEETS_CELL_LIMIT:
-            return reduced
-
-        minimal = {
-            "question": original.get("question"),
-            "timestamp": original.get("timestamp"),
-            "final_confidence": original.get("final_confidence"),
-            "question_profile": original.get("question_profile"),
-            "primary_response": (original.get("primary_response") or {}),
-            "_sheet_write": {
-                "truncated": True,
-                "mode": "minimal_fallback",
-                "note": "Full analysis too large for single Google Sheets cell (50k limit).",
-            },
-        }
-        return minimal
-
-    # -----------------------
-    # Enrich the analysis dict (safe, additive)  (unchanged)
-    # -----------------------
-    try:
-        if not analysis.get("evidence_layer_version"):
-            baseline_cache = (
-                analysis.get("baseline_sources_cache")
-                or (analysis.get("results", {}) or {}).get("baseline_sources_cache")
-                or (analysis.get("results", {}) or {}).get("source_results")
-            )
-
-            primary_response = analysis.get("primary_response", {}) or {}
-            primary_metrics = primary_response.get("primary_metrics", {}) or {}
-
-            if isinstance(baseline_cache, list) and baseline_cache:
-                evidence_records = _build_evidence_records_from_baseline_cache(baseline_cache)
-
-
-                # ---- ADDITIVE: stable ordering of evidence records (Change #2 / boundary seal) ----
-                evidence_records = sort_evidence_records(evidence_records)
-                # ---------------------------------------------------------------------------------
-
-                metric_anchors = _build_metric_anchors(primary_metrics, evidence_records)
-
-                # ---- ADDITIVE: stable ordering of metric anchors (Change #2 / 3B) ----
-                metric_anchors = sort_metric_anchors(metric_anchors)
-                # --------------------------------------------------------------------
-
-                analysis["evidence_layer_version"] = 1
-                analysis["evidence_records"] = evidence_records
-                analysis["metric_anchors"] = metric_anchors
-    except Exception:
-        pass  # never block saving
-
-    # -----------------------
-    # Existing Google Sheet save behavior (unchanged, but guarded)
-    # -----------------------
-    try:
-        sheet = get_google_sheet()
-    except Exception:
-        sheet = None
-
-    if not sheet:
-        if "analysis_history" not in st.session_state:
-            st.session_state.analysis_history = []
-        st.session_state.analysis_history.append(analysis)
-
-        # ---- ADDITIVE: persist last analysis for snapshot reuse (Change #3 wiring) ----
-        try:
-            st.session_state["last_analysis"] = analysis
-        except Exception:
-            pass
-        # ---------------------------------------------------------------------------
-        return False
-
-    try:
-        analysis_id = generate_analysis_id()
-
-        # NEW (additive): write a reduced COPY if needed; do not mutate original
-        payload_for_sheets = _shrink_for_sheets(analysis)
-        payload_json = _try_make_sheet_json(payload_for_sheets)
-
-        # extra safeguard: final hard truncation if still slightly over (rare)
-        if isinstance(payload_json, str) and len(payload_json) > SHEETS_CELL_LIMIT:
-            payload_json = payload_json[: (SHEETS_CELL_LIMIT - 200)] + '... {"_sheet_write":{"truncated":true,"note":"hard_truncation"}}'
-
-        row = [
-            analysis_id,
-            analysis.get("timestamp", datetime.now().isoformat()),
-            (analysis.get("question", "") or "")[:100],
-            str(analysis.get("final_confidence", "")),
-            payload_json,
-        ]
-        sheet.append_row(row, value_input_option="RAW")
-
-        # ---- ADDITIVE: persist last analysis for snapshot reuse (Change #3 wiring) ----
-        try:
-            st.session_state["last_analysis"] = analysis
-        except Exception:
-            pass
-        # ---------------------------------------------------------------------------
-
-        return True
-    except Exception as e:
-        st.warning(f"⚠️ Failed to save to Google Sheets: {e}")
-        if "analysis_history" not in st.session_state:
-            st.session_state.analysis_history = []
-        st.session_state.analysis_history.append(analysis)
-
-        # ---- ADDITIVE: persist last analysis for snapshot reuse (Change #3 wiring) ----
-        try:
-            st.session_state["last_analysis"] = analysis
-        except Exception:
-            pass
-        # ---------------------------------------------------------------------------
-        return False
 
 
 def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
@@ -9604,6 +9228,7 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
 
     return out_changes
 
+
 def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
     """
     Tight source-anchored evolution:
@@ -9692,9 +9317,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
                                 # =====================================================================
                                 # PATCH (ADDITIVE): preserve analysis-aligned fields when present.
-                                # This enables deterministic rebuild_metrics_from_snapshots() to work
-                                # even when snapshots are reconstructed from web_context.
-                                # - Does NOT break older payloads (missing keys remain None).
                                 # =====================================================================
                                 "anchor_hash": n.get("anchor_hash"),
                                 "is_junk": n.get("is_junk"),
@@ -9765,13 +9387,37 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
     prev_metrics = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
 
+    # =====================================================================
+    # PATCH E1 (ADDITIVE): ensure schema is available inside prev_response
+    # Why: rebuild_metrics_from_snapshots() fallback reads prev_response.metric_schema_frozen.
+    # Some runs store metric_schema_frozen at analysis top-level or under results.
+    # This patch copies it into prev_response *only if missing*.
+    # =====================================================================
+    try:
+        if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_schema_frozen"), dict):
+            schema_frozen = None
+
+            # prefer top-level analysis object
+            if isinstance(previous_data, dict) and isinstance(previous_data.get("metric_schema_frozen"), dict):
+                schema_frozen = previous_data.get("metric_schema_frozen")
+
+            # else try results.* (if you store it there)
+            if schema_frozen is None:
+                r = (previous_data or {}).get("results")
+                if isinstance(r, dict) and isinstance(r.get("metric_schema_frozen"), dict):
+                    schema_frozen = r.get("metric_schema_frozen")
+
+            if isinstance(schema_frozen, dict) and schema_frozen:
+                prev_response["metric_schema_frozen"] = schema_frozen
+    except Exception:
+        pass
+    # =====================================================================
+
     # Build a minimal current metrics dict from snapshots:
-    # NOTE: we do NOT brute-force match random candidates; we keep it snapshot-only for tightness.
-    # If you have a dedicated analysis extractor to rebuild metrics from snapshots, use it:
     current_metrics = {}
 
     try:
-        fn_rebuild = globals().get("rebuild_metrics_from_snapshots")  # optional future hook
+        fn_rebuild = globals().get("rebuild_metrics_from_snapshots")
         if callable(fn_rebuild):
             # =========================
             # PATCH (ADDITIVE): pass web_context through to rebuild hook
@@ -9796,7 +9442,10 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
-            metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, {"primary_metrics_canonical": current_metrics})
+            metric_changes, unchanged, increased, decreased, found = fn_diff(
+                prev_response,
+                {"primary_metrics_canonical": current_metrics}
+            )
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
