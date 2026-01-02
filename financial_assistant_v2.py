@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.36
+# YUREEKA AI RESEARCH ASSISTANT v7.37
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -40,6 +40,7 @@
 # Safe fallback scraper when ScrapingDog is unavailable
 # Prevent caching “empty results” from SerpAPI (no poisoned cache)
 # Restoration of Range Estimates For Metrics
+# Improved Junk Tagging and Rejection
 # ================================================================================
 
 import io
@@ -376,7 +377,10 @@ def add_to_history(analysis: dict) -> bool:
                     ctx = (n.get("context_snippet") or n.get("context") or "").strip()
                     val = n.get("value")
                     unit = n.get("unit")
+
+                    # Prefer existing extractor anchor_hash if present (more stable); fallback if missing
                     anchor_hash = n.get("anchor_hash") or _sha1(f"{url}|{raw}|{ctx[:220]}")
+
                     clean_nums.append(
                         {
                             "value": val,
@@ -384,12 +388,18 @@ def add_to_history(analysis: dict) -> bool:
                             "raw": raw,
                             "context_snippet": ctx[:220],
                             "anchor_hash": anchor_hash,
-                            # ---- ADDITIVE: preserve stable identity and offsets for deterministic anchoring ----
+
+                            # ---- ADDITIVE: preserve stable identity + offsets (Change #2 support) ----
                             "extracted_number_id": n.get("extracted_number_id"),
                             "source_url": n.get("source_url") or url,
                             "start_idx": n.get("start_idx"),
                             "end_idx": n.get("end_idx"),
-                            # ------------------------------------------------------------------------------
+                            # --------------------------------------------------------------------------
+
+                            # ---- ADDITIVE (Patch B): preserve junk tags ----
+                            "is_junk": bool(n.get("is_junk")) if isinstance(n.get("is_junk"), bool) else False,
+                            "junk_reason": n.get("junk_reason") or "",
+                            # ---------------------------------------------
                         }
                     )
 
@@ -405,6 +415,7 @@ def add_to_history(analysis: dict) -> bool:
         # ---- ADDITIVE: stable ordering of evidence records (Change #2 / 3A) ----
         records = sort_evidence_records(records)
         # -----------------------------------------------------------------------
+
         return records
 
 
@@ -440,18 +451,25 @@ def add_to_history(analysis: dict) -> bool:
             for n in rec.get("numbers", []) or []:
                 if not isinstance(n, dict):
                     continue
-                all_nums.append({
-                    "source_url": url,
-                    "fingerprint": fp,
-                    "value": n.get("value"),
-                    "unit": (n.get("unit") or "").strip(),
-                    "raw": n.get("raw") or "",
-                    "context_snippet": n.get("context_snippet") or "",
-                    "anchor_hash": n.get("anchor_hash"),
-                    "start_idx": n.get("start_idx"),
-                    "end_idx": n.get("end_idx"),
-                    "extracted_number_id": n.get("extracted_number_id"),
-                })
+                all_nums.append(
+                    {
+                        "source_url": url,
+                        "fingerprint": fp,
+                        "value": n.get("value"),
+                        "unit": (n.get("unit") or "").strip(),
+                        "raw": n.get("raw") or "",
+                        "context_snippet": n.get("context_snippet") or "",
+                        "anchor_hash": n.get("anchor_hash"),
+                        "start_idx": n.get("start_idx"),
+                        "end_idx": n.get("end_idx"),
+                        "extracted_number_id": n.get("extracted_number_id"),
+
+                        # ---- ADDITIVE (Patch C prerequisite): carry junk tag into candidates ----
+                        "is_junk": n.get("is_junk"),
+                        "junk_reason": n.get("junk_reason"),
+                        # ------------------------------------------------------------------------
+                    }
+                )
 
         compat_v2 = globals().get("_compatible_units_v2")
         compat_legacy = globals().get("_compatible_units")
@@ -477,6 +495,15 @@ def add_to_history(analysis: dict) -> bool:
                 craw = cand.get("raw") or ""
                 cunit = (cand.get("unit") or "").strip()
 
+                # ---- ADDITIVE (Patch C): exclude junk candidates by default ----
+                if cand.get("is_junk") is True:
+                    # Allow only if the baseline metric itself is clearly "a year" (rare case)
+                    br = (prev_raw or "").strip()
+                    if not (br.isdigit() and len(br) == 4):
+                        continue
+                # ---------------------------------------------------------------
+
+                # 1) unit-family compatibility (v2 preferred)
                 ok = True
                 try:
                     if callable(compat_v2):
@@ -488,6 +515,7 @@ def add_to_history(analysis: dict) -> bool:
                 if not ok:
                     continue
 
+                # 2) preserve any existing currency compatibility filter
                 try:
                     if callable(compat_ccy) and not compat_ccy(prev_raw, craw, cctx):
                         continue
@@ -511,6 +539,7 @@ def add_to_history(analysis: dict) -> bool:
                 if _is_number(mval) and _is_number(cand.get("value")):
                     abs_delta = abs(_safe_float(mval) - _safe_float(cand.get("value")))
 
+                # Stable tie-breaker tuple
                 key = (
                     score,
                     same_unit,
@@ -528,33 +557,37 @@ def add_to_history(analysis: dict) -> bool:
                     best = cand
 
             if best and best_score >= 0.20:
-                anchors.append({
-                    "metric_id": str(mid),
-                    "metric_name": mname,
-                    "baseline_raw": prev_raw,
-                    "source_url": best.get("source_url"),
-                    "fingerprint": best.get("fingerprint"),
-                    "anchor_hash": best.get("anchor_hash"),
-                    "matched_raw": best.get("raw"),
-                    "matched_value": best.get("value"),
-                    "matched_unit": best.get("unit"),
-                    "context_snippet": best.get("context_snippet"),
-                    "anchor_confidence": float(min(100.0, best_score * 100.0)),
-                })
+                anchors.append(
+                    {
+                        "metric_id": str(mid),
+                        "metric_name": mname,
+                        "baseline_raw": prev_raw,
+                        "source_url": best.get("source_url"),
+                        "fingerprint": best.get("fingerprint"),
+                        "anchor_hash": best.get("anchor_hash"),
+                        "matched_raw": best.get("raw"),
+                        "matched_value": best.get("value"),
+                        "matched_unit": best.get("unit"),
+                        "context_snippet": best.get("context_snippet"),
+                        "anchor_confidence": float(min(100.0, best_score * 100.0)),
+                    }
+                )
             else:
-                anchors.append({
-                    "metric_id": str(mid),
-                    "metric_name": mname,
-                    "baseline_raw": prev_raw,
-                    "source_url": None,
-                    "fingerprint": None,
-                    "anchor_hash": None,
-                    "matched_raw": None,
-                    "matched_value": None,
-                    "matched_unit": None,
-                    "context_snippet": None,
-                    "anchor_confidence": 0.0,
-                })
+                anchors.append(
+                    {
+                        "metric_id": str(mid),
+                        "metric_name": mname,
+                        "baseline_raw": prev_raw,
+                        "source_url": None,
+                        "fingerprint": None,
+                        "anchor_hash": None,
+                        "matched_raw": None,
+                        "matched_value": None,
+                        "matched_unit": None,
+                        "context_snippet": None,
+                        "anchor_confidence": 0.0,
+                    }
+                )
 
         return anchors
 
@@ -9349,7 +9382,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
         return u
 
-
     def _looks_html(s: str) -> bool:
         sl = s.lower()
         return ("<html" in sl) or ("<div" in sl) or ("<p" in sl) or ("<script" in sl) or ("</" in sl)
@@ -9431,12 +9463,68 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                     return True
         return False
 
+    # -------------------------------------------------------------------------
+    # ADDITIVE (Patch A1): fix common "split year" artifact (e.g., "202 5" -> "2025")
+    # Do this AFTER HTML->text and BEFORE regex extraction.
+    # -------------------------------------------------------------------------
+
     # ---------- normalize to visible text ----------
     if _looks_html(raw):
         raw = _html_to_text(raw)
 
     # cap huge pages
     raw = raw[:250_000]
+
+    # ---- ADDITIVE: fix common "split year" artifact (e.g., "202 5" -> "2025") ----
+    raw = re.sub(r"\b((?:19|20)\d)\s+(\d)\b", r"\1\2", raw)
+    # -----------------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    # ADDITIVE (Patch A2): non-destructive junk tagger
+    # - We DO NOT filter here; we tag and downstream excludes by default.
+    # -------------------------------------------------------------------------
+    def _junk_tag(value: float, unit: str, raw_disp: str, ctx: str):
+        """
+        Non-destructive junk classifier.
+        Returns (is_junk: bool, reason: str).
+        """
+        c = (ctx or "").lower()
+        u = (unit or "").strip()
+
+        # Strong chrome/nav hints (unitless small ints)
+        nav_hits = [
+            "skip to content", "menu", "search", "login", "sign in", "sign up",
+            "subscribe", "newsletter", "cookie", "privacy", "terms", "copyright",
+            "all rights reserved", "back to top", "next", "previous", "page ",
+            "home", "about", "contact", "sitemap", "breadcrumb"
+        ]
+        if any(h in c for h in nav_hits):
+            try:
+                if u == "" and abs(float(value)) <= 20:
+                    return True, "nav_small_int"
+            except Exception:
+                pass
+
+        # Enumeration-like unitless small integers
+        if u == "":
+            try:
+                if abs(float(value)) <= 12:
+                    if any(h in c for h in ["•", "–", "step", "chapter", "section", "item", "no."]):
+                        return True, "enumeration_small_int"
+            except Exception:
+                pass
+
+        # 3-digit "year fragments" (often from broken markup; kept as tag-only)
+        if u == "":
+            try:
+                iv = int(abs(float(value)))
+                if 190 <= iv <= 209:
+                    if any(x in (raw_disp or "") for x in ["202", "203", "204", "205", "206", "207", "208", "209"]):
+                        return True, "year_fragment_3digit"
+            except Exception:
+                pass
+
+        return False, ""
 
     # ---------- extraction pattern ----------
     # currency token (optional) + number + optional scale/%/words
@@ -9490,6 +9578,13 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
         anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx_store}")
 
+        # ---------------------------------------------------------------------
+        # ADDITIVE (Patch A2): tag junk candidates (do not drop)
+        # Also add deterministic offsets.
+        # ---------------------------------------------------------------------
+        is_junk, junk_reason = _junk_tag(val, unit, raw_disp, ctx_store)
+        # ---------------------------------------------------------------------
+
         out.append({
             "value": val,
             "unit": unit,
@@ -9498,6 +9593,13 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             "context": ctx_store,
             "context_snippet": ctx_store,
             "anchor_hash": anchor_hash,
+
+            # ---- ADDITIVE: junk tagging + deterministic offsets ----
+            "is_junk": bool(is_junk),
+            "junk_reason": junk_reason,
+            "start_idx": int(m.start()),
+            "end_idx": int(m.end()),
+            # -------------------------------------------------------
         })
 
         if len(out) >= int(max_results or 350):
