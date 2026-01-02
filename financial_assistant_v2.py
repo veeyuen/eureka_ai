@@ -9480,6 +9480,13 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     # -----------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
+    # ADDITIVE (Patch A3): year-range detector (tag-only, does NOT drop candidates)
+    # -------------------------------------------------------------------------
+    def _is_year_range_context(ctx: str) -> bool:
+        # Matches: 2025-2035, 2025 – 2035, 2025 to 2035, 2025—2035
+        return bool(re.search(r"\b(19|20)\d{2}\s*(?:-|–|—|to)\s*(19|20)\d{2}\b", ctx or "", flags=re.I))
+
+    # -------------------------------------------------------------------------
     # ADDITIVE (Patch A2): non-destructive junk tagger
     # - We DO NOT filter here; we tag and downstream excludes by default.
     # -------------------------------------------------------------------------
@@ -9490,6 +9497,18 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         """
         c = (ctx or "").lower()
         u = (unit or "").strip()
+
+        # =========================
+        # PATCH A3 (TAG ONLY): year-range endpoints are usually timeline metadata
+        # This does NOT drop candidates; it only tags them.
+        # =========================
+        try:
+            # value may be 2025.0 from float parsing; normalize to int string
+            iv = int(float(value))
+            if u == "" and 1900 <= iv <= 2099 and _is_year_range_context(ctx):
+                return True, "year_range"
+        except Exception:
+            pass
 
         # Strong chrome/nav hints (unitless small ints)
         nav_hits = [
@@ -9530,7 +9549,12 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     # currency token (optional) + number + optional scale/%/words
     pat = re.compile(
         r"(S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
-        r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*"
+        # =========================
+        # PATCH A4 (BUGFIX, minimal): prevent partial matches like "-203" inside "2025-2035"
+        # by ensuring the number match is not immediately followed by another digit.
+        # This ONLY blocks truncated matches; normal numbers still match.
+        # =========================
+        r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)(?!\d)\s*"
         # --------------------------------------------------
         # NEW (additive): energy units in the captured unit group
         # --------------------------------------------------
