@@ -397,6 +397,7 @@ def add_to_history(analysis: dict) -> bool:
             )
         return records
 
+
     def _build_metric_anchors(primary_metrics: Any, evidence_records: List[Dict]) -> List[Dict]:
         """
         For each baseline metric, pick the best matching evidence number and store anchor.
@@ -406,6 +407,7 @@ def add_to_history(analysis: dict) -> bool:
         if not isinstance(primary_metrics, dict):
             return anchors
 
+        # Flatten evidence numbers
         all_nums: List[Dict] = []
         for rec in (evidence_records or []):
             if not isinstance(rec, dict):
@@ -420,24 +422,30 @@ def add_to_history(analysis: dict) -> bool:
                         "source_url": url,
                         "fingerprint": fp,
                         "value": n.get("value"),
-                        "unit": n.get("unit"),
-                        "raw": n.get("raw"),
+                        "unit": (n.get("unit") or "").strip(),
+                        "raw": n.get("raw") or "",
                         "context_snippet": n.get("context_snippet") or "",
                         "anchor_hash": n.get("anchor_hash"),
+                        # Optional but useful deterministic tiebreakers if present:
+                        "start_idx": n.get("start_idx"),
+                        "end_idx": n.get("end_idx"),
                     }
                 )
 
         for mid, m in primary_metrics.items():
             if not isinstance(m, dict):
                 continue
+
             mname = m.get("name") or str(mid)
             mval = m.get("value")
             munit = (m.get("unit") or "").strip()
+            prev_unit = munit
             prev_raw = m.get("raw") or _format_prev_raw(mval, munit)
 
             tokens = _metric_tokens(mname)
 
             best = None
+            best_key = None  # deterministic composite key
             best_score = -1.0
 
             for cand in all_nums:
@@ -445,17 +453,40 @@ def add_to_history(analysis: dict) -> bool:
                 craw = cand.get("raw") or ""
                 cunit = (cand.get("unit") or "").strip()
 
-            if not _compatible_units_v2(prev_unit, cand_unit, prev_raw, cand_raw, cand_ctx):
-                continue
+                # ✅ unit-family compatibility gate (v2)
+                if not _compatible_units_v2(prev_unit, cunit, prev_raw, craw, cctx):
+                    continue
 
                 s_ctx = _ctx_score(tokens, cctx)
+
                 bonus = 0.0
                 if _looks_like_currency(prev_raw) and _looks_like_currency(craw):
                     bonus += 0.05
 
                 score = s_ctx + bonus
-                if score > best_score:
-                    best_score = score
+
+                # Deterministic tie-breakers: higher score wins; then prefer same-unit; then stable ordering
+                same_unit = 1 if (normalize_unit(prev_unit) and normalize_unit(prev_unit) == normalize_unit(cunit)) else 0
+                # Use url + indices + raw as stable fallback
+                tie_url = cand.get("source_url") or ""
+                tie_start = cand.get("start_idx")
+                tie_end = cand.get("end_idx")
+                tie_raw = craw
+
+                key = (
+                    float(score),
+                    int(same_unit),
+                    -abs(_safe_float(mval) - _safe_float(cand.get("value"))) if _is_number(mval) and _is_number(cand.get("value")) else float("-inf"),
+                    tie_url,
+                    tie_start if isinstance(tie_start, int) else 10**18,
+                    tie_end if isinstance(tie_end, int) else 10**18,
+                    tie_raw,
+                )
+
+                # Compare keys lexicographically (best is max)
+                if (best_key is None) or (key > best_key):
+                    best_key = key
+                    best_score = float(score)
                     best = cand
 
             if best and best_score >= 0.20:
@@ -492,6 +523,23 @@ def add_to_history(analysis: dict) -> bool:
                 )
 
         return anchors
+
+
+    # --- Additive helpers used above (safe, small) ---
+    def _is_number(x: Any) -> bool:
+        try:
+            float(x)
+            return True
+        except Exception:
+            return False
+
+    def _safe_float(x: Any) -> float:
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+
+
 
     # -----------------------
     # NEW (additive): Sheet cell size guard
