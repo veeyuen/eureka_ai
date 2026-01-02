@@ -9080,37 +9080,37 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
     def _normalize_unit(u: str) -> str:
-    u = (u or "").strip()
-    if not u:
-        return ""
-    ul = u.lower().replace(" ", "")
+        u = (u or "").strip()
+        if not u:
+            return ""
+        ul = u.lower().replace(" ", "")
 
-    # Energy units (must come before magnitude)
-    if "twh" in ul:
-        return "TWh"
-    if "gwh" in ul:
-        return "GWh"
-    if "mwh" in ul:
-        return "MWh"
-    if "kwh" in ul:
-        return "kWh"
-    if ul == "wh":
-        return "Wh"
+        # Energy units (must come before magnitude)
+        if "twh" in ul:
+            return "TWh"
+        if "gwh" in ul:
+            return "GWh"
+        if "mwh" in ul:
+            return "MWh"
+        if "kwh" in ul:
+            return "kWh"
+        if ul == "wh":
+            return "Wh"
 
-    # Magnitudes (case-insensitive; fix: accept single-letter suffixes)
-    if ul in ("bn", "billion", "b"):
-        return "B"
-    if ul in ("mn", "mio", "million", "m"):
-        return "M"
-    if ul in ("k", "thousand", "000"):
-        return "K"
-    if ul in ("trillion", "tn", "t"):
-        return "T"
+        # Magnitudes (case-insensitive; fix: accept single-letter suffixes)
+        if ul in ("bn", "billion", "b"):
+            return "B"
+        if ul in ("mn", "mio", "million", "m"):
+            return "M"
+        if ul in ("k", "thousand", "000"):
+            return "K"
+        if ul in ("trillion", "tn", "t"):
+            return "T"
 
-    if ul in ("pct", "percent", "%"):
-        return "%"
+        if ul in ("pct", "percent", "%"):
+            return "%"
 
-    return u
+        return u
 
 
     def _looks_html(s: str) -> bool:
