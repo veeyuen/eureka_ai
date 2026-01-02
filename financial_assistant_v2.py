@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.35
+# YUREEKA AI RESEARCH ASSISTANT v7.36
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -211,27 +211,136 @@ def add_to_history(analysis: dict) -> bool:
         return True
 
     def _unit_family(u: str) -> str:
-        u = _norm_unit(u)
-        if u in ("T", "B", "M", "K"):
-            return "SCALE"
-        if u == "%":
+        """
+        Deterministic unit-family classifier for anchor matching.
+        Keep it strict: only classify what we can confidently identify.
+        """
+        uu = normalize_unit(u or "")
+        ul = (uu or "").strip().lower()
+
+        # Percent
+        if uu == "%":
             return "PCT"
+
+        # Energy
+        if ul in ("twh", "gwh", "mwh", "kwh", "wh") or ul.endswith("wh"):
+            return "ENERGY"
+
+        # Magnitude tags
+        if uu in ("T", "B", "M", "K"):
+            return "MAG"
+
         return "OTHER"
 
     def _compatible_units(prev_unit: str, cand_unit: str, prev_raw: str, cand_raw: str, cand_ctx: str) -> bool:
-        pu = _norm_unit(prev_unit)
-        cu = _norm_unit(cand_unit)
+        """
+        Deterministic unit compatibility gate for metric anchors.
+
+        Principle: if the baseline metric has a meaningful unit family
+        (PCT / ENERGY / MAG), the candidate must match that family.
+        This prevents cross-unit anchors (e.g., energy metric anchoring to currency).
+        """
+        pu = normalize_unit(prev_unit or "")
+        cu = normalize_unit(cand_unit or "")
 
         pf = _unit_family(pu)
         cf = _unit_family(cu)
 
+        prev_raw_l = (prev_raw or "").lower()
+        cand_raw_l = (cand_raw or "").lower()
+        cand_ctx_l = (cand_ctx or "").lower()
+
+        # Helper signals from raw/context when cand_unit is empty
+        cand_has_pct = ("%" in cand_raw_l) or ("%" in cand_ctx_l) or (" pct" in cand_ctx_l) or ("percent" in cand_ctx_l)
+        cand_has_energy = any(x in cand_raw_l or x in cand_ctx_l for x in ["twh", "gwh", "mwh", "kwh", " wh"])
+        cand_has_mag = normalize_unit_tag(cu or cand_raw or cand_ctx) in ("K", "M", "B", "T")
+
+        prev_has_energy = any(x in prev_raw_l for x in ["twh", "gwh", "mwh", "kwh", " wh"])
+        prev_has_mag = normalize_unit_tag(pu or prev_raw) in ("K", "M", "B", "T")
+
+        # PCT: must be percent-like
         if pf == "PCT":
-            return (cu == "%") or ("%" in (cand_raw or "")) or ("%" in (cand_ctx or ""))
+            return (cf == "PCT") or cand_has_pct
 
-        if pf == "SCALE":
-            return cf == "SCALE"
+        # ENERGY: must be energy-like (unit OR raw/context)
+        if pf == "ENERGY" or prev_has_energy:
+            return (cf == "ENERGY") or cand_has_energy
 
+        # MAG: must be magnitude-like (unit tag OR raw/context tag)
+        if pf == "MAG" or prev_has_mag:
+            return (cf == "MAG") or cand_has_mag
+
+        # If baseline has no meaningful unit, don't block (backward compatible)
         return True
+
+    # ==========================================================
+    # ADDITIVE: Strict unit-family compatibility for anchors (v2)
+    # Keeps legacy behavior as fallback for backward compatibility
+    # ==========================================================
+
+    def _unit_family_v2(u: str) -> str:
+        """
+        Deterministic unit-family classifier for anchor matching.
+        Only classify when confidently recognized.
+        """
+        uu = normalize_unit(u or "")
+        ul = (uu or "").strip().lower()
+
+        if uu == "%":
+            return "PCT"
+
+        # ENERGY (keep strict; do not infer beyond wh-family)
+        if ul in ("twh", "gwh", "mwh", "kwh", "wh") or ul.endswith("wh"):
+            return "ENERGY"
+
+        # Magnitude tags
+        if uu in ("T", "B", "M", "K"):
+            return "MAG"
+
+        return "OTHER"
+
+
+    def _compatible_units_v2(prev_unit: str, cand_unit: str, prev_raw: str, cand_raw: str, cand_ctx: str) -> bool:
+        """
+        Strict unit compatibility gate for anchors.
+        If baseline metric has a meaningful unit family (PCT/ENERGY/MAG),
+        candidate must match the same family (unit OR raw/context signal).
+
+        Returns True if compatible; False if confidently incompatible.
+        """
+        pu = normalize_unit(prev_unit or "")
+        cu = normalize_unit(cand_unit or "")
+
+        pf = _unit_family_v2(pu)
+        cf = _unit_family_v2(cu)
+
+        prev_raw_l = (prev_raw or "").lower()
+        cand_raw_l = (cand_raw or "").lower()
+        cand_ctx_l = (cand_ctx or "").lower()
+
+        # Signals from raw/context when cand_unit is missing/empty
+        cand_has_pct = ("%" in cand_raw_l) or ("%" in cand_ctx_l) or (" pct" in cand_ctx_l) or ("percent" in cand_ctx_l)
+        cand_has_energy = any(x in cand_raw_l or x in cand_ctx_l for x in ["twh", "gwh", "mwh", "kwh", " wh"])
+        cand_has_mag = normalize_unit_tag(cu or cand_raw or cand_ctx) in ("K", "M", "B", "T")
+
+        prev_has_energy = any(x in prev_raw_l for x in ["twh", "gwh", "mwh", "kwh", " wh"])
+        prev_has_mag = normalize_unit_tag(pu or prev_raw) in ("K", "M", "B", "T")
+
+        # PCT: candidate must be percent-like
+        if pf == "PCT":
+            return (cf == "PCT") or cand_has_pct
+
+        # ENERGY: candidate must be energy-like
+        if pf == "ENERGY" or prev_has_energy:
+            return (cf == "ENERGY") or cand_has_energy
+
+        # MAG: candidate must be magnitude-like
+        if pf == "MAG" or prev_has_mag:
+            return (cf == "MAG") or cand_has_mag
+
+        # Baseline has no meaningful unit family -> do not block
+        return True
+
 
     def _format_prev_raw(v, u) -> str:
         if v is None or v == "":
@@ -336,8 +445,7 @@ def add_to_history(analysis: dict) -> bool:
                 craw = cand.get("raw") or ""
                 cunit = (cand.get("unit") or "").strip()
 
-                if not _compatible_units(munit, cunit, prev_raw, craw, cctx):
-                    continue
+            if not _compatible_units_v2(prev_unit, cand_unit, prev_raw, cand_raw, cand_ctx):                        continue
                 if not _compatible_currency(prev_raw, craw, cctx):
                     continue
 
@@ -4247,58 +4355,61 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
 # RANGE + SOURCE ATTRIBUTION (DETERMINISTIC, NO LLM)
 # =========================================================
 
-def normalize_unit_tag(u: str) -> str:
+def normalize_unit(unit: str) -> str:
     """
-    Normalize unit to a compact tag for matching:
-    - Energy units (NEW): TWh/GWh/MWh/kWh
-    - Currency magnitudes: T/B/M
-    - Percent: %
-    - Unknown: ""
+    Deterministic unit normalizer used across analysis/evolution.
+
+    Goals:
+    - Preserve domain units like TWh/GWh/MWh/kWh (do NOT collapse to T/M/etc.)
+    - Normalize magnitude suffixes case-insensitively: b/m/t/k -> B/M/T/K
+    - Normalize percent consistently to "%"
+    - Avoid clever heuristics; only normalize when confidently recognized
     """
-    if not u:
+    if not unit:
         return ""
 
-    ul = str(u).strip().lower()
+    u0 = str(unit).strip()
+    if not u0:
+        return ""
 
-    # --------------------------------------------------
-    # NEW (additive): explicit energy-unit short circuit
-    # --------------------------------------------------
-    # Must come BEFORE generic "endswith(t/m/b)" logic
-    if "twh" in ul:
+    ul = u0.strip().lower().replace(" ", "")
+
+    # --- Domain energy units (short-circuit, must be first) ---
+    # Normalize casing to canonical display forms
+    if "twh" == ul or ul.endswith("twh"):
         return "TWh"
-    if "gwh" in ul:
+    if "gwh" == ul or ul.endswith("gwh"):
         return "GWh"
-    if "mwh" in ul:
+    if "mwh" == ul or ul.endswith("mwh"):
         return "MWh"
-    if "kwh" in ul:
+    if "kwh" == ul or ul.endswith("kwh"):
         return "kWh"
     if ul == "wh":
         return "Wh"
 
-    # --------------------------------------------------
-    # EXISTING BEHAVIOR (unchanged)
-    # --------------------------------------------------
-    if "%" in ul:
+    # --- Percent ---
+    if ul in ("%", "percent", "pct"):
         return "%"
 
-    # common currency magnitude patterns
-    if "trillion" in ul or ul.endswith("t"):
+    # --- Currency prefixes/symbols (do not try to infer currency codes here) ---
+    # Keep currency detection elsewhere; unit here is for magnitude tags.
+    # If unit is literally "usd"/"$" etc, strip to empty.
+    if ul in ("$", "usd", "sgd", "eur", "gbp", "aud", "cad", "jpy", "cny", "rmb"):
+        return ""
+
+    # --- Magnitude tags (case-insensitive) ---
+    # IMPORTANT: handle single-letter forms used by extractor ("m", "b", "t", "k")
+    if ul in ("trillion", "tn", "t"):
         return "T"
-    if "billion" in ul or ul.endswith("b"):
+    if ul in ("billion", "bn", "b"):
         return "B"
-    if "million" in ul or ul.endswith("m"):
+    if ul in ("million", "mn", "mio", "m"):
         return "M"
+    if ul in ("thousand", "k", "000"):
+        return "K"
 
-    # if you store units like "billion USD"
-    if ul.startswith("t"):
-        return "T"
-    if ul.startswith("b"):
-        return "B"
-    if ul.startswith("m"):
-        return "M"
-
-    return ""
-
+    # Unknown: return original trimmed (preserve domain-specific tokens)
+    return u0.strip()
 
 
 
@@ -7344,13 +7455,27 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     def _cand_unit_family(cunit: str, craw: str) -> str:
         u = (cunit or "").strip()
         r = (craw or "")
-        if u == "%":
+        uu = u.upper()
+        ru = r.upper()
+
+        # Percent
+        if uu == "%" or "%" in ru:
             return "PCT"
-        if any(x in r.upper() for x in ["$", "USD", "SGD", "EUR", "GBP", "S$"]) or any(x in (u.upper()) for x in ["USD", "SGD", "EUR", "GBP"]):
+
+        # Energy
+        if any(x in (u or "").lower() for x in ["twh", "gwh", "mwh", "kwh"]) or any(x in (r or "").lower() for x in ["twh", "gwh", "mwh", "kwh"]):
+            return "ENERGY"
+
+        # Currency (symbol/code presence)
+        if any(x in ru for x in ["$", "USD", "SGD", "EUR", "GBP", "S$"]) or uu in ("USD", "SGD", "EUR", "GBP"):
             return "CUR"
-        if u in ("K", "M", "B", "T"):
+
+        # Magnitude (case-insensitive)
+        if uu in ("K", "M", "B", "T") or (u or "").lower() in ("k", "m", "b", "t"):
             return "MAG"
+
         return "OTHER"
+
 
     def _tokenize(s: str):
         return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
@@ -7447,6 +7572,25 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 # MAG: allow MAG/OTHER but avoid CUR/PCT
                 if uf == "MAG" and cf in ("CUR", "PCT"):
                     continue
+
+                # -----------------------------------------
+                # NEW (additive): metric-aware magnitude gate
+                # -----------------------------------------
+                # For MAG metrics, require the candidate to actually be a magnitude-tagged number
+                # (prevents years/menu numbers slipping in as OTHER).
+                if uf == "MAG":
+                    cand_tag = normalize_unit_tag(cunit or craw)
+                    exp_tag = normalize_unit_tag((mdef.get("unit") or "") or (m.get("unit") or ""))
+
+                    # If we have an expected magnitude (e.g., "M"), require it to match.
+                    if exp_tag in ("K", "M", "B", "T"):
+                        if cand_tag != exp_tag:
+                            continue
+                    else:
+                        # Otherwise require candidate be magnitude-tagged at all.
+                        if cand_tag not in ("K", "M", "B", "T"):
+                            continue
+
 
                 # token overlap gate (tight enough to avoid random “beryllium”)
                 c_tokens = set(_tokenize(ctx))
@@ -8937,35 +9081,38 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
     def _normalize_unit(u: str) -> str:
-        u = (u or "").strip()
-        ul = u.lower()
+    u = (u or "").strip()
+    if not u:
+        return ""
+    ul = u.lower().replace(" ", "")
 
-        # --------------------------------------------------
-        # NEW (additive): energy units short-circuit
-        # --------------------------------------------------
-        if "twh" in ul:
-            return "TWh"
-        if "gwh" in ul:
-            return "GWh"
-        if "mwh" in ul:
-            return "MWh"
-        if "kwh" in ul:
-            return "kWh"
-        if ul == "wh":
-            return "Wh"
+    # Energy units (must come before magnitude)
+    if "twh" in ul:
+        return "TWh"
+    if "gwh" in ul:
+        return "GWh"
+    if "mwh" in ul:
+        return "MWh"
+    if "kwh" in ul:
+        return "kWh"
+    if ul == "wh":
+        return "Wh"
 
-        # existing behavior
-        if ul in ("bn", "billion"):
-            return "B"
-        if ul in ("mn", "mio", "million"):
-            return "M"
-        if ul in ("k", "thousand", "000"):
-            return "K"
-        if ul in ("trillion", "tn"):
-            return "T"
-        if ul in ("pct", "percent"):
-            return "%"
-        return u
+    # Magnitudes (case-insensitive; fix: accept single-letter suffixes)
+    if ul in ("bn", "billion", "b"):
+        return "B"
+    if ul in ("mn", "mio", "million", "m"):
+        return "M"
+    if ul in ("k", "thousand", "000"):
+        return "K"
+    if ul in ("trillion", "tn", "t"):
+        return "T"
+
+    if ul in ("pct", "percent", "%"):
+        return "%"
+
+    return u
+
 
     def _looks_html(s: str) -> bool:
         sl = s.lower()
