@@ -446,7 +446,6 @@ def add_to_history(analysis: dict) -> bool:
                 cunit = (cand.get("unit") or "").strip()
 
             if not _compatible_units_v2(prev_unit, cand_unit, prev_raw, cand_raw, cand_ctx):                        continue
-                if not _compatible_currency(prev_raw, craw, cctx):
                     continue
 
                 s_ctx = _ctx_score(tokens, cctx)
