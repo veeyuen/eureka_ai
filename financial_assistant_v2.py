@@ -4091,8 +4091,65 @@ def canonicalize_metrics(
         - dimension (currency | unit_sales | percent | count | index | unknown)
         - name (dimension-corrected display name)
     """
+    import re  # ========================= PATCH C0 (ADDITIVE): missing import =========================
+
     if not isinstance(metrics, dict):
         return {}
+
+    # =========================
+    # PATCH C1 (ADDITIVE): safe helpers for canonical numeric fields
+    # - Prefer existing normalize_unit_tag/unit_family/canonicalize_numeric_candidate if present.
+    # - Never breaks if those helpers are missing.
+    # =========================
+    def _safe_normalize_unit_tag(u: str) -> str:
+        try:
+            fn = globals().get("normalize_unit_tag")
+            if callable(fn):
+                return fn(u or "")
+        except Exception:
+            pass
+        # minimal fallback (kept conservative)
+        uu = (u or "").strip()
+        ul = uu.lower().replace(" ", "")
+        if ul in ("%", "pct", "percent"):
+            return "%"
+        if ul in ("twh",):
+            return "TWh"
+        if ul in ("gwh",):
+            return "GWh"
+        if ul in ("mwh",):
+            return "MWh"
+        if ul in ("kwh",):
+            return "kWh"
+        if ul in ("wh",):
+            return "Wh"
+        if ul in ("t", "trillion", "tn"):
+            return "T"
+        if ul in ("b", "bn", "billion"):
+            return "B"
+        if ul in ("m", "mn", "mio", "million"):
+            return "M"
+        if ul in ("k", "thousand", "000"):
+            return "K"
+        return uu
+
+    def _safe_unit_family(unit_tag: str) -> str:
+        try:
+            fn = globals().get("unit_family")
+            if callable(fn):
+                return fn(unit_tag or "")
+        except Exception:
+            pass
+        ut = (unit_tag or "").strip()
+        if ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
+            return "energy"
+        if ut == "%":
+            return "percent"
+        if ut in ("T", "B", "M", "K"):
+            return "magnitude"
+        # currency not reliably derived here (handled elsewhere)
+        return ""
+    # =========================
 
     def infer_metric_dimension(metric_name: str, unit_raw: str) -> str:
         n = (metric_name or "").lower()
@@ -4123,8 +4180,6 @@ def canonicalize_metrics(
         return "unknown"
 
     def display_name_for_dimension(original_display: str, dim: str) -> str:
-        # If registry mapped it wrongly (e.g. "Revenue (2025)" but actually unit sales),
-        # override display name to avoid misleading labels.
         if not original_display:
             return original_display
 
@@ -4132,10 +4187,8 @@ def canonicalize_metrics(
         od_low = od.lower()
 
         if dim == "unit_sales":
-            # Replace "Revenue" phrasing if it exists
             if "revenue" in od_low or "market value" in od_low or "valuation" in od_low:
                 return re.sub(r"(?i)revenue|market value|valuation", "Unit Sales", od).strip()
-            # If it just says "Sales", keep but make explicit
             if od_low.startswith("sales"):
                 return "Unit Sales" + od[len("Sales"):]
             if "sales" in od_low:
@@ -4143,15 +4196,13 @@ def canonicalize_metrics(
             return od
 
         if dim == "currency":
-            # If it says "Unit Sales" but unit is currency, flip back
             if "unit sales" in od_low:
                 return re.sub(r"(?i)unit sales", "Revenue", od).strip()
             return od
 
         if dim == "percent":
-            # Prefer "Share" / "CAGR" style if it looks like one
             if "unit sales" in od_low or "revenue" in od_low:
-                return od  # don’t aggressively rename; leave as-is
+                return od
             return od
 
         return od
@@ -4166,11 +4217,19 @@ def canonicalize_metrics(
         canonical_id, canonical_name = get_canonical_metric_id(original_name)
 
         raw_unit = (metric.get("unit") or "").strip()
-        unit_norm = raw_unit.upper()
 
+        # =========================
+        # PATCH C2 (ADDITIVE): compute unit_tag/unit_family without changing existing unit behavior
+        # - We keep your existing unit_norm logic for backwards compatibility.
+        # - But we ALSO attach unit_tag + unit_family so downstream can gate deterministically.
+        # =========================
+        unit_tag = metric.get("unit_tag") or _safe_normalize_unit_tag(raw_unit)
+        unit_family_tag = metric.get("unit_family") or _safe_unit_family(unit_tag)
+        # =========================
+
+        unit_norm = raw_unit.upper()  # keep original behavior (do not change)
         dim = infer_metric_dimension(str(original_name), raw_unit)
 
-        # Dimension-safe canonical key (this is what you group/merge on)
         canonical_key = f"{canonical_id}__{dim}"
 
         parsed_val = parse_to_float(metric.get("value"))
@@ -4200,12 +4259,34 @@ def canonicalize_metrics(
             str(metric.get("source_url", "")),
         )
 
+        # =========================
+        # PATCH C3 (ADDITIVE): canonicalize numeric fields on the candidate metric dict
+        # - If canonicalize_numeric_candidate exists, it will attach:
+        #   unit_tag/unit_family/base_unit/multiplier_to_base/value_norm
+        # - If not, we attach minimal fields ourselves (still additive).
+        # =========================
+        metric_enriched = dict(metric)  # never mutate caller's dict
+        try:
+            fn_can = globals().get("canonicalize_numeric_candidate")
+            if callable(fn_can):
+                metric_enriched = fn_can(metric_enriched)
+        except Exception:
+            pass
+
+        # Ensure minimal canonical fields exist (additive)
+        metric_enriched.setdefault("unit_tag", unit_tag)
+        metric_enriched.setdefault("unit_family", unit_family_tag)
+        # =========================
+
         candidates.append({
             "canonical_id": canonical_id,
             "canonical_key": canonical_key,
             "canonical_name": display_name_for_dimension(canonical_name, dim),
             "original_name": original_name,
-            "metric": metric,
+
+            # NOTE: store enriched metric
+            "metric": metric_enriched,
+
             "unit": unit_norm,
             "parsed_val": parsed_val,
             "dimension": dim,
@@ -4217,7 +4298,6 @@ def canonicalize_metrics(
 
     candidates.sort(key=lambda x: x["stable_sort_key"])
 
-    # Group by canonical_key (NOT canonical_id)
     grouped: Dict[str, List[Dict]] = {}
     for c in candidates:
         grouped.setdefault(c["canonical_key"], []).append(c)
@@ -4225,11 +4305,15 @@ def canonicalize_metrics(
     canonicalized: Dict[str, Dict] = {}
 
     for ckey, group in grouped.items():
-        # Single metric or no merge requested
         if len(group) == 1 or not merge_duplicates_to_range:
             g = group[0]
             m = g["metric"]
-            canonicalized[ckey] = {
+
+            # =========================
+            # PATCH C4 (ADDITIVE): keep canonical numeric & semantic fields on output row
+            # (only adds keys; does not remove/rename existing keys)
+            # =========================
+            out_row = {
                 **m,
                 "name": g["canonical_name"],
                 "canonical_id": g["canonical_id"],
@@ -4244,6 +4328,13 @@ def canonicalize_metrics(
                 "proxy_confidence": float(g.get("proxy_confidence", 0.0) or 0.0),
                 "proxy_target": g.get("proxy_target", ""),
             }
+            # Ensure these exist if upstream provided them
+            for k in ["anchor_hash", "source_url", "context_snippet", "measure_kind", "measure_assoc",
+                      "unit_tag", "unit_family", "base_unit", "multiplier_to_base", "value_norm"]:
+                if k in m and k not in out_row:
+                    out_row[k] = m.get(k)
+            canonicalized[ckey] = out_row
+            # =========================
             continue
 
         # Merge duplicates within SAME dimension-safe canonical_key
@@ -4272,6 +4363,21 @@ def canonicalize_metrics(
         base_metric["original_names"] = orig_names
         base_metric["raw_values"] = raw_vals
 
+        # =========================
+        # PATCH C5 (ADDITIVE): optional canonical range using value_norm if present
+        # - Keeps your existing "range" untouched.
+        # - Adds "range_norm" when we can compute it.
+        # =========================
+        vals_norm = []
+        for g in group:
+            mm = g.get("metric") if isinstance(g, dict) else {}
+            if isinstance(mm, dict) and mm.get("value_norm") is not None:
+                try:
+                    vals_norm.append(float(mm.get("value_norm")))
+                except Exception:
+                    pass
+        # =========================
+
         if vals:
             vals_sorted = sorted(vals)
             vmin, vmax = vals_sorted[0], vals_sorted[-1]
@@ -4286,9 +4392,21 @@ def canonicalize_metrics(
         else:
             base_metric["range"] = {"min": None, "max": None, "candidates": [], "n": 0}
 
+        if len(vals_norm) >= 2:
+            vn = sorted(vals_norm)
+            base_metric["range_norm"] = {
+                "min": vn[0],
+                "max": vn[-1],
+                "candidates": vn,
+                "n": len(vn),
+                "unit": base_metric.get("base_unit") or base_metric.get("unit") or "",
+            }
+        # =========================
+
         canonicalized[ckey] = base_metric
 
     return canonicalized
+
 
 
 def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
@@ -7757,6 +7875,33 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         except Exception:
             return ""
 
+    # =========================================================================
+    # PATCH N1 (ADDITIVE): stable anchor_hash fallback helper for snapshots
+    # - Does NOT change existing behavior if anchor_hash already present.
+    # =========================================================================
+    def _sha1(s: str) -> str:
+        try:
+            import hashlib
+            return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+        except Exception:
+            return ""
+    # =========================================================================
+
+    # =========================================================================
+    # PATCH N2 (ADDITIVE): optional canonicalizer hook for snapshot numbers
+    # - Ensures unit_tag/unit_family/base_unit/value_norm are present when possible.
+    # - No behavior change if helper missing.
+    # =========================================================================
+    _canon_fn = globals().get("canonicalize_numeric_candidate")
+    def _maybe_canonicalize(n: dict) -> dict:
+        try:
+            if callable(_canon_fn):
+                return _canon_fn(dict(n))
+        except Exception:
+            pass
+        return dict(n)
+    # =========================================================================
+
     def _parse_num(value, unit_hint=""):
         try:
             fn = globals().get("parse_human_number")
@@ -7809,7 +7954,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
         return "OTHER"
 
-
     def _tokenize(s: str):
         return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
 
@@ -7835,18 +7979,53 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 "numbers_found": int(meta.get("numbers_found") or (len(nums) if isinstance(nums, list) else 0)),
                 "fetched_at": meta.get("fetched_at") or _now_iso(),
                 "fingerprint": meta.get("fingerprint") or _fingerprint(content),
+
+                # =====================================================================
+                # PATCH N1 (+ N2) (ADDITIVE): preserve full candidate record in snapshots
+                # - This is critical for:
+                #   * range gating (metric-aware)
+                #   * schema-first attribution
+                #   * evolution rebuild (anchor_hash + value_norm + unit_family)
+                # - Backward compatible: only adds keys; existing keys unchanged.
+                # =====================================================================
                 "extracted_numbers": [
-                    {
-                        "value": n.get("value"),
-                        "unit": n.get("unit"),
-                        "raw": n.get("raw"),
-                        "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:240],
-                        "anchor_hash": n.get("anchor_hash"),
-                        "source_url": n.get("source_url") or url,
-                    }
+                    (lambda nn: {
+                        "value": nn.get("value"),
+                        "unit": nn.get("unit"),
+                        "raw": nn.get("raw"),
+                        "context_snippet": (nn.get("context_snippet") or nn.get("context") or "")[:240],
+
+                        # keep existing anchor_hash if present; else stable fallback
+                        "anchor_hash": (
+                            nn.get("anchor_hash")
+                            or _sha1(
+                                f"{url}|{str(nn.get('raw') or '')}|{(nn.get('context_snippet') or nn.get('context') or '')[:240]}"
+                            )
+                        ),
+
+                        "source_url": nn.get("source_url") or url,
+
+                        # ---- Additive: junk tagging & deterministic offsets ----
+                        "is_junk": nn.get("is_junk"),
+                        "junk_reason": nn.get("junk_reason"),
+                        "start_idx": nn.get("start_idx"),
+                        "end_idx": nn.get("end_idx"),
+
+                        # ---- Additive: normalized unit fields (if already present or canonicalized) ----
+                        "unit_tag": nn.get("unit_tag"),
+                        "unit_family": nn.get("unit_family"),
+                        "base_unit": nn.get("base_unit"),
+                        "multiplier_to_base": nn.get("multiplier_to_base"),
+                        "value_norm": nn.get("value_norm"),
+
+                        # ---- Additive: semantic association tags (if present) ----
+                        "measure_kind": nn.get("measure_kind"),
+                        "measure_assoc": nn.get("measure_assoc"),
+                    })(_maybe_canonicalize(n))
                     for n in nums
                     if isinstance(n, dict)
                 ]
+                # =====================================================================
             })
 
     if baseline_sources_cache:
@@ -7854,7 +8033,23 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         # ---- ADDITIVE: stable ordering of snapshots (Change #2) ----
         for s in (baseline_sources_cache or []):
             if isinstance(s, dict) and isinstance(s.get("extracted_numbers"), list):
-                s["extracted_numbers"] = sort_snapshot_numbers(s["extracted_numbers"])
+
+                # =========================================================================
+                # PATCH N3 (ADDITIVE): guard sort_snapshot_numbers if not defined
+                # =========================================================================
+                try:
+                    if "sort_snapshot_numbers" in globals() and callable(globals()["sort_snapshot_numbers"]):
+                        s["extracted_numbers"] = sort_snapshot_numbers(s["extracted_numbers"])
+                    else:
+                        # safe fallback: anchor_hash then raw
+                        s["extracted_numbers"] = sorted(
+                            s["extracted_numbers"],
+                            key=lambda x: (str((x or {}).get("anchor_hash") or ""), str((x or {}).get("raw") or ""))
+                        )
+                except Exception:
+                    pass
+                # =========================================================================
+
                 s["numbers_found"] = len(s["extracted_numbers"])
 
         baseline_sources_cache = sorted(
@@ -7891,14 +8086,12 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             mdef = schema.get(ckey) or {}
             uf = _unit_family_from_metric(mdef)
             keywords = mdef.get("keywords") or []
-            # keywords might include phrases; tokenize everything
+
             kw_tokens = []
             for k in (keywords or []):
                 kw_tokens.extend(_tokenize(str(k)))
 
-            # also include the metric name tokens
             kw_tokens.extend(_tokenize(m.get("name") or m.get("original_name") or ""))
-
             kw_tokens = list(dict.fromkeys([t for t in kw_tokens if len(t) > 2]))[:40]
 
             vals = []
@@ -7919,26 +8112,19 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 if uf == "MAG" and cf in ("CUR", "PCT"):
                     continue
 
-                # -----------------------------------------
                 # NEW (additive): metric-aware magnitude gate
-                # -----------------------------------------
-                # For MAG metrics, require the candidate to actually be a magnitude-tagged number
-                # (prevents years/menu numbers slipping in as OTHER).
                 if uf == "MAG":
                     cand_tag = normalize_unit_tag(cunit or craw)
                     exp_tag = normalize_unit_tag((mdef.get("unit") or "") or (m.get("unit") or ""))
 
-                    # If we have an expected magnitude (e.g., "M"), require it to match.
                     if exp_tag in ("K", "M", "B", "T"):
                         if cand_tag != exp_tag:
                             continue
                     else:
-                        # Otherwise require candidate be magnitude-tagged at all.
                         if cand_tag not in ("K", "M", "B", "T"):
                             continue
 
-
-                # token overlap gate (tight enough to avoid random “beryllium”)
+                # token overlap gate
                 c_tokens = set(_tokenize(ctx))
                 if kw_tokens:
                     overlap = sum(1 for t in kw_tokens if t in c_tokens)
@@ -7960,7 +8146,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             if len(vals) >= 2:
                 vmin = min(vals)
                 vmax = max(vals)
-                # Only add a range if it’s meaningfully different (avoid 0.1% noise)
                 if abs(vmax - vmin) > max(1e-9, abs(vmin) * 0.02):
                     m["value_range"] = {
                         "min": vmin,
@@ -7969,7 +8154,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         "examples": examples,
                         "method": "snapshot_candidates"
                     }
-                    # optional display helper (won’t break anything if unused)
                     try:
                         unit_disp = m.get("unit") or ""
                         m["value_range_display"] = f"{vmin:g}–{vmax:g} {unit_disp}".strip()
@@ -9792,17 +9976,24 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     # -------------------------------------------------------------------------
 
     # ---------- extraction pattern ----------
+    # =========================
+    # PATCH N1 (ADDITIVE, BUGFIX): currency tokens
+    # - Fix US$ being parsed as S$ by matching US\$ first.
+    # - Also accept "US$" as a single token (case-insensitive).
+    # =========================
     pat = re.compile(
-        r"(S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
+        r"(US\$|US\$(?!\w)|S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
         # =========================
-        # PATCH A4 (BUGFIX): prevent partial matches like "-203" inside "2025-2035"
+        # PATCH N2 (ADDITIVE, BUGFIX): avoid capturing negative year from year-range
+        # - We'll still allow negatives generally, but we'll tag the special "2025-2030" case below.
+        # (No behavior change for real negatives like -1.2% etc.)
         # =========================
         r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)(?!\d)\s*"
-        # --------------------------------------------------
-        # PATCH A5 (BUGFIX): stop 'to' being read as unit 't' => normalized to 'T'
-        # - Single-letter magnitudes (T,B,M,K) only match if NOT followed by another letter.
-        # --------------------------------------------------
-        r"(TWh|GWh|MWh|kWh|Wh|(?:T|B|M|K)(?![A-Za-z])|trillion|billion|million|bn|mn|%|percent)?",
+        # =========================
+        # PATCH N3 (ADDITIVE, BUGFIX): capture 'tn' magnitude explicitly
+        # - Keep your A5 safeguard: single-letter magnitudes only match if NOT followed by a letter.
+        # =========================
+        r"(TWh|GWh|MWh|kWh|Wh|tn|(?:T|B|M|K)(?![A-Za-z])|trillion|billion|million|bn|mn|%|percent)?",
         flags=re.I
     )
 
@@ -9821,11 +10012,13 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         ctx = re.sub(r"\s+", " ", ctx).strip()
         ctx_store = ctx[:240]
 
+        # numeric parse
         try:
             val = float(num_s.replace(",", ""))
         except Exception:
             continue
 
+        # normalize unit
         unit = _normalize_unit(unit_s)
 
         raw_disp = f"{cur} {num_s}{unit_s}".strip()
@@ -9840,14 +10033,36 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         if _year_only_suppression(val, unit, num_s, ctx_store):
             continue
 
+        # =========================
+        # PATCH N2b (ADDITIVE, BUGFIX): tag the "negative year from range" case as junk
+        # Example: "CAGR 2025-2030" producing "-2030"
+        # - Do NOT drop here (keep non-destructive policy); just tag.
+        # =========================
+        neg_year_from_range = False
+        try:
+            if num_s.startswith("-"):
+                iv = int(abs(float(val)))
+                if 1900 <= iv <= 2099:
+                    # look immediately behind the match for a digit (the "2025" in "2025-2030")
+                    if m.start() > 0 and raw[m.start() - 1].isdigit():
+                        neg_year_from_range = True
+        except Exception:
+            neg_year_from_range = False
+        # =========================
+
         anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx_store}")
         is_junk, junk_reason = _junk_tag(val, unit, raw_disp, ctx_store)
 
-        # ---------------------------------------------------------------------
-        # PATCH M1 (ADDITIVE): attach semantic association tags
-        # ---------------------------------------------------------------------
+        # =========================
+        # PATCH N2c (ADDITIVE): override junk tagging reason when we confidently detect this bug
+        # =========================
+        if neg_year_from_range:
+            is_junk = True
+            junk_reason = "year_range_negative_endpoint"
+        # =========================
+
+        # semantic association tags
         measure_kind, measure_assoc = _classify_measure(unit, ctx_store)
-        # ---------------------------------------------------------------------
 
         out.append({
             "value": val,
@@ -9863,20 +10078,15 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             "start_idx": int(m.start()),
             "end_idx": int(m.end()),
 
-            # =========================
-            # PATCH M1 (ADDITIVE): semantic association tag(s)
-            # - measure_kind: internal stable classifier
-            # - measure_assoc: display-friendly association ("units", "share", "growth", ...)
-            # =========================
             "measure_kind": measure_kind,
             "measure_assoc": measure_assoc,
-            # =========================
         })
 
         if len(out) >= int(max_results or 350):
             break
 
     return out
+
 
 
 def extract_numbers_with_context_pdf(text):
