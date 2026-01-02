@@ -417,149 +417,146 @@ def add_to_history(analysis: dict) -> bool:
         if not isinstance(primary_metrics, dict):
             return anchors
 
-    def _is_number(x: Any) -> bool:
-        try:
-            float(x)
-            return True
-        except Exception:
-            return False
-
-    def _safe_float(x: Any) -> float:
-        try:
-            return float(x)
-        except Exception:
-            return 0.0
-
-    # Flatten all evidence candidates
-    all_nums: List[Dict] = []
-    for rec in (evidence_records or []):
-        if not isinstance(rec, dict):
-            continue
-        url = rec.get("url") or ""
-        fp = rec.get("fingerprint")
-        for n in rec.get("numbers", []) or []:
-            if not isinstance(n, dict):
-                continue
-            all_nums.append({
-                "source_url": url,
-                "fingerprint": fp,
-                "value": n.get("value"),
-                "unit": (n.get("unit") or "").strip(),
-                "raw": n.get("raw") or "",
-                "context_snippet": n.get("context_snippet") or "",
-                "anchor_hash": n.get("anchor_hash"),
-                "start_idx": n.get("start_idx"),
-                "end_idx": n.get("end_idx"),
-                "extracted_number_id": n.get("extracted_number_id"),
-            })
-
-    compat_v2 = globals().get("_compatible_units_v2")
-    compat_legacy = globals().get("_compatible_units")
-    compat_ccy = globals().get("_compatible_currency")
-
-    for mid, m in primary_metrics.items():
-        if not isinstance(m, dict):
-            continue
-
-        mname = m.get("name") or str(mid)
-        mval = m.get("value")
-        munit = (m.get("unit") or "").strip()
-        prev_raw = m.get("raw") or _format_prev_raw(mval, munit)
-
-        tokens = _metric_tokens(mname)
-
-        best = None
-        best_key = None
-        best_score = -1.0
-
-        for cand in all_nums:
-            cctx = cand.get("context_snippet") or ""
-            craw = cand.get("raw") or ""
-            cunit = (cand.get("unit") or "").strip()
-
-            # 1) unit-family compatibility (v2 preferred)
-            ok = True
+        def _is_number(x: Any) -> bool:
             try:
-                if callable(compat_v2):
-                    ok = bool(compat_v2(munit, cunit, prev_raw, craw, cctx))
-                elif callable(compat_legacy):
-                    ok = bool(compat_legacy(munit, cunit, prev_raw, craw, cctx))
+                float(x)
+                return True
             except Exception:
-                ok = True
-            if not ok:
-                continue
+                return False
 
-            # 2) preserve any existing currency compatibility filter
+        def _safe_float(x: Any) -> float:
             try:
-                if callable(compat_ccy) and not compat_ccy(prev_raw, craw, cctx):
+                return float(x)
+            except Exception:
+                return 0.0
+
+        # Flatten all evidence candidates
+        all_nums: List[Dict] = []
+        for rec in (evidence_records or []):
+            if not isinstance(rec, dict):
+                continue
+            url = rec.get("url") or ""
+            fp = rec.get("fingerprint")
+            for n in rec.get("numbers", []) or []:
+                if not isinstance(n, dict):
                     continue
-            except Exception:
-                pass
+                all_nums.append({
+                    "source_url": url,
+                    "fingerprint": fp,
+                    "value": n.get("value"),
+                    "unit": (n.get("unit") or "").strip(),
+                    "raw": n.get("raw") or "",
+                    "context_snippet": n.get("context_snippet") or "",
+                    "anchor_hash": n.get("anchor_hash"),
+                    "start_idx": n.get("start_idx"),
+                    "end_idx": n.get("end_idx"),
+                    "extracted_number_id": n.get("extracted_number_id"),
+                })
 
-            s_ctx = _ctx_score(tokens, cctx)
+        compat_v2 = globals().get("_compatible_units_v2")
+        compat_legacy = globals().get("_compatible_units")
+        compat_ccy = globals().get("_compatible_currency")
 
-            bonus = 0.0
-            try:
-                if _looks_like_currency(prev_raw) and _looks_like_currency(craw):
-                    bonus += 0.05
-            except Exception:
-                pass
+        for mid, m in primary_metrics.items():
+            if not isinstance(m, dict):
+                continue
 
-            score = float(s_ctx + bonus)
+            mname = m.get("name") or str(mid)
+            mval = m.get("value")
+            munit = (m.get("unit") or "").strip()
+            prev_raw = m.get("raw") or _format_prev_raw(mval, munit)
 
-            same_unit = 1 if (normalize_unit(munit) and normalize_unit(munit) == normalize_unit(cunit)) else 0
+            tokens = _metric_tokens(mname)
 
-            abs_delta = None
-            if _is_number(mval) and _is_number(cand.get("value")):
-                abs_delta = abs(_safe_float(mval) - _safe_float(cand.get("value")))
+            best = None
+            best_key = None
+            best_score = -1.0
 
-            # Stable tie-breaker tuple (most important first)
-            key = (
-                score,                               # highest wins
-                same_unit,                            # prefer exact unit matches
-                -(abs_delta if isinstance(abs_delta, (int, float)) else 1e18),  # closer numeric wins
-                str(cand.get("source_url") or ""),    # stable
-                cand.get("start_idx") if isinstance(cand.get("start_idx"), int) else 10**18,
-                cand.get("end_idx") if isinstance(cand.get("end_idx"), int) else 10**18,
-                str(cand.get("extracted_number_id") or ""),  # stable if present
-                str(craw),
-            )
+            for cand in all_nums:
+                cctx = cand.get("context_snippet") or ""
+                craw = cand.get("raw") or ""
+                cunit = (cand.get("unit") or "").strip()
 
-            if best_key is None or key > best_key:
-                best_key = key
-                best_score = score
-                best = cand
+                ok = True
+                try:
+                    if callable(compat_v2):
+                        ok = bool(compat_v2(munit, cunit, prev_raw, craw, cctx))
+                    elif callable(compat_legacy):
+                        ok = bool(compat_legacy(munit, cunit, prev_raw, craw, cctx))
+                except Exception:
+                    ok = True
+                if not ok:
+                    continue
 
-        if best and best_score >= 0.20:
-            anchors.append({
-                "metric_id": str(mid),
-                "metric_name": mname,
-                "baseline_raw": prev_raw,
-                "source_url": best.get("source_url"),
-                "fingerprint": best.get("fingerprint"),
-                "anchor_hash": best.get("anchor_hash"),
-                "matched_raw": best.get("raw"),
-                "matched_value": best.get("value"),
-                "matched_unit": best.get("unit"),
-                "context_snippet": best.get("context_snippet"),
-                "anchor_confidence": float(min(100.0, best_score * 100.0)),
-            })
-        else:
-            anchors.append({
-                "metric_id": str(mid),
-                "metric_name": mname,
-                "baseline_raw": prev_raw,
-                "source_url": None,
-                "fingerprint": None,
-                "anchor_hash": None,
-                "matched_raw": None,
-                "matched_value": None,
-                "matched_unit": None,
-                "context_snippet": None,
-                "anchor_confidence": 0.0,
-            })
+                try:
+                    if callable(compat_ccy) and not compat_ccy(prev_raw, craw, cctx):
+                        continue
+                except Exception:
+                    pass
 
-    return anchors
+                s_ctx = _ctx_score(tokens, cctx)
+
+                bonus = 0.0
+                try:
+                    if _looks_like_currency(prev_raw) and _looks_like_currency(craw):
+                        bonus += 0.05
+                except Exception:
+                    pass
+
+                score = float(s_ctx + bonus)
+
+                same_unit = 1 if (normalize_unit(munit) and normalize_unit(munit) == normalize_unit(cunit)) else 0
+
+                abs_delta = None
+                if _is_number(mval) and _is_number(cand.get("value")):
+                    abs_delta = abs(_safe_float(mval) - _safe_float(cand.get("value")))
+
+                key = (
+                    score,
+                    same_unit,
+                    -(abs_delta if isinstance(abs_delta, (int, float)) else 1e18),
+                    str(cand.get("source_url") or ""),
+                    cand.get("start_idx") if isinstance(cand.get("start_idx"), int) else 10**18,
+                    cand.get("end_idx") if isinstance(cand.get("end_idx"), int) else 10**18,
+                    str(cand.get("extracted_number_id") or ""),
+                    str(craw),
+                )
+
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best_score = score
+                    best = cand
+
+            if best and best_score >= 0.20:
+                anchors.append({
+                    "metric_id": str(mid),
+                    "metric_name": mname,
+                    "baseline_raw": prev_raw,
+                    "source_url": best.get("source_url"),
+                    "fingerprint": best.get("fingerprint"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "matched_raw": best.get("raw"),
+                    "matched_value": best.get("value"),
+                    "matched_unit": best.get("unit"),
+                    "context_snippet": best.get("context_snippet"),
+                    "anchor_confidence": float(min(100.0, best_score * 100.0)),
+                })
+            else:
+                anchors.append({
+                    "metric_id": str(mid),
+                    "metric_name": mname,
+                    "baseline_raw": prev_raw,
+                    "source_url": None,
+                    "fingerprint": None,
+                    "anchor_hash": None,
+                    "matched_raw": None,
+                    "matched_value": None,
+                    "matched_unit": None,
+                    "context_snippet": None,
+                    "anchor_confidence": 0.0,
+                })
+
+        return anchors
 
 
     # --- Additive helpers used above (safe, small) ---
