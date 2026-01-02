@@ -1,5 +1,5 @@
 # ===============================================================================
-# YUREEKA AI RESEARCH ASSISTANT v7.38
+# YUREEKA AI RESEARCH ASSISTANT v7.40
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
 # Updated SerpAPI parameters for stable output
@@ -44,7 +44,8 @@
 # One Canononical Operator for Analysis + Evolution Layers
 # Metric Aware Range Construction Everywhere
 # Anchor Matching Correctness
-# Unit Measure + Attribute Assocation e.g. M + units (sold)
+# Unit Measure + Attribute Association e.g. M + units (sold)
+# Enriched metric_schema_frozen (analysis side)
 # ================================================================================
 
 import io
@@ -4890,11 +4891,12 @@ def extract_numbers_from_scraped_sources(
             }
 
             # =========================
-            # PATCH 3 (ADDITIVE): preserve measure association tag if extractor provides it
-            # e.g., "count_units", "share_pct", "growth_pct"
+            # PATCH 3 (ADDITIVE): preserve measure association tags if extractor provides them
             # =========================
             if "measure_kind" in n:
                 row["measure_kind"] = n.get("measure_kind")
+            if "measure_assoc" in n:
+                row["measure_assoc"] = n.get("measure_assoc")
             # =========================
 
             # =========================
@@ -4910,10 +4912,39 @@ def extract_numbers_from_scraped_sources(
                     row[k] = n.get(k)
             # =========================
 
+            # ============================================================
+            # PATCH 9 (ADDITIVE): enforce canonical numeric fields uniformly
+            # Why:
+            #   - Some candidates may not carry unit_family/base_unit/value_norm yet
+            #   - We want every candidate (analysis + evolution) to have the same
+            #     canonical fields so diff + span logic is stable and drift-free.
+            #
+            # This is additive and safe to call multiple times.
+            # ============================================================
+            try:
+                fn_can = globals().get("canonicalize_numeric_candidate")
+                if callable(fn_can):
+                    row = fn_can(row) or row
+                else:
+                    row = canonicalize_numeric_candidate(row) or row
+            except Exception:
+                pass
+
+            # --- ADDITIVE: ensure canonical keys exist even if canonicalize failed ---
+            row.setdefault("unit_family", unit_family(row.get("unit_tag", "") or ""))
+            row.setdefault("base_unit", row.get("unit_tag", "") or "")
+            row.setdefault("multiplier_to_base", 1.0)
+            if row.get("value") is not None and row.get("value_norm") is None:
+                try:
+                    row["value_norm"] = float(row.get("value"))
+                except Exception:
+                    pass
+            # ------------------------------------------------------------------------
+            # ============================================================
+
             candidates.append(row)
 
     return candidates
-
 
 
 def attribute_span_to_sources(
@@ -4921,22 +4952,102 @@ def attribute_span_to_sources(
     metric_unit: str,
     scraped_content: Dict[str, str],
     rel_tol: float = 0.08,
+    # =========================
+    # PATCH S1 (ADDITIVE): optional schema inputs (non-breaking)
+    # - If provided, we enforce schema-first gating for drift stability.
+    # - If not provided, we fall back to existing heuristic behavior.
+    # =========================
+    canonical_key: str = "",
+    metric_schema: Dict[str, Any] = None,
+    # =========================
 ) -> Dict[str, Any]:
     """
     Build a deterministic span (min/mid/max) for a metric, and attribute min/max to sources.
     Uses only scraped content + regex extractions (NO LLM).
+
+    Schema-first behavior (when metric_schema/canonical_key provided):
+      - Enforces unit_family and currency/count/percent gating from frozen schema
+      - Uses measure_kind tags when available to avoid semantic leakage
+      - Keeps deterministic tie-breaking
     """
+    import re
+    import hashlib
+
     unit_tag_hint = normalize_unit_tag(metric_unit)
     keywords = build_metric_keywords(metric_name)
 
     all_candidates = extract_numbers_from_scraped_sources(scraped_content)
-
     filtered: List[Dict[str, Any]] = []
 
-    # =========================
-    # PATCH 2 (ADDITIVE): helpers to suppress year-ish artifacts deterministically
-    # =========================
     metric_l = (metric_name or "").lower()
+
+    # =========================
+    # PATCH S2 (ADDITIVE): resolve schema entry (if available)
+    # =========================
+    schema_entry = None
+    if isinstance(metric_schema, dict) and canonical_key and isinstance(metric_schema.get(canonical_key), dict):
+        schema_entry = metric_schema.get(canonical_key)
+    # =========================
+
+    # =========================
+    # PATCH S3 (ADDITIVE): schema-derived expectations with safe fallbacks
+    # =========================
+    schema_unit_family = ""
+    schema_dimension = ""
+    schema_unit = ""
+    if isinstance(schema_entry, dict):
+        schema_unit_family = (schema_entry.get("unit_family") or "").strip().lower()
+        schema_dimension = (schema_entry.get("dimension") or "").strip().lower()
+        schema_unit = (schema_entry.get("unit") or "").strip()
+
+    expected_family = ""
+    if schema_unit_family in ("percent", "currency", "energy"):
+        expected_family = schema_unit_family
+    if not expected_family:
+        ut = normalize_unit_tag(metric_unit)
+        if ut == "%":
+            expected_family = "percent"
+        elif ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
+            expected_family = "energy"
+        else:
+            expected_family = ""
+
+    currencyish = False
+    if schema_unit_family == "currency" or schema_dimension == "currency":
+        currencyish = True
+    if not currencyish:
+        mu = (metric_unit or "").lower()
+        if any(x in mu for x in ["usd", "sgd", "eur", "gbp", "$", "s$", "€", "£", "aud", "cad", "jpy", "cny", "rmb"]):
+            currencyish = True
+    if not currencyish and any(x in metric_l for x in ["revenue", "turnover", "valuation", "market value", "market size",
+                                                       "profit", "earnings", "ebitda", "capex", "opex"]):
+        currencyish = True
+    # =========================
+
+    # =========================
+    # PATCH S4 (ADDITIVE): expected measure_kind (schema-first with fallback)
+    # =========================
+    expected_kind = None
+
+    if expected_family == "percent":
+        if any(k in metric_l for k in ["growth", "cagr", "increase", "decrease", "yoy", "qoq", "mom", "rate"]):
+            expected_kind = "growth_pct"
+        else:
+            expected_kind = "share_pct"
+
+    if currencyish:
+        expected_kind = "money"
+
+    if expected_kind is None and any(k in metric_l for k in [
+        "units", "unit sales", "vehicle sales", "vehicles sold", "sold", "sales volume",
+        "deliveries", "shipments", "registrations", "volume"
+    ]):
+        expected_kind = "count_units"
+    # =========================
+
+    # =========================
+    # PATCH S5 (ADDITIVE): year-ish suppression helpers (unchanged behavior)
+    # =========================
     metric_is_yearish = any(k in metric_l for k in ["year", "years", "fy", "fiscal", "calendar", "timeline", "target year"])
 
     def _looks_like_year_value(v) -> bool:
@@ -4947,103 +5058,134 @@ def attribute_span_to_sources(
             return False
 
     def _ctx_has_year_range(ctx: str) -> bool:
-        # catches "2025-2035", "2025 – 2035", "2025 to 2035"
-        import re
         return bool(re.search(r"\b(19|20)\d{2}\s*(?:-|–|—|to)\s*(19|20)\d{2}\b", ctx or "", flags=re.I))
     # =========================
 
     # =========================
-    # PATCH 4 (ADDITIVE): infer expected association (measure_kind) from metric name
-    # Keeps unit separate from meaning: counts vs share vs growth.
+    # PATCH S6 (ADDITIVE): currency evidence check (used only when currencyish)
     # =========================
-    expected_kind = None
+    def _has_currency_evidence(raw: str, ctx: str) -> bool:
+        r = (raw or "")
+        c = (ctx or "").lower()
 
-    # Share-like metrics
-    if any(k in metric_l for k in ["share", "penetration", "mix", "percentage of", "portion"]):
-        expected_kind = "share_pct"
+        if any(s in r for s in ["$", "S$", "€", "£"]):
+            return True
+        if any(code in c for code in [" usd", "sgd", " eur", " gbp", " aud", " cad", " jpy", " cny", " rmb"]):
+            return True
 
-    # Growth-like percent metrics
-    if expected_kind is None and any(k in metric_l for k in ["growth", "cagr", "increase", "decrease", "yoy", "qoq", "mom", "rate"]):
-        expected_kind = "growth_pct"
-
-    # Unit/count-like metrics (vehicles/units sold/shipments/deliveries)
-    if expected_kind is None and any(k in metric_l for k in ["units", "unit sales", "vehicle sales", "vehicles sold", "sold", "sales volume",
-                                                            "deliveries", "shipments", "registrations", "volume"]):
-        expected_kind = "count_units"
+        strong_kw = [
+            "revenue", "turnover", "valuation", "valued at", "market value", "market size",
+            "sales value", "net profit", "operating profit", "gross profit",
+            "ebitda", "earnings", "income", "capex", "opex"
+        ]
+        if any(k in c for k in strong_kw):
+            return True
+        return False
     # =========================
+
+    # =========================================================================
+    # PATCH S11 (ADDITIVE): deterministic candidate_id for tie-breaking
+    # - Stable across runs, depends only on stable fields
+    # - Used ONLY as final tie-breaker (won't change non-tie outcomes)
+    # =========================================================================
+    def _candidate_id(x: dict) -> str:
+        try:
+            url = str(x.get("url") or x.get("source_url") or "")
+            ah = str(x.get("anchor_hash") or "")
+            vn = x.get("value_norm")
+            bu = str(x.get("base_unit") or x.get("unit") or x.get("unit_tag") or "")
+            mk = str(x.get("measure_kind") or "")
+            # normalize numeric string for stability
+            vn_s = ""
+            if vn is not None:
+                try:
+                    vn_s = f"{float(vn):.12g}"
+                except Exception:
+                    vn_s = str(vn)
+            s = f"{url}|{ah}|{vn_s}|{bu}|{mk}"
+            return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+        except Exception:
+            return ""
+    # =========================================================================
 
     for c in all_candidates:
         ctx = c.get("context", "")
         if not ctx:
             continue
 
-        # =========================
-        # PATCH 2 (ADDITIVE): drop extractor-tagged junk candidates early
-        # =========================
         if c.get("is_junk") is True:
             continue
 
-        # =========================
-        # PATCH 2 (ADDITIVE): suppress year-like values unless metric is year-based
-        # =========================
         if not metric_is_yearish:
             if (c.get("unit_tag") in ("", None)) and _looks_like_year_value(c.get("value")):
                 continue
             if _looks_like_year_value(c.get("value")) and _ctx_has_year_range(ctx):
                 continue
-        # =========================
 
-        # Context match gate
         ctx_score = calculate_context_match(keywords, ctx)
         if ctx_score <= 0.0:
             continue
 
-        # =========================
-        # PATCH 5 (ADDITIVE): enforce association when available
-        # - Only applies if we inferred an expected_kind AND candidate provides measure_kind
-        # - Backward compatible: candidates without measure_kind are not rejected here.
-        # =========================
+        cand_ut = c.get("unit_tag") or normalize_unit_tag(c.get("unit") or "")
+        cand_fam = (c.get("unit_family") or unit_family(cand_ut) or "").strip().lower()
+
+        if expected_family:
+            if expected_family == "percent" and cand_fam != "percent":
+                continue
+            if expected_family == "currency":
+                if cand_fam not in ("currency", "magnitude"):
+                    continue
+                if not _has_currency_evidence(c.get("raw", ""), ctx):
+                    continue
+            if expected_family == "energy" and cand_fam != "energy":
+                continue
+
         if expected_kind:
             mk = c.get("measure_kind")
             if mk and mk != expected_kind:
                 continue
-        # =========================
 
-        # Unit gate:
-        # If metric is %, require %.
-        if unit_tag_hint == "%":
-            if c.get("unit_tag") != "%":
+        val_norm = None
+        if expected_family == "percent" or unit_tag_hint == "%":
+            if cand_ut != "%":
                 continue
-
-            # =========================
-            # PATCH 6 (ADDITIVE): for percent metrics, prefer correct percent meaning if tagged
-            # If expected_kind is share_pct/growth_pct and candidate has measure_kind, it already passed PATCH 5.
-            # keep as-is, no scaling
-            # =========================
             val_norm = c.get("value")
 
-        else:
-            # currency magnitude matching: allow T/B/M and convert to billions
-            # if candidate unit_tag missing, skip (too risky)
-            if c.get("unit_tag") not in ("T", "B", "M"):
-                continue
+        elif expected_family == "energy":
+            val_norm = c.get("value_norm")
+            if val_norm is None:
+                val_norm = c.get("value")
 
-            # =========================
-            # PATCH 2 (ADDITIVE): guard against "year mapped to T" artifacts slipping through
-            # =========================
-            if (not metric_is_yearish) and _looks_like_year_value(c.get("value")):
+        elif currencyish or expected_family == "currency":
+            if c.get("measure_kind") == "count_units":
                 continue
-            # =========================
-
-            val_norm = to_billions(c.get("value"), c.get("unit_tag"))
+            if cand_ut not in ("T", "B", "M"):
+                continue
+            val_norm = to_billions(c.get("value"), cand_ut)
             if val_norm is None:
                 continue
 
-        filtered.append({
+        else:
+            try:
+                val_norm = float(c.get("value"))
+            except Exception:
+                continue
+
+        row = {
             **c,
+            "unit_tag": cand_ut,
+            "unit_family": cand_fam,
             "value_norm": val_norm,
             "ctx_score": float(ctx_score),
-        })
+        }
+
+        # =========================
+        # PATCH S11 (ADDITIVE): attach candidate_id (safe extra field)
+        # =========================
+        row.setdefault("candidate_id", _candidate_id(row))
+        # =========================
+
+        filtered.append(row)
 
     if not filtered:
         return {
@@ -5052,11 +5194,26 @@ def attribute_span_to_sources(
             "evidence": []
         }
 
+    # Deterministic selection: value_norm then ctx_score then url then candidate_id
+    # =========================================================================
+    # PATCH S12 (ADDITIVE): candidate_id as final tie-breaker
+    # =========================================================================
     def min_key(x):
-        return (x["value_norm"], -x["ctx_score"], str(x.get("url", "")))
+        return (
+            float(x["value_norm"]),
+            -float(x["ctx_score"]),
+            str(x.get("url", "")),
+            str(x.get("candidate_id", "")),
+        )
 
     def max_key(x):
-        return (-x["value_norm"], -x["ctx_score"], str(x.get("url", "")))
+        return (
+            -float(x["value_norm"]),
+            -float(x["ctx_score"]),
+            str(x.get("url", "")),
+            str(x.get("candidate_id", "")),
+        )
+    # =========================================================================
 
     min_item = sorted(filtered, key=min_key)[0]
     max_item = sorted(filtered, key=max_key)[0]
@@ -5065,25 +5222,26 @@ def attribute_span_to_sources(
     vmax = float(max_item["value_norm"])
     vmid = (vmin + vmax) / 2.0
 
-    if unit_tag_hint == "%":
+    if expected_family == "percent" or unit_tag_hint == "%":
         unit_out = "%"
-    else:
+    elif currencyish or expected_family == "currency":
         unit_out = "billion USD"
+    elif expected_family == "energy":
+        unit_out = "Wh"
+    else:
+        unit_out = metric_unit or (schema_unit or "")
 
     evidence = []
-    for it in sorted(filtered, key=lambda x: (-x["ctx_score"], str(x.get("url", ""))))[:12]:
+    for it in sorted(filtered, key=lambda x: (-float(x["ctx_score"]), str(x.get("url", "")), str(x.get("candidate_id", ""))))[:12]:
         evidence.append({
             "url": it.get("url"),
             "raw": it.get("raw"),
             "unit_tag": it.get("unit_tag"),
-
-            # =========================
-            # PATCH 7 (ADDITIVE): include association in evidence for transparency
-            # =========================
+            "unit_family": it.get("unit_family"),
             "measure_kind": it.get("measure_kind"),
-            # =========================
-
+            "measure_assoc": it.get("measure_assoc"),
             "value_norm": it.get("value_norm"),
+            "candidate_id": it.get("candidate_id"),  # PATCH S11: exposed for transparency
             "context_snippet": (it.get("context") or "")[:220],
             "context_score": round(float(it.get("ctx_score", 0.0)) * 100, 1),
         })
@@ -5099,22 +5257,20 @@ def attribute_span_to_sources(
             "min": {
                 "url": min_item.get("url"),
                 "raw": min_item.get("raw"),
-
-                # PATCH 7 (ADDITIVE): include association for min/max too
                 "measure_kind": min_item.get("measure_kind"),
-
+                "measure_assoc": min_item.get("measure_assoc"),
                 "value_norm": min_item.get("value_norm"),
+                "candidate_id": min_item.get("candidate_id"),  # PATCH S11
                 "context_snippet": (min_item.get("context") or "")[:220],
                 "context_score": round(float(min_item.get("ctx_score", 0.0)) * 100, 1),
             },
             "max": {
                 "url": max_item.get("url"),
                 "raw": max_item.get("raw"),
-
-                # PATCH 7 (ADDITIVE): include association for min/max too
                 "measure_kind": max_item.get("measure_kind"),
-
+                "measure_assoc": max_item.get("measure_assoc"),
                 "value_norm": max_item.get("value_norm"),
+                "candidate_id": max_item.get("candidate_id"),  # PATCH S11
                 "context_snippet": (max_item.get("context") or "")[:220],
                 "context_score": round(float(max_item.get("ctx_score", 0.0)) * 100, 1),
             }
@@ -5151,8 +5307,14 @@ def add_range_and_source_attribution_to_canonical_metrics(
         span_pack = attribute_span_to_sources(
             metric_name=metric_name,
             metric_unit=metric_unit,
-            scraped_content=scraped
-        )
+            scraped_content=scraped,
+            # =========================
+            # PATCH (ADDITIVE): schema-first wiring
+            # =========================
+            canonical_key=ckey,
+            metric_schema=(prev_response.get("metric_schema_frozen") or {}),
+            # =========================
+            )
 
         mm = dict(m)
         if span_pack.get("span"):
@@ -8804,6 +8966,7 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
     """
     import re
 
+    # Defaults (used unless schema provides overrides)
     ABS_EPS = 1e-9
     REL_EPS = 0.0005
 
@@ -8916,6 +9079,34 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
         return prettify_ckey(ckey)
 
+    # =========================================================================
+    # PATCH D3 (ADDITIVE): schema-driven tolerances (optional)
+    # - If schema provides abs_eps/rel_eps use them, else default.
+    # - Safe: only affects comparisons when schema explicitly opts in.
+    # =========================================================================
+    def get_eps_for_metric(prev_resp: dict, ckey: str):
+        ae = ABS_EPS
+        re_ = REL_EPS
+        try:
+            schema = (prev_resp or {}).get("metric_schema_frozen")
+            if isinstance(schema, dict):
+                d = schema.get(ckey)
+                if isinstance(d, dict):
+                    if d.get("abs_eps") is not None:
+                        try:
+                            ae = float(d.get("abs_eps"))
+                        except Exception:
+                            pass
+                    if d.get("rel_eps") is not None:
+                        try:
+                            re_ = float(d.get("rel_eps"))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        return ae, re_
+    # =========================================================================
+
     prev_response = prev_response if isinstance(prev_response, dict) else {}
     cur_response = cur_response if isinstance(cur_response, dict) else {}
 
@@ -8938,7 +9129,6 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
             definition = get_metric_definition(prev_response, ckey)
 
             prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
-            prev_unit = pm.get("unit") or ""
 
             # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
             if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
@@ -8960,33 +9150,47 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
             found += 1
 
             cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
-            cur_unit = cm.get("unit") or ""
 
             # =========================================================================
             # PATCH D2 (ADDITIVE): use canonical values for diff when available
             # =========================================================================
             prev_val, prev_unit_cmp = get_canonical_value_and_unit(pm)
             cur_val, cur_unit_cmp = get_canonical_value_and_unit(cm)
-            # If units disagree, we still compare numerically only if both are present.
-            # (Unit-family gating should happen upstream via schema; diff stays pure.)
+            # =========================================================================
+
+            # =========================================================================
+            # PATCH D3 (ADDITIVE): metric-specific tolerances (schema overrides)
+            # =========================================================================
+            abs_eps, rel_eps = get_eps_for_metric(prev_response, ckey)
             # =========================================================================
 
             change_type = "unknown"
             change_pct = None
 
             if prev_val is not None and cur_val is not None:
-                if abs(prev_val - cur_val) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
+                if abs(prev_val - cur_val) <= max(abs_eps, abs(prev_val) * rel_eps):
                     change_type = "unchanged"
                     change_pct = 0.0
                     unchanged += 1
                 elif cur_val > prev_val:
                     change_type = "increased"
-                    change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+                    change_pct = ((cur_val - prev_val) / max(abs_eps, abs(prev_val))) * 100.0
                     increased += 1
                 else:
                     change_type = "decreased"
-                    change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+                    change_pct = ((cur_val - prev_val) / max(abs_eps, abs(prev_val))) * 100.0
                     decreased += 1
+
+            # =========================================================================
+            # PATCH D4 (ADDITIVE): unit mismatch flag (debug only)
+            # =========================================================================
+            unit_mismatch = False
+            try:
+                if prev_unit_cmp and cur_unit_cmp and str(prev_unit_cmp) != str(cur_unit_cmp):
+                    unit_mismatch = True
+            except Exception:
+                unit_mismatch = False
+            # =========================================================================
 
             metric_changes.append({
                 "name": display_name,
@@ -9003,12 +9207,14 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
                 # =========================================================================
                 # PATCH D2 (ADDITIVE): expose canonical comparison basis for debugging/convergence
-                # (safe extra fields; does not break existing consumers that ignore unknown keys)
                 # =========================================================================
                 "prev_value_norm": prev_val,
                 "cur_value_norm": cur_val,
                 "prev_unit_cmp": prev_unit_cmp,
                 "cur_unit_cmp": cur_unit_cmp,
+                "unit_mismatch": bool(unit_mismatch),
+                "abs_eps_used": abs_eps,
+                "rel_eps_used": rel_eps,
                 # =========================================================================
             })
 
@@ -9821,7 +10027,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             year = int(s)
             if 1900 <= year <= 2099:
                 c = (ctx or "").lower()
-                # allow if context clearly indicates metric like "CAGR 2024" etc
                 allow_kw = ["cagr", "growth", "inflation", "gdp", "revenue", "market", "sales", "shipments", "capacity"]
                 if not any(k in c for k in allow_kw):
                     return True
@@ -9871,7 +10076,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         except Exception:
             pass
 
-        # Strong chrome/nav hints (unitless small ints)
         nav_hits = [
             "skip to content", "menu", "search", "login", "sign in", "sign up",
             "subscribe", "newsletter", "cookie", "privacy", "terms", "copyright",
@@ -9885,7 +10089,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             except Exception:
                 pass
 
-        # Enumeration-like unitless small integers
         if u == "":
             try:
                 if abs(float(value)) <= 12:
@@ -9894,7 +10097,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             except Exception:
                 pass
 
-        # 3-digit "year fragments" (often from broken markup; kept as tag-only)
         if u == "":
             try:
                 iv = int(abs(float(value)))
@@ -9905,6 +10107,40 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                 pass
 
         return False, ""
+
+    # -------------------------------------------------------------------------
+    # PATCH M1 (ADDITIVE): semantic classifier for associations like "share" vs "units"
+    # NOTE: moved OUTSIDE the loop for determinism + speed (no behavioral change).
+    # Also emits a "measure_assoc" label that downstream can display easily.
+    # -------------------------------------------------------------------------
+    def _classify_measure(unit_tag: str, ctx: str):
+        """
+        Returns (measure_kind, measure_assoc):
+          - measure_kind: stable internal tag (share_pct / growth_pct / count_units / money / etc.)
+          - measure_assoc: human-meaning label ("share", "growth", "units", "money", "energy", etc.)
+        """
+        c = (ctx or "").lower()
+        ut = (unit_tag or "").strip()
+
+        if ut == "%":
+            if any(k in c for k in ["market share", "share of", "share", "penetration", "portion", "contribution"]):
+                return "share_pct", "share"
+            if any(k in c for k in ["growth", "cagr", "increase", "decrease", "yoy", "mom", "qoq", "rate"]):
+                return "growth_pct", "growth"
+            return "percent_other", "percent"
+
+        if ut in ("K", "M", "B", "T", ""):
+            if any(k in c for k in ["units", "unit", "vehicles", "cars", "sold", "sales volume", "shipments", "deliveries", "registrations"]):
+                return "count_units", "units"
+            if any(k in c for k in ["revenue", "sales ($", "usd", "$", "market size", "valuation", "turnover"]):
+                return "money", "money"
+            return "magnitude_other", "magnitude"
+
+        if ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
+            return "energy", "energy"
+
+        return "other", "other"
+    # -------------------------------------------------------------------------
 
     # ---------- extraction pattern ----------
     pat = re.compile(
@@ -9956,43 +10192,13 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             continue
 
         anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx_store}")
-
         is_junk, junk_reason = _junk_tag(val, unit, raw_disp, ctx_store)
 
-        # -------------------------------------------------------------------------
-        # PATCH (ADDITIVE): semantic classifier for associations like "share" vs "units"
-        # -------------------------------------------------------------------------
-        def _classify_measure(unit_tag: str, ctx: str) -> str:
-            """
-            Returns a coarse 'measure_kind' for the candidate based on unit + context.
-            Keep it conservative/deterministic.
-            """
-            c = (ctx or "").lower()
-            ut = (unit_tag or "").strip()
-
-            # Percent: share vs growth-ish
-            if ut == "%":
-                if any(k in c for k in ["market share", "share of", "share", "penetration", "portion", "contribution"]):
-                    return "share_pct"
-                if any(k in c for k in ["growth", "cagr", "increase", "decrease", "yoy", "mom", "qoq", "rate"]):
-                    return "growth_pct"
-                return "percent_other"
-
-            # Unitless magnitudes: attempt to distinguish counts vs money-ish
-            # (Only tag; don't filter.)
-            if ut in ("K", "M", "B", "T", ""):
-                if any(k in c for k in ["units", "unit", "vehicles", "cars", "sold", "sales volume", "shipments", "deliveries", "registrations"]):
-                    return "count_units"
-                if any(k in c for k in ["revenue", "sales ($", "usd", "$", "market size", "valuation", "turnover"]):
-                    return "money"
-                return "magnitude_other"
-
-            # Energy already has strong unit
-            if ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
-                return "energy"
-
-            return "other"
-
+        # ---------------------------------------------------------------------
+        # PATCH M1 (ADDITIVE): attach semantic association tags
+        # ---------------------------------------------------------------------
+        measure_kind, measure_assoc = _classify_measure(unit, ctx_store)
+        # ---------------------------------------------------------------------
 
         out.append({
             "value": val,
@@ -10007,9 +10213,15 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             "junk_reason": junk_reason,
             "start_idx": int(m.start()),
             "end_idx": int(m.end()),
-            # PATCH (ADDITIVE): attach semantic association tag
-            "measure_kind": _classify_measure(unit, ctx_store),
 
+            # =========================
+            # PATCH M1 (ADDITIVE): semantic association tag(s)
+            # - measure_kind: internal stable classifier
+            # - measure_assoc: display-friendly association ("units", "share", "growth", ...)
+            # =========================
+            "measure_kind": measure_kind,
+            "measure_assoc": measure_assoc,
+            # =========================
         })
 
         if len(out) >= int(max_results or 350):
