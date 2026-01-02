@@ -9362,6 +9362,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     nums = meta.get("extracted_numbers") or []
                     if not isinstance(nums, list):
                         nums = []
+
                     rebuilt.append({
                         "url": url,
                         "status": meta.get("status") or "fetched",
@@ -9376,6 +9377,25 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 "unit": n.get("unit"),
                                 "raw": n.get("raw"),
                                 "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:200],
+
+                                # =====================================================================
+                                # PATCH (ADDITIVE): preserve analysis-aligned fields when present.
+                                # This enables deterministic rebuild_metrics_from_snapshots() to work
+                                # even when snapshots are reconstructed from web_context.
+                                # - Does NOT break older payloads (missing keys remain None).
+                                # =====================================================================
+                                "anchor_hash": n.get("anchor_hash"),
+                                "is_junk": n.get("is_junk"),
+                                "junk_reason": n.get("junk_reason"),
+                                "unit_tag": n.get("unit_tag"),
+                                "unit_family": n.get("unit_family"),
+                                "base_unit": n.get("base_unit"),
+                                "multiplier_to_base": n.get("multiplier_to_base"),
+                                "value_norm": n.get("value_norm"),
+                                "start_idx": n.get("start_idx"),
+                                "end_idx": n.get("end_idx"),
+                                "source_url": n.get("source_url") or url,
+                                # =====================================================================
                             }
                             for n in nums if isinstance(n, dict)
                         ]
@@ -9441,7 +9461,11 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         fn_rebuild = globals().get("rebuild_metrics_from_snapshots")  # optional future hook
         if callable(fn_rebuild):
+            # =========================
+            # PATCH (ADDITIVE): pass web_context through to rebuild hook
+            # =========================
             current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
+            # =========================
     except Exception:
         current_metrics = {}
 
@@ -9484,6 +9508,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
 
     return output
+
 
 
 
