@@ -44,6 +44,7 @@
 # One Canononical Operator for Analysis + Evolution Layers
 # Metric Aware Range Construction Everywhere
 # Anchor Matching Correctness
+# Unit Measure + Attribute Assocation e.g. M + units (sold)
 # ================================================================================
 
 import io
@@ -4889,6 +4890,14 @@ def extract_numbers_from_scraped_sources(
             }
 
             # =========================
+            # PATCH 3 (ADDITIVE): preserve measure association tag if extractor provides it
+            # e.g., "count_units", "share_pct", "growth_pct"
+            # =========================
+            if "measure_kind" in n:
+                row["measure_kind"] = n.get("measure_kind")
+            # =========================
+
+            # =========================
             # PATCH 1 (ADDITIVE): preserve extra fields if extractor provides them
             # (backwards compatible: we only add keys, never remove)
             # =========================
@@ -4904,6 +4913,7 @@ def extract_numbers_from_scraped_sources(
             candidates.append(row)
 
     return candidates
+
 
 
 def attribute_span_to_sources(
@@ -4942,6 +4952,26 @@ def attribute_span_to_sources(
         return bool(re.search(r"\b(19|20)\d{2}\s*(?:-|–|—|to)\s*(19|20)\d{2}\b", ctx or "", flags=re.I))
     # =========================
 
+    # =========================
+    # PATCH 4 (ADDITIVE): infer expected association (measure_kind) from metric name
+    # Keeps unit separate from meaning: counts vs share vs growth.
+    # =========================
+    expected_kind = None
+
+    # Share-like metrics
+    if any(k in metric_l for k in ["share", "penetration", "mix", "percentage of", "portion"]):
+        expected_kind = "share_pct"
+
+    # Growth-like percent metrics
+    if expected_kind is None and any(k in metric_l for k in ["growth", "cagr", "increase", "decrease", "yoy", "qoq", "mom", "rate"]):
+        expected_kind = "growth_pct"
+
+    # Unit/count-like metrics (vehicles/units sold/shipments/deliveries)
+    if expected_kind is None and any(k in metric_l for k in ["units", "unit sales", "vehicle sales", "vehicles sold", "sold", "sales volume",
+                                                            "deliveries", "shipments", "registrations", "volume"]):
+        expected_kind = "count_units"
+    # =========================
+
     for c in all_candidates:
         ctx = c.get("context", "")
         if not ctx:
@@ -4949,14 +4979,12 @@ def attribute_span_to_sources(
 
         # =========================
         # PATCH 2 (ADDITIVE): drop extractor-tagged junk candidates early
-        # (does not remove old behavior unless tag exists; if no tag, it passes through)
         # =========================
         if c.get("is_junk") is True:
             continue
 
         # =========================
         # PATCH 2 (ADDITIVE): suppress year-like values unless metric is year-based
-        # Also suppress year-range endpoints in timeline contexts (common non-metric junk)
         # =========================
         if not metric_is_yearish:
             if (c.get("unit_tag") in ("", None)) and _looks_like_year_value(c.get("value")):
@@ -4970,13 +4998,30 @@ def attribute_span_to_sources(
         if ctx_score <= 0.0:
             continue
 
+        # =========================
+        # PATCH 5 (ADDITIVE): enforce association when available
+        # - Only applies if we inferred an expected_kind AND candidate provides measure_kind
+        # - Backward compatible: candidates without measure_kind are not rejected here.
+        # =========================
+        if expected_kind:
+            mk = c.get("measure_kind")
+            if mk and mk != expected_kind:
+                continue
+        # =========================
+
         # Unit gate:
         # If metric is %, require %.
         if unit_tag_hint == "%":
             if c.get("unit_tag") != "%":
                 continue
+
+            # =========================
+            # PATCH 6 (ADDITIVE): for percent metrics, prefer correct percent meaning if tagged
+            # If expected_kind is share_pct/growth_pct and candidate has measure_kind, it already passed PATCH 5.
             # keep as-is, no scaling
+            # =========================
             val_norm = c.get("value")
+
         else:
             # currency magnitude matching: allow T/B/M and convert to billions
             # if candidate unit_tag missing, skip (too risky)
@@ -4985,7 +5030,6 @@ def attribute_span_to_sources(
 
             # =========================
             # PATCH 2 (ADDITIVE): guard against "year mapped to T" artifacts slipping through
-            # If value is year-like and unit_tag is magnitude, skip unless metric is yearish.
             # =========================
             if (not metric_is_yearish) and _looks_like_year_value(c.get("value")):
                 continue
@@ -5032,6 +5076,13 @@ def attribute_span_to_sources(
             "url": it.get("url"),
             "raw": it.get("raw"),
             "unit_tag": it.get("unit_tag"),
+
+            # =========================
+            # PATCH 7 (ADDITIVE): include association in evidence for transparency
+            # =========================
+            "measure_kind": it.get("measure_kind"),
+            # =========================
+
             "value_norm": it.get("value_norm"),
             "context_snippet": (it.get("context") or "")[:220],
             "context_score": round(float(it.get("ctx_score", 0.0)) * 100, 1),
@@ -5048,6 +5099,10 @@ def attribute_span_to_sources(
             "min": {
                 "url": min_item.get("url"),
                 "raw": min_item.get("raw"),
+
+                # PATCH 7 (ADDITIVE): include association for min/max too
+                "measure_kind": min_item.get("measure_kind"),
+
                 "value_norm": min_item.get("value_norm"),
                 "context_snippet": (min_item.get("context") or "")[:220],
                 "context_score": round(float(min_item.get("ctx_score", 0.0)) * 100, 1),
@@ -5055,6 +5110,10 @@ def attribute_span_to_sources(
             "max": {
                 "url": max_item.get("url"),
                 "raw": max_item.get("raw"),
+
+                # PATCH 7 (ADDITIVE): include association for min/max too
+                "measure_kind": max_item.get("measure_kind"),
+
                 "value_norm": max_item.get("value_norm"),
                 "context_snippet": (max_item.get("context") or "")[:220],
                 "context_score": round(float(max_item.get("ctx_score", 0.0)) * 100, 1),
@@ -5062,7 +5121,6 @@ def attribute_span_to_sources(
         },
         "evidence": evidence
     }
-
 
 
 def add_range_and_source_attribution_to_canonical_metrics(
@@ -8764,6 +8822,35 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
         except Exception:
             return None
 
+    # =========================================================================
+    # PATCH D1 (ADDITIVE): canonical numeric extractor
+    # - Prefer value_norm/base_unit when present (analysis/evolution alignment)
+    # - Fall back to existing parse_num(value, unit) when canonical fields missing
+    # =========================================================================
+    def get_canonical_value_and_unit(m: dict):
+        """
+        Returns: (val: float|None, unit: str)
+        Priority:
+          1) value_norm (float-like) + base_unit (if present)
+          2) parse_num(value, unit)
+        """
+        m = m if isinstance(m, dict) else {}
+
+        # 1) canonical path
+        if m.get("value_norm") is not None:
+            try:
+                v = float(m.get("value_norm"))
+                u = str(m.get("base_unit") or m.get("unit") or "").strip()
+                return v, u
+            except Exception:
+                pass
+
+        # 2) legacy parse path
+        u = str(m.get("unit") or "").strip()
+        v = parse_num(m.get("value"), u)
+        return v, u
+    # =========================================================================
+
     def prettify_ckey(ckey: str) -> str:
         ckey = str(ckey or "").strip()
         if not ckey:
@@ -8784,7 +8871,6 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
         if isinstance(schema, dict):
             d = schema.get(ckey)
             if isinstance(d, dict) and d:
-                # normalize the keys we care about (but keep extras too)
                 out = dict(d)
                 out.setdefault("canonical_key", ckey)
                 return out
@@ -8803,13 +8889,11 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     "geo_name": d.get("geo_name"),
                     "keywords": d.get("keywords"),
                 }
-                # drop empty keys
                 return {k: v for k, v in out.items() if v not in (None, "", [], {})}
 
         return {"canonical_key": ckey, "name": prettify_ckey(ckey)}
 
     def get_display_name(prev_resp: dict, prev_can_obj: dict, cur_can_obj: dict, ckey: str) -> str:
-        # 1) schema frozen name
         schema = prev_resp.get("metric_schema_frozen")
         if isinstance(schema, dict):
             sm = schema.get(ckey)
@@ -8818,14 +8902,12 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 if isinstance(v, str) and v.strip():
                     return v.strip()
 
-        # 2) prev canonical name/original_name
         if isinstance(prev_can_obj, dict):
             for k in ("name", "original_name"):
                 v = prev_can_obj.get(k)
                 if isinstance(v, str) and v.strip():
                     return v.strip()
 
-        # 3) cur canonical name/original_name
         if isinstance(cur_can_obj, dict):
             for k in ("name", "original_name"):
                 v = cur_can_obj.get(k)
@@ -8857,7 +8939,6 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
             prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
             prev_unit = pm.get("unit") or ""
-            prev_val = parse_num(pm.get("value"), prev_unit)
 
             # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
             if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
@@ -8872,7 +8953,7 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     "source_url": None,
                     "anchor_used": False,
                     "canonical_key": ckey,
-                    "metric_definition": definition,   # ✅ original definition attached
+                    "metric_definition": definition,
                 })
                 continue
 
@@ -8880,7 +8961,15 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
             cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
             cur_unit = cm.get("unit") or ""
-            cur_val = parse_num(cm.get("value"), cur_unit)
+
+            # =========================================================================
+            # PATCH D2 (ADDITIVE): use canonical values for diff when available
+            # =========================================================================
+            prev_val, prev_unit_cmp = get_canonical_value_and_unit(pm)
+            cur_val, cur_unit_cmp = get_canonical_value_and_unit(cm)
+            # If units disagree, we still compare numerically only if both are present.
+            # (Unit-family gating should happen upstream via schema; diff stays pure.)
+            # =========================================================================
 
             change_type = "unknown"
             change_pct = None
@@ -8910,7 +8999,17 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 "source_url": None,
                 "anchor_used": False,
                 "canonical_key": ckey,
-                "metric_definition": definition,     # ✅ original definition attached
+                "metric_definition": definition,
+
+                # =========================================================================
+                # PATCH D2 (ADDITIVE): expose canonical comparison basis for debugging/convergence
+                # (safe extra fields; does not break existing consumers that ignore unknown keys)
+                # =========================================================================
+                "prev_value_norm": prev_val,
+                "cur_value_norm": cur_val,
+                "prev_unit_cmp": prev_unit_cmp,
+                "cur_unit_cmp": cur_unit_cmp,
+                # =========================================================================
             })
 
         return metric_changes, unchanged, increased, decreased, found
@@ -8942,8 +9041,6 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
     for nk, (display_name, pm) in prev_index.items():
         prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
-        prev_unit = pm.get("unit") or ""
-        prev_val = parse_num(pm.get("value"), prev_unit)
 
         if nk not in cur_index:
             metric_changes.append({
@@ -8962,8 +9059,13 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
         found += 1
         _, cm = cur_index[nk]
         cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
-        cur_unit = cm.get("unit") or ""
-        cur_val = parse_num(cm.get("value"), cur_unit)
+
+        # =========================================================================
+        # PATCH D2 (ADDITIVE): use canonical values when present (legacy path too)
+        # =========================================================================
+        prev_val, _prev_unit_cmp = get_canonical_value_and_unit(pm)
+        cur_val, _cur_unit_cmp = get_canonical_value_and_unit(cm)
+        # =========================================================================
 
         change_type = "unknown"
         change_pct = None
@@ -8992,6 +9094,10 @@ def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
             "context_snippet": None,
             "source_url": None,
             "anchor_used": False,
+
+            # PATCH D2 (ADDITIVE): expose basis
+            "prev_value_norm": prev_val,
+            "cur_value_norm": cur_val,
         })
 
     return metric_changes, unchanged, increased, decreased, found
@@ -9853,6 +9959,41 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
         is_junk, junk_reason = _junk_tag(val, unit, raw_disp, ctx_store)
 
+        # -------------------------------------------------------------------------
+        # PATCH (ADDITIVE): semantic classifier for associations like "share" vs "units"
+        # -------------------------------------------------------------------------
+        def _classify_measure(unit_tag: str, ctx: str) -> str:
+            """
+            Returns a coarse 'measure_kind' for the candidate based on unit + context.
+            Keep it conservative/deterministic.
+            """
+            c = (ctx or "").lower()
+            ut = (unit_tag or "").strip()
+
+            # Percent: share vs growth-ish
+            if ut == "%":
+                if any(k in c for k in ["market share", "share of", "share", "penetration", "portion", "contribution"]):
+                    return "share_pct"
+                if any(k in c for k in ["growth", "cagr", "increase", "decrease", "yoy", "mom", "qoq", "rate"]):
+                    return "growth_pct"
+                return "percent_other"
+
+            # Unitless magnitudes: attempt to distinguish counts vs money-ish
+            # (Only tag; don't filter.)
+            if ut in ("K", "M", "B", "T", ""):
+                if any(k in c for k in ["units", "unit", "vehicles", "cars", "sold", "sales volume", "shipments", "deliveries", "registrations"]):
+                    return "count_units"
+                if any(k in c for k in ["revenue", "sales ($", "usd", "$", "market size", "valuation", "turnover"]):
+                    return "money"
+                return "magnitude_other"
+
+            # Energy already has strong unit
+            if ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
+                return "energy"
+
+            return "other"
+
+
         out.append({
             "value": val,
             "unit": unit,
@@ -9866,6 +10007,9 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             "junk_reason": junk_reason,
             "start_idx": int(m.start()),
             "end_idx": int(m.end()),
+            # PATCH (ADDITIVE): attach semantic association tag
+            "measure_kind": _classify_measure(unit, ctx_store),
+
         })
 
         if len(out) >= int(max_results or 350):
