@@ -8055,13 +8055,13 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
 
     def _safe_norm_unit_tag(x: str) -> str:
-    try:
-        fn = globals().get("normalize_unit_tag")
-        if callable(fn):
-            return fn(x or "")
-    except Exception:
-        pass
-    return (x or "").strip()
+        try:
+            fn = globals().get("normalize_unit_tag")
+            if callable(fn):
+                return fn(x or "")
+        except Exception:
+            pass
+        return (x or "").strip()
 
 
     # -----------------------------
