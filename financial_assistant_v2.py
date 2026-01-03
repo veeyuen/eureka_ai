@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8"
+CODE_VERSION = "v7_41_endstate_wip_9"
 # =========================
 
 
@@ -1355,17 +1355,65 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
         history = []
         for row in all_rows[-limit:]:
             if len(row) >= 5:
+                raw_cell = row[4]
+
                 try:
-                    data = json.loads(row[4])
+                    data = json.loads(raw_cell)
                     data['_sheet_id'] = row[0]  # Keep track of sheet row ID
                     history.append(data)
+
                 except json.JSONDecodeError:
+                    # ============================================================
+                    # PATCH GH1 (ADDITIVE): rescue "TRUNCATED" rows that are not valid JSON
+                    # Why:
+                    # - add_to_history may hard-truncate the JSON cell with a prefix like:
+                    #     '... {"_sheet_write":{"truncated":true,"note":"hard_truncation"}}'
+                    #   which is NOT valid JSON and gets skipped today.
+                    # Result:
+                    # - We emit a minimal stub entry so it appears in history and can be selected.
+                    # - This is additive: only triggers on JSONDecodeError.
+                    # ============================================================
+                    try:
+                        s = str(raw_cell or "")
+
+                        # Look for a valid JSON tail marker we control.
+                        # Example tail: {"_sheet_write":{"truncated":true,...}}
+                        tail_idx = s.rfind('{"_sheet_write"')
+                        if tail_idx != -1:
+                            tail = s[tail_idx:]
+                            try:
+                                tail_obj = json.loads(tail)
+                            except Exception:
+                                tail_obj = {"_sheet_write": {"truncated": True, "note": "unparseable_truncation_tail"}}
+
+                            # Build a minimal record using other columns that ARE reliable
+                            # row[0]=analysis_id, row[1]=timestamp, row[2]=question (truncated to 100),
+                            # row[3]=final_confidence, row[4]=analysis json (maybe truncated)
+                            stub = {
+                                "question": (row[2] or "").strip(),
+                                "timestamp": (row[1] or "").strip(),
+                                "final_confidence": row[3],
+                                "primary_response": {},
+                                "_sheet_write": tail_obj.get("_sheet_write") if isinstance(tail_obj, dict) else {"truncated": True},
+                                "_sheet_id": row[0],
+                                "_sheet_json_truncated": True,
+                            }
+
+                            history.append(stub)
+                            continue
+
+                        # If no tail marker, skip as before (unchanged behavior)
+                    except Exception:
+                        pass
+                    # ============================================================
+
                     continue
 
         return history
     except Exception as e:
         st.warning(f"⚠️ Failed to load from Google Sheets: {e}")
         return st.session_state.get('analysis_history', [])
+
 
 def get_analysis_by_id(analysis_id: str) -> Optional[Dict]:
     """Get a specific analysis by ID"""
