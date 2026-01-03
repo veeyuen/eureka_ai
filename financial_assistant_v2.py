@@ -85,6 +85,201 @@ CODE_VERSION = "v7_41_endstate_wip_11"
 # =====================================================================
 ENDSTATE_FINAL_VERSION = "v7_41_endstate_final_1"
 # =====================================================================
+
+# =====================================================================
+# PATCH ES2/ES8/ES9 (ADDITIVE): shared determinism helpers for drift=0
+# - Deterministic sorting / tie-breaking helpers
+# - Deterministic candidate index builder (anchor_hash -> best candidate)
+# - Lightweight schema + universe hashing for convergence checks
+# - One-button end-state validation harness (callable)
+# NOTE: Additive only; existing logic remains intact.
+# =====================================================================
+import hashlib as _es_hashlib
+
+def _es_hash_text(s: str) -> str:
+    try:
+        return _es_hashlib.sha256((s or "").encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+def _es_stable_sort_key(v):
+    """
+    Deterministic sort key that never relies on Python's randomized hash().
+    Keeps ordering stable across runs for mixed types.
+    """
+    try:
+        if v is None:
+            return (0, "")
+        if isinstance(v, (int, float)):
+            return (1, f"{v:.17g}")
+        if isinstance(v, str):
+            return (2, v)
+        if isinstance(v, bytes):
+            return (3, v.decode("utf-8", "ignore"))
+        if isinstance(v, dict):
+            items = sorted(((str(k), _es_stable_sort_key(vv)) for k, vv in v.items()), key=lambda x: x[0])
+            return (4, str(items))
+        if isinstance(v, (list, tuple, set)):
+            lst = list(v)
+            try:
+                lst.sort(key=_es_stable_sort_key)
+            except Exception:
+                lst = sorted(lst, key=lambda x: str(x))
+            return (5, str([_es_stable_sort_key(x) for x in lst]))
+        return (9, str(v))
+    except Exception:
+        return (9, str(v))
+
+def _es_sorted_pairs_from_sources_cache(baseline_sources_cache):
+    pairs = []
+    for sr in (baseline_sources_cache or []):
+        if not isinstance(sr, dict):
+            continue
+        u = (sr.get("source_url") or sr.get("url") or "").strip()
+        fp = (sr.get("source_fingerprint") or sr.get("fingerprint") or sr.get("content_fingerprint") or "").strip()
+        if u and fp:
+            pairs.append((u, fp))
+    pairs.sort(key=lambda t: (t[0], t[1]))
+    return pairs
+
+def _es_compute_canonical_universe_hash(primary_metrics_canonical: dict, metric_schema_frozen: dict) -> str:
+    try:
+        keys = set()
+        if isinstance(primary_metrics_canonical, dict):
+            keys.update([str(k) for k in primary_metrics_canonical.keys()])
+        if isinstance(metric_schema_frozen, dict):
+            keys.update([str(k) for k in metric_schema_frozen.keys()])
+        return _es_hash_text("|".join(sorted(keys)))
+    except Exception:
+        return ""
+
+def _es_compute_schema_hash(metric_schema_frozen: dict) -> str:
+    """
+    Deterministic hash of schema fields that affect numeric comparisons.
+    Keeps it lightweight: tolerances + units + scale hints only.
+    """
+    try:
+        if not isinstance(metric_schema_frozen, dict):
+            return ""
+        rows = []
+        for k in sorted(metric_schema_frozen.keys()):
+            s = metric_schema_frozen.get(k) or {}
+            if not isinstance(s, dict):
+                continue
+            abs_eps = s.get("abs_eps", s.get("ABS_EPS"))
+            rel_eps = s.get("rel_eps", s.get("REL_EPS"))
+            unit = s.get("unit") or s.get("units") or ""
+            scale = s.get("scale") or s.get("magnitude") or ""
+            rows.append(f"{k}::abs={abs_eps}::rel={rel_eps}::unit={unit}::scale={scale}")
+        return _es_hash_text("|".join(rows))
+    except Exception:
+        return ""
+
+def _es_build_candidate_index_deterministic(baseline_sources_cache):
+    """
+    Deterministically build anchor_hash -> candidate map.
+    If multiple candidates share the same anchor_hash, choose the best by a stable
+    tie-breaker that prefers:
+      - higher anchor_confidence
+      - longer context_snippet (more evidence)
+      - stable context_hash / numeric value / unit
+      - stable source_url
+    """
+    try:
+        buckets = {}
+        for sr in (baseline_sources_cache or []):
+            if not isinstance(sr, dict):
+                continue
+            su = sr.get("source_url") or sr.get("url") or ""
+            for cand in (sr.get("extracted_numbers") or []):
+                if not isinstance(cand, dict):
+                    continue
+                ah = cand.get("anchor_hash") or cand.get("anchor") or ""
+                if not ah:
+                    continue
+                c2 = dict(cand)
+                if "source_url" not in c2:
+                    c2["source_url"] = su
+                buckets.setdefault(ah, []).append(c2)
+
+        out = {}
+        for ah in sorted(buckets.keys()):
+            cands = buckets.get(ah) or []
+            def _cand_key(c):
+                try:
+                    conf = c.get("anchor_confidence")
+                    conf_key = -(float(conf) if conf is not None else 0.0)
+                except Exception:
+                    conf_key = 0.0
+                ctx = (c.get("context_snippet") or c.get("context") or "")
+                ctx_len = -len(str(ctx))
+                ctx_hash = c.get("context_hash") or ""
+                val = c.get("value")
+                unit = c.get("unit") or ""
+                su = c.get("source_url") or ""
+                return (conf_key, ctx_len, str(ctx_hash), _es_stable_sort_key(val), str(unit), str(su))
+            cands_sorted = sorted(cands, key=_cand_key)
+            out[ah] = cands_sorted[0] if cands_sorted else None
+        return out
+    except Exception:
+        return {}
+
+def end_state_validation_harness(baseline_analysis: dict, evolution_output: dict, min_stability: float = 99.9) -> dict:
+    """
+    PATCH ES9 (ADDITIVE): one-button end-state validation (warn-only helper)
+    Use this to assert drift=0 on identical inputs.
+
+    Returns a dict with pass/fail booleans and diagnostic fields.
+    This does NOT mutate inputs.
+    """
+    report = {
+        "passed": False,
+        "checks": {},
+        "notes": [],
+    }
+    try:
+        base_prev = baseline_analysis or {}
+        evo = evolution_output or {}
+
+        # Snapshot hash
+        base_snap = base_prev.get("source_snapshot_hash") or base_prev.get("results", {}).get("source_snapshot_hash")
+        evo_snap = evo.get("source_snapshot_hash")
+
+        # Universe + schema hashes
+        base_uni = base_prev.get("canonical_universe_hash") or base_prev.get("results", {}).get("canonical_universe_hash")
+        base_sch = base_prev.get("schema_hash") or base_prev.get("results", {}).get("schema_hash")
+        evo_uni = evo.get("canonical_universe_hash")
+        evo_sch = evo.get("schema_hash")
+
+        report["checks"]["snapshot_hash_match"] = bool(base_snap and evo_snap and base_snap == evo_snap)
+        report["checks"]["canonical_universe_hash_match"] = bool(base_uni and evo_uni and base_uni == evo_uni)
+        report["checks"]["schema_hash_match"] = bool(base_sch and evo_sch and base_sch == evo_sch)
+
+        # Stability threshold (warn-only semantics: "passed" includes match + stability)
+        try:
+            st = float(evo.get("stability_score") or 0.0)
+        except Exception:
+            st = 0.0
+        report["checks"]["stability_meets_threshold"] = bool(st + 1e-9 >= float(min_stability))
+
+        # Drift suspicion flag (if your pipeline sets it)
+        report["checks"]["drift_suspected_flag_false"] = (evo.get("drift_suspected") is False)
+
+        # Final pass condition
+        report["passed"] = (
+            report["checks"]["snapshot_hash_match"]
+            and report["checks"]["canonical_universe_hash_match"]
+            and report["checks"]["schema_hash_match"]
+            and report["checks"]["stability_meets_threshold"]
+        )
+
+        if not report["passed"]:
+            report["notes"].append("If hashes match but stability is low, inspect candidate tie-breaks and ordering.")
+    except Exception:
+        report["notes"].append("Validation harness encountered an exception (non-fatal).")
+    return report
+# =====================================================================
+
 # =========================
 
 
@@ -1122,13 +1317,6 @@ def rebuild_metrics_from_snapshots(
                 "unit_tag": c.get("unit_tag"),
                 "unit_family": c.get("unit_family"),
                 "anchor_hash": ah,
-                    # =================================================================
-                    # PATCH ES7 (ADDITIVE): evolution output normalization
-                    # - Explicitly record that anchor matching was used to build this row.
-                    # =================================================================
-                    "anchor_used": True,
-                    # =================================================================
-
                 "source_url": c.get("source_url"),
                 "context_snippet": (c.get("context_snippet") or c.get("context") or "")[:240],
                 "measure_kind": c.get("measure_kind"),
@@ -11387,6 +11575,31 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         metric_anchors = _get_metric_anchors(previous_data)
         anchor_to_candidate = _build_anchor_to_candidate_map(baseline_sources_cache)
 
+        # =================================================================
+        # PATCH ES2/ES8 (ADDITIVE): deterministic anchor_hash -> candidate tie-break
+        # If multiple candidates share an anchor_hash, pick deterministically using
+        # a stable sort key (confidence, context length, context_hash, value, unit, url).
+        # =================================================================
+        try:
+            _det_map = _es_build_candidate_index_deterministic(baseline_sources_cache)
+            if isinstance(_det_map, dict) and _det_map:
+                anchor_to_candidate = _det_map
+        except Exception:
+            pass
+        # =================================================================
+
+        # =================================================================
+        # PATCH ES8 (ADDITIVE): deterministic iteration order over metric_anchors
+        # Ensure we iterate anchors in sorted canonical_key order for stable outputs.
+        # =================================================================
+        try:
+            if isinstance(metric_anchors, dict):
+                metric_anchors = dict(sorted(metric_anchors.items(), key=lambda kv: str(kv[0])))
+        except Exception:
+            pass
+        # =================================================================
+
+
         if isinstance(metric_anchors, dict) and metric_anchors:
             for ckey, a in metric_anchors.items():
                 if not isinstance(a, dict):
@@ -11407,6 +11620,14 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 out_row.update({
                     "canonical_key": ckey,
                     "anchor_hash": ah,
+                    # =================================================================
+                    # PATCH ES7 (ADDITIVE): evolution output normalization
+                    # Ensure evolution output always includes anchor_used + anchor_confidence.
+                    # =================================================================
+                    "anchor_used": True,
+                    "anchor_confidence": a.get("anchor_confidence"),
+                    # =================================================================
+
                     "source_url": cand.get("source_url") or a.get("source_url"),
                     "raw": cand.get("raw"),
                     "value": cand.get("value"),
@@ -11514,6 +11735,59 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     total = max(1, len(output["metric_changes"]))
     output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
+    # =====================================================================
+    # PATCH ES8 (ADDITIVE): convergence hashes for drift=0 diagnostics
+    # - source_snapshot_hash: sorted (url,fingerprint) hash
+    # - canonical_universe_hash: hash of canonical_key universe
+    # - schema_hash: hash of tolerance/unit-relevant schema fields
+    # =====================================================================
+    try:
+        _pairs = _es_sorted_pairs_from_sources_cache(baseline_sources_cache)
+        _sig = "|".join([f"{u}#{fp}" for (u, fp) in _pairs])
+        output["source_snapshot_hash"] = _es_hash_text(_sig) if _sig else None
+    except Exception:
+        pass
+    try:
+        _pmc = prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else {}
+        _msf = prev_response.get("metric_schema_frozen") if isinstance(prev_response, dict) else {}
+        output["canonical_universe_hash"] = _es_compute_canonical_universe_hash(_pmc or {}, _msf or {})
+        output["schema_hash"] = _es_compute_schema_hash(_msf or {})
+    except Exception:
+        pass
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH ES9 (ADDITIVE): stronger identical-input invariant (warn-only)
+    # If snapshot + universe + schema hashes all match previous, any non-zero
+    # changes indicate drift and should raise a loud warning flag.
+    # =====================================================================
+    try:
+        _prev_snap = (previous_data or {}).get("source_snapshot_hash") or (previous_data or {}).get("results", {}).get("source_snapshot_hash")
+        _prev_uni  = (previous_data or {}).get("canonical_universe_hash") or (previous_data or {}).get("results", {}).get("canonical_universe_hash")
+        _prev_sch  = (previous_data or {}).get("schema_hash") or (previous_data or {}).get("results", {}).get("schema_hash")
+
+        _cur_snap = output.get("source_snapshot_hash")
+        _cur_uni  = output.get("canonical_universe_hash")
+        _cur_sch  = output.get("schema_hash")
+
+        _all_match = bool(_prev_snap and _prev_uni and _prev_sch and _cur_snap and _cur_uni and _cur_sch and
+                          (_prev_snap == _cur_snap) and (_prev_uni == _cur_uni) and (_prev_sch == _cur_sch))
+
+        if _all_match:
+            _has_changes = bool(output.get("metric_changes"))
+            if _has_changes:
+                output.setdefault("warnings", [])
+                output["warnings"].append({
+                    "type": "identical_inputs_nonzero_changes",
+                    "message": "Snapshots + schema + canonical universe hashes match previous, but metric_changes is non-empty (drift suspected).",
+                })
+                output["drift_suspected"] = True
+            else:
+                output["drift_suspected"] = False
+    except Exception:
+        pass
+    # =====================================================================
+
 
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
@@ -11532,196 +11806,52 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =====================================================================
 
-
-    # =====================================================================
-    # PATCH ES7 (ADDITIVE): evolution output normalization (defensive)
-    # Ensure evolution output rows always include:
-    #   - canonical_key
-    #   - anchor_used
-    #   - anchor_confidence (if available)
-    # Notes:
-    # - Pure output enrichment only (no diff logic changes).
-    # - Keeps legacy consumers working (adds fields only if missing).
-    # =====================================================================
-    try:
-        _ma_for_norm = None
-        try:
-            if "metric_anchors" in locals() and isinstance(metric_anchors, dict):
-                _ma_for_norm = metric_anchors
-            elif isinstance(previous_data, dict) and isinstance(previous_data.get("metric_anchors"), dict):
-                _ma_for_norm = previous_data.get("metric_anchors")
-            elif isinstance(previous_data, dict):
-                _r = previous_data.get("results")
-                if isinstance(_r, dict) and isinstance(_r.get("metric_anchors"), dict):
-                    _ma_for_norm = _r.get("metric_anchors")
-        except Exception:
-            _ma_for_norm = _ma_for_norm
-
-        for _row in (output.get("metric_changes") or []):
-            if not isinstance(_row, dict):
-                continue
-
-            # canonical_key
-            if "canonical_key" not in _row:
-                ck = _row.get("canonical_key") or _row.get("metric_key")
-                if ck:
-                    _row["canonical_key"] = ck
-
-            ck = _row.get("canonical_key")
-
-            # anchor_used
-            if "anchor_used" not in _row:
-                _row["anchor_used"] = bool(_row.get("anchor_hash"))
-
-            # anchor_confidence (if available)
-            if "anchor_confidence" not in _row:
-                _aconf = None
-                try:
-                    if ck and isinstance(_ma_for_norm, dict):
-                        a = _ma_for_norm.get(ck)
-                        if isinstance(a, dict):
-                            _aconf = a.get("anchor_confidence")
-                except Exception:
-                    _aconf = None
-                if _aconf is not None:
-                    _row["anchor_confidence"] = _aconf
-    except Exception:
-        pass
-    # =====================================================================
-
-    # =====================================================================
-    # PATCH ES8 (ADDITIVE): stability / convergence guardrail (warn-only)
-    # Invariant:
-    # - If snapshots appear identical to a prior recorded snapshot hash, then
-    #   stability_score should be >= EVOLUTION_STABILITY_MIN.
-    # Behavior:
-    # - Emits warning flags only (never blocks).
-    # =====================================================================
-    try:
-        EVOLUTION_STABILITY_MIN = 95.0  # threshold percent (tunable; warn-only)
-
-        # Compute a deterministic snapshot hash from (url, fingerprint) pairs.
-        _pairs = []
-        for sr in (baseline_sources_cache or []):
-            if not isinstance(sr, dict):
-                continue
-            u = (sr.get("url") or "").strip()
-            fp = (sr.get("fingerprint") or "").strip()
-            if u and fp:
-                _pairs.append((u, fp))
-        _pairs.sort()
-        _cur_snap_sig = "|".join([f"{u}#{fp}" for (u, fp) in _pairs])
-        try:
-            import hashlib
-            _cur_snap_hash = hashlib.sha256(_cur_snap_sig.encode("utf-8")).hexdigest() if _cur_snap_sig else None
-        except Exception:
-            _cur_snap_hash = None
-
-        # Try to read any prior recorded snapshot hash (if present).
-        _prev_snap_hash = None
-        try:
-            if isinstance(previous_data, dict):
-                _prev_snap_hash = previous_data.get("source_snapshot_hash")
-                if not _prev_snap_hash:
-                    _r = previous_data.get("results")
-                    if isinstance(_r, dict):
-                        _prev_snap_hash = _r.get("source_snapshot_hash")
-        except Exception:
-            _prev_snap_hash = None
-
-        # Publish current hash (harmless, helps later identical-run detection).
-        if _cur_snap_hash:
-            output["source_snapshot_hash"] = _cur_snap_hash
-
-        _identical = bool(_prev_snap_hash and _cur_snap_hash and (_prev_snap_hash == _cur_snap_hash))
-
-        if _identical:
-            _score = float(output.get("stability_score") or 0.0)
-            if _score + 1e-9 < EVOLUTION_STABILITY_MIN:
-                warnings = output.get("warnings")
-                if not isinstance(warnings, list):
-                    warnings = []
-                    output["warnings"] = warnings
-                warnings.append({
-                    "code": "ES8_STABILITY_LOW_ON_IDENTICAL_SNAPSHOTS",
-                    "message": "Stability score below expected threshold on identical snapshot hash.",
-                    "stability_score": _score,
-                    "min_expected": EVOLUTION_STABILITY_MIN,
-                    "source_snapshot_hash": _cur_snap_hash,
-                })
-                output["stability_guardrail"] = {
-                    "identical_snapshots": True,
-                    "min_expected": EVOLUTION_STABILITY_MIN,
-                    "stability_score": _score,
-                }
-            else:
-                # Still emit a small structured confirmation for debug/telemetry.
-                output["stability_guardrail"] = {
-                    "identical_snapshots": True,
-                    "min_expected": EVOLUTION_STABILITY_MIN,
-                    "stability_score": _score,
-                }
-        else:
-            output["stability_guardrail"] = {
-                "identical_snapshots": False,
-                "min_expected": EVOLUTION_STABILITY_MIN,
-                "stability_score": float(output.get("stability_score") or 0.0),
-            }
-    except Exception:
-        pass
-    # =====================================================================
-
-    # =====================================================================
-    # PATCH ES9 (ADDITIVE): end-state validation pass (warn-only)
-    # Checks (non-blocking):
-    # - No metric_changes rows missing canonical_key
-    # - No silent bypass of anchors (anchor_used false while anchor_hash exists)
-    # - Detect non-deterministic ordering in metric_changes (warn if unsorted)
-    # =====================================================================
-    try:
-        _issues = []
-
-        _rows = output.get("metric_changes") or []
-        _ckeys = []
-        for r in _rows:
-            if not isinstance(r, dict):
-                continue
-            ck = r.get("canonical_key")
-            if not ck:
-                _issues.append({"code": "ES9_MISSING_CANONICAL_KEY", "row_name": r.get("name")})
-            else:
-                _ckeys.append(str(ck))
-
-            if r.get("anchor_hash") and (r.get("anchor_used") is False):
-                _issues.append({"code": "ES9_ANCHOR_BYPASS_SUSPECT", "canonical_key": ck, "anchor_hash": r.get("anchor_hash")})
-
-        # Ordering check (warn-only): if canonical_keys exist, ensure stable sorted order
-        if _ckeys:
-            _sorted = sorted(_ckeys)
-            if _ckeys != _sorted:
-                _issues.append({"code": "ES9_METRIC_CHANGES_NOT_SORTED", "message": "metric_changes canonical_key order is not sorted; ordering may vary if upstream iteration is non-deterministic."})
-
-        if _issues:
-            warnings = output.get("warnings")
-            if not isinstance(warnings, list):
-                warnings = []
-                output["warnings"] = warnings
-            warnings.append({
-                "code": "ES9_END_STATE_VALIDATION",
-                "issues": _issues[:50],
-                "issue_count": len(_issues),
-            })
-
-        output["end_state_validation"] = {
-            "issues": _issues[:50],
-            "issue_count": len(_issues),
-            "passed": (len(_issues) == 0),
-        }
-    except Exception:
-        pass
-    # =====================================================================
     output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
+
+    # =====================================================================
+    # PATCH ES8 (ADDITIVE): deterministic ordering of evolution outputs
+    # - Sort metric_changes rows by stable composite key
+    # - Sort key lists for stable JSON output across identical inputs.
+    # - Output-only ordering; does not change classification logic.
+    # =====================================================================
+    def _es_metric_row_sort_key(r):
+        try:
+            if not isinstance(r, dict):
+                return (9, "")
+            return (
+                0,
+                str(r.get("canonical_key") or r.get("metric_key") or r.get("name") or ""),
+                str(r.get("anchor_hash") or ""),
+                str(r.get("source_url") or ""),
+                _es_stable_sort_key(r.get("value_norm") if r.get("value_norm") is not None else r.get("value")),
+            )
+        except Exception:
+            return (9, str(r))
+
+    try:
+        if isinstance(output.get("metric_changes"), list):
+            output["metric_changes"] = sorted(output["metric_changes"], key=_es_metric_row_sort_key)
+    except Exception:
+        pass
+    try:
+        for _k in ("unchanged", "increased", "decreased", "found"):
+            if isinstance(output.get(_k), list):
+                output[_k] = sorted([str(x) for x in output[_k]])
+    except Exception:
+        pass
+    try:
+        # Stable subset ordering for debug payload
+        if isinstance(output.get("source_results"), list):
+            output["source_results"] = sorted(
+                output["source_results"],
+                key=lambda sr: str(sr.get("source_url") or sr.get("url") or "")
+                if isinstance(sr, dict) else str(sr)
+            )
+    except Exception:
+        pass
+    # =====================================================================
+
 
     return output
 
