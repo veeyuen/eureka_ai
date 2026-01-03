@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_4"
+CODE_VERSION = "v7_41_endstate_wip_6"
 # =========================
 
 
@@ -277,6 +277,19 @@ def add_to_history(analysis: dict) -> bool:
     # PATCH A3 (ADDITIVE): build metric_anchors deterministically (schema-first if present)
     # -----------------------
     def _build_metric_anchors(primary_metrics_canonical, metric_schema_frozen, evidence_records):
+        """
+        Deterministically anchor each canonical metric to the best matching extracted number
+        from evidence_records.
+
+        Returns:
+        anchors: Dict[canonical_key -> anchor_dict]
+
+        Notes:
+        - Schema-first gating (unit_family/dimension) for drift stability.
+        - Backward compatible: emits legacy fields metric_id/metric_name in each anchor.
+        """
+        import re
+
         anchors = {}
         if not isinstance(primary_metrics_canonical, dict) or not isinstance(evidence_records, list):
             return anchors
@@ -290,6 +303,26 @@ def add_to_history(analysis: dict) -> bool:
                 return float(x)
             except Exception:
                 return None
+
+        # PATCH A3.9 (ADDITIVE): currency evidence helper
+        # - Needed because many currency metrics appear as magnitude-tagged numbers (e.g., "40.7M")
+        #   with currency implied in nearby context ("USD", "revenue", "$", etc.)
+        def _has_currency_evidence(raw: str, ctx: str) -> bool:
+            r = (raw or "")
+            c = (ctx or "").lower()
+            if any(s in r for s in ["$", "S$", "€", "£"]):
+                return True
+            if any(code in c for code in [" usd", "sgd", " eur", " gbp", " aud", " cad", " jpy", " cny", " rmb"]):
+                return True
+            strong_kw = [
+                "revenue", "turnover", "valuation", "valued at", "market value", "market size",
+                "sales value", "net profit", "operating profit", "gross profit",
+                "ebitda", "earnings", "income", "capex", "opex"
+            ]
+            if any(k in c for k in strong_kw):
+                return True
+            return False
+        # =========================
 
         # flatten candidates
         all_nums = []
@@ -325,7 +358,7 @@ def add_to_history(analysis: dict) -> bool:
             best_key = None
 
             # PATCH A3.3 (ADDITIVE): metric value reference for closeness bonus
-            m_val = _to_float(m.get("value_norm") or m.get("value"))
+            m_val = _to_float(m.get("value_norm") if m.get("value_norm") is not None else m.get("value"))
 
             # PATCH A3.4 (ADDITIVE): normalized expected tag (schema unit may be "M", "%", etc.)
             exp_tag = expected_unit
@@ -334,6 +367,9 @@ def add_to_history(analysis: dict) -> bool:
                     exp_tag = _norm_tag_fn(expected_unit)
             except Exception:
                 pass
+
+            # PATCH A3.10 (ADDITIVE): metric unit_tag (if available) to gate closeness bonus
+            m_tag = (m.get("unit_tag") or "").strip()
 
             for cand in all_nums:
                 if cand.get("is_junk") is True:
@@ -356,12 +392,32 @@ def add_to_history(analysis: dict) -> bool:
                 # =========================
 
                 # =========================
-                # PATCH A3.6 (ADDITIVE): schema-first family gate (strict when expected_family known)
-                # - previously optional when c_fam was empty
+                # PATCH A3.7 (ADDITIVE): prefer unit_tag matching (normalized) over raw unit matching
+                # PATCH A3.11 (ADDITIVE): extend normalization fallback to raw/context
+                # - helps older snapshots where unit_tag/unit may be empty but raw/context carries scale ("million", "%")
+                # =========================
+                cand_tag = c_ut
+                try:
+                    if callable(_norm_tag_fn):
+                        cand_tag = _norm_tag_fn(c_ut or cand.get("unit") or cand.get("raw") or ctx)
+                except Exception:
+                    pass
+                # =========================
+
+                # =========================
+                # PATCH A3.6 (FIX): schema-first family gate with currency exception
+                # - Currency metrics often appear as magnitude candidates ("40.7M") + currency evidence in context.
+                # - We allow cand_fam == "magnitude" for expected_family == "currency" ONLY when currency evidence exists.
                 # =========================
                 if expected_family in ("percent", "currency", "magnitude", "energy"):
-                    if (c_fam or "") != expected_family:
-                        continue
+                    if expected_family == "currency":
+                        if c_fam not in ("currency", "magnitude"):
+                            continue
+                        if c_fam == "magnitude" and not _has_currency_evidence(cand.get("raw", ""), ctx):
+                            continue
+                    else:
+                        if (c_fam or "") != expected_family:
+                            continue
                 # =========================
 
                 # dimension/meaning gate using measure_kind when present (soft but helpful)
@@ -378,28 +434,28 @@ def add_to_history(analysis: dict) -> bool:
                 bonus = 0.0
 
                 # =========================
-                # PATCH A3.7 (ADDITIVE): prefer unit_tag matching (normalized) over raw unit matching
+                # PATCH A3.7 (ADDITIVE): tag-based unit bonus (stronger)
                 # =========================
-                cand_tag = c_ut
-                try:
-                    if callable(_norm_tag_fn):
-                        cand_tag = _norm_tag_fn(c_ut or cand.get("unit") or "")
-                except Exception:
-                    pass
-
                 if exp_tag and cand_tag and cand_tag == exp_tag:
-                    bonus += 0.07  # stronger than previous 0.05
+                    bonus += 0.07
                 # keep a small legacy bonus if exact unit string matches too
                 if expected_unit and (str(cand.get("unit") or "").strip() == expected_unit):
                     bonus += 0.03
                 # =========================
 
                 # =========================
-                # PATCH A3.8 (ADDITIVE): deterministic value closeness bonus (when both parsable)
-                # - helps pick the right number within same context
+                # PATCH A3.8 (ADDITIVE): deterministic value closeness bonus (guarded)
+                # - Only apply when units are comparable (tag match or both use value_norm).
+                # - Prevents misleading closeness when one side is normalized and the other isn't.
                 # =========================
-                c_val = _to_float(cand.get("value_norm") or cand.get("value"))
-                if m_val is not None and c_val is not None:
+                c_val = _to_float(cand.get("value_norm") if cand.get("value_norm") is not None else cand.get("value"))
+                comparable = False
+                if m_tag and cand_tag and m_tag == cand_tag:
+                    comparable = True
+                elif (m.get("value_norm") is not None) and (cand.get("value_norm") is not None):
+                    comparable = True
+
+                if comparable and m_val is not None and c_val is not None:
                     denom = max(1e-9, abs(m_val))
                     rel_err = abs(c_val - m_val) / denom
                     if rel_err <= 0.02:
@@ -424,6 +480,13 @@ def add_to_history(analysis: dict) -> bool:
 
             if best and best_key and best_key[0] >= 0.10:
                 anchors[ckey] = {
+                    # =========================
+                    # PATCH MA1 (ADDITIVE): legacy compat fields
+                    # =========================
+                    "metric_id": ckey,
+                    "metric_name": (m.get("name") or m.get("original_name") or ckey),
+                    # =========================
+
                     "canonical_key": ckey,
                     "anchor_hash": best.get("anchor_hash"),
                     "source_url": best.get("source_url"),
@@ -438,14 +501,31 @@ def add_to_history(analysis: dict) -> bool:
                     "measure_assoc": best.get("measure_assoc"),
                     "context_snippet": (best.get("context_snippet") or "")[:220],
                     "anchor_confidence": float(min(100.0, best_key[0] * 100.0)),
+
+                    # =========================
+                    # PATCH A3.12 (ADDITIVE): optional fingerprint passthrough (if present)
+                    # - Useful later for evolution/debugging; harmless if missing.
+                    # =========================
+                    "fingerprint": best.get("fingerprint"),
+                    # =========================
                 }
             else:
                 anchors[ckey] = {
+                    # =========================
+                    # PATCH MA1 (ADDITIVE): legacy compat fields
+                    # =========================
+                    "metric_id": ckey,
+                    "metric_name": (m.get("name") or m.get("original_name") or ckey),
+                    # =========================
+
                     "canonical_key": ckey,
                     "anchor_hash": None,
                     "source_url": None,
                     "raw": None,
                     "anchor_confidence": 0.0,
+
+                    # PATCH A3.12 (ADDITIVE): keep key present for stable shape
+                    "fingerprint": None,
                 }
 
         # stable ordering (prefer helper if present)
@@ -461,6 +541,7 @@ def add_to_history(analysis: dict) -> bool:
             pass
 
         return anchors
+
 
     # -----------------------
     # PATCH A4 (ADDITIVE): enrich analysis (never block saving)
@@ -4768,6 +4849,81 @@ def canonicalize_metrics(
         original_name = metric.get("name", key)
         canonical_id, canonical_name = get_canonical_metric_id(original_name)
 
+        # =========================
+        # PATCH CM1 (ADDITIVE): registry-guided dimension hint
+        # - If the canonical base metric is in METRIC_REGISTRY, use its unit_type
+        #   as a strong prior for dimension classification.
+        # - This reduces mislabel drift like "Revenue" being assigned as unit_sales
+        #   (or vice-versa) purely from noisy LLM labels.
+        #
+        # NOTE (conflict fix, additive):
+        # - Your prior code risked UnboundLocalError due to base_id scoping.
+        # - We keep your legacy behavior, but guard it and define base_id upfront.
+        # =========================
+
+        registry_unit_type = ""
+
+        # ---- PATCH CM1.A (ADDITIVE): define base_id upfront to prevent UnboundLocalError ----
+        base_id = ""
+        # -------------------------------------------------------------------------------
+
+        try:
+            # =========================
+            # PATCH CM1.B (BUGFIX + ADDITIVE): registry base_id extraction
+            # - canonical_id may contain underscores inside the base id (e.g., "market_size_2025")
+            # - Find the LONGEST registry key that is a prefix of canonical_id.
+            # =========================
+            try:
+                reg = globals().get("METRIC_REGISTRY")
+                cid = str(canonical_id or "")
+                if isinstance(reg, dict) and cid:
+                    # choose the longest matching prefix key
+                    for k in reg.keys():
+                        ks = str(k)
+                        if cid == ks or cid.startswith(ks + "_"):
+                            if len(ks) > len(base_id):
+                                base_id = ks
+
+                    if base_id and isinstance(reg.get(base_id), dict):
+                        registry_unit_type = (reg[base_id].get("unit_type") or "").strip().lower()
+            except Exception:
+                # keep safe defaults
+                pass
+            # =========================
+
+            # -------------------------------------------------------------------
+            # PATCH CM1.C (ADDITIVE): legacy code preserved, but guarded
+            # - This block is redundant with CM1.B, but we keep it as requested.
+            # - Guard prevents:
+            #   (1) base_id undefined
+            #   (2) overwriting registry_unit_type already computed above
+            # -------------------------------------------------------------------
+            if not registry_unit_type:
+                reg = globals().get("METRIC_REGISTRY")
+                if base_id and isinstance(reg, dict) and base_id in reg and isinstance(reg[base_id], dict):
+                    registry_unit_type = (reg[base_id].get("unit_type") or "").strip().lower()
+            # -------------------------------------------------------------------
+
+        except Exception:
+            registry_unit_type = ""
+
+        # Map registry unit_type -> canonicalize_metrics dimension vocabulary
+        # (keep it small + deterministic)
+        if registry_unit_type:
+            if registry_unit_type in ("currency",):
+                registry_dim_hint = "currency"
+            elif registry_unit_type in ("percentage", "percent"):
+                registry_dim_hint = "percent"
+            elif registry_unit_type in ("count",):
+                # keep "unit_sales" vs "count" distinction:
+                # registry says count; name-based inference decides "unit_sales" if it sees units/shipments/deliveries
+                registry_dim_hint = "count"
+            else:
+                registry_dim_hint = ""
+        else:
+            registry_dim_hint = ""
+        # =========================
+
         raw_unit = (metric.get("unit") or "").strip()
 
         # =========================
@@ -4781,6 +4937,19 @@ def canonicalize_metrics(
 
         unit_norm = raw_unit.upper()  # keep original behavior (do not change)
         dim = infer_metric_dimension(str(original_name), raw_unit)
+
+        # =========================
+        # PATCH CM1 (ADDITIVE): apply registry hint as override / guardrail
+        # - If registry says currency/percent, force that dimension.
+        # - If registry says count, prevent accidental "currency"/"percent".
+        # =========================
+        if registry_dim_hint in ("currency", "percent"):
+            dim = registry_dim_hint
+        elif registry_dim_hint == "count":
+            # Allow unit_sales if name clearly indicates it; else keep "count"
+            if dim in ("currency", "percent"):
+                dim = "count"
+        # =========================
 
         canonical_key = f"{canonical_id}__{dim}"
 
@@ -4958,6 +5127,7 @@ def canonicalize_metrics(
         canonicalized[ckey] = base_metric
 
     return canonicalized
+
 
 
 def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
@@ -5184,32 +5354,21 @@ def sort_evidence_records(records: List[Dict]) -> List[Dict]:
     return sorted((records or []), key=k)
 
 def sort_metric_anchors(anchors: List[Dict]) -> List[Dict]:
-    """
-    Deterministic ordering for metric anchors.
-
-    Backward compatible:
-      - Supports legacy anchor shapes that include metric_id/metric_name
-      - Supports newer canonical-key anchors (canonical_key)
-    """
-
     # =========================
-    # PATCH SM1 (ADDITIVE): support canonical_key-first sorting
-    # - New anchor dicts typically include: canonical_key, source_url, anchor_hash
-    # - Old anchor dicts used: metric_id, metric_name, source_url
+    # PATCH MA2 (ADDITIVE): canonical-first stable sort
+    # - Prefer canonical_key (new)
+    # - Fall back to metric_id/metric_name (legacy)
     # =========================
-    def k(a: Dict[str, Any]):
-        a = a or {}
-        return (
-            str(a.get("canonical_key") or ""),                 # NEW (preferred)
-            str(a.get("metric_id") or ""),                     # legacy fallback
-            str(a.get("metric_name") or ""),                   # legacy fallback
-            str(a.get("source_url") or ""),
-            str(a.get("anchor_hash") or ""),
-            str(a.get("raw") or ""),
-        )
-    # =========================
+    return sorted(
+        (anchors or []),
+        key=lambda a: (
+            str((a or {}).get("canonical_key") or ""),
+            str((a or {}).get("metric_id") or ""),
+            str((a or {}).get("metric_name") or ""),
+            str((a or {}).get("source_url") or ""),
+        ),
+    )
 
-    return sorted((anchors or []), key=k)
 
 def normalize_unit(unit: str) -> str:
     """
