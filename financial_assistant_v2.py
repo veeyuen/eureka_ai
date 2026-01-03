@@ -167,9 +167,11 @@ def add_to_history(analysis: dict) -> bool:
 
     # -----------------------
     # PATCH A1 (ADDITIVE): robustly locate baseline_sources_cache
+    # - Added primary_response.baseline_sources_cache as extra fallback
     # -----------------------
     baseline_cache = (
         analysis.get("baseline_sources_cache")
+        or (analysis.get("primary_response", {}) or {}).get("baseline_sources_cache")
         or (analysis.get("results", {}) or {}).get("baseline_sources_cache")
         or (analysis.get("results", {}) or {}).get("source_results")
     )
@@ -246,7 +248,10 @@ def add_to_history(analysis: dict) -> bool:
                 if "sort_snapshot_numbers" in globals() and callable(globals()["sort_snapshot_numbers"]):
                     clean_nums = sort_snapshot_numbers(clean_nums)
                 else:
-                    clean_nums = sorted(clean_nums, key=lambda x: (str(x.get("anchor_hash") or ""), str(x.get("raw") or "")))
+                    clean_nums = sorted(
+                        clean_nums,
+                        key=lambda x: (str(x.get("anchor_hash") or ""), str(x.get("raw") or ""))
+                    )
             except Exception:
                 pass
 
@@ -279,6 +284,13 @@ def add_to_history(analysis: dict) -> bool:
         def _tokenize(s: str):
             return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
 
+        # PATCH A3.1 (ADDITIVE): tiny float helper for deterministic closeness scoring
+        def _to_float(x):
+            try:
+                return float(x)
+            except Exception:
+                return None
+
         # flatten candidates
         all_nums = []
         for rec in evidence_records:
@@ -287,6 +299,10 @@ def add_to_history(analysis: dict) -> bool:
             for n in (rec.get("numbers") or []):
                 if isinstance(n, dict):
                     all_nums.append(n)
+
+        # PATCH A3.2 (ADDITIVE): normalize_unit_tag + unit_family hooks (if present)
+        _norm_tag_fn = globals().get("normalize_unit_tag")
+        _unit_family_fn = globals().get("unit_family")
 
         for ckey, m in primary_metrics_canonical.items():
             if not isinstance(m, dict):
@@ -308,18 +324,45 @@ def add_to_history(analysis: dict) -> bool:
             best = None
             best_key = None
 
+            # PATCH A3.3 (ADDITIVE): metric value reference for closeness bonus
+            m_val = _to_float(m.get("value_norm") or m.get("value"))
+
+            # PATCH A3.4 (ADDITIVE): normalized expected tag (schema unit may be "M", "%", etc.)
+            exp_tag = expected_unit
+            try:
+                if callable(_norm_tag_fn):
+                    exp_tag = _norm_tag_fn(expected_unit)
+            except Exception:
+                pass
+
             for cand in all_nums:
                 if cand.get("is_junk") is True:
                     continue
 
                 ctx = cand.get("context_snippet") or ""
+                c_ut = (cand.get("unit_tag") or "").strip()
                 c_fam = (cand.get("unit_family") or "").lower().strip()
-                c_ut = (cand.get("unit_tag") or "")
 
-                # schema-first family gate (only if we have a strong expected_family)
+                # =========================
+                # PATCH A3.5 (ADDITIVE): derive candidate family if missing
+                # - prevents leakage when unit_family wasn't populated upstream
+                # =========================
+                if not c_fam:
+                    try:
+                        if callable(_unit_family_fn):
+                            c_fam = str(_unit_family_fn(c_ut or "") or "").lower().strip()
+                    except Exception:
+                        pass
+                # =========================
+
+                # =========================
+                # PATCH A3.6 (ADDITIVE): schema-first family gate (strict when expected_family known)
+                # - previously optional when c_fam was empty
+                # =========================
                 if expected_family in ("percent", "currency", "magnitude", "energy"):
-                    if c_fam and c_fam != expected_family:
+                    if (c_fam or "") != expected_family:
                         continue
+                # =========================
 
                 # dimension/meaning gate using measure_kind when present (soft but helpful)
                 mk = cand.get("measure_kind")
@@ -332,14 +375,38 @@ def add_to_history(analysis: dict) -> bool:
                 overlap = sum(1 for t in toks if t in c_tokens) if toks else 0
                 score = overlap / max(1, len(toks))
 
-                # small bonuses for unit matches
                 bonus = 0.0
+
+                # =========================
+                # PATCH A3.7 (ADDITIVE): prefer unit_tag matching (normalized) over raw unit matching
+                # =========================
+                cand_tag = c_ut
+                try:
+                    if callable(_norm_tag_fn):
+                        cand_tag = _norm_tag_fn(c_ut or cand.get("unit") or "")
+                except Exception:
+                    pass
+
+                if exp_tag and cand_tag and cand_tag == exp_tag:
+                    bonus += 0.07  # stronger than previous 0.05
+                # keep a small legacy bonus if exact unit string matches too
                 if expected_unit and (str(cand.get("unit") or "").strip() == expected_unit):
-                    bonus += 0.05
-                if expected_unit and expected_unit in ("K", "M", "B", "T") and c_ut == expected_unit:
-                    bonus += 0.05
-                if expected_unit == "%" and c_ut == "%":
-                    bonus += 0.05
+                    bonus += 0.03
+                # =========================
+
+                # =========================
+                # PATCH A3.8 (ADDITIVE): deterministic value closeness bonus (when both parsable)
+                # - helps pick the right number within same context
+                # =========================
+                c_val = _to_float(cand.get("value_norm") or cand.get("value"))
+                if m_val is not None and c_val is not None:
+                    denom = max(1e-9, abs(m_val))
+                    rel_err = abs(c_val - m_val) / denom
+                    if rel_err <= 0.02:
+                        bonus += 0.06
+                    elif rel_err <= 0.10:
+                        bonus += 0.03
+                # =========================
 
                 score = float(score + bonus)
 
@@ -385,7 +452,11 @@ def add_to_history(analysis: dict) -> bool:
         try:
             if "sort_metric_anchors" in globals() and callable(globals()["sort_metric_anchors"]):
                 ordered = sort_metric_anchors(list(anchors.values()))
-                anchors = {a.get("canonical_key"): a for a in ordered if isinstance(a, dict) and a.get("canonical_key")}
+                anchors = {
+                    a.get("canonical_key"): a
+                    for a in ordered
+                    if isinstance(a, dict) and a.get("canonical_key")
+                }
         except Exception:
             pass
 
@@ -398,8 +469,19 @@ def add_to_history(analysis: dict) -> bool:
         if isinstance(baseline_cache, list) and baseline_cache:
             evidence_records = _build_evidence_records_from_baseline_cache(baseline_cache)
 
+            # =========================
+            # PATCH A4.1 (ADDITIVE): evidence layer versioning (pipeline attribution)
+            # - Use CODE_VERSION if available; else keep numeric fallback
+            # =========================
+            try:
+                cv = globals().get("CODE_VERSION")
+                analysis.setdefault("evidence_layer_version", cv or 1)
+            except Exception:
+                analysis.setdefault("evidence_layer_version", 1)
+            analysis.setdefault("evidence_layer_schema_version", 1)
+            # =========================
+
             # stash on analysis (additive)
-            analysis.setdefault("evidence_layer_version", 1)
             analysis["evidence_records"] = evidence_records
 
             # build anchors using canonical metrics + frozen schema if present
@@ -496,7 +578,8 @@ def add_to_history(analysis: dict) -> bool:
         payload_json = _try_make_sheet_json(payload_for_sheets)
 
         if isinstance(payload_json, str) and len(payload_json) > SHEETS_CELL_LIMIT:
-            payload_json = payload_json[: (SHEETS_CELL_LIMIT - 200)] + '... {"_sheet_write":{"truncated":true,"note":"hard_truncation"}}'
+            payload_json = payload_json[: (SHEETS_CELL_LIMIT - 200)] + \
+                '... {"_sheet_write":{"truncated":true,"note":"hard_truncation"}}'
 
         row = [
             analysis_id,
@@ -524,7 +607,6 @@ def add_to_history(analysis: dict) -> bool:
         except Exception:
             pass
         return False
-
 
 
 def normalize_unit_tag(unit_str: str) -> str:
@@ -3421,6 +3503,13 @@ class EvolutionDiff:
 # ------------------------------------
 
 # Metric type definitions with aliases
+# =========================
+# PATCH MR1 (ADDITIVE): de-ambiguate "sales" so unit-sales doesn't map to Revenue
+# - Remove standalone "sales" from Revenue aliases (too ambiguous)
+# - Add money-explicit revenue phrases instead ("sales revenue", "sales value", etc.)
+# - Add a couple of volume-style aliases under units_sold ("sales volume", "volume sales")
+# =========================
+
 METRIC_REGISTRY = {
     # Market Size metrics
     "market_size": {
@@ -3478,8 +3567,25 @@ METRIC_REGISTRY = {
     "revenue": {
         "canonical_name": "Revenue",
         "aliases": [
-            "revenue", "sales", "total revenue", "annual revenue",
-            "yearly revenue", "total sales", "gross revenue"
+            "revenue",
+            # =========================
+            # PATCH MR1 (CHANGED): removed ambiguous standalone alias "sales"
+            # =========================
+            # "sales",
+            # =========================
+            "total revenue", "annual revenue",
+            "yearly revenue", "gross revenue",
+
+            # =========================
+            # PATCH MR1 (ADDITIVE): money-explicit sales phrasing (revenue-like)
+            # =========================
+            "sales revenue",
+            "revenue from sales",
+            "sales value",
+            "value of sales",
+            "sales (value)",
+            "turnover",  # common finance synonym
+            # =========================
         ],
         "unit_type": "currency",
         "category": "financial"
@@ -3501,7 +3607,14 @@ METRIC_REGISTRY = {
         "canonical_name": "Units Sold",
         "aliases": [
             "units sold", "unit sales", "volume", "units shipped",
-            "shipments", "deliveries", "production volume"
+            "shipments", "deliveries", "production volume",
+
+            # =========================
+            # PATCH MR1 (ADDITIVE): common unit-sales phrasing variants
+            # =========================
+            "sales volume",
+            "volume sales",
+            # =========================
         ],
         "unit_type": "count",
         "category": "volume"
@@ -3517,6 +3630,7 @@ METRIC_REGISTRY = {
         "unit_type": "currency",
         "category": "pricing"
     },
+
     # -------------------------
     # Country / Macro metrics
     # -------------------------
@@ -3568,8 +3682,11 @@ METRIC_REGISTRY = {
         "unit_type": "percentage",
         "category": "macro"
     }
-
 }
+
+# =========================
+# END PATCH MR1
+# =========================
 
 # Year extraction pattern
 YEAR_PATTERN = re.compile(r'(20\d{2})')
@@ -4135,48 +4252,123 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
         "Global Market Value" -> ("market_size", "Market Size")
         "CAGR 2024-2030" -> ("cagr_2024_2030", "CAGR (2024-2030)")
     """
+    import re
+
     if not metric_name:
         return ("unknown", "Unknown Metric")
 
     name_lower = metric_name.lower().strip()
-    name_normalized = re.sub(r'[^\w\s]', ' ', name_lower)
-    name_normalized = re.sub(r'\s+', ' ', name_normalized).strip()
+    name_normalized = re.sub(r"[^\w\s]", " ", name_lower)
+    name_normalized = re.sub(r"\s+", " ", name_normalized).strip()
 
     # Extract years
     years = YEAR_PATTERN.findall(metric_name)
     year_suffix = "_".join(sorted(years)) if years else ""
 
+    # =========================
+    # PATCH CM1 (ADDITIVE): intent signals to prevent "sales" -> "revenue" mis-maps
+    # =========================
+    name_words = set(name_normalized.split())
+
+    # Explicit money intent (strong)
+    money_tokens = {
+        "revenue", "turnover", "valuation", "valued", "value", "market", "capex", "opex",
+        "profit", "earnings", "ebitda", "income",
+        "usd", "sgd", "eur", "gbp", "aud", "cad", "jpy", "cny", "rmb"
+    }
+    # Currency symbols appear in raw text sometimes
+    has_currency_symbol = any(sym in metric_name for sym in ["$", "€", "£", "S$"])
+
+    has_money_intent = bool(name_words & money_tokens) or has_currency_symbol
+
+    # Explicit unit/count intent (strong)
+    unit_tokens = {
+        "unit", "units", "deliveries", "shipments", "registrations", "vehicles",
+        "sold", "salesvolume", "volume", "pcs", "pieces"
+    }
+    # normalize joined token cases like "sales volume"
+    joined = name_normalized.replace(" ", "")
+    has_unit_intent = bool(name_words & unit_tokens) or any(t in joined for t in ["salesvolume", "unitsold", "vehiclesold"])
+    # =========================
+
     # Find best matching registry entry
     best_match_id = None
-    best_match_score = 0
+    best_match_score = 0.0
+
+    # =========================
+    # PATCH CM2 (ADDITIVE): helper to identify revenue-like registry targets
+    # =========================
+    def _is_revenue_like(metric_id: str, config: dict) -> bool:
+        mid = (metric_id or "").lower()
+        cname = str((config or {}).get("canonical_name") or "").lower()
+        # treat "market value" / "valuation" as currency-like too
+        if any(k in cname for k in ["revenue", "market value", "valuation", "market size", "turnover"]):
+            return True
+        if any(k in mid for k in ["revenue", "market_value", "market_size", "valuation"]):
+            return True
+        return False
+    # =========================
 
     for metric_id, config in METRIC_REGISTRY.items():
         for alias in config["aliases"]:
             # Remove years from alias for comparison
-            alias_no_year = YEAR_PATTERN.sub('', alias).strip()
-            name_no_year = YEAR_PATTERN.sub('', name_normalized).strip()
+            alias_no_year = YEAR_PATTERN.sub("", alias).strip().lower()
+            alias_no_year = re.sub(r"[^\w\s]", " ", alias_no_year)
+            alias_no_year = re.sub(r"\s+", " ", alias_no_year).strip()
+
+            name_no_year = YEAR_PATTERN.sub("", name_normalized).strip()
+
+            # ---- base score from your existing logic ----
+            score = 0.0
 
             # Exact match
-            if alias_no_year == name_no_year:
-                best_match_id = metric_id
-                best_match_score = 1.0
-                break
+            if alias_no_year == name_no_year and alias_no_year:
+                score = 1.0
 
             # Containment match
-            if alias_no_year in name_no_year or name_no_year in alias_no_year:
+            elif alias_no_year and (alias_no_year in name_no_year or name_no_year in alias_no_year):
                 score = len(alias_no_year) / max(len(name_no_year), 1)
-                if score > best_match_score:
-                    best_match_id = metric_id
-                    best_match_score = score
 
             # Word overlap match
-            alias_words = set(alias_no_year.split())
-            name_words = set(name_no_year.split())
-            if alias_words and name_words:
-                overlap = len(alias_words & name_words) / len(alias_words | name_words)
-                if overlap > best_match_score:
-                    best_match_id = metric_id
-                    best_match_score = overlap
+            else:
+                alias_words = set(alias_no_year.split())
+                name_words_local = set(name_no_year.split())
+                if alias_words and name_words_local:
+                    overlap = len(alias_words & name_words_local) / len(alias_words | name_words_local)
+                    score = max(score, overlap)
+
+            # =========================
+            # PATCH CM3 (ADDITIVE): disambiguation penalties/guards
+            # - Block "sales" -> revenue when no money intent
+            # - Block unit-intent -> revenue-like
+            # - Require explicit money intent for revenue-like (soft guard, not hard stop)
+            # =========================
+            if score > 0.0:
+                revenue_like = _is_revenue_like(metric_id, config)
+
+                # If target is revenue-like but name has strong unit intent, penalize heavily
+                if revenue_like and has_unit_intent and not has_money_intent:
+                    score *= 0.20  # strong downweight
+
+                # If target is revenue-like but name has NO money intent at all, penalize
+                if revenue_like and not has_money_intent:
+                    score *= 0.55  # moderate downweight
+
+                # If name includes the word "sales" but no money intent, avoid mapping to revenue-like
+                if revenue_like and ("sales" in name_no_year.split()) and not has_money_intent:
+                    score *= 0.60
+
+                # Conversely: if target is NOT revenue-like but name has money intent, slight penalty
+                if (not revenue_like) and has_money_intent and ("sales" in name_no_year.split()) and not has_unit_intent:
+                    score *= 0.85
+            # =========================
+
+            if score > best_match_score:
+                best_match_id = metric_id
+                best_match_score = score
+
+            if best_match_score == 1.0:
+                break
 
         if best_match_score == 1.0:
             break
@@ -4199,7 +4391,7 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
         return (canonical_id, display_name)
 
     # Fallback: create ID from normalized name
-    fallback_id = re.sub(r'\s+', '_', name_normalized)
+    fallback_id = re.sub(r"\s+", "_", name_normalized)
     if year_suffix:
         fallback_id = f"{fallback_id}_{year_suffix}" if year_suffix not in fallback_id else fallback_id
 
@@ -4913,23 +5105,111 @@ def make_extracted_number_id(source_url: str, fingerprint: str, n: Dict) -> str:
     return stable_json_hash(payload)
 
 def sort_snapshot_numbers(numbers: List[Dict]) -> List[Dict]:
-    def k(n: Dict):
+    """
+    Deterministic ordering for extracted_numbers in snapshots.
+
+    Backward compatible + robust:
+      - Uses start/end idx when present
+      - Avoids hard dependency on normalize_unit() (may not exist)
+      - Falls back to normalize_unit_tag() if available
+    """
+
+    # =========================
+    # PATCH SS1 (ADDITIVE): safe unit normalizer
+    # - Prefer normalize_unit() if it exists
+    # - Else fall back to normalize_unit_tag() if present
+    # - Else just return stripped unit
+    # =========================
+    _norm_unit_fn = globals().get("normalize_unit")
+    _norm_tag_fn = globals().get("normalize_unit_tag")
+
+    def _safe_norm_unit(u: str) -> str:
+        u = (u or "").strip()
+        try:
+            if callable(_norm_unit_fn):
+                return str(_norm_unit_fn(u) or "")
+        except Exception:
+            pass
+        try:
+            if callable(_norm_tag_fn):
+                # normalize_unit_tag expects tags / unit-ish strings; still better than raw
+                return str(_norm_tag_fn(u) or "")
+        except Exception:
+            pass
+        return u
+    # =========================
+
+    def k(n: Dict[str, Any]):
+        n = n or {}
         return (
             n.get("start_idx") if isinstance(n.get("start_idx"), int) else 10**18,
             n.get("end_idx") if isinstance(n.get("end_idx"), int) else 10**18,
-            str(normalize_unit(n.get("unit") or "")),
-            str(n.get("value")),
-            str(n.get("raw") or ""),
+
+            # stable identity ordering
             str(n.get("anchor_hash") or ""),
+
+            # unit + value
+            _safe_norm_unit(str(n.get("unit") or "")),
+            str(n.get("unit_tag") or ""),
+            str(n.get("value_norm") if n.get("value_norm") is not None else n.get("value")),
+
+            # final tie-breakers
+            str(n.get("raw") or ""),
+            str(n.get("context_snippet") or n.get("context") or "")[:80],
         )
+
     return sorted((numbers or []), key=k)
 
 def sort_evidence_records(records: List[Dict]) -> List[Dict]:
-    return sorted((records or []), key=lambda r: (str((r or {}).get("url") or ""), str((r or {}).get("fingerprint") or "")))
+    """
+    Deterministic ordering for evidence_records.
+
+    Backward compatible:
+      - Uses url + fingerprint (as you had)
+      - Adds fetched_at as tie-breaker if present (non-breaking)
+    """
+
+    # =========================
+    # PATCH SE1 (ADDITIVE): add fetched_at tie-breaker (optional)
+    # =========================
+    def k(r: Dict[str, Any]):
+        r = r or {}
+        return (
+            str(r.get("url") or ""),
+            str(r.get("fingerprint") or ""),
+            str(r.get("fetched_at") or ""),
+        )
+    # =========================
+
+    return sorted((records or []), key=k)
 
 def sort_metric_anchors(anchors: List[Dict]) -> List[Dict]:
-    return sorted((anchors or []), key=lambda a: (str((a or {}).get("metric_id") or ""), str((a or {}).get("metric_name") or ""), str((a or {}).get("source_url") or "")))
+    """
+    Deterministic ordering for metric anchors.
 
+    Backward compatible:
+      - Supports legacy anchor shapes that include metric_id/metric_name
+      - Supports newer canonical-key anchors (canonical_key)
+    """
+
+    # =========================
+    # PATCH SM1 (ADDITIVE): support canonical_key-first sorting
+    # - New anchor dicts typically include: canonical_key, source_url, anchor_hash
+    # - Old anchor dicts used: metric_id, metric_name, source_url
+    # =========================
+    def k(a: Dict[str, Any]):
+        a = a or {}
+        return (
+            str(a.get("canonical_key") or ""),                 # NEW (preferred)
+            str(a.get("metric_id") or ""),                     # legacy fallback
+            str(a.get("metric_name") or ""),                   # legacy fallback
+            str(a.get("source_url") or ""),
+            str(a.get("anchor_hash") or ""),
+            str(a.get("raw") or ""),
+        )
+    # =========================
+
+    return sorted((anchors or []), key=k)
 
 def normalize_unit(unit: str) -> str:
     """
