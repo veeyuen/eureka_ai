@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_2"
+CODE_VERSION = "v7_41_endstate_wip_4"
 # =========================
 
 
@@ -146,33 +146,386 @@ def add_to_history(analysis: dict) -> bool:
     """
     Save analysis to Google Sheet (or session fallback).
 
-    Enhancement (safe):
-    - If a baseline source cache exists, build & store:
-        * evidence_records (structured, cached)
-        * metric_anchors (baseline metrics anchored to evidence)
-    This is used by evolution to improve matching determinism and stability.
+    ADDITIVE end-state wiring:
+      - If a baseline source cache exists, build & store:
+          * evidence_records (structured, cached)
+          * metric_anchors (baseline metrics anchored to evidence)
+      - Prevent Google Sheets 50,000-char single-cell limit errors by shrinking only
+        the JSON payload written into the single "analysis json" cell when necessary.
 
-    Additional (safe, additive):
-    - Prevent Google Sheets 50,000-char single-cell limit errors by shrinking only
-      the JSON payload written into the single "analysis json" cell when necessary.
-      The in-memory `analysis` object is NOT destroyed; we only write a reduced copy.
-
-    Notes:
-    - Backward compatible: only adds keys; does not change existing schema.
-    - Robust: finds baseline cache in multiple likely locations.
-    - Safe: never blocks saving if enrichment fails.
-    - Safe: Sheets open failure falls back to session state.
+    Backward compatible:
+      - Only adds keys; does not remove existing fields.
+      - Never blocks saving if enrichment fails.
+      - If Sheets unavailable, falls back to session_state.
     """
+    import json
+    import re
+    import streamlit as st
+    from datetime import datetime
+
+    SHEETS_CELL_LIMIT = 50000
 
     # -----------------------
-    # Existing helper block (unchanged)
+    # PATCH A1 (ADDITIVE): robustly locate baseline_sources_cache
     # -----------------------
+    baseline_cache = (
+        analysis.get("baseline_sources_cache")
+        or (analysis.get("results", {}) or {}).get("baseline_sources_cache")
+        or (analysis.get("results", {}) or {}).get("source_results")
+    )
 
-    # =============================================================================
-# PATCH HELPERS (ADDITIVE)
-# Canonical numeric normalization + snapshot rebuild
-# These helpers are intentionally standalone and do NOT override any logic.
-# =============================================================================
+    # -----------------------
+    # PATCH A2 (ADDITIVE): build evidence_records deterministically
+    # -----------------------
+    def _build_evidence_records_from_baseline_cache(baseline_cache_obj):
+        records = []
+        if not isinstance(baseline_cache_obj, list):
+            return records
+
+        # helper: safe sha1 fallback if needed
+        def _sha1(s: str) -> str:
+            try:
+                import hashlib
+                return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+            except Exception:
+                return ""
+
+        for sr in baseline_cache_obj:
+            if not isinstance(sr, dict):
+                continue
+            url = sr.get("url") or ""
+            fp = sr.get("fingerprint")
+            fetched_at = sr.get("fetched_at")
+
+            nums = sr.get("extracted_numbers") or []
+            clean_nums = []
+
+            if isinstance(nums, list):
+                for n in nums:
+                    if not isinstance(n, dict):
+                        continue
+
+                    # optional canonicalization hook
+                    try:
+                        fn = globals().get("canonicalize_numeric_candidate")
+                        if callable(fn):
+                            n = fn(dict(n))
+                    except Exception:
+                        n = dict(n)
+
+                    raw = (n.get("raw") or "").strip()
+                    ctx = (n.get("context_snippet") or n.get("context") or "").strip()
+                    anchor_hash = n.get("anchor_hash") or _sha1(f"{url}|{raw}|{ctx[:240]}")
+
+                    clean_nums.append({
+                        "value": n.get("value"),
+                        "unit": n.get("unit"),
+                        "unit_tag": n.get("unit_tag"),
+                        "unit_family": n.get("unit_family"),
+                        "base_unit": n.get("base_unit"),
+                        "multiplier_to_base": n.get("multiplier_to_base"),
+                        "value_norm": n.get("value_norm"),
+
+                        "raw": raw,
+                        "context_snippet": ctx[:240],
+                        "anchor_hash": anchor_hash,
+                        "source_url": n.get("source_url") or url,
+
+                        "start_idx": n.get("start_idx"),
+                        "end_idx": n.get("end_idx"),
+
+                        "is_junk": bool(n.get("is_junk")) if isinstance(n.get("is_junk"), bool) else False,
+                        "junk_reason": n.get("junk_reason") or "",
+
+                        "measure_kind": n.get("measure_kind"),
+                        "measure_assoc": n.get("measure_assoc"),
+                    })
+
+            # stable ordering (prefer your helper if present)
+            try:
+                if "sort_snapshot_numbers" in globals() and callable(globals()["sort_snapshot_numbers"]):
+                    clean_nums = sort_snapshot_numbers(clean_nums)
+                else:
+                    clean_nums = sorted(clean_nums, key=lambda x: (str(x.get("anchor_hash") or ""), str(x.get("raw") or "")))
+            except Exception:
+                pass
+
+            records.append({
+                "url": url,
+                "fetched_at": fetched_at,
+                "fingerprint": fp,
+                "numbers": clean_nums,
+            })
+
+        # stable ordering (prefer helper if present)
+        try:
+            if "sort_evidence_records" in globals() and callable(globals()["sort_evidence_records"]):
+                records = sort_evidence_records(records)
+            else:
+                records = sorted(records, key=lambda r: str(r.get("url") or ""))
+        except Exception:
+            pass
+
+        return records
+
+    # -----------------------
+    # PATCH A3 (ADDITIVE): build metric_anchors deterministically (schema-first if present)
+    # -----------------------
+    def _build_metric_anchors(primary_metrics_canonical, metric_schema_frozen, evidence_records):
+        anchors = {}
+        if not isinstance(primary_metrics_canonical, dict) or not isinstance(evidence_records, list):
+            return anchors
+
+        def _tokenize(s: str):
+            return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
+
+        # flatten candidates
+        all_nums = []
+        for rec in evidence_records:
+            if not isinstance(rec, dict):
+                continue
+            for n in (rec.get("numbers") or []):
+                if isinstance(n, dict):
+                    all_nums.append(n)
+
+        for ckey, m in primary_metrics_canonical.items():
+            if not isinstance(m, dict):
+                continue
+
+            schema = (metric_schema_frozen or {}).get(ckey) if isinstance(metric_schema_frozen, dict) else None
+            expected_family = (schema.get("unit_family") or "").lower().strip() if isinstance(schema, dict) else ""
+            expected_unit = (schema.get("unit") or "").strip() if isinstance(schema, dict) else ""
+            expected_dim = (schema.get("dimension") or "").lower().strip() if isinstance(schema, dict) else ""
+
+            # tokens: schema keywords + metric name tokens
+            toks = []
+            if isinstance(schema, dict):
+                for k in (schema.get("keywords") or []):
+                    toks.extend(_tokenize(str(k)))
+            toks.extend(_tokenize(m.get("name") or m.get("original_name") or ""))
+            toks = list(dict.fromkeys(toks))[:40]
+
+            best = None
+            best_key = None
+
+            for cand in all_nums:
+                if cand.get("is_junk") is True:
+                    continue
+
+                ctx = cand.get("context_snippet") or ""
+                c_fam = (cand.get("unit_family") or "").lower().strip()
+                c_ut = (cand.get("unit_tag") or "")
+
+                # schema-first family gate (only if we have a strong expected_family)
+                if expected_family in ("percent", "currency", "magnitude", "energy"):
+                    if c_fam and c_fam != expected_family:
+                        continue
+
+                # dimension/meaning gate using measure_kind when present (soft but helpful)
+                mk = cand.get("measure_kind")
+                if expected_dim == "percent" and mk and mk not in ("share_pct", "growth_pct", "percent_other"):
+                    continue
+                if expected_dim == "currency" and mk and mk == "count_units":
+                    continue
+
+                c_tokens = set(_tokenize(ctx))
+                overlap = sum(1 for t in toks if t in c_tokens) if toks else 0
+                score = overlap / max(1, len(toks))
+
+                # small bonuses for unit matches
+                bonus = 0.0
+                if expected_unit and (str(cand.get("unit") or "").strip() == expected_unit):
+                    bonus += 0.05
+                if expected_unit and expected_unit in ("K", "M", "B", "T") and c_ut == expected_unit:
+                    bonus += 0.05
+                if expected_unit == "%" and c_ut == "%":
+                    bonus += 0.05
+
+                score = float(score + bonus)
+
+                # stable tie-breaker
+                key = (
+                    score,
+                    str(cand.get("source_url") or ""),
+                    str(cand.get("anchor_hash") or ""),
+                    str(cand.get("raw") or ""),
+                )
+
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best = cand
+
+            if best and best_key and best_key[0] >= 0.10:
+                anchors[ckey] = {
+                    "canonical_key": ckey,
+                    "anchor_hash": best.get("anchor_hash"),
+                    "source_url": best.get("source_url"),
+                    "raw": best.get("raw"),
+                    "unit": best.get("unit"),
+                    "unit_tag": best.get("unit_tag"),
+                    "unit_family": best.get("unit_family"),
+                    "base_unit": best.get("base_unit"),
+                    "value": best.get("value"),
+                    "value_norm": best.get("value_norm"),
+                    "measure_kind": best.get("measure_kind"),
+                    "measure_assoc": best.get("measure_assoc"),
+                    "context_snippet": (best.get("context_snippet") or "")[:220],
+                    "anchor_confidence": float(min(100.0, best_key[0] * 100.0)),
+                }
+            else:
+                anchors[ckey] = {
+                    "canonical_key": ckey,
+                    "anchor_hash": None,
+                    "source_url": None,
+                    "raw": None,
+                    "anchor_confidence": 0.0,
+                }
+
+        # stable ordering (prefer helper if present)
+        try:
+            if "sort_metric_anchors" in globals() and callable(globals()["sort_metric_anchors"]):
+                ordered = sort_metric_anchors(list(anchors.values()))
+                anchors = {a.get("canonical_key"): a for a in ordered if isinstance(a, dict) and a.get("canonical_key")}
+        except Exception:
+            pass
+
+        return anchors
+
+    # -----------------------
+    # PATCH A4 (ADDITIVE): enrich analysis (never block saving)
+    # -----------------------
+    try:
+        if isinstance(baseline_cache, list) and baseline_cache:
+            evidence_records = _build_evidence_records_from_baseline_cache(baseline_cache)
+
+            # stash on analysis (additive)
+            analysis.setdefault("evidence_layer_version", 1)
+            analysis["evidence_records"] = evidence_records
+
+            # build anchors using canonical metrics + frozen schema if present
+            primary_resp = analysis.get("primary_response") or {}
+            if isinstance(primary_resp, dict):
+                pmc = primary_resp.get("primary_metrics_canonical") or analysis.get("primary_metrics_canonical") or {}
+                schema = primary_resp.get("metric_schema_frozen") or analysis.get("metric_schema_frozen") or {}
+            else:
+                pmc = analysis.get("primary_metrics_canonical") or {}
+                schema = analysis.get("metric_schema_frozen") or {}
+
+            metric_anchors = _build_metric_anchors(pmc, schema, evidence_records)
+            analysis["metric_anchors"] = metric_anchors
+    except Exception:
+        pass
+
+    # -----------------------
+    # Existing Google Sheet save behavior (guarded)
+    # -----------------------
+    def _try_make_sheet_json(obj: dict) -> str:
+        try:
+            fn = globals().get("make_sheet_safe_json")
+            if callable(fn):
+                return fn(obj)
+        except Exception:
+            pass
+        return json.dumps(obj, ensure_ascii=False, default=str)
+
+    def _shrink_for_sheets(original: dict) -> dict:
+        base_copy = dict(original)
+        s = _try_make_sheet_json(base_copy)
+        if isinstance(s, str) and len(s) <= SHEETS_CELL_LIMIT:
+            return base_copy
+
+        reduced = dict(base_copy)
+        removed = []
+
+        for k in [
+            "evidence_records",
+            "baseline_sources_cache",
+            "metric_anchors",
+            "source_results",
+            "web_context",
+            "scraped_meta",
+            "raw_sources",
+            "raw_text",
+            "debug",
+        ]:
+            if k in reduced:
+                reduced.pop(k, None)
+                removed.append(k)
+
+        reduced.setdefault("_sheet_write", {})
+        if isinstance(reduced["_sheet_write"], dict):
+            reduced["_sheet_write"]["truncated"] = True
+            reduced["_sheet_write"]["removed_keys"] = removed[:50]
+
+        s2 = _try_make_sheet_json(reduced)
+        if isinstance(s2, str) and len(s2) <= SHEETS_CELL_LIMIT:
+            return reduced
+
+        return {
+            "question": original.get("question"),
+            "timestamp": original.get("timestamp"),
+            "final_confidence": original.get("final_confidence"),
+            "question_profile": original.get("question_profile"),
+            "primary_response": original.get("primary_response") or {},
+            "_sheet_write": {
+                "truncated": True,
+                "mode": "minimal_fallback",
+                "note": "Full analysis too large for single Google Sheets cell (50k limit).",
+            },
+        }
+
+    # Try Sheets
+    try:
+        sheet = get_google_sheet()
+    except Exception:
+        sheet = None
+
+    if not sheet:
+        if "analysis_history" not in st.session_state:
+            st.session_state.analysis_history = []
+        st.session_state.analysis_history.append(analysis)
+        try:
+            st.session_state["last_analysis"] = analysis
+        except Exception:
+            pass
+        return False
+
+    try:
+        analysis_id = generate_analysis_id()
+        payload_for_sheets = _shrink_for_sheets(analysis)
+        payload_json = _try_make_sheet_json(payload_for_sheets)
+
+        if isinstance(payload_json, str) and len(payload_json) > SHEETS_CELL_LIMIT:
+            payload_json = payload_json[: (SHEETS_CELL_LIMIT - 200)] + '... {"_sheet_write":{"truncated":true,"note":"hard_truncation"}}'
+
+        row = [
+            analysis_id,
+            analysis.get("timestamp", datetime.now().isoformat()),
+            (analysis.get("question", "") or "")[:100],
+            str(analysis.get("final_confidence", "")),
+            payload_json,
+        ]
+        sheet.append_row(row, value_input_option="RAW")
+
+        try:
+            st.session_state["last_analysis"] = analysis
+        except Exception:
+            pass
+
+        return True
+
+    except Exception as e:
+        st.warning(f"⚠️ Failed to save to Google Sheets: {e}")
+        if "analysis_history" not in st.session_state:
+            st.session_state.analysis_history = []
+        st.session_state.analysis_history.append(analysis)
+        try:
+            st.session_state["last_analysis"] = analysis
+        except Exception:
+            pass
+        return False
+
+
 
 def normalize_unit_tag(unit_str: str) -> str:
     """
@@ -10802,6 +11155,8 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     return profile
 
 
+
+
 def render_dashboard(
     primary_json: str,
     final_conf: float,
@@ -10837,7 +11192,8 @@ def render_dashboard(
         # =========================
         # PATCH RD2 (ADDITIVE): accept dict/list directly
         # - If caller passes dict (primary_data), just use it
-        # - Else try json.loads
+        # - If caller passes list, wrap it (keeps downstream dict access safe)
+        # - Else try json.loads on string
         # =========================
         if isinstance(primary_json, dict):
             data = primary_json
