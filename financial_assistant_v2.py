@@ -74,6 +74,13 @@ from bs4 import BeautifulSoup
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
+# =========================
+# VERSION STAMP (ADDITIVE)
+# =========================
+CODE_VERSION = "v7_41_endstate_wip_2"
+# =========================
+
+
 # =========================================================
 # GOOGLE SHEETS HISTORY STORAGE
 # =========================================================
@@ -4408,7 +4415,6 @@ def canonicalize_metrics(
     return canonicalized
 
 
-
 def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
     """
     Lock metric identity + expected schema for future evolution.
@@ -4422,7 +4428,46 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
     if not isinstance(canonical_metrics, dict):
         return frozen
 
-    def unit_family(unit_raw: str) -> str:
+    # =========================
+    # PATCH F1 (ADDITIVE): prefer shared normalize_unit_tag/unit_family helpers if present
+    # This improves consistency with extractor + attribution gating.
+    # Falls back safely to old heuristics.
+    # =========================
+    def _normalize_unit_safe(u: str) -> str:
+        try:
+            fn = globals().get("normalize_unit_tag")
+            if callable(fn):
+                return fn(u or "")
+        except Exception:
+            pass
+        return (u or "").strip()
+
+    def _unit_family_safe(unit_raw: str, dim_hint: str = "") -> str:
+        # 1) dimension-first (strongest signal)
+        d = (dim_hint or "").strip().lower()
+        if d in ("percent", "pct"):
+            return "percent"
+        if d in ("currency",):
+            return "currency"
+        if d in ("energy",):
+            return "energy"
+        if d in ("unit_sales", "count"):
+            # You’ve been treating M/B/T as “magnitude” for counts; keep aligned.
+            return "magnitude"
+        if d in ("index", "score"):
+            return "index"
+
+        # 2) if you already have a unit-family helper in the codebase, use it
+        try:
+            fn = globals().get("unit_family")
+            if callable(fn):
+                uf = fn(_normalize_unit_safe(unit_raw))
+                if isinstance(uf, str) and uf.strip():
+                    return uf.strip().lower()
+        except Exception:
+            pass
+
+        # 3) fallback to old heuristic (your original logic)
         u = (unit_raw or "").strip().lower()
         if not u:
             return "unknown"
@@ -4431,9 +4476,9 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
         if any(t in u for t in ["$", "s$", "usd", "sgd", "eur", "€", "gbp", "£", "jpy", "¥", "cny", "rmb"]):
             return "currency"
         if any(t in u for t in ["b", "bn", "billion", "m", "mn", "million", "k", "thousand", "t", "trillion"]):
-            # magnitude without currency symbol -> keep as magnitude
             return "magnitude"
         return "other"
+    # =========================
 
     for ckey, m in canonical_metrics.items():
         if not isinstance(m, dict):
@@ -4442,7 +4487,12 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
         dim = (m.get("dimension") or "").strip() or "unknown"
         name = m.get("name")
         unit = (m.get("unit") or "").strip()
-        uf = unit_family(unit)
+
+        # =========================
+        # PATCH F2 (ADDITIVE): compute unit_family using dimension-first logic
+        # =========================
+        uf = _unit_family_safe(unit, dim_hint=dim)
+        # =========================
 
         # Keywords: name + dimension token to prevent cross-dimension matches later
         kws = extract_context_keywords(name or "") or []
@@ -4451,18 +4501,37 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
         if uf and uf not in kws:
             kws.append(uf)
 
+        # =========================
+        # PATCH F3 (ADDITIVE): preserve schema unit more safely
+        # - Keep your existing behavior in 'unit' (backward compatible),
+        #   BUT also add 'unit_tag' which is the canonicalized unit used downstream.
+        # - This avoids the "SGD -> S" schema corruption that breaks currency gating.
+        # =========================
+        unit_tag = _normalize_unit_safe(unit)
+        # Keep existing 'unit' output to avoid breaking consumers:
+        unit_out = unit_clean_first_letter(unit.upper())
+        # =========================
+
         frozen[ckey] = {
             "canonical_key": ckey,
             "canonical_id": m.get("canonical_id") or ckey.split("__", 1)[0],
             "dimension": dim,
             "name": name,
-            "unit": unit_clean_first_letter(unit.upper()),
-            "unit_family": uf,
+
+            # Existing field kept exactly (backward compatible)
+            "unit": unit_out,
+
+            # =========================
+            # PATCH F3 (ADDITIVE): extra stable fields (non-breaking additions)
+            # =========================
+            "unit_tag": unit_tag,          # e.g., "%", "M", "B", "TWh"
+            "unit_family": uf,             # e.g., "currency", "percent", "magnitude"
+            # =========================
+
             "keywords": kws[:30],
         }
 
     return frozen
-
 
 
 # =========================================================
@@ -5021,54 +5090,78 @@ def attribute_span_to_sources(
     }
 
 
-def add_range_and_source_attribution_to_canonical_metrics(
-    canonical_metrics: Dict[str, Dict[str, Any]],
-    web_context: Dict[str, Any],
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Enrich canonical metrics with:
-      - value_span (min/mid/max)
-      - source_attribution (min/max)
-      - evidence list (top candidates)
-    Deterministic + no LLM.
-    """
-    if not isinstance(canonical_metrics, dict):
-        return {}
 
-    scraped = {}
-    try:
-        scraped = (web_context or {}).get("scraped_content", {}) or {}
-    except Exception:
+def add_range_and_source_attribution_to_canonical_metrics(
+    canonical_metrics: Dict[str, Any],
+    web_context: dict,
+    # =========================
+    # PATCH R1 (ADDITIVE): optional schema-first inputs
+    # If provided, attribution uses frozen schema to avoid semantic/unit leakage.
+    # =========================
+    metric_schema: Dict[str, Any] = None,
+    # =========================
+) -> Dict[str, Any]:
+    """
+    Enrich canonical metrics with deterministic range + source attribution.
+
+    IMPORTANT:
+    - canonical_metrics is expected to be keyed by canonical_key (dimension-safe),
+      i.e. the output of canonicalize_metrics().
+    - Schema-first mode (recommended): pass metric_schema=metric_schema_frozen so
+      attribute_span_to_sources() can enforce unit_family / measure_kind gates.
+    - Backward compatible: if metric_schema not provided, attribution falls back
+      to existing heuristic behavior inside attribute_span_to_sources().
+    """
+    enriched: Dict[str, Any] = {}
+    if not isinstance(canonical_metrics, dict):
+        return enriched
+
+    scraped = (web_context or {}).get("scraped_content") or {}
+    if not isinstance(scraped, dict):
         scraped = {}
 
-    enriched = {}
-    for cid, m in canonical_metrics.items():
-        metric_name = m.get("name") or m.get("original_name") or cid
+    # =========================
+    # PATCH R2 (ADDITIVE): resolve schema dict safely
+    # =========================
+    schema = metric_schema if isinstance(metric_schema, dict) else {}
+    # =========================
+
+    for ckey, m in canonical_metrics.items():
+        if not isinstance(m, dict):
+            continue
+
+        metric_name = m.get("name") or m.get("original_name") or str(ckey)
         metric_unit = m.get("unit") or ""
 
+        # =========================
+        # PATCH R3 (BUGFIX): schema-first wiring (no undefined prev_response/ckey)
+        # - canonical_key is the dict key (ckey)
+        # - metric_schema is the frozen schema dict (if provided)
+        # =========================
         span_pack = attribute_span_to_sources(
             metric_name=metric_name,
             metric_unit=metric_unit,
             scraped_content=scraped,
-            # =========================
-            # PATCH (ADDITIVE): schema-first wiring
-            # =========================
-            canonical_key=ckey,
-            metric_schema=(prev_response.get("metric_schema_frozen") or {}),
-            # =========================
-            )
+            canonical_key=str(ckey),
+            metric_schema=schema,
+        )
+        # =========================
 
         mm = dict(m)
-        if span_pack.get("span"):
-            mm["value_span"] = span_pack["span"]
-        if span_pack.get("source_attribution"):
-            mm["source_attribution"] = span_pack["source_attribution"]
-        if span_pack.get("evidence"):
-            mm["evidence"] = span_pack["evidence"]
 
-        enriched[cid] = mm
+        # Preserve old behavior: only add keys (don’t remove anything)
+        if isinstance(span_pack, dict):
+            if span_pack.get("span") is not None:
+                mm["source_span"] = span_pack.get("span")
+            if span_pack.get("source_attribution") is not None:
+                mm["source_attribution"] = span_pack.get("source_attribution")
+            if span_pack.get("evidence") is not None:
+                mm["evidence"] = span_pack.get("evidence")
+
+        enriched[ckey] = mm
 
     return enriched
+
 
 
 
@@ -7945,8 +8038,12 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             return "ENERGY"
 
         # Currency (symbol/code presence)
-        if any(x in ru for x in ["$", "USD", "SGD", "EUR", "GBP", "S$"]) or uu in ("USD", "SGD", "EUR", "GBP"):
+        #if any(x in ru for x in ["$", "USD", "SGD", "EUR", "GBP", "S$"]) or uu in ("USD", "SGD", "EUR", "GBP"):
+        #    return "CUR"
+
+        if re.search(r"(\$|S\$|€|£)\s*\d", r) or any(x in ru for x in ["USD", "SGD", "EUR", "GBP"]) or uu in ("USD","SGD","EUR","GBP"):
             return "CUR"
+
 
         # Magnitude (case-insensitive)
         if uu in ("K", "M", "B", "T") or (u or "").lower() in ("k", "m", "b", "t"):
@@ -7956,6 +8053,16 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
     def _tokenize(s: str):
         return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
+
+    def _safe_norm_unit_tag(x: str) -> str:
+    try:
+        fn = globals().get("normalize_unit_tag")
+        if callable(fn):
+            return fn(x or "")
+    except Exception:
+        pass
+    return (x or "").strip()
+
 
     # -----------------------------
     # Build baseline_sources_cache from scraped_meta (snapshot-friendly)
@@ -8059,6 +8166,10 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         # -----------------------------------------------------------
 
         analysis["baseline_sources_cache"] = baseline_sources_cache
+        analysis.setdefault("results", {})
+        if isinstance(analysis["results"], dict):
+            analysis["results"]["baseline_sources_cache"] = baseline_sources_cache
+
 
     # -----------------------------
     # RANGE capture for canonical metrics
@@ -8114,8 +8225,10 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
                 # NEW (additive): metric-aware magnitude gate
                 if uf == "MAG":
-                    cand_tag = normalize_unit_tag(cunit or craw)
-                    exp_tag = normalize_unit_tag((mdef.get("unit") or "") or (m.get("unit") or ""))
+
+                    cand_tag = _safe_norm_unit_tag(cunit or craw)
+                    exp_tag = _safe_norm_unit_tag((mdef.get("unit") or "") or (m.get("unit") or ""))
+
 
                     if exp_tag in ("K", "M", "B", "T"):
                         if cand_tag != exp_tag:
@@ -8159,6 +8272,23 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         m["value_range_display"] = f"{vmin:g}–{vmax:g} {unit_disp}".strip()
                     except Exception:
                         pass
+    # =====================================================================
+    # PATCH V1 (ADDITIVE): analysis & schema version stamping
+    # - Pure metadata, NO logic impact
+    # - Allows downstream drift attribution:
+    #     * pipeline changes vs source changes
+    # =====================================================================
+    analysis.setdefault("analysis_pipeline_version", "v7_41_endstate_wip_1")
+    analysis.setdefault("metric_identity_version", "canon_v2_dim_safe")
+    analysis.setdefault("schema_freeze_version", 1)
+    # =====================================================================
+
+    # =========================
+    # VERSION STAMP (ADDITIVE)
+    # =========================
+    analysis.setdefault("code_version", CODE_VERSION)
+    # =========================
+
 
     return analysis
 
@@ -8447,6 +8577,8 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
             return False
         except Exception:
             return False
+
+
 
     def _tokenize(s: str) -> list:
         toks = re.findall(r"[a-z0-9]+", (s or "").lower())
@@ -8760,7 +8892,7 @@ def _safe_parse_current_analysis(query: str, web_context: dict) -> dict:
         return {}
 
 
-def _diff_metrics_by_name(prev_response: dict, cur_response: dict):
+def diff_metrics_by_name(prev_response: dict, cur_response: dict):
     """
     Canonical-first diff with:
       - HARD STOP when prev canonical_key is missing in current (no name fallback)
@@ -11271,15 +11403,30 @@ def main():
                         question_text=query,
                         category_hint=str(primary_data.get("question_category", ""))
                     )
-                if primary_data.get("primary_metrics_canonical"):
-                    primary_data["primary_metrics_canonical"] = add_range_and_source_attribution_to_canonical_metrics(
-                        primary_data.get("primary_metrics_canonical", {}),
-                        web_context
+
+                # 1) canonicalize (unchanged)
+                if primary_data.get("primary_metrics"):
+                    primary_data["primary_metrics_canonical"] = canonicalize_metrics(
+                        primary_data.get("primary_metrics", {}),
+                        merge_duplicates_to_range=True,
+                        question_text=query,
+                        category_hint=str(primary_data.get("question_category", ""))
                     )
+
+                # 2) freeze schema FIRST  ✅ (so attribution can be schema-first)
                 if primary_data.get("primary_metrics_canonical"):
                     primary_data["metric_schema_frozen"] = freeze_metric_schema(
                         primary_data["primary_metrics_canonical"]
                     )
+
+                # 3) attribution using frozen schema  ✅
+                if primary_data.get("primary_metrics_canonical"):
+                    primary_data["primary_metrics_canonical"] = add_range_and_source_attribution_to_canonical_metrics(
+                        primary_data.get("primary_metrics_canonical", {}),
+                        web_context,
+                        metric_schema=(primary_data.get("metric_schema_frozen") or {}),
+                    )
+
             except Exception:
                 pass
 
@@ -11312,7 +11459,15 @@ def main():
                 "final_confidence": final_conf,
                 "veracity_scores": veracity_scores,
                 "web_sources": web_context.get("sources", []),
+                "code_version": CODE_VERSION,
                 }
+
+            try:
+                if isinstance(output.get("primary_response"), dict):
+                    output["primary_response"]["code_version"] = CODE_VERSION
+            except Exception:
+                pass
+
 
             # ✅ NEW: attach analysis-aligned snapshots (from scraped_meta)
             # This is the stable cache evolution should reuse.
@@ -11338,14 +11493,15 @@ def main():
             )
 
             render_dashboard(
-                primary_response,
-                final_conf,
-                web_context,
-                base_conf,
-                query,
-                veracity_scores,
-                web_context.get("source_reliability", [])
+            primary_data,
+            final_conf,
+            web_context,
+            base_conf,
+            query,
+            veracity_scores,
+            web_context.get("source_reliability", [])
             )
+
 
             with st.expander("🔧 Debug Information"):
                 st.write("**Confidence Breakdown:**")
