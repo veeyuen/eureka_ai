@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p5_snapshots_sheet_fix"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p6_snapshot_rehydrate_guard"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -9592,6 +9592,23 @@ def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
             wrapper["timestamp"] = obj.get("timestamp")
             wrapper["code_version"] = obj.get("code_version") or (obj.get("primary_response") or {}).get("code_version")
 
+            # =========================
+            # PATCH SS1B (ADDITIVE, REQUIRED FOR SNAPSHOT REHYDRATION):
+            # Carry snapshot pointers even when the payload is wrapped.
+            # Without these fields, evolution cannot rehydrate full snapshots
+            # from the Snapshots worksheet (or local fallback) and will fail
+            # the snapshot gate with "No valid snapshots".
+            # =========================
+            try:
+                _ssh = obj.get("source_snapshot_hash") or (obj.get("results") or {}).get("source_snapshot_hash")
+                _ref = obj.get("snapshot_store_ref") or (obj.get("results") or {}).get("snapshot_store_ref")
+                if _ssh:
+                    wrapper["source_snapshot_hash"] = _ssh
+                if _ref:
+                    wrapper["snapshot_store_ref"] = _ref
+            except Exception:
+                pass
+
         return json.dumps(wrapper, ensure_ascii=False, default=str)
     except Exception:
         return '{"_sheets_safe":true,"_sheet_write":{"truncated":true,"mode":"sheets_safe_wrapper","note":"wrapper failed"}}'
@@ -12016,6 +12033,49 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         "invalid_snapshot_count": int(invalid_count),
         "generated_at": _now(),
     }
+
+    # =====================================================================
+    # PATCH SS6 (ADDITIVE, REQUIRED): last-chance snapshot rehydration
+    # Why:
+    #   - When History rows are stored as Sheets-safe wrappers, baseline_sources_cache
+    #     may be absent at runtime unless a caller went through get_history() rehydration.
+    #   - Some UI paths may pass previous_data directly from the truncated wrapper row.
+    # Determinism:
+    #   - Only loads from existing snapshot stores (Sheets Snapshots tab or local file).
+    #   - No re-fetching; no heuristic matching.
+    # =====================================================================
+    try:
+        if not baseline_sources_cache and isinstance(previous_data, dict):
+            _ref = previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref")
+            _hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
+
+            # Prefer explicit pointer if provided
+            if isinstance(_ref, str) and _ref.startswith("gsheet:"):
+                parts = _ref.split(":")
+                _ws_title = parts[1] if len(parts) > 1 and parts[1] else "Snapshots"
+                _h = parts[2] if len(parts) > 2 else ""
+                baseline_sources_cache = load_full_snapshots_from_sheet(_h, worksheet_title=_ws_title) if _h else []
+                if baseline_sources_cache:
+                    output["snapshot_origin"] = "sheet_snapshot_store_ref"
+
+            # If no ref, try by hash (common when wrapper omitted pointer)
+            if not baseline_sources_cache and isinstance(_hash, str) and _hash:
+                baseline_sources_cache = load_full_snapshots_from_sheet(_hash, worksheet_title="Snapshots")
+                if baseline_sources_cache:
+                    output["snapshot_origin"] = "sheet_source_snapshot_hash"
+
+            # Local fallback
+            if not baseline_sources_cache and isinstance(_ref, str) and _ref and not _ref.startswith("gsheet:"):
+                baseline_sources_cache = load_full_snapshots_local(_ref)
+                if baseline_sources_cache:
+                    output["snapshot_origin"] = "local_snapshot_store_ref"
+
+            # Keep debug counts aligned
+            if isinstance(baseline_sources_cache, list):
+                output["valid_snapshot_count"] = len(baseline_sources_cache)
+    except Exception:
+        pass
+    # =====================================================================
 
     # If no valid snapshots, return "not_found" (tight safety net)
     if not baseline_sources_cache:
