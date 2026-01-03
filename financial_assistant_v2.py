@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_6"
+CODE_VERSION = "v7_41_endstate_wip_7"
 # =========================
 
 
@@ -10524,16 +10524,127 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Build a minimal current metrics dict from snapshots:
     current_metrics = {}
 
+    # =====================================================================
+    # PATCH E3 (ADDITIVE): prefer metric_anchors to rebuild current_metrics
+    # - If metric_anchors exist: resolve by anchor_hash -> candidate in CURRENT snapshots.
+    # - Snapshot-only: if anchor_hash not found, we do NOT guess.
+    # - Fully additive: if no anchors/hits, we fall back to rebuild_metrics_from_snapshots().
+    # =====================================================================
+    def _get_metric_anchors(prev: dict) -> dict:
+        if not isinstance(prev, dict):
+            return {}
+
+        # 1) top-level
+        a = prev.get("metric_anchors")
+        if isinstance(a, dict) and a:
+            return a
+
+        # 2) under primary_response
+        pr = prev.get("primary_response")
+        if isinstance(pr, dict):
+            a2 = pr.get("metric_anchors")
+            if isinstance(a2, dict) and a2:
+                return a2
+
+        # 3) under results
+        res = prev.get("results")
+        if isinstance(res, dict):
+            a3 = res.get("metric_anchors")
+            if isinstance(a3, dict) and a3:
+                return a3
+
+        return {}
+
+    def _canonicalize_candidate(n: dict) -> dict:
+        try:
+            fn = globals().get("canonicalize_numeric_candidate")
+            if callable(fn):
+                return fn(dict(n))
+        except Exception:
+            pass
+        return dict(n)
+
+    def _build_anchor_to_candidate_map(snapshots: list) -> dict:
+        m = {}
+        for sr in snapshots or []:
+            if not isinstance(sr, dict):
+                continue
+            for n in (sr.get("extracted_numbers") or []):
+                if not isinstance(n, dict):
+                    continue
+                nn = _canonicalize_candidate(n)
+                ah = nn.get("anchor_hash")
+                if not ah:
+                    continue
+                if ah not in m:
+                    m[ah] = nn
+                else:
+                    # prefer non-junk if tie
+                    old = m[ah]
+                    if old.get("is_junk") is True and nn.get("is_junk") is not True:
+                        m[ah] = nn
+        return m
+
     try:
-        fn_rebuild = globals().get("rebuild_metrics_from_snapshots")
-        if callable(fn_rebuild):
-            # =========================
-            # PATCH (ADDITIVE): pass web_context through to rebuild hook
-            # =========================
-            current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
-            # =========================
+        metric_anchors = _get_metric_anchors(previous_data)
+        anchor_to_candidate = _build_anchor_to_candidate_map(baseline_sources_cache)
+
+        if isinstance(metric_anchors, dict) and metric_anchors:
+            for ckey, a in metric_anchors.items():
+                if not isinstance(a, dict):
+                    continue
+
+                ah = a.get("anchor_hash") or a.get("anchor")
+                if not ah:
+                    continue
+
+                cand = anchor_to_candidate.get(ah)
+                if not isinstance(cand, dict):
+                    continue
+
+                # Optional: use baseline metric as template for stable identity fields
+                base = prev_metrics.get(ckey) if isinstance(prev_metrics, dict) else None
+                out_row = dict(base) if isinstance(base, dict) else {}
+
+                out_row.update({
+                    "canonical_key": ckey,
+                    "anchor_hash": ah,
+                    "source_url": cand.get("source_url") or a.get("source_url"),
+                    "raw": cand.get("raw"),
+                    "value": cand.get("value"),
+                    "unit": cand.get("unit"),
+                    "unit_tag": cand.get("unit_tag"),
+                    "unit_family": cand.get("unit_family"),
+                    "base_unit": cand.get("base_unit"),
+                    "multiplier_to_base": cand.get("multiplier_to_base"),
+                    "value_norm": cand.get("value_norm"),
+                    "measure_kind": cand.get("measure_kind"),
+                    "measure_assoc": cand.get("measure_assoc"),
+                    "context_snippet": cand.get("context_snippet") or cand.get("context") or "",
+                })
+
+                current_metrics[ckey] = out_row
     except Exception:
-        current_metrics = {}
+        pass
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH E4 (ADDITIVE): rebuild fallback only if anchors didn't produce metrics
+    # - Prevents anchor-built current_metrics from being overwritten.
+    # - Preserves existing behavior when anchors are missing or yield no hits.
+    # =====================================================================
+    if not isinstance(current_metrics, dict) or not current_metrics:
+        try:
+            fn_rebuild = globals().get("rebuild_metrics_from_snapshots")
+            if callable(fn_rebuild):
+                # =========================
+                # PATCH (ADDITIVE): pass web_context through to rebuild hook
+                # =========================
+                current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
+                # =========================
+        except Exception:
+            current_metrics = {}
+    # =====================================================================
 
     # If we cannot rebuild metrics, return a tight result that still exposes source_results for debugging
     if not isinstance(current_metrics, dict) or not current_metrics:
