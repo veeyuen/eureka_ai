@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p4_sheets_snapshots"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p5_snapshots_sheet_fix"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -869,6 +869,28 @@ def add_to_history(analysis: dict) -> bool:
             _bsc = None
             if isinstance(analysis, dict):
                 _bsc = analysis.get("results", {}).get("baseline_sources_cache") or analysis.get("baseline_sources_cache")
+
+
+            # =================================================================
+            # PATCH SS6B (ADDITIVE): if snapshots were already summarized away,
+            # rebuild minimal snapshot shape from evidence_records (deterministic).
+            # This enables snapshot persistence even when baseline_sources_cache
+            # is a summary dict in the main analysis object.
+            # =================================================================
+            try:
+                if (not isinstance(_bsc, list)) and isinstance(analysis, dict):
+                    _er = None
+                    # prefer nested results evidence_records first
+                    if isinstance(analysis.get("results"), dict):
+                        _er = analysis["results"].get("evidence_records")
+                    if _er is None:
+                        _er = analysis.get("evidence_records")
+                    _rebuilt = build_baseline_sources_cache_from_evidence_records(_er)
+                    if isinstance(_rebuilt, list) and _rebuilt:
+                        _bsc = _rebuilt
+            except Exception:
+                pass
+            # =================================================================
 
             if isinstance(_bsc, list) and _bsc:
                 _ssh = compute_source_snapshot_hash(_bsc)
@@ -9650,6 +9672,49 @@ def compute_source_snapshot_hash(baseline_sources_cache: list) -> str:
     sig = "|".join([f"{u}#{fp}" for (u, fp) in pairs])
     return hashlib.sha256(sig.encode("utf-8")).hexdigest() if sig else ""
 # =====================================================================
+# =====================================================================
+# PATCH SS6 (ADDITIVE): build full baseline_sources_cache from evidence_records
+# Why:
+# - Sheets-safe summarization may replace baseline_sources_cache/extracted_numbers
+#   with summary dicts. However, evidence_records often remains available and is
+#   already deterministic, snapshot-derived data.
+# - This helper reconstructs the minimal snapshot shape needed for
+#   source-anchored evolution WITHOUT re-fetching or heuristic matching.
+# =====================================================================
+def build_baseline_sources_cache_from_evidence_records(evidence_records):
+    """Return a list-shaped baseline_sources_cache rebuilt from evidence_records, or [].
+
+    Expected evidence_records shape (existing pipeline):
+      [{"url":..., "fingerprint":..., "fetched_at":..., "numbers":[{...candidate...}, ...]}, ...]
+    We map:
+      source_url <- url
+      extracted_numbers <- numbers
+    """
+    try:
+        if not isinstance(evidence_records, list) or not evidence_records:
+            return []
+        rebuilt = []
+        for rec in evidence_records:
+            if not isinstance(rec, dict):
+                continue
+            url = (rec.get("url") or rec.get("source_url") or "").strip()
+            nums = rec.get("numbers") or rec.get("extracted_numbers") or []
+            if not url or not isinstance(nums, list):
+                continue
+            rebuilt.append({
+                "source_url": url,
+                "url": url,  # legacy compatibility
+                "fingerprint": rec.get("fingerprint") or rec.get("content_fingerprint"),
+                "fetched_at": rec.get("fetched_at"),
+                "extracted_numbers": nums,
+            })
+        # Deterministic ordering
+        rebuilt.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+        return rebuilt
+    except Exception:
+        return []
+# =====================================================================
+
 
 # =====================================================================
 # PATCH SS2 (ADDITIVE): Google Sheets snapshot store (separate worksheet)
@@ -11797,6 +11862,32 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     snapshot_origin = "analysis_source_results_rebuild"
     except Exception:
         pass
+
+
+    # =====================================================================
+    # PATCH SS6C (ADDITIVE): evidence_records fallback for snapshots (evolution-time)
+    # If baseline_sources_cache is missing or summarized in previous_data, but
+    # evidence_records are present, rebuild the minimal snapshot shape needed
+    # for source-anchored evolution. No re-fetching; deterministic only.
+    # =====================================================================
+    try:
+        if (not baseline_sources_cache) and isinstance(previous_data, dict):
+            _er = None
+            if isinstance(previous_data.get("results"), dict):
+                _er = previous_data["results"].get("evidence_records")
+            if _er is None:
+                _er = previous_data.get("evidence_records")
+            _rebuilt = build_baseline_sources_cache_from_evidence_records(_er)
+            if isinstance(_rebuilt, list) and _rebuilt:
+                baseline_sources_cache = _rebuilt
+                try:
+                    snapshot_origin = "evidence_records_rebuild"
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # =====================================================================
+
 
     # =====================================================================
     # PATCH ES1C (ADDITIVE): validate snapshot shape & attach debug metadata
