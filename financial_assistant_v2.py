@@ -542,7 +542,6 @@ def add_to_history(analysis: dict) -> bool:
 
         return anchors
 
-
     # -----------------------
     # PATCH A4 (ADDITIVE): enrich analysis (never block saving)
     # -----------------------
@@ -658,9 +657,34 @@ def add_to_history(analysis: dict) -> bool:
         payload_for_sheets = _shrink_for_sheets(analysis)
         payload_json = _try_make_sheet_json(payload_for_sheets)
 
+        # =====================================================================
+        # PATCH A5 (BUGFIX, REQUIRED): never write invalid JSON to Sheets
+        # - Previous hard truncation produced non-JSON (prefix + random suffix),
+        #   causing history loaders (json.loads) to skip the row entirely.
+        # - This wrapper guarantees valid JSON even when we must truncate.
+        # =====================================================================
         if isinstance(payload_json, str) and len(payload_json) > SHEETS_CELL_LIMIT:
-            payload_json = payload_json[: (SHEETS_CELL_LIMIT - 200)] + \
-                '... {"_sheet_write":{"truncated":true,"note":"hard_truncation"}}'
+            try:
+                payload_json = json.dumps(
+                    {
+                        "_sheet_write": {
+                            "truncated": True,
+                            "mode": "hard_truncation_wrapper",
+                            "note": "Payload exceeded Google Sheets single-cell limit; stored preview only.",
+                        },
+                        # keep a preview for debugging/UI; still parseable JSON
+                        "preview": payload_json[: max(0, SHEETS_CELL_LIMIT - 600)],
+                        "analysis_id": analysis_id,
+                        "timestamp": analysis.get("timestamp", datetime.now().isoformat()),
+                        "question": (analysis.get("question", "") or "")[:200],
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+            except Exception:
+                # ultra-safe fallback: still valid JSON
+                payload_json = '{"_sheet_write":{"truncated":true,"mode":"hard_truncation_wrapper","note":"json.dumps failed"}}'
+        # =====================================================================
 
         row = [
             analysis_id,
