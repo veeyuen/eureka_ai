@@ -8923,6 +8923,32 @@ NON_DATA_CONTEXT_HINTS = [
 ]
 
 
+def _truncate_json_safely_for_sheets(json_str: str, max_chars: int = 45000) -> str:
+    """
+    PATCH TS1 (ADDITIVE): JSON-safe truncation wrapper
+    - Ensures json.loads always succeeds for any returned value.
+    - Stores a preview when oversized.
+    """
+    import json
+
+    s = "" if json_str is None else str(json_str)
+    if len(s) <= max_chars:
+        return s
+
+    preview_len = max(0, int(max_chars) - 700)
+    wrapper = {
+        "_sheets_safe": True,
+        "_sheet_write": {
+            "truncated": True,
+            "mode": "json_wrapper",
+            "note": "Payload exceeded cell limit; stored preview only.",
+        },
+        "preview": s[:preview_len],
+    }
+    try:
+        return json.dumps(wrapper, ensure_ascii=False, default=str)
+    except Exception:
+        return '{"_sheets_safe":true,"_sheet_write":{"truncated":true,"mode":"json_wrapper","note":"json.dumps failed"}}'
 
 
 def _truncate_for_sheets(s: str, max_chars: int = 45000) -> str:
@@ -8935,6 +8961,7 @@ def _truncate_for_sheets(s: str, max_chars: int = 45000) -> str:
     head = s[: int(max_chars * 0.75)]
     tail = s[- int(max_chars * 0.20):]
     return head + "\n...\n[TRUNCATED FOR GOOGLE SHEETS]\n...\n" + tail
+
 
 
 def _summarize_heavy_fields_for_sheets(obj: dict) -> dict:
@@ -8988,19 +9015,107 @@ def _summarize_heavy_fields_for_sheets(obj: dict) -> dict:
         else:
             out["scraped_content"] = {"_summary": True, "type": str(type(sc))}
 
+    # =====================================================================
+    # PATCH SS2 (ADDITIVE, REQUIRED): summarize nested heavy fields under out["results"]
+    # Why:
+    # - Your biggest payload is typically results.baseline_sources_cache (full snapshots)
+    # - The previous summarizer only handled top-level keys, so Sheets payload still exceeded limits
+    # - This keeps the saved JSON smaller AND keeps json.loads(get_history) working reliably
+    # =====================================================================
+    try:
+        r = out.get("results")
+        if isinstance(r, dict):
+            r2 = dict(r)
+
+            for big_key in ("baseline_sources_cache", "source_results"):
+                if big_key in r2:
+                    sr = r2.get(big_key)
+                    if isinstance(sr, list):
+                        sample = []
+                        for item in sr[:2]:
+                            if isinstance(item, dict):
+                                item2 = dict(item)
+                                if isinstance(item2.get("extracted_numbers"), list):
+                                    item2["extracted_numbers"] = {
+                                        "_summary": True,
+                                        "count": len(item2["extracted_numbers"])
+                                    }
+                                sample.append(item2)
+                        r2[big_key] = {"_summary": True, "count": len(sr), "sample": sample}
+                    else:
+                        r2[big_key] = {"_summary": True, "type": str(type(sr))}
+
+            out["results"] = r2
+    except Exception:
+        pass
+    # =====================================================================
+
     return out
 
 
+
 def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
-    """Serialize sheet-safe JSON under the cell limit."""
+    """
+    Serialize sheet-safe JSON under the cell limit.
+
+    NOTE / CONFLICT:
+      - The prior implementation used _truncate_for_sheets() on the JSON string, which can produce
+        invalid JSON (cut mid-string). Invalid JSON rows are skipped by get_history() (json.loads fails),
+        so evolution can't pick them up.
+      - This patch preserves summarization but replaces raw string truncation with a JSON wrapper
+        that is ALWAYS valid JSON.
+
+    Output behavior:
+      - If JSON fits: returns full compact JSON string.
+      - If too large: returns a valid JSON wrapper with a preview + metadata.
+    """
     import json
+
+    # Keep existing behavior: summarize heavy fields
     compact = _summarize_heavy_fields_for_sheets(obj if isinstance(obj, dict) else {"value": obj})
-    compact["_sheets_safe"] = True
+    if isinstance(compact, dict):
+        compact["_sheets_safe"] = True
+
+    # Try to serialize
     try:
         s = json.dumps(compact, ensure_ascii=False, default=str)
     except Exception:
-        s = str(compact)
-    return _truncate_for_sheets(s, max_chars=max_chars)
+        # ultra-safe fallback (still return valid JSON)
+        try:
+            s = json.dumps({"_sheets_safe": True, "_sheet_write": {"error": "json.dumps failed"}}, ensure_ascii=False)
+        except Exception:
+            return '{"_sheets_safe":true,"_sheet_write":{"error":"json.dumps failed"}}'
+
+    # If it fits, return as-is
+    if isinstance(s, str) and len(s) <= int(max_chars or 45000):
+        return s
+
+    # =========================
+    # PATCH SS1 (BUGFIX, REQUIRED): valid JSON wrapper when oversized
+    # - Never return mid-string truncations that break json.loads in get_history().
+    # =========================
+    try:
+        preview_len = max(0, int(max_chars or 45000) - 700)  # leave room for wrapper fields
+        wrapper = {
+            "_sheets_safe": True,
+            "_sheet_write": {
+                "truncated": True,
+                "mode": "sheets_safe_wrapper",
+                "note": "Payload exceeded cell limit; stored preview only. Full snapshots must be stored separately if needed.",
+            },
+            # Keep a preview for UI/debugging
+            "preview": s[:preview_len],
+        }
+
+        # Optional: carry minimal identity fields for convenience (additive)
+        if isinstance(obj, dict):
+            wrapper["question"] = (obj.get("question") or "")[:200]
+            wrapper["timestamp"] = obj.get("timestamp")
+            wrapper["code_version"] = obj.get("code_version") or (obj.get("primary_response") or {}).get("code_version")
+
+        return json.dumps(wrapper, ensure_ascii=False, default=str)
+    except Exception:
+        return '{"_sheets_safe":true,"_sheet_write":{"truncated":true,"mode":"sheets_safe_wrapper","note":"wrapper failed"}}'
 
 
 def fingerprint_text(text: str) -> str:
