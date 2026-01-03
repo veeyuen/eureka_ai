@@ -10816,11 +10816,44 @@ def render_dashboard(
     # -------------------------
     # Parse primary response
     # -------------------------
+
+    # =========================
+    # PATCH RD1 (ADDITIVE): safe preview helper
+    # - Prevents slice errors when primary_json is dict/list/etc.
+    # - Keeps original behavior for strings
+    # =========================
+    def _preview(x, limit: int = 1000) -> str:
+        try:
+            if isinstance(x, (dict, list)):
+                s = json.dumps(x, ensure_ascii=False, indent=2, default=str)
+            else:
+                s = str(x)
+        except Exception:
+            s = repr(x)
+        return s[:limit]
+    # =========================
+
     try:
-        data = json.loads(primary_json)
+        # =========================
+        # PATCH RD2 (ADDITIVE): accept dict/list directly
+        # - If caller passes dict (primary_data), just use it
+        # - Else try json.loads
+        # =========================
+        if isinstance(primary_json, dict):
+            data = primary_json
+        elif isinstance(primary_json, list):
+            data = {"_list": primary_json}
+        else:
+            data = json.loads(primary_json)
+        # =========================
+
     except Exception as e:
         st.error(f"❌ Cannot render dashboard: {e}")
-        st.code(primary_json[:1000])
+        # =========================
+        # PATCH RD1 (ADDITIVE): safe preview (no slicing crash)
+        # =========================
+        st.code(_preview(primary_json))
+        # =========================
         return
 
     # -------------------------
