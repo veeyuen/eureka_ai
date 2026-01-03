@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_7"
+CODE_VERSION = "v7_41_endstate_wip_8"
 # =========================
 
 
@@ -830,8 +830,26 @@ def rebuild_metrics_from_snapshots(
     import re
     import hashlib
 
+    # =========================
+    # PATCH RMS0 (ADDITIVE): typing imports for Dict/Any/List used below
+    # - Prevents NameError if typing symbols are not imported globally.
+    # =========================
+    from typing import Dict, Any, List
+    # =========================
+
     prev_response = prev_response if isinstance(prev_response, dict) else {}
-    prev_anchors = prev_response.get("metric_anchors") or {}
+
+    # =========================
+    # PATCH RMS0.1 (ADDITIVE): accept anchors stored under alternate keys
+    # - Backward compatible: does not change existing behavior if metric_anchors exists.
+    # =========================
+    prev_anchors = (
+        prev_response.get("metric_anchors")
+        or prev_response.get("anchors")
+        or {}
+    )
+    # =========================
+
     if not isinstance(prev_anchors, dict):
         prev_anchors = {}
 
@@ -844,6 +862,19 @@ def rebuild_metrics_from_snapshots(
     prev_can = prev_response.get("primary_metrics_canonical") or {}
     if not isinstance(prev_can, dict):
         prev_can = {}
+
+    # =========================
+    # PATCH RMS0.2 (ADDITIVE): compute full metric key universe
+    # - Important: some metrics may not have anchors yet; we still must rebuild them
+    #   (otherwise evolution "misses" metrics and diffs become unstable).
+    # =========================
+    metric_key_universe = set()
+    try:
+        metric_key_universe.update(list(prev_can.keys()))
+        metric_key_universe.update(list(prev_anchors.keys()))
+    except Exception:
+        metric_key_universe = set(prev_can.keys()) if isinstance(prev_can, dict) else set()
+    # =========================
 
     # ---------- deterministic candidate id (tie-breaker) ----------
     def _candidate_id(c: dict) -> str:
@@ -978,6 +1009,27 @@ def rebuild_metrics_from_snapshots(
         except Exception:
             return False
 
+    # =========================
+    # PATCH RMS_BASE (ADDITIVE): helper to overlay rebuilt fields onto prior canonical metric
+    # - Keeps metric identity fields (name/canonical_key/dimension/etc.) stable for diffing.
+    # - Only overwrites value-ish/source-ish fields with rebuilt candidate data.
+    # =========================
+    def _overlay_base(metric_key: str, patch: dict) -> dict:
+        base = {}
+        try:
+            if isinstance(prev_can.get(metric_key), dict):
+                base = dict(prev_can.get(metric_key) or {})
+        except Exception:
+            base = {}
+        out = dict(base)
+        try:
+            if isinstance(patch, dict):
+                out.update(patch)
+        except Exception:
+            pass
+        return out
+    # =========================
+
     # ---------- 1) primary rebuild by anchor ----------
     rebuilt_by_anchor = set()
 
@@ -990,19 +1042,32 @@ def rebuild_metrics_from_snapshots(
 
         if ah and ah in anchor_to_candidate:
             c = anchor_to_candidate[ah]
-            rebuilt[metric_key] = {
+
+            # =========================
+            # PATCH RMS1 (ADDITIVE): overlay rebuilt candidate onto base canonical metric
+            # - Keeps canonical identity fields intact for downstream diffs/UI.
+            # =========================
+            rebuilt[metric_key] = _overlay_base(metric_key, {
                 "value": c.get("value"),
                 "unit": c.get("unit"),
                 "value_norm": c.get("value_norm"),
                 "base_unit": c.get("base_unit"),
+                "unit_tag": c.get("unit_tag"),
                 "unit_family": c.get("unit_family"),
                 "anchor_hash": ah,
                 "source_url": c.get("source_url"),
+                "context_snippet": (c.get("context_snippet") or c.get("context") or "")[:240],
+                "measure_kind": c.get("measure_kind"),
+                "measure_assoc": c.get("measure_assoc"),
                 "rebuild_method": "anchor",
-            }
+            })
+            # =========================
+
             rebuilt_by_anchor.add(metric_key)
 
     # ---------- 2) fallback rebuild when anchor missing ----------
+    # NOTE: existing loop only iterated prev_anchors.keys(); we keep it as-is,
+    # and then add an extra additive loop to cover metrics without anchors. (PATCH RMS2)
     for metric_key in prev_anchors.keys():
         if metric_key in rebuilt_by_anchor:
             continue
@@ -1116,20 +1181,163 @@ def rebuild_metrics_from_snapshots(
                 best = {**c2, "value_norm": val_norm, "candidate_id": cid}
 
         if best:
-            rebuilt[metric_key] = {
+            # =========================
+            # PATCH RMS1 (ADDITIVE): overlay onto base canonical metric
+            # =========================
+            rebuilt[metric_key] = _overlay_base(metric_key, {
                 "value": best.get("value"),
                 "unit": best.get("unit") or best.get("unit_tag"),
                 "value_norm": best.get("value_norm"),
                 "base_unit": best.get("base_unit"),
+                "unit_tag": best.get("unit_tag"),
                 "unit_family": best.get("unit_family"),
                 "anchor_hash": best.get("anchor_hash"),
                 "source_url": best.get("source_url") or best.get("url"),
+                "context_snippet": (best.get("context_snippet") or best.get("context") or "")[:240],
+                "measure_kind": best.get("measure_kind"),
+                "measure_assoc": best.get("measure_assoc"),
                 "rebuild_method": "schema_fallback",
                 "fallback_ctx_score": round(best_score, 6),
                 "candidate_id": best.get("candidate_id"),
-            }
+            })
+            # =========================
+
+    # =========================
+    # PATCH RMS2 (ADDITIVE): ensure metrics without anchors are also rebuilt
+    # - Your existing fallback loop only iterates prev_anchors.keys().
+    # - This loop covers the remaining canonical metrics (prev_can keys) that are missing
+    #   from prev_anchors, using the SAME schema-first logic (copied, not refactored).
+    # - Additive: does not alter prior behavior for anchored metrics.
+    # =========================
+    for metric_key in (metric_key_universe or set()):
+        if metric_key in rebuilt:
+            continue
+
+        expected_family, currencyish, expected_kind, schema_keywords, schema_unit = _expected_from_schema(metric_key)
+
+        if not expected_family and metric_key in prev_can and isinstance(prev_can.get(metric_key), dict):
+            pm = prev_can.get(metric_key) or {}
+            ut = normalize_unit_tag(pm.get("unit") or schema_unit or "")
+            if ut == "%":
+                expected_family = "percent"
+            elif ut in ("TWh", "GWh", "MWh", "kWh", "Wh"):
+                expected_family = "energy"
+
+        tokens = []
+        if schema_keywords:
+            tokens = schema_keywords
+        else:
+            schema_name = ""
+            try:
+                schema_name = str(_schema_for_key(metric_key).get("name") or "")
+            except Exception:
+                schema_name = ""
+            fn_bmk = globals().get("build_metric_keywords")
+            if callable(fn_bmk):
+                try:
+                    tokens = fn_bmk(schema_name or metric_key) or []
+                except Exception:
+                    tokens = []
+            else:
+                tokens = []
+
+        best = None
+        best_key = None
+        best_score = -1.0
+
+        for c in all_candidates:
+            if not isinstance(c, dict):
+                continue
+            if c.get("is_junk") is True:
+                continue
+
+            ctx = (c.get("context") or c.get("context_snippet") or "").strip()
+            if not ctx:
+                continue
+
+            if expected_family not in ("percent", "energy") and not (currencyish or expected_family == "currency"):
+                if (c.get("unit_tag") in ("", None)) and _is_yearish_value(c.get("value")):
+                    continue
+
+            cand_ut = c.get("unit_tag") or normalize_unit_tag(c.get("unit") or "")
+            cand_fam = (c.get("unit_family") or unit_family(cand_ut) or "").strip().lower()
+            mk = c.get("measure_kind")
+
+            if expected_family == "percent":
+                if cand_fam != "percent" and cand_ut != "%":
+                    continue
+            elif expected_family == "energy":
+                if cand_fam != "energy":
+                    continue
+            elif currencyish or expected_family == "currency":
+                if cand_fam not in ("currency", "magnitude"):
+                    continue
+                if not _currency_evidence(c.get("raw", ""), ctx):
+                    continue
+                if mk == "count_units":
+                    continue
+
+            if expected_kind and mk and mk != expected_kind:
+                continue
+
+            try:
+                c2 = canonicalize_numeric_candidate(dict(c))
+            except Exception:
+                c2 = c
+
+            val_norm = c2.get("value_norm")
+            if val_norm is None:
+                try:
+                    val_norm = float(c2.get("value"))
+                except Exception:
+                    continue
+
+            ctx_score = _ctx_match_score(tokens, ctx)
+            if ctx_score <= 0.0:
+                continue
+
+            url = str(c2.get("source_url") or c2.get("url") or "")
+            cid = c2.get("candidate_id") or _candidate_id({**c2, "value_norm": val_norm})
+
+            key = (
+                float(ctx_score),
+                float(val_norm),
+                url,
+                str(cid),
+            )
+
+            if best_key is None or key > best_key:
+                best_key = key
+                best_score = float(ctx_score)
+                best = {**c2, "value_norm": val_norm, "candidate_id": cid}
+
+        if best:
+            rebuilt[metric_key] = _overlay_base(metric_key, {
+                "value": best.get("value"),
+                "unit": best.get("unit") or best.get("unit_tag"),
+                "value_norm": best.get("value_norm"),
+                "base_unit": best.get("base_unit"),
+                "unit_tag": best.get("unit_tag"),
+                "unit_family": best.get("unit_family"),
+                "anchor_hash": best.get("anchor_hash"),
+                "source_url": best.get("source_url") or best.get("url"),
+                "context_snippet": (best.get("context_snippet") or best.get("context") or "")[:240],
+                "measure_kind": best.get("measure_kind"),
+                "measure_assoc": best.get("measure_assoc"),
+                "rebuild_method": "schema_fallback_no_anchor",
+                "fallback_ctx_score": round(best_score, 6),
+                "candidate_id": best.get("candidate_id"),
+            })
+        else:
+            # stable placeholder (do not fabricate)
+            if isinstance(prev_can.get(metric_key), dict):
+                rebuilt[metric_key] = _overlay_base(metric_key, {
+                    "rebuild_method": "not_found_in_snapshots",
+                })
+    # =========================
 
     return rebuilt
+
 
 
 def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
@@ -9770,6 +9978,63 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
         return v, u
     # =========================================================================
 
+    # =========================================================================
+    # PATCH D0 (ADDITIVE): anchor helpers (drift=0 stability)
+    # - If the SAME anchor_hash is present on both sides, treat metric as unchanged
+    # - Pull prev anchor_hash from prev_response.metric_anchors when metric row lacks it
+    # - Purely additive: does not remove or alter existing diff logic; only short-circuits
+    #   to "unchanged" when anchors are identical.
+    # =========================================================================
+    def _get_anchor_hash_from_metric(m: dict):
+        try:
+            if isinstance(m, dict):
+                ah = m.get("anchor_hash") or m.get("anchor") or m.get("anchorHash")
+                return str(ah) if ah else None
+        except Exception:
+            pass
+        return None
+
+    def _get_prev_anchor_hash(prev_resp: dict, ckey: str, pm: dict):
+        # 1) direct on metric row
+        ah = _get_anchor_hash_from_metric(pm)
+        if ah:
+            return ah
+
+        # 2) prev_response.metric_anchors[ckey].anchor_hash
+        try:
+            ma = (prev_resp or {}).get("metric_anchors")
+            if isinstance(ma, dict):
+                a = ma.get(ckey)
+                if isinstance(a, dict):
+                    ah2 = a.get("anchor_hash") or a.get("anchor")
+                    if ah2:
+                        return str(ah2)
+        except Exception:
+            pass
+
+        return None
+
+    def _get_cur_anchor_hash(cur_resp: dict, ckey: str, cm: dict):
+        # 1) direct on metric row (evolution rebuild puts anchor_hash here)
+        ah = _get_anchor_hash_from_metric(cm)
+        if ah:
+            return ah
+
+        # 2) cur_response.metric_anchors[ckey].anchor_hash (if present)
+        try:
+            ma = (cur_resp or {}).get("metric_anchors")
+            if isinstance(ma, dict):
+                a = ma.get(ckey)
+                if isinstance(a, dict):
+                    ah2 = a.get("anchor_hash") or a.get("anchor")
+                    if ah2:
+                        return str(ah2)
+        except Exception:
+            pass
+
+        return None
+    # =========================================================================
+
     def prettify_ckey(ckey: str) -> str:
         ckey = str(ckey or "").strip()
         if not ckey:
@@ -9908,6 +10173,15 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
 
             # =========================================================================
+            # PATCH D0 (ADDITIVE): anchor-first unchanged shortcut
+            # - If anchor_hash matches, mark unchanged regardless of value formatting/range
+            # =========================================================================
+            prev_ah = _get_prev_anchor_hash(prev_response, ckey, pm)
+            cur_ah = _get_cur_anchor_hash(cur_response, ckey, cm)
+            anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
+            # =========================================================================
+
+            # =========================================================================
             # PATCH D2 (ADDITIVE): use canonical values for diff when available
             # =========================================================================
             prev_val, prev_unit_cmp = get_canonical_value_and_unit(pm)
@@ -9923,7 +10197,14 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             change_type = "unknown"
             change_pct = None
 
-            if prev_val is not None and cur_val is not None:
+            # =========================================================================
+            # PATCH D0 (ADDITIVE): apply anchor-first result
+            # =========================================================================
+            if anchor_same:
+                change_type = "unchanged"
+                change_pct = 0.0
+                unchanged += 1
+            elif prev_val is not None and cur_val is not None:
                 if abs(prev_val - cur_val) <= max(abs_eps, abs(prev_val) * rel_eps):
                     change_type = "unchanged"
                     change_pct = 0.0
@@ -9936,6 +10217,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     change_type = "decreased"
                     change_pct = ((cur_val - prev_val) / max(abs_eps, abs(prev_val))) * 100.0
                     decreased += 1
+            # =========================================================================
 
             # =========================================================================
             # PATCH D4 (ADDITIVE): unit mismatch flag (debug only)
@@ -9957,7 +10239,15 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 "match_confidence": 92.0,
                 "context_snippet": None,
                 "source_url": None,
-                "anchor_used": False,
+
+                # =========================================================================
+                # PATCH D0 (ADDITIVE): mark anchor usage + expose hashes
+                # =========================================================================
+                "anchor_used": bool(anchor_same),
+                "prev_anchor_hash": prev_ah,
+                "cur_anchor_hash": cur_ah,
+                # =========================================================================
+
                 "canonical_key": ckey,
                 "metric_definition": definition,
 
@@ -10029,10 +10319,26 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
         cur_val, _cur_unit_cmp = get_canonical_value_and_unit(cm)
         # =========================================================================
 
+        # =========================================================================
+        # PATCH D0 (ADDITIVE): legacy-path anchor-first unchanged shortcut
+        # - Only engages if both metric dicts carry anchor_hash (rare on legacy path)
+        # =========================================================================
+        prev_ah = _get_anchor_hash_from_metric(pm)
+        cur_ah = _get_anchor_hash_from_metric(cm)
+        anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
+        # =========================================================================
+
         change_type = "unknown"
         change_pct = None
 
-        if prev_val is not None and cur_val is not None:
+        # =========================================================================
+        # PATCH D0 (ADDITIVE): apply anchor-first result
+        # =========================================================================
+        if anchor_same:
+            change_type = "unchanged"
+            change_pct = 0.0
+            unchanged += 1
+        elif prev_val is not None and cur_val is not None:
             if abs(prev_val - cur_val) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
                 change_type = "unchanged"
                 change_pct = 0.0
@@ -10045,6 +10351,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 change_type = "decreased"
                 change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
                 decreased += 1
+        # =========================================================================
 
         metric_changes.append({
             "name": display_name or "Unknown Metric",
@@ -10055,7 +10362,14 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             "match_confidence": 80.0,
             "context_snippet": None,
             "source_url": None,
-            "anchor_used": False,
+
+            # =========================================================================
+            # PATCH D0 (ADDITIVE): anchor usage + expose hashes (legacy)
+            # =========================================================================
+            "anchor_used": bool(anchor_same),
+            "prev_anchor_hash": prev_ah,
+            "cur_anchor_hash": cur_ah,
+            # =========================================================================
 
             # PATCH D2 (ADDITIVE): expose basis
             "prev_value_norm": prev_val,
