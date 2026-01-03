@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_11"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p4_sheets_snapshots"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -856,6 +856,61 @@ def add_to_history(analysis: dict) -> bool:
 
     try:
         analysis_id = generate_analysis_id()
+
+
+        # =====================================================================
+        # PATCH ES1F (ADDITIVE): persist full snapshots + pointer for Sheets rows
+        # - If full baseline_sources_cache exists (list-shaped), store it outside
+        #   Sheets keyed by source_snapshot_hash, and attach pointer fields into
+        #   analysis/results for deterministic evolution rehydration.
+        # - Pure enrichment only (no refetch, no heuristics).
+        # =====================================================================
+        try:
+            _bsc = None
+            if isinstance(analysis, dict):
+                _bsc = analysis.get("results", {}).get("baseline_sources_cache") or analysis.get("baseline_sources_cache")
+
+            if isinstance(_bsc, list) and _bsc:
+                _ssh = compute_source_snapshot_hash(_bsc)
+                if _ssh:
+                    # =============================================================
+                    # PATCH SS4 (ADDITIVE): store snapshots to Snapshots worksheet when possible
+                    # - Persists full baseline_sources_cache in a dedicated worksheet tab.
+                    # - Falls back to local snapshot_store file if Sheets snapshot store unavailable.
+                    # - Pointer ref stored as 'gsheet:Snapshots:<hash>' when successful.
+                    # =============================================================
+                    _gs_ref = ""
+                    try:
+                        _gs_ref = store_full_snapshots_to_sheet(_bsc, _ssh, worksheet_title="Snapshots")
+                    except Exception:
+                        _gs_ref = ""
+
+                    _ref = store_full_snapshots_local(_bsc, _ssh)
+
+                    analysis["source_snapshot_hash"] = analysis.get("source_snapshot_hash") or _ssh
+                    analysis.setdefault("results", {})
+                    if isinstance(analysis["results"], dict):
+                        analysis["results"]["source_snapshot_hash"] = analysis["results"].get("source_snapshot_hash") or _ssh
+
+                    if _ref:
+                        analysis["snapshot_store_ref"] = analysis.get("snapshot_store_ref") or _ref
+                        if isinstance(analysis["results"], dict):
+                            analysis["results"]["snapshot_store_ref"] = analysis["results"].get("snapshot_store_ref") or _ref
+                    # =============================================================
+                    # PATCH SS4B (ADDITIVE): prefer Sheets snapshot ref when available
+                    # =============================================================
+                    try:
+                        if _gs_ref:
+                            analysis["snapshot_store_ref"] = _gs_ref
+                            if isinstance(analysis.get("results"), dict):
+                                analysis["results"]["snapshot_store_ref"] = _gs_ref
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+        # =====================================================================
+
         payload_for_sheets = _shrink_for_sheets(analysis)
         payload_json = _try_make_sheet_json(payload_for_sheets)
 
@@ -1679,6 +1734,48 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                     except Exception:
                         pass
                     # ============================================================
+
+
+                    # =====================================================================
+                    # PATCH ES1G (ADDITIVE): rehydrate baseline_sources_cache from store ref
+                    # - If Sheets row is a safe wrapper / summary but contains snapshot_store_ref,
+                    #   load full snapshots so evolution can run anchor-first (no refetch).
+                    # =====================================================================
+                    try:
+                        if isinstance(data, dict):
+                            _ref = data.get("snapshot_store_ref") or data.get("results", {}).get("snapshot_store_ref")
+                            _bsc = data.get("results", {}).get("baseline_sources_cache") or data.get("baseline_sources_cache")
+                            _is_summary = isinstance(_bsc, dict) and bool(_bsc.get("_summary"))
+
+                            if (_is_summary or not isinstance(_bsc, list)) and _ref:
+                                # =============================================================
+                                # PATCH SS5 (ADDITIVE): support Sheets snapshot refs
+                                # - If snapshot_store_ref is 'gsheet:<WorksheetTitle>:<hash>',
+                                #   rehydrate from Snapshots worksheet.
+                                # =============================================================
+                                _full = []
+                                try:
+                                    if isinstance(_ref, str) and _ref.startswith("gsheet:"):
+                                        parts = _ref.split(":")
+                                        # expected: gsheet:Snapshots:<hash>
+                                        _ws_title = parts[1] if len(parts) > 1 and parts[1] else "Snapshots"
+                                        _hash = parts[2] if len(parts) > 2 else ""
+                                        _full = load_full_snapshots_from_sheet(_hash, worksheet_title=_ws_title) if _hash else []
+                                except Exception:
+                                    _full = []
+
+                                if not _full:
+                                    _full = load_full_snapshots_local(_ref)
+
+                                if isinstance(_full, list) and _full:
+                                    data.setdefault("results", {})
+                                    if isinstance(data["results"], dict):
+                                        data["results"]["baseline_sources_cache"] = _full
+                                    data["baseline_sources_cache"] = _full
+                                    data["snapshots_rehydrated"] = True
+                    except Exception:
+                        pass
+                    # =====================================================================
 
                     history.append(data)
 
@@ -9478,6 +9575,287 @@ def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
         return '{"_sheets_safe":true,"_sheet_write":{"truncated":true,"mode":"sheets_safe_wrapper","note":"wrapper failed"}}'
 
 
+# =====================================================================
+# PATCH ES1D (ADDITIVE): external snapshot store (local file-based)
+# Purpose:
+#   - Store full baseline_sources_cache outside Google Sheets when rows
+#     are too large (Sheets wrapper / preview mode).
+#   - Allow deterministic rehydration for evolution (no refetch).
+# =====================================================================
+def _snapshot_store_dir() -> str:
+    import os
+    d = os.path.join(os.getcwd(), "snapshot_store")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+def store_full_snapshots_local(baseline_sources_cache: list, source_snapshot_hash: str) -> str:
+    """
+    Store full snapshots deterministically by hash. Returns a store ref string (path).
+    Additive-only helper.
+    """
+    import os, json
+    if not source_snapshot_hash:
+        return ""
+    if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
+        return ""
+
+    path = os.path.join(_snapshot_store_dir(), f"{source_snapshot_hash}.json")
+    try:
+        # write-once semantics (deterministic)
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            return path
+    except Exception:
+        pass
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(baseline_sources_cache, f, ensure_ascii=False, default=str)
+        return path
+    except Exception:
+        return ""
+
+def load_full_snapshots_local(snapshot_store_ref: str) -> list:
+    """
+    Load full snapshots from a store ref string (path). Returns [] if not available.
+    """
+    import json, os
+    try:
+        if not snapshot_store_ref or not isinstance(snapshot_store_ref, str):
+            return []
+        if not os.path.exists(snapshot_store_ref):
+            return []
+        with open(snapshot_store_ref, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+# =====================================================================
+# PATCH ES1E (ADDITIVE): deterministic source_snapshot_hash helper
+# =====================================================================
+def compute_source_snapshot_hash(baseline_sources_cache: list) -> str:
+    import hashlib
+    pairs = []
+    for sr in (baseline_sources_cache or []):
+        if not isinstance(sr, dict):
+            continue
+        u = (sr.get("source_url") or sr.get("url") or "").strip()
+        fp = (sr.get("fingerprint") or sr.get("content_fingerprint") or "").strip()
+        if u:
+            pairs.append((u, fp))
+    pairs.sort()
+    sig = "|".join([f"{u}#{fp}" for (u, fp) in pairs])
+    return hashlib.sha256(sig.encode("utf-8")).hexdigest() if sig else ""
+# =====================================================================
+
+# =====================================================================
+# PATCH SS2 (ADDITIVE): Google Sheets snapshot store (separate worksheet)
+# Purpose:
+#   - Persist full baseline_sources_cache inside the same Spreadsheet
+#     but in a dedicated worksheet (tab), chunked across rows.
+#   - Enables deterministic rehydration for evolution without refetch.
+# Notes:
+#   - Write-once semantics by source_snapshot_hash.
+#   - Chunking and reassembly are deterministic (part_index ordering).
+# =====================================================================
+def get_google_spreadsheet():
+    """Connect to Google Spreadsheet (cached connection if available)."""
+    try:
+        # If get_google_sheet() exists and already opened the spreadsheet as sheet.sheet1,
+        # we re-open to obtain the Spreadsheet handle (additive; avoids refactoring).
+        import streamlit as st
+        from google.oauth2.service_account import Credentials
+        import gspread
+
+        SCOPES = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
+            scopes=SCOPES
+        )
+        client = gspread.authorize(creds)
+        spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
+        return client.open(spreadsheet_name)
+    except Exception:
+        return None
+
+def _ensure_snapshot_worksheet(spreadsheet, title: str = "Snapshots"):
+    """Ensure a worksheet tab exists for snapshot storage."""
+    try:
+        if not spreadsheet:
+            return None
+        try:
+            ws = spreadsheet.worksheet(title)
+            return ws
+        except Exception:
+            # Create with a reasonable default size; Sheets can expand.
+            ws = spreadsheet.add_worksheet(title=title, rows=2000, cols=8)
+            try:
+                ws.append_row(
+                    ["source_snapshot_hash", "part_index", "total_parts", "payload_part", "created_at", "code_version", "fingerprints_sig", "sha256"],
+                    value_input_option="RAW",
+                )
+            except Exception:
+                pass
+            return ws
+    except Exception:
+        return None
+
+def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_hash: str, worksheet_title: str = "Snapshots", chunk_chars: int = 45000) -> str:
+    """
+    Store full snapshots to a dedicated worksheet tab in chunked rows.
+    Returns a ref string like: 'gsheet:Snapshots:<hash>'
+    """
+    import json, hashlib
+    if not source_snapshot_hash:
+        return ""
+    if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
+        return ""
+
+    try:
+        ss = get_google_spreadsheet()
+        ws = _ensure_snapshot_worksheet(ss, worksheet_title) if ss else None
+        if not ws:
+            return ""
+
+        # Write-once: if hash already present, do not write again.
+        try:
+            # Find any existing rows for this hash (skip header)
+            existing = ws.findall(source_snapshot_hash)
+            if existing:
+                return f"gsheet:{worksheet_title}:{source_snapshot_hash}"
+        except Exception:
+            # best effort; continue to attempt write
+            pass
+
+        payload = json.dumps(baseline_sources_cache, ensure_ascii=False, default=str)
+        sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+        # deterministic chunking
+        chunk_size = max(1000, int(chunk_chars or 45000))
+        parts = [payload[i:i+chunk_size] for i in range(0, len(payload), chunk_size)]
+        total = len(parts)
+
+        # Optional fingerprints signature (stable)
+        pairs = []
+        for sr in baseline_sources_cache:
+            if isinstance(sr, dict):
+                u = (sr.get("source_url") or sr.get("url") or "").strip()
+                fp = (sr.get("fingerprint") or sr.get("content_fingerprint") or "").strip()
+                if u:
+                    pairs.append((u, fp))
+        pairs.sort()
+        fingerprints_sig = "|".join([f"{u}#{fp}" for (u, fp) in pairs]) if pairs else ""
+
+        from datetime import datetime
+        created_at = datetime.utcnow().isoformat() + "Z"
+
+        # Append rows in order (deterministic)
+        code_version = ""
+        try:
+            # best effort: use global if exists
+            code_version = globals().get("CODE_VERSION") or ""
+        except Exception:
+            code_version = ""
+
+        # Use append_rows if available, else append_row in loop
+        rows = []
+        for idx, part in enumerate(parts):
+            rows.append([source_snapshot_hash, idx, total, part, created_at, code_version, fingerprints_sig, sha])
+
+        try:
+            ws.append_rows(rows, value_input_option="RAW")
+        except Exception:
+            for r in rows:
+                try:
+                    ws.append_row(r, value_input_option="RAW")
+                except Exception:
+                    # partial failure: still return empty to avoid false pointer
+                    return ""
+
+        return f"gsheet:{worksheet_title}:{source_snapshot_hash}"
+    except Exception:
+        return ""
+
+def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: str = "Snapshots") -> list:
+    """Load and reassemble full snapshots list from a dedicated worksheet."""
+    import json, hashlib
+    if not source_snapshot_hash:
+        return []
+    try:
+        ss = get_google_spreadsheet()
+        ws = ss.worksheet(worksheet_title) if ss else None
+        if not ws:
+            return []
+
+        # Fetch all values and filter (simple, deterministic). For large sheets, optimize later.
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return []
+
+        # Identify header indices
+        header = values[0]
+        def _idx(name):
+            try:
+                return header.index(name)
+            except Exception:
+                return None
+
+        i_hash = _idx("source_snapshot_hash")
+        i_part = _idx("part_index")
+        i_total = _idx("total_parts")
+        i_payload = _idx("payload_part")
+        i_sha = _idx("sha256")
+
+        if i_hash is None or i_part is None or i_total is None or i_payload is None:
+            return []
+
+        rows = []
+        expected_total = None
+        expected_sha = None
+        for r in values[1:]:
+            if not r or i_hash >= len(r):
+                continue
+            if str(r[i_hash]).strip() != str(source_snapshot_hash).strip():
+                continue
+            try:
+                part_index = int(r[i_part]) if i_part < len(r) else 0
+            except Exception:
+                part_index = 0
+            try:
+                expected_total = int(r[i_total]) if i_total < len(r) else expected_total
+            except Exception:
+                pass
+            if i_sha is not None and i_sha < len(r):
+                if r[i_sha]:
+                    expected_sha = r[i_sha]
+            payload_part = r[i_payload] if i_payload < len(r) else ""
+            rows.append((part_index, payload_part))
+
+        if not rows:
+            return []
+
+        rows.sort(key=lambda x: x[0])
+        payload = "".join([p for _, p in rows])
+
+        if expected_sha:
+            sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            if sha != expected_sha:
+                # integrity mismatch; refuse
+                return []
+
+        data = json.loads(payload)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+# =====================================================================
+
+
 def fingerprint_text(text: str) -> str:
     """Stable short fingerprint for fetched content (deterministic)."""
     if not text:
@@ -11343,7 +11721,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         baseline_sources_cache = []
 
-    
+
     # =====================================================================
     # PATCH ES1B (ADDITIVE): broaden snapshot discovery (legacy storage shapes)
     # Why:
