@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p2"
+CODE_VERSION = "v7_41_endstate_wip_11"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -11342,6 +11342,119 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     snapshot_origin = "analysis_top_level_cache"
     except Exception:
         baseline_sources_cache = []
+
+    
+    # =====================================================================
+    # PATCH ES1B (ADDITIVE): broaden snapshot discovery (legacy storage shapes)
+    # Why:
+    # - Some callers persist only previous_data["primary_response"] or embed
+    #   caches under different nesting. If snapshots exist there, evolution
+    #   should still be able to use them without re-fetching.
+    # Notes:
+    # - Additive only: does not remove/replace existing preferred paths.
+    # - Still snapshot-gated: we only accept FULL snapshot shapes (list of
+    #   sources with extracted_numbers list). We do not fabricate numbers.
+    # =====================================================================
+    try:
+        if (not baseline_sources_cache) and isinstance(previous_data, dict):
+            pr = previous_data.get("primary_response") or {}
+            if isinstance(pr, dict):
+                # A) primary_response.results.baseline_sources_cache
+                r2 = pr.get("results")
+                if (not baseline_sources_cache) and isinstance(r2, dict) and isinstance(r2.get("baseline_sources_cache"), list):
+                    baseline_sources_cache = r2.get("baseline_sources_cache") or []
+                    if baseline_sources_cache:
+                        snapshot_origin = "primary_response_results_cache"
+
+                # B) primary_response.baseline_sources_cache
+                if (not baseline_sources_cache) and isinstance(pr.get("baseline_sources_cache"), list):
+                    baseline_sources_cache = pr.get("baseline_sources_cache") or []
+                    if baseline_sources_cache:
+                        snapshot_origin = "primary_response_top_level_cache"
+
+                # C) primary_response.results.source_results (reconstruct minimal snapshot shape)
+                #    We only use this if it already contains extracted_numbers lists.
+                if (not baseline_sources_cache) and isinstance(r2, dict) and isinstance(r2.get("source_results"), list):
+                    rebuilt_sr = []
+                    for sr in (r2.get("source_results") or []):
+                        if not isinstance(sr, dict):
+                            continue
+                        u = sr.get("source_url") or sr.get("url")
+                        ex = sr.get("extracted_numbers")
+                        if u and isinstance(ex, list) and ex:
+                            rebuilt_sr.append({
+                                "source_url": u,
+                                "extracted_numbers": ex,
+                                "clean_text": sr.get("clean_text") or sr.get("content") or "",
+                                "fingerprint": sr.get("fingerprint"),
+                                "fetched_at": sr.get("fetched_at"),
+                            })
+                    # Deterministic ordering
+                    rebuilt_sr.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+                    if rebuilt_sr:
+                        baseline_sources_cache = rebuilt_sr
+                        snapshot_origin = "primary_response_source_results_rebuild"
+
+        # D) As a last legacy fallback, some callers store caches under previous_data["results"]["source_results"]
+        if (not baseline_sources_cache) and isinstance(previous_data, dict):
+            r3 = previous_data.get("results")
+            if isinstance(r3, dict) and isinstance(r3.get("source_results"), list):
+                rebuilt_sr2 = []
+                for sr in (r3.get("source_results") or []):
+                    if not isinstance(sr, dict):
+                        continue
+                    u = sr.get("source_url") or sr.get("url")
+                    ex = sr.get("extracted_numbers")
+                    if u and isinstance(ex, list) and ex:
+                        rebuilt_sr2.append({
+                            "source_url": u,
+                            "extracted_numbers": ex,
+                            "clean_text": sr.get("clean_text") or sr.get("content") or "",
+                            "fingerprint": sr.get("fingerprint"),
+                            "fetched_at": sr.get("fetched_at"),
+                        })
+                rebuilt_sr2.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+                if rebuilt_sr2:
+                    baseline_sources_cache = rebuilt_sr2
+                    snapshot_origin = "analysis_source_results_rebuild"
+    except Exception:
+        pass
+
+    # =====================================================================
+    # PATCH ES1C (ADDITIVE): validate snapshot shape & attach debug metadata
+    # Why:
+    # - Avoid "truthy but unusable" caches (e.g., summarized shapes).
+    # - Provide actionable debug fields without changing failure message.
+    # =====================================================================
+    try:
+        _raw_len = int(len(baseline_sources_cache)) if isinstance(baseline_sources_cache, list) else 0
+        _kept = []
+        if isinstance(baseline_sources_cache, list):
+            for s in baseline_sources_cache:
+                if not isinstance(s, dict):
+                    continue
+                u = s.get("source_url") or s.get("url")
+                ex = s.get("extracted_numbers")
+                # Require full snapshot shape: extracted_numbers must be a list (possibly empty is allowed, but we prefer list)
+                if u and isinstance(ex, list):
+                    _kept.append(s)
+        # Deterministic ordering for downstream
+        _kept.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+        baseline_sources_cache = _kept
+        # Attach debug meta to output
+        try:
+            output["snapshot_debug"] = {
+                "origin": snapshot_origin,
+                "raw_count": _raw_len,
+                "valid_count": int(len(baseline_sources_cache)),
+                "example_urls": [x.get("source_url") for x in (baseline_sources_cache[:3] if isinstance(baseline_sources_cache, list) else [])],
+                "prev_keys": sorted(list(previous_data.keys()))[:40] if isinstance(previous_data, dict) else [],
+            }
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # =====================================================================
 
     # 3) reconstruct from web_context.scraped_meta (if provided)
     if (not baseline_sources_cache) and isinstance(web_context, dict):
