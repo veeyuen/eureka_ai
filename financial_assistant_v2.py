@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p6_snapshot_rehydrate_guard"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -1710,6 +1710,45 @@ def rebuild_metrics_from_snapshots(
                     # =============================================================
                 })
     # =========================
+
+    # =====================================================================
+    # PATCH RMS_FALLBACK1 (ADDITIVE): never return empty rebuild when we have a baseline universe
+    # Why:
+    #   - Source-anchored evolution is snapshot-gated; if snapshots exist but rebuild fails
+    #     (missing anchors/schema mismatch/edge cases), returning {} causes evolution to hard-fail.
+    #   - For determinism + drift-0 testing, we prefer a safe fallback that preserves the
+    #     canonical metric universe from the previous analysis while emitting an explicit flag.
+    #
+    # Behavior:
+    #   - If 'rebuilt' is empty/non-dict, fall back to prev_response['primary_metrics_canonical'].
+    #   - Marks each metric with '_rebuild_fallback_used': True (additive field).
+    #   - DOES NOT fabricate new values; it reuses previous canonical values only.
+    # =====================================================================
+    try:
+        if not isinstance(rebuilt, dict) or not rebuilt:
+            prev_universe = {}
+            if isinstance(prev_response, dict):
+                prev_universe = prev_response.get("primary_metrics_canonical") or {}
+            if isinstance(prev_universe, dict) and prev_universe:
+                rebuilt = {}
+                for ck in sorted(prev_universe.keys()):
+                    m = prev_universe.get(ck)
+                    if isinstance(m, dict):
+                        mm = dict(m)
+                        mm["_rebuild_fallback_used"] = True
+                        # Ensure ES7 fields exist (pure enrichment)
+                        mm.setdefault("canonical_key", ck)
+                        mm.setdefault("anchor_used", False)
+                        mm.setdefault("anchor_confidence", 0.0)
+                        rebuilt[ck] = mm
+                # Add top-level marker (additive)
+                try:
+                    rebuilt["_rebuild_status"] = "fallback_prev_primary_metrics_canonical"
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # =====================================================================
 
     return rebuilt
 
