@@ -77,7 +77,14 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_9"
+CODE_VERSION = "v7_41_endstate_wip_11"
+# =====================================================================
+# PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
+# NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
+# Consumers can prefer ENDSTATE_FINAL_VERSION when present.
+# =====================================================================
+ENDSTATE_FINAL_VERSION = "v7_41_endstate_final_1"
+# =====================================================================
 # =========================
 
 
@@ -895,6 +902,52 @@ def rebuild_metrics_from_snapshots(
         except Exception:
             return ""
 
+    # =====================================================================
+    # PATCH RMS_E0 (ADDITIVE): small evidence extraction helper
+    # - Ensures we consistently carry anchor/evidence fields onto rebuilt metrics.
+    # - Purely additive; never affects selection logic.
+    # =====================================================================
+    def _extract_evidence_fields(c: dict) -> dict:
+        if not isinstance(c, dict):
+            return {}
+        ctx = (c.get("context_snippet") or c.get("context") or "").strip()
+        return {
+            "raw": c.get("raw"),
+            "candidate_id": c.get("candidate_id") or _candidate_id(c),
+            "context_snippet": ctx[:240] if isinstance(ctx, str) else None,
+            "measure_kind": c.get("measure_kind"),
+            "measure_assoc": c.get("measure_assoc"),
+            "start_idx": c.get("start_idx"),
+            "end_idx": c.get("end_idx"),
+            # optional passthroughs if upstream provides them
+            "fingerprint": c.get("fingerprint"),
+        }
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH RMS_E1 (ADDITIVE): anchor metadata getter
+    # - Pull anchor_confidence (and any other safe fields) from prev_anchors entry.
+    # - Helps diff/UI show confidence without recomputing.
+    # =====================================================================
+    def _anchor_meta(anchor_obj) -> dict:
+        if isinstance(anchor_obj, dict):
+            out = {}
+            if anchor_obj.get("anchor_confidence") is not None:
+                try:
+                    out["anchor_confidence"] = float(anchor_obj.get("anchor_confidence"))
+                except Exception:
+                    pass
+            # optional passthroughs if present
+            if anchor_obj.get("source_url"):
+                out["anchor_source_url"] = anchor_obj.get("source_url")
+            if anchor_obj.get("raw"):
+                out["anchor_raw"] = anchor_obj.get("raw")
+            if anchor_obj.get("candidate_id"):
+                out["anchor_candidate_id"] = anchor_obj.get("candidate_id")
+            return out
+        return {}
+    # =====================================================================
+
     # ---------- collect candidates + anchor map ----------
     anchor_to_candidate: Dict[str, Dict[str, Any]] = {}
     all_candidates: List[Dict[str, Any]] = []
@@ -903,6 +956,13 @@ def rebuild_metrics_from_snapshots(
         if not isinstance(src, dict):
             continue
         src_url = src.get("url") or src.get("source_url") or ""
+
+        # =================================================================
+        # PATCH RMS_E2 (ADDITIVE): capture source fingerprint on candidates
+        # - Helps later debugging and “same source” proofs.
+        # =================================================================
+        src_fp = src.get("fingerprint")
+        # =================================================================
 
         for c in (src.get("extracted_numbers") or []):
             if not isinstance(c, dict):
@@ -917,6 +977,13 @@ def rebuild_metrics_from_snapshots(
             # ensure stable url carried through
             if not c.get("source_url"):
                 c["source_url"] = src_url
+
+            # =============================================================
+            # PATCH RMS_E2 (ADDITIVE): attach fingerprint if missing
+            # =============================================================
+            if src_fp and not c.get("fingerprint"):
+                c["fingerprint"] = src_fp
+            # =============================================================
 
             ah = c.get("anchor_hash")
             if ah:
@@ -1055,11 +1122,27 @@ def rebuild_metrics_from_snapshots(
                 "unit_tag": c.get("unit_tag"),
                 "unit_family": c.get("unit_family"),
                 "anchor_hash": ah,
+                    # =================================================================
+                    # PATCH ES7 (ADDITIVE): evolution output normalization
+                    # - Explicitly record that anchor matching was used to build this row.
+                    # =================================================================
+                    "anchor_used": True,
+                    # =================================================================
+
                 "source_url": c.get("source_url"),
                 "context_snippet": (c.get("context_snippet") or c.get("context") or "")[:240],
                 "measure_kind": c.get("measure_kind"),
                 "measure_assoc": c.get("measure_assoc"),
                 "rebuild_method": "anchor",
+
+                # =============================================================
+                # PATCH RMS_E3 (ADDITIVE): attach evidence + anchor metadata
+                # - candidate_id used as stable ID for UI/debugging
+                # - anchor_confidence helps diff/UI set match_confidence
+                # =============================================================
+                **_extract_evidence_fields(c),
+                **_anchor_meta(anchor),
+                # =============================================================
             })
             # =========================
 
@@ -1199,6 +1282,15 @@ def rebuild_metrics_from_snapshots(
                 "rebuild_method": "schema_fallback",
                 "fallback_ctx_score": round(best_score, 6),
                 "candidate_id": best.get("candidate_id"),
+
+                # =============================================================
+                # PATCH RMS_E4 (ADDITIVE): attach standardized evidence fields
+                # - Ensures candidate_id/raw/context are always present when possible.
+                # - Adds anchor_confidence derived from fallback_ctx_score.
+                # =============================================================
+                **_extract_evidence_fields(best),
+                "anchor_confidence": float(min(100.0, max(0.0, best_score) * 100.0)) if best_score is not None else 0.0,
+                # =============================================================
             })
             # =========================
 
@@ -1327,12 +1419,30 @@ def rebuild_metrics_from_snapshots(
                 "rebuild_method": "schema_fallback_no_anchor",
                 "fallback_ctx_score": round(best_score, 6),
                 "candidate_id": best.get("candidate_id"),
+
+                # =============================================================
+                # PATCH RMS_E5 (ADDITIVE): attach standardized evidence fields
+                # =============================================================
+                **_extract_evidence_fields(best),
+                "anchor_confidence": float(min(100.0, max(0.0, best_score) * 100.0)) if best_score is not None else 0.0,
+                # =============================================================
             })
         else:
             # stable placeholder (do not fabricate)
             if isinstance(prev_can.get(metric_key), dict):
                 rebuilt[metric_key] = _overlay_base(metric_key, {
                     "rebuild_method": "not_found_in_snapshots",
+
+                    # =============================================================
+                    # PATCH RMS_E6 (ADDITIVE): keep evidence fields present for stable shape
+                    # =============================================================
+                    "anchor_hash": None,
+                    "source_url": None,
+                    "context_snippet": None,
+                    "raw": None,
+                    "candidate_id": None,
+                    "anchor_confidence": 0.0,
+                    # =============================================================
                 })
     # =========================
 
@@ -1360,6 +1470,28 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                 try:
                     data = json.loads(raw_cell)
                     data['_sheet_id'] = row[0]  # Keep track of sheet row ID
+
+                    # ============================================================
+                    # PATCH GH2 (ADDITIVE): normalize Sheets "safe wrapper" rows
+                    # Why:
+                    # - make_sheet_safe_json() may store an oversized payload as a valid JSON wrapper:
+                    #   {"_sheets_safe": true, "_sheet_write": {"truncated": true, ...}, "preview": "...", ...}
+                    # - We want these rows to still appear in history with predictable flags.
+                    # Result:
+                    # - Add additive flags to help UI/evolution gating.
+                    # ============================================================
+                    try:
+                        if isinstance(data, dict):
+                            sw = data.get("_sheet_write")
+                            if isinstance(sw, dict) and sw.get("truncated") is True:
+                                data["_sheet_json_truncated"] = True
+                                data.setdefault("_sheet_write", sw)
+                            if data.get("_sheets_safe") is True and isinstance(data.get("preview"), str):
+                                data["_sheet_safe_wrapper"] = True
+                    except Exception:
+                        pass
+                    # ============================================================
+
                     history.append(data)
 
                 except json.JSONDecodeError:
@@ -1408,6 +1540,46 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                     # ============================================================
 
                     continue
+
+        # ============================================================
+        # PATCH GH3 (ADDITIVE): sort history by timestamp DESC (true "latest")
+        # Why:
+        # - Google Sheets row order is usually append-only, but can be disrupted by edits/backfills.
+        # - Evolution baseline selection should reflect actual latest timestamps.
+        # Result:
+        # - Stable, deterministic sort (timestamp desc, then sheet_id/row position fallback).
+        # ============================================================
+        try:
+            from datetime import datetime
+
+            def _parse_ts(x):
+                try:
+                    s = str(x or "").strip()
+                    if not s:
+                        return None
+                    # handle trailing 'Z' if present
+                    if s.endswith("Z"):
+                        s = s[:-1] + "+00:00"
+                    return datetime.fromisoformat(s)
+                except Exception:
+                    return None
+
+            def _sort_key(d):
+                try:
+                    ts = _parse_ts((d or {}).get("timestamp"))
+                    # primary: timestamp (desc)
+                    ts_key = ts.timestamp() if ts else -1.0
+                    # secondary: sheet id (desc-ish, string compare for stability)
+                    sid = str((d or {}).get("_sheet_id") or "")
+                    return (ts_key, sid)
+                except Exception:
+                    return (-1.0, "")
+
+            # sort DESC
+            history = sorted(history, key=_sort_key, reverse=True)
+        except Exception:
+            pass
+        # ============================================================
 
         return history
     except Exception as e:
@@ -10198,6 +10370,73 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
         return None
     # =========================================================================
 
+    # =========================================================================
+    # PATCH MA2 (ADDITIVE): wire metric_anchors into row fields
+    # - Populate context_snippet/source_url from prev_response.metric_anchors[ckey] when available
+    # - Keep existing anchor_same logic untouched; this is output enrichment only
+    # =========================================================================
+    def _get_prev_anchor_obj(prev_resp: dict, ckey: str):
+        try:
+            ma = (prev_resp or {}).get("metric_anchors")
+            if isinstance(ma, dict):
+                a = ma.get(ckey)
+                return a if isinstance(a, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    def _anchor_meta(prev_resp: dict, cur_resp: dict, ckey: str, pm: dict, cm: dict):
+        """
+        Returns: (source_url, context_snippet, anchor_confidence)
+        Priority:
+          1) prev_response.metric_anchors[ckey] (baseline anchoring is authoritative)
+          2) current metric row fields (if present)
+          3) prev metric row fields (if present)
+        """
+        a = _get_prev_anchor_obj(prev_resp, ckey)
+
+        src = a.get("source_url") or a.get("url")
+        ctx = a.get("context_snippet") or a.get("context")
+        conf = a.get("anchor_confidence")
+
+        if not src:
+            try:
+                src = (cm or {}).get("source_url") or (cm or {}).get("url")
+            except Exception:
+                src = None
+        if not ctx:
+            try:
+                ctx = (cm or {}).get("context_snippet") or (cm or {}).get("context")
+            except Exception:
+                ctx = None
+
+        if not src:
+            try:
+                src = (pm or {}).get("source_url") or (pm or {}).get("url")
+            except Exception:
+                src = None
+        if not ctx:
+            try:
+                ctx = (pm or {}).get("context_snippet") or (pm or {}).get("context")
+            except Exception:
+                ctx = None
+
+        try:
+            if isinstance(ctx, str):
+                ctx = ctx.strip()[:220] or None
+            else:
+                ctx = None
+        except Exception:
+            ctx = None
+
+        try:
+            conf = float(conf) if conf is not None else None
+        except Exception:
+            conf = None
+
+        return src, ctx, conf
+    # =========================================================================
+
     def prettify_ckey(ckey: str) -> str:
         ckey = str(ckey or "").strip()
         if not ckey:
@@ -10316,6 +10555,12 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
             # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
             if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
+                # =========================================================================
+                # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
+                # =========================================================================
+                _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
+                # =========================================================================
+
                 metric_changes.append({
                     "name": display_name,
                     "previous_value": prev_raw,
@@ -10323,11 +10568,17 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     "change_pct": None,
                     "change_type": "not_found",
                     "match_confidence": 0.0,
-                    "context_snippet": None,
-                    "source_url": None,
-                    "anchor_used": False,
+
+                    # PATCH MA2 (ADDITIVE): was None
+                    "context_snippet": _ctx,
+                    "source_url": _src,
+
+                    "anchor_used": False,  # (kept) not applicable when current metric missing
                     "canonical_key": ckey,
                     "metric_definition": definition,
+
+                    # PATCH MA2 (ADDITIVE): extra debug field (harmless if ignored)
+                    "anchor_confidence": _aconf,
                 })
                 continue
 
@@ -10393,6 +10644,12 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 unit_mismatch = False
             # =========================================================================
 
+            # =========================================================================
+            # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
+            # =========================================================================
+            _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, cm)
+            # =========================================================================
+
             metric_changes.append({
                 "name": display_name,
                 "previous_value": prev_raw,
@@ -10400,8 +10657,10 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 "change_pct": change_pct,
                 "change_type": change_type,
                 "match_confidence": 92.0,
-                "context_snippet": None,
-                "source_url": None,
+
+                # PATCH MA2 (ADDITIVE): was None
+                "context_snippet": _ctx,
+                "source_url": _src,
 
                 # =========================================================================
                 # PATCH D0 (ADDITIVE): mark anchor usage + expose hashes
@@ -10413,6 +10672,9 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
                 "canonical_key": ckey,
                 "metric_definition": definition,
+
+                # PATCH MA2 (ADDITIVE): extra debug field (harmless if ignored)
+                "anchor_confidence": _aconf,
 
                 # =========================================================================
                 # PATCH D2 (ADDITIVE): expose canonical comparison basis for debugging/convergence
@@ -10540,6 +10802,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
         })
 
     return metric_changes, unchanged, increased, decreased, found
+
 
 
 def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_by_name: dict):
@@ -11022,6 +11285,40 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =====================================================================
 
+    # =====================================================================
+    # PATCH E2 (ADDITIVE): ensure metric_anchors are available inside prev_response
+    # Why:
+    # - diff_metrics_by_name() can pull prev anchor_hash from prev_response.metric_anchors
+    #   when the metric row itself doesn't carry anchor_hash.
+    # - Some runs store metric_anchors at analysis top-level (previous_data) or under results.
+    # This patch copies anchors into prev_response *only if missing*.
+    # =====================================================================
+    try:
+        if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_anchors"), dict):
+            anchors_src = None
+
+            # prefer top-level analysis object
+            if isinstance(previous_data, dict) and isinstance(previous_data.get("metric_anchors"), dict):
+                anchors_src = previous_data.get("metric_anchors")
+
+            # else try primary_response.metric_anchors (if different object)
+            if anchors_src is None:
+                pr = (previous_data or {}).get("primary_response")
+                if isinstance(pr, dict) and isinstance(pr.get("metric_anchors"), dict):
+                    anchors_src = pr.get("metric_anchors")
+
+            # else try results.metric_anchors
+            if anchors_src is None:
+                r = (previous_data or {}).get("results")
+                if isinstance(r, dict) and isinstance(r.get("metric_anchors"), dict):
+                    anchors_src = r.get("metric_anchors")
+
+            if isinstance(anchors_src, dict) and anchors_src:
+                prev_response["metric_anchors"] = anchors_src
+    except Exception:
+        pass
+    # =====================================================================
+
     # Build a minimal current metrics dict from snapshots:
     current_metrics = {}
 
@@ -11122,6 +11419,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     "measure_kind": cand.get("measure_kind"),
                     "measure_assoc": cand.get("measure_assoc"),
                     "context_snippet": cand.get("context_snippet") or cand.get("context") or "",
+
+                    # =================================================================
+                    # PATCH E3.1 (ADDITIVE): evidence/debug passthrough for diff/UI stability
+                    # - candidate_id helps stable identity/debug (if available)
+                    # - anchor_confidence lets diff emit match_confidence deterministically
+                    # - fingerprint helps show source consistency (if present)
+                    # =================================================================
+                    "candidate_id": cand.get("candidate_id") or a.get("candidate_id"),
+                    "anchor_confidence": a.get("anchor_confidence"),
+                    "fingerprint": cand.get("fingerprint"),
+                    # =================================================================
                 })
 
                 current_metrics[ckey] = out_row
@@ -11162,10 +11470,36 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
-            metric_changes, unchanged, increased, decreased, found = fn_diff(
-                prev_response,
-                {"primary_metrics_canonical": current_metrics}
-            )
+            # =====================================================================
+            # PATCH E5 (ADDITIVE): pass metric_anchors into cur_response for diff
+            # Why:
+            # - diff_metrics_by_name() can also look at cur_response.metric_anchors for anchor_hash.
+            # - Helps when rebuilt metric rows are missing anchor_hash (older snapshots / partial rebuild).
+            # =====================================================================
+            try:
+                cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
+
+                # carry schema too (harmless; helps display_name/definition if you ever use cur-side)
+                if isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen"), dict):
+                    cur_resp_for_diff["metric_schema_frozen"] = prev_response.get("metric_schema_frozen")
+
+                # carry anchors (prefer the ones we extracted above)
+                try:
+                    _ma = None
+                    if "metric_anchors" in locals() and isinstance(metric_anchors, dict) and metric_anchors:
+                        _ma = metric_anchors
+                    elif isinstance(prev_response, dict) and isinstance(prev_response.get("metric_anchors"), dict):
+                        _ma = prev_response.get("metric_anchors")
+
+                    if isinstance(_ma, dict) and _ma:
+                        cur_resp_for_diff["metric_anchors"] = _ma
+                except Exception:
+                    pass
+
+                metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+            except Exception:
+                metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+            # =====================================================================
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
@@ -11185,6 +11519,207 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     output["sources_checked"] = len(baseline_sources_cache)
     output["sources_fetched"] = len(baseline_sources_cache)
 
+    # =====================================================================
+    # PATCH E6 (ADDITIVE): populate numbers_extracted_total for debug/telemetry
+    # =====================================================================
+    try:
+        total_nums = 0
+        for sr in baseline_sources_cache or []:
+            if isinstance(sr, dict) and isinstance(sr.get("extracted_numbers"), list):
+                total_nums += len(sr.get("extracted_numbers") or [])
+        output["numbers_extracted_total"] = int(total_nums)
+    except Exception:
+        pass
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH ES7 (ADDITIVE): evolution output normalization (defensive)
+    # Ensure evolution output rows always include:
+    #   - canonical_key
+    #   - anchor_used
+    #   - anchor_confidence (if available)
+    # Notes:
+    # - Pure output enrichment only (no diff logic changes).
+    # - Keeps legacy consumers working (adds fields only if missing).
+    # =====================================================================
+    try:
+        _ma_for_norm = None
+        try:
+            if "metric_anchors" in locals() and isinstance(metric_anchors, dict):
+                _ma_for_norm = metric_anchors
+            elif isinstance(previous_data, dict) and isinstance(previous_data.get("metric_anchors"), dict):
+                _ma_for_norm = previous_data.get("metric_anchors")
+            elif isinstance(previous_data, dict):
+                _r = previous_data.get("results")
+                if isinstance(_r, dict) and isinstance(_r.get("metric_anchors"), dict):
+                    _ma_for_norm = _r.get("metric_anchors")
+        except Exception:
+            _ma_for_norm = _ma_for_norm
+
+        for _row in (output.get("metric_changes") or []):
+            if not isinstance(_row, dict):
+                continue
+
+            # canonical_key
+            if "canonical_key" not in _row:
+                ck = _row.get("canonical_key") or _row.get("metric_key")
+                if ck:
+                    _row["canonical_key"] = ck
+
+            ck = _row.get("canonical_key")
+
+            # anchor_used
+            if "anchor_used" not in _row:
+                _row["anchor_used"] = bool(_row.get("anchor_hash"))
+
+            # anchor_confidence (if available)
+            if "anchor_confidence" not in _row:
+                _aconf = None
+                try:
+                    if ck and isinstance(_ma_for_norm, dict):
+                        a = _ma_for_norm.get(ck)
+                        if isinstance(a, dict):
+                            _aconf = a.get("anchor_confidence")
+                except Exception:
+                    _aconf = None
+                if _aconf is not None:
+                    _row["anchor_confidence"] = _aconf
+    except Exception:
+        pass
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH ES8 (ADDITIVE): stability / convergence guardrail (warn-only)
+    # Invariant:
+    # - If snapshots appear identical to a prior recorded snapshot hash, then
+    #   stability_score should be >= EVOLUTION_STABILITY_MIN.
+    # Behavior:
+    # - Emits warning flags only (never blocks).
+    # =====================================================================
+    try:
+        EVOLUTION_STABILITY_MIN = 95.0  # threshold percent (tunable; warn-only)
+
+        # Compute a deterministic snapshot hash from (url, fingerprint) pairs.
+        _pairs = []
+        for sr in (baseline_sources_cache or []):
+            if not isinstance(sr, dict):
+                continue
+            u = (sr.get("url") or "").strip()
+            fp = (sr.get("fingerprint") or "").strip()
+            if u and fp:
+                _pairs.append((u, fp))
+        _pairs.sort()
+        _cur_snap_sig = "|".join([f"{u}#{fp}" for (u, fp) in _pairs])
+        try:
+            import hashlib
+            _cur_snap_hash = hashlib.sha256(_cur_snap_sig.encode("utf-8")).hexdigest() if _cur_snap_sig else None
+        except Exception:
+            _cur_snap_hash = None
+
+        # Try to read any prior recorded snapshot hash (if present).
+        _prev_snap_hash = None
+        try:
+            if isinstance(previous_data, dict):
+                _prev_snap_hash = previous_data.get("source_snapshot_hash")
+                if not _prev_snap_hash:
+                    _r = previous_data.get("results")
+                    if isinstance(_r, dict):
+                        _prev_snap_hash = _r.get("source_snapshot_hash")
+        except Exception:
+            _prev_snap_hash = None
+
+        # Publish current hash (harmless, helps later identical-run detection).
+        if _cur_snap_hash:
+            output["source_snapshot_hash"] = _cur_snap_hash
+
+        _identical = bool(_prev_snap_hash and _cur_snap_hash and (_prev_snap_hash == _cur_snap_hash))
+
+        if _identical:
+            _score = float(output.get("stability_score") or 0.0)
+            if _score + 1e-9 < EVOLUTION_STABILITY_MIN:
+                warnings = output.get("warnings")
+                if not isinstance(warnings, list):
+                    warnings = []
+                    output["warnings"] = warnings
+                warnings.append({
+                    "code": "ES8_STABILITY_LOW_ON_IDENTICAL_SNAPSHOTS",
+                    "message": "Stability score below expected threshold on identical snapshot hash.",
+                    "stability_score": _score,
+                    "min_expected": EVOLUTION_STABILITY_MIN,
+                    "source_snapshot_hash": _cur_snap_hash,
+                })
+                output["stability_guardrail"] = {
+                    "identical_snapshots": True,
+                    "min_expected": EVOLUTION_STABILITY_MIN,
+                    "stability_score": _score,
+                }
+            else:
+                # Still emit a small structured confirmation for debug/telemetry.
+                output["stability_guardrail"] = {
+                    "identical_snapshots": True,
+                    "min_expected": EVOLUTION_STABILITY_MIN,
+                    "stability_score": _score,
+                }
+        else:
+            output["stability_guardrail"] = {
+                "identical_snapshots": False,
+                "min_expected": EVOLUTION_STABILITY_MIN,
+                "stability_score": float(output.get("stability_score") or 0.0),
+            }
+    except Exception:
+        pass
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH ES9 (ADDITIVE): end-state validation pass (warn-only)
+    # Checks (non-blocking):
+    # - No metric_changes rows missing canonical_key
+    # - No silent bypass of anchors (anchor_used false while anchor_hash exists)
+    # - Detect non-deterministic ordering in metric_changes (warn if unsorted)
+    # =====================================================================
+    try:
+        _issues = []
+
+        _rows = output.get("metric_changes") or []
+        _ckeys = []
+        for r in _rows:
+            if not isinstance(r, dict):
+                continue
+            ck = r.get("canonical_key")
+            if not ck:
+                _issues.append({"code": "ES9_MISSING_CANONICAL_KEY", "row_name": r.get("name")})
+            else:
+                _ckeys.append(str(ck))
+
+            if r.get("anchor_hash") and (r.get("anchor_used") is False):
+                _issues.append({"code": "ES9_ANCHOR_BYPASS_SUSPECT", "canonical_key": ck, "anchor_hash": r.get("anchor_hash")})
+
+        # Ordering check (warn-only): if canonical_keys exist, ensure stable sorted order
+        if _ckeys:
+            _sorted = sorted(_ckeys)
+            if _ckeys != _sorted:
+                _issues.append({"code": "ES9_METRIC_CHANGES_NOT_SORTED", "message": "metric_changes canonical_key order is not sorted; ordering may vary if upstream iteration is non-deterministic."})
+
+        if _issues:
+            warnings = output.get("warnings")
+            if not isinstance(warnings, list):
+                warnings = []
+                output["warnings"] = warnings
+            warnings.append({
+                "code": "ES9_END_STATE_VALIDATION",
+                "issues": _issues[:50],
+                "issue_count": len(_issues),
+            })
+
+        output["end_state_validation"] = {
+            "issues": _issues[:50],
+            "issue_count": len(_issues),
+            "passed": (len(_issues) == 0),
+        }
+    except Exception:
+        pass
+    # =====================================================================
     output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
 
