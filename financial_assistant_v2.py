@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -1167,6 +1167,31 @@ def rebuild_metrics_from_snapshots(
     metric_schema = prev_response.get("metric_schema_frozen") or {}
     if not isinstance(metric_schema, dict):
         metric_schema = {}
+
+    # =========================
+    # PATCH RB2 (ADDITIVE): ensure baseline_sources_cache is a full list (rehydrate from snapshot store if needed)
+    # - Handles cases where history rows store only a summarized baseline_sources_cache, but full snapshots exist
+    #   in the Snapshots sheet (referenced by snapshot_store_ref / source_snapshot_hash).
+    # =========================
+    try:
+        if (not isinstance(baseline_sources_cache, list)) or (isinstance(baseline_sources_cache, dict) and baseline_sources_cache.get("_summary") is True):
+            # Prefer already-rehydrated cache on prev_response["results"]["baseline_sources_cache"]
+            _maybe = (prev_response.get("results", {}) or {}).get("baseline_sources_cache")
+            if isinstance(_maybe, list) and _maybe:
+                baseline_sources_cache = _maybe
+            else:
+                store_ref = prev_response.get("snapshot_store_ref") or (prev_response.get("results", {}) or {}).get("snapshot_store_ref")
+                source_hash = prev_response.get("source_snapshot_hash") or (prev_response.get("results", {}) or {}).get("source_snapshot_hash")
+                if (not store_ref) and source_hash:
+                    store_ref = f"gsheet:Snapshots:{source_hash}"
+                if isinstance(store_ref, str) and store_ref.startswith("gsheet:Snapshots:"):
+                    _hash = store_ref.split(":")[-1]
+                    _full = load_full_snapshots_from_sheet(_hash)
+                    if isinstance(_full, list) and _full:
+                        baseline_sources_cache = _full
+    except Exception:
+        pass
+
     prev_can = prev_response.get("primary_metrics_canonical") or {}
     if not isinstance(prev_can, dict):
         prev_can = {}
@@ -1861,6 +1886,9 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                                     data.setdefault("results", {})
                                     if isinstance(data["results"], dict):
                                         data["results"]["baseline_sources_cache"] = _full
+                                        # PATCH RH2 (ADDITIVE): also set top-level baseline_sources_cache so evolution callers that read it directly get the full list
+                                        data["baseline_sources_cache"] = _full
+
                                     data["baseline_sources_cache"] = _full
                                     data["snapshots_rehydrated"] = True
                     except Exception:
