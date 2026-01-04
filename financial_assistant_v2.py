@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -894,6 +894,15 @@ def add_to_history(analysis: dict) -> bool:
 
             if isinstance(_bsc, list) and _bsc:
                 _ssh = compute_source_snapshot_hash(_bsc)
+
+                # =========================
+                # PATCH A2 (ADD): also compute snapshot hash v2 for stronger identity
+                # =========================
+                _ssh_v2 = None
+                try:
+                    _ssh_v2 = compute_source_snapshot_hash_v2(_bsc)
+                except Exception:
+                    _ssh_v2 = None
                 if _ssh:
                     # =============================================================
                     # PATCH SS4 (ADDITIVE): store snapshots to Snapshots worksheet when possible
@@ -904,6 +913,14 @@ def add_to_history(analysis: dict) -> bool:
                     _gs_ref = ""
                     try:
                         _gs_ref = store_full_snapshots_to_sheet(_bsc, _ssh, worksheet_title="Snapshots")
+                        # =========================
+                        # PATCH A3 (ADD): mirror-write snapshots under v2 hash as well
+                        # =========================
+                        if _ssh_v2 and isinstance(_ssh_v2, str) and _ssh_v2 != _ssh:
+                            try:
+                                store_full_snapshots_to_sheet(_bsc, _ssh_v2, worksheet_title="Snapshots")
+                            except Exception:
+                                pass
                     except Exception:
                         _gs_ref = ""
 
@@ -913,11 +930,23 @@ def add_to_history(analysis: dict) -> bool:
                     analysis.setdefault("results", {})
                     if isinstance(analysis["results"], dict):
                         analysis["results"]["source_snapshot_hash"] = analysis["results"].get("source_snapshot_hash") or _ssh
+                        # PATCH A4 (ADD): store v2 hash in results for downstream consumers
+                        try:
+                            if _ssh_v2:
+                                analysis["results"]["source_snapshot_hash_v2"] = analysis["results"].get("source_snapshot_hash_v2") or _ssh_v2
+                        except Exception:
+                            pass
 
                     if _ref:
                         analysis["snapshot_store_ref"] = analysis.get("snapshot_store_ref") or _ref
                         if isinstance(analysis["results"], dict):
                             analysis["results"]["snapshot_store_ref"] = analysis["results"].get("snapshot_store_ref") or _ref
+                            # PATCH A5 (ADD): v2 snapshot ref for convenience
+                            try:
+                                if _ssh_v2:
+                                    analysis["results"]["snapshot_store_ref_v2"] = analysis["results"].get("snapshot_store_ref_v2") or f"gsheet:Snapshots:{_ssh_v2}"
+                            except Exception:
+                                pass
                     # =============================================================
                     # PATCH SS4B (ADDITIVE): prefer Sheets snapshot ref when available
                     # =============================================================
@@ -9737,6 +9766,66 @@ def compute_source_snapshot_hash(baseline_sources_cache: list) -> str:
 # - This helper reconstructs the minimal snapshot shape needed for
 #   source-anchored evolution WITHOUT re-fetching or heuristic matching.
 # =====================================================================
+
+# =========================
+# PATCH A (ADD): Snapshot hash v2 (stable, content-weighted)
+# - Keeps v1 compute_source_snapshot_hash() for backward compatibility.
+# - v2 includes url + status + fingerprint + (anchor_hash,value_norm,unit_tag) tuples (bounded) for stronger identity.
+# =========================
+def compute_source_snapshot_hash_v2(baseline_sources_cache: list, max_items_per_source: int = 120) -> str:
+    import hashlib
+    import json
+
+    try:
+        sources = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
+        parts = []
+        for s in sources:
+            if not isinstance(s, dict):
+                continue
+            url = str(s.get("url") or "")
+            status = str(s.get("status") or "")
+            status_detail = str(s.get("status_detail") or "")
+            fingerprint = str(s.get("fingerprint") or "")
+
+            nums = s.get("extracted_numbers") or s.get("numbers") or []
+            # Sometimes stored in summarized form
+            if isinstance(nums, dict) and nums.get("_summary") and isinstance(nums.get("count"), int):
+                # no details available; just use summary
+                num_tuples = [("summary_count", int(nums.get("count")))]
+            else:
+                num_list = nums if isinstance(nums, list) else []
+                num_tuples = []
+                for n in num_list[: int(max_items_per_source or 120)]:
+                    if not isinstance(n, dict):
+                        continue
+                    ah = str(n.get("anchor_hash") or "")
+                    vn = n.get("value_norm")
+                    ut = str(n.get("unit_tag") or n.get("unit") or "")
+                    # Use JSON for float stability + None handling
+                    num_tuples.append((ah, vn, ut))
+                # Deterministic order
+                num_tuples = sorted(num_tuples, key=lambda t: (t[0], str(t[1]), t[2]))
+
+            parts.append({
+                "url": url,
+                "status": status,
+                "status_detail": status_detail,
+                "fingerprint": fingerprint,
+                "nums": num_tuples,
+            })
+
+        # Deterministic ordering of sources
+        parts = sorted(parts, key=lambda d: (d.get("url",""), d.get("fingerprint",""), d.get("status","")))
+
+        payload = json.dumps(parts, ensure_ascii=False, default=str, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    except Exception:
+        # Ultra-safe fallback (still deterministic-ish)
+        try:
+            return hashlib.sha256(str(baseline_sources_cache).encode("utf-8")).hexdigest()
+        except Exception:
+            return "0"*64
+
 def build_baseline_sources_cache_from_evidence_records(evidence_records):
     """Return a list-shaped baseline_sources_cache rebuilt from evidence_records, or [].
 
