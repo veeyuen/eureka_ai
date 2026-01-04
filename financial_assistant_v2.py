@@ -74,10 +74,10 @@ from bs4 import BeautifulSoup
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
-            # =========================
+# =========================
 # VERSION STAMP (ADDITIVE)
-            # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_RMS_MIN2_HF5_fixindent_BSCNORM1"
+# =========================
+CODE_VERSION = financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_RMS_MIN2_HF5_fixindent_BSCNORM1_EARLY1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -12857,6 +12857,63 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 # =========================
         except Exception:
             current_metrics = {}
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH BSC_NORM_EARLY1 (ADDITIVE): early baseline_sources_cache normalization before guardrail
+    # Purpose:
+    #   - Some evolution paths carry extracted_numbers in output["source_results"] (current fetch),
+    #     while baseline_sources_cache remains snapshot-only or numbers-empty.
+    #   - The guardrail below checks rebuilt metrics; if baseline_sources_cache has no numeric payload,
+    #     rebuild hooks may return empty and trigger a false "missing/empty" failure.
+    #
+    # Behavior:
+    #   - If baseline_sources_cache contains no non-empty extracted_numbers,
+    #     and output["source_results"] contains extracted_numbers,
+    #     build a minimal baseline_sources_cache view from output["source_results"].
+    #   - Deterministic ordering by (source_url, fingerprint) only.
+    # =====================================================================
+    try:
+        _bsc_has_numbers2 = False
+        for _sr2 in (baseline_sources_cache or []):
+            if isinstance(_sr2, dict) and isinstance(_sr2.get("extracted_numbers"), list) and (_sr2.get("extracted_numbers") or []):
+                _bsc_has_numbers2 = True
+                break
+
+        if not _bsc_has_numbers2:
+            _out_sr = None
+            try:
+                _out_sr = output.get("source_results")
+            except Exception:
+                _out_sr = None
+
+            if isinstance(_out_sr, list) and _out_sr:
+                _rebuilt2 = []
+                for _r2 in _out_sr:
+                    if not isinstance(_r2, dict):
+                        continue
+                    _ex2 = _r2.get("extracted_numbers")
+                    if not isinstance(_ex2, list) or not _ex2:
+                        continue
+                    _u2 = _r2.get("source_url") or _r2.get("url")
+                    _rebuilt2.append({
+                        "source_url": _u2,
+                        "extracted_numbers": _ex2,
+                        "clean_text": _r2.get("clean_text") or _r2.get("content") or "",
+                        "fingerprint": _r2.get("fingerprint"),
+                        "status": _r2.get("status"),
+                        "status_detail": _r2.get("status_detail"),
+                    })
+                _rebuilt2.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+                if _rebuilt2:
+                    baseline_sources_cache = _rebuilt2
+                    try:
+                        output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|baseline_cache_normalized_from_output_source_results"
+                    except Exception:
+                        pass
+    except Exception:
+        pass
     # =====================================================================
 
     # If we cannot rebuild metrics, return a tight result that still exposes source_results for debugging
