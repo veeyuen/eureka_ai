@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_HF1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -966,6 +966,68 @@ def add_to_history(analysis: dict) -> bool:
         payload_json = _try_make_sheet_json(payload_for_sheets)
 
         # =====================================================================
+        # PATCH HF2 (ADDITIVE, REQUIRED): store full History payload when Sheets cell is truncated/wrapped
+        # - If payload_json is a Sheets-safe wrapper/preview (or otherwise truncated),
+        #   persist the full analysis JSON to HistoryFull and add a pointer.
+        # - This is crucial for drift=0 rebuild, since evolution needs rebuild essentials
+        #   even when History cells are summarized.
+        # =====================================================================
+        try:
+            # Ensure analysis_id is also present inside analysis payload (additive)
+            try:
+                if isinstance(analysis, dict):
+                    analysis.setdefault("analysis_id", analysis_id)
+            except Exception:
+                pass
+
+            _needs_full = False
+            _pj = payload_json if isinstance(payload_json, str) else ""
+            if _pj and ('"_sheets_safe"' in _pj or '"truncated"' in _pj):
+                _needs_full = True
+            else:
+                # Fallback: if full analysis JSON exceeds the Sheets cell limit, store full.
+                try:
+                    _full_s = json.dumps(analysis, ensure_ascii=False, separators=(",", ":"), default=str)
+                    if isinstance(_full_s, str) and len(_full_s) > SHEETS_CELL_LIMIT:
+                        _needs_full = True
+                except Exception:
+                    pass
+
+            if _needs_full:
+                _full_ref = ""
+                try:
+                    _full_ref = store_full_history_payload_to_sheet(analysis, analysis_id, worksheet_title="HistoryFull")
+                except Exception:
+                    _full_ref = ""
+
+                if _full_ref:
+                    # Add pointers in both analysis (in-memory) and payload_for_sheets (written)
+                    try:
+                        if isinstance(analysis, dict):
+                            analysis["full_store_ref"] = analysis.get("full_store_ref") or _full_ref
+                            analysis.setdefault("results", {})
+                            if isinstance(analysis["results"], dict):
+                                analysis["results"]["full_store_ref"] = analysis["results"].get("full_store_ref") or _full_ref
+                    except Exception:
+                        pass
+
+                    try:
+                        if isinstance(payload_for_sheets, dict):
+                            payload_for_sheets["full_store_ref"] = payload_for_sheets.get("full_store_ref") or _full_ref
+                            payload_for_sheets.setdefault("results", {})
+                            if isinstance(payload_for_sheets["results"], dict):
+                                payload_for_sheets["results"]["full_store_ref"] = payload_for_sheets["results"].get("full_store_ref") or _full_ref
+
+                            # Regenerate payload_json to ensure the pointer is actually written
+                            payload_json = _try_make_sheet_json(payload_for_sheets)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # =====================================================================
+
+
+        # =====================================================================
         # PATCH A5 (BUGFIX, REQUIRED): never write invalid JSON to Sheets
         # - Previous hard truncation produced non-JSON (prefix + random suffix),
         #   causing history loaders (json.loads) to skip the row entirely.
@@ -1852,7 +1914,55 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
 
 
                     # =====================================================================
-                    # PATCH ES1G (ADDITIVE): rehydrate baseline_sources_cache from store ref
+
+                    # =====================================================================
+                    # PATCH HF3 (ADDITIVE, REQUIRED): rehydrate full History payload when wrapper includes full_store_ref
+                    # - If History row contains a Sheets-safe wrapper/preview but has a pointer to HistoryFull,
+                    #   load the full JSON so downstream consumers (evolution, regression harness) have
+                    #   rebuild essentials (metric_schema_frozen, metric_anchors, snapshot refs, etc.).
+                    # =====================================================================
+                    try:
+                        if isinstance(data, dict):
+                            _fsr = data.get("full_store_ref") or data.get("results", {}).get("full_store_ref")
+                            _is_wrapped = bool(data.get("_sheets_safe") is True or data.get("_sheet_safe_wrapper") is True)
+                            _is_trunc = False
+                            try:
+                                sw = data.get("_sheet_write") or {}
+                                if isinstance(sw, dict) and sw.get("truncated") is True:
+                                    _is_trunc = True
+                            except Exception:
+                                pass
+
+                            if _fsr and (_is_wrapped or _is_trunc):
+                                _analysis_id = ""
+                                if isinstance(_fsr, str) and _fsr.startswith("gsheet:"):
+                                    parts = _fsr.split(":")
+                                    if len(parts) >= 3:
+                                        _analysis_id = parts[2]
+                                # Fallback: use row-stored id if present
+                                _analysis_id = _analysis_id or (data.get("analysis_id") or data.get("_analysis_id") or "")
+
+                                if _analysis_id:
+                                    _full = load_full_history_payload_from_sheet(_analysis_id, worksheet_title="HistoryFull")
+                                    if isinstance(_full, dict) and _full:
+                                        # Preserve wrapper flags for debugging
+                                        try:
+                                            _full["_history_rehydrated"] = True
+                                            _full["_history_rehydrated_from"] = _fsr
+                                            if isinstance(data.get("_sheet_write"), dict):
+                                                _full["_sheet_write"] = data.get("_sheet_write")
+                                            if data.get("_sheets_safe") is True:
+                                                _full["_sheets_safe"] = True
+                                            if data.get("_sheet_safe_wrapper") is True:
+                                                _full["_sheet_safe_wrapper"] = True
+                                        except Exception:
+                                            pass
+                                        data = _full
+                    except Exception:
+                        pass
+                    # =====================================================================
+
+# PATCH ES1G (ADDITIVE): rehydrate baseline_sources_cache from store ref
                     # - If Sheets row is a safe wrapper / summary but contains snapshot_store_ref,
                     #   load full snapshots so evolution can run anchor-first (no refetch).
                     # =====================================================================
@@ -10093,6 +10203,162 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
         return []
 # =====================================================================
 
+
+
+# =====================================================================
+# PATCH HF1 (ADDITIVE, REQUIRED FOR DRIFT=0): Full History payload persistence
+# - Problem: make_sheet_safe_json() may store a Sheets-safe wrapper/preview when
+#   payload exceeds single-cell limits. Evolution and regression tests may need
+#   rebuild essentials that are not in the preview.
+# - Solution: store the full analysis JSON in a dedicated worksheet ("HistoryFull")
+#   keyed by analysis_id, and store a pointer (full_store_ref) in the wrapper row.
+# - Design goals:
+#     * Additive only; does not alter existing History schema.
+#     * Deterministic chunking, ordering, and hashing.
+#     * Backward compatible: get_history() rehydrates only when pointer present.
+# =====================================================================
+
+def _ensure_historyfull_worksheet(spreadsheet, title: str = "HistoryFull"):
+    """Ensure a worksheet tab exists for full History payload storage."""
+    try:
+        if not spreadsheet:
+            return None
+        try:
+            ws = spreadsheet.worksheet(title)
+            return ws
+        except Exception:
+            ws = spreadsheet.add_worksheet(title=title, rows=2000, cols=8)
+            try:
+                ws.append_row(
+                    ["analysis_id", "part_index", "total_parts", "payload_json", "created_at", "code_version", "sha256"],
+                    value_input_option="RAW",
+                )
+            except Exception:
+                pass
+            return ws
+    except Exception:
+        return None
+
+
+def store_full_history_payload_to_sheet(analysis: dict, analysis_id: str, worksheet_title: str = "HistoryFull", chunk_chars: int = 45000) -> str:
+    """Store full analysis JSON to a dedicated worksheet tab in chunked rows.
+
+    Returns a ref string like: 'gsheet:HistoryFull:<analysis_id>'
+    """
+    import json, hashlib
+    if not analysis_id:
+        return ""
+    if not isinstance(analysis, dict):
+        return ""
+
+    try:
+        ss = get_google_spreadsheet()
+        ws = _ensure_historyfull_worksheet(ss, worksheet_title) if ss else None
+        if not ws:
+            return ""
+
+        # Stable, compact serialization
+        payload = json.dumps(analysis, ensure_ascii=False, separators=(",", ":"), default=str)
+        if not isinstance(payload, str) or not payload.strip():
+            return ""
+
+        sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        total_parts = (len(payload) + chunk_chars - 1) // chunk_chars
+
+        from datetime import datetime
+        created_at = datetime.utcnow().isoformat() + "Z"
+
+        code_version = ""
+        try:
+            code_version = globals().get("CODE_VERSION") or ""
+        except Exception:
+            code_version = ""
+
+        # Append rows in order (deterministic)
+        for part_index in range(total_parts):
+            chunk = payload[part_index * chunk_chars : (part_index + 1) * chunk_chars]
+            ws.append_row(
+                [analysis_id, str(part_index), str(total_parts), chunk, created_at, code_version, sha],
+                value_input_option="RAW",
+            )
+
+        return f"gsheet:{worksheet_title}:{analysis_id}"
+    except Exception:
+        return ""
+
+
+def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str = "HistoryFull") -> dict:
+    """Load and reassemble full analysis JSON dict from dedicated worksheet."""
+    import json, hashlib
+    if not analysis_id:
+        return {}
+    try:
+        ss = get_google_spreadsheet()
+        ws = ss.worksheet(worksheet_title) if ss else None
+        if not ws:
+            return {}
+
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return {}
+
+        header = values[0]
+        def _idx(name: str) -> int:
+            try:
+                return header.index(name)
+            except Exception:
+                return -1
+
+        i_id = _idx("analysis_id")
+        i_part = _idx("part_index")
+        i_total = _idx("total_parts")
+        i_payload = _idx("payload_json")
+        i_sha = _idx("sha256")
+
+        if i_id < 0 or i_part < 0 or i_payload < 0:
+            return {}
+
+        rows = []
+        expected_sha = ""
+        expected_total = None
+
+        for r in values[1:]:
+            try:
+                if i_id < len(r) and (r[i_id] or "").strip() == analysis_id:
+                    part_i = int((r[i_part] or "0").strip()) if i_part < len(r) else 0
+                    total_i = int((r[i_total] or "0").strip()) if (i_total >= 0 and i_total < len(r)) else None
+                    payload_i = r[i_payload] if i_payload < len(r) else ""
+                    sha_i = r[i_sha] if (i_sha >= 0 and i_sha < len(r)) else ""
+                    rows.append((part_i, payload_i))
+                    if sha_i:
+                        expected_sha = expected_sha or sha_i
+                    if total_i is not None:
+                        expected_total = expected_total or total_i
+            except Exception:
+                continue
+
+        if not rows:
+            return {}
+
+        rows.sort(key=lambda x: x[0])
+        payload = "".join([p for (_, p) in rows])
+
+        # Verify hash if present
+        if expected_sha:
+            sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            if sha != expected_sha:
+                return {}
+
+        # Optional: verify part count if present
+        if expected_total is not None and expected_total > 0:
+            if len(rows) != expected_total:
+                # allow partial reads but return empty to avoid inconsistent state
+                return {}
+
+        data = json.loads(payload)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 def fingerprint_text(text: str) -> str:
     """Stable short fingerprint for fetched content (deterministic)."""
