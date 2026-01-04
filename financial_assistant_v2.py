@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL_FIX3_ANCHOR_DISPATCH_FIX3"
+CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL_FIX4_REBUILD_GUARD_FIX"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -13129,6 +13129,27 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output.setdefault("results", {})
         output["results"]["rebuilt_primary_metrics_canonical"] = rebuilt_metrics
     # =================== END PATCH RMS_WIRE1 (ADDITIVE) ===================
+
+    # =====================================================================
+    # PATCH RMS_WIRE2 (ADDITIVE): ensure guardrail sees rebuilt metrics
+    # Why:
+    # - Some evolution paths validate rebuild presence via `current_metrics` (not output['results']).
+    # - If we successfully rebuilt metrics into `rebuilt_metrics` but did not populate `current_metrics`,
+    #   the code would incorrectly fail with "rebuild missing/empty".
+    # Behavior:
+    # - If `current_metrics` is empty and `rebuilt_metrics` is a non-empty dict, set `current_metrics`
+    #   from `rebuilt_metrics` (schema-only or anchor-aware).
+    # =====================================================================
+    try:
+        if (not isinstance(current_metrics, dict) or not current_metrics) and isinstance(rebuilt_metrics, dict) and rebuilt_metrics:
+            current_metrics = rebuilt_metrics
+            output.setdefault("debug", {})
+            output["debug"]["current_metrics_source"] = "rebuilt_metrics"
+    except Exception:
+        pass
+    # =====================================================================
+
+
 
 
     # =====================================================================
