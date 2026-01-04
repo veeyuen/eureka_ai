@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL_FIX1"
+CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL_FIX2_ANCHOR_REBUILD"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -2022,6 +2022,148 @@ def rebuild_metrics_from_snapshots_schema_only(
         out[canonical_key] = metric
 
     return out
+
+
+
+# ===================== PATCH RMS_AWARE1 (ADDITIVE) =====================
+def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """
+    Anchor-aware deterministic rebuild (analysis-aligned):
+      - Uses ONLY snapshots/cache + frozen schema + prior metric_anchors (if present)
+      - No re-fetch
+      - No heuristic matching outside anchor_hash + schema dimension checks
+      - Deterministic ordering and selection
+
+    Strategy:
+      1) Load metric_anchors (canonical_key -> {anchor_hash, ...}) from prev_response (any common nesting).
+      2) Flatten snapshot candidates (extracted_numbers) from baseline_sources_cache.
+      3) For each canonical_key with an anchor_hash:
+           pick candidate with matching anchor_hash (and compatible unit family if inferable).
+      4) Build primary_metrics_canonical-like dict.
+
+    Returns: dict {canonical_key: metric_obj}
+    """
+    import re
+
+    if not isinstance(prev_response, dict):
+        return {}
+
+    # 1) Pull anchors from any common location
+    metric_anchors = (
+        prev_response.get("metric_anchors")
+        or (prev_response.get("primary_response") or {}).get("metric_anchors")
+        or (prev_response.get("results") or {}).get("metric_anchors")
+    )
+    if not isinstance(metric_anchors, dict) or not metric_anchors:
+        return {}
+
+    # 2) Pull frozen schema (for name/dimension hints; optional but preferred)
+    metric_schema = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or {}
+    )
+
+    # Flatten candidates from baseline_sources_cache (list of source dicts with extracted_numbers)
+    if isinstance(baseline_sources_cache, dict) and isinstance(baseline_sources_cache.get("snapshots"), list):
+        sources = baseline_sources_cache.get("snapshots", [])
+    elif isinstance(baseline_sources_cache, list):
+        sources = baseline_sources_cache
+    else:
+        sources = []
+
+    candidates = []
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        url = s.get("source_url") or s.get("url") or ""
+        xs = s.get("extracted_numbers")
+        if isinstance(xs, list) and xs:
+            for c in xs:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("is_junk") is True:
+                    continue
+                c2 = dict(c)
+                c2.setdefault("source_url", url)
+                candidates.append(c2)
+
+    # Deterministic sort key (stable across runs)
+    def _cand_sort_key(c: dict):
+        try:
+            return (
+                str(c.get("anchor_hash") or ""),
+                str(c.get("source_url") or ""),
+                int(c.get("start_idx") or 0),
+                str(c.get("raw") or ""),
+                str(c.get("unit") or ""),
+                float(c.get("value_norm") or 0.0),
+            )
+        except Exception:
+            return ("", "", 0, "", "", 0.0)
+
+    candidates.sort(key=_cand_sort_key)
+
+    # Unit family inference (lightweight; used only as a compatibility guard)
+    def _unit_family(unit: str) -> str:
+        u = (unit or "").strip().lower()
+        if u in ("%", "percent", "percentage"):
+            return "percent"
+        if any(x in u for x in ("usd", "$", "eur", "gbp", "jpy", "cny", "aud", "sgd")):
+            return "currency"
+        if any(x in u for x in ("unit", "units", "vehicle", "vehicles", "kwh", "mwh", "gwh", "twh", "ton", "tons")):
+            return "quantity"
+        return ""
+
+    rebuilt = {}
+
+    # 3) Anchor_hash match first (no schema-free guessing)
+    for canonical_key, a in metric_anchors.items():
+        if not isinstance(a, dict):
+            continue
+        ah = a.get("anchor_hash") or a.get("anchor") or ""
+        if not ah:
+            continue
+
+        sch = metric_schema.get(canonical_key) if isinstance(metric_schema, dict) else None
+        name = (sch or {}).get("name") or a.get("name") or canonical_key
+        expected_dim = ((sch or {}).get("dimension") or (sch or {}).get("unit_family") or "").strip().lower()
+
+        best = None
+        for c in candidates:
+            if (c.get("anchor_hash") or "") != ah:
+                continue
+            # If we can infer unit family, enforce compatibility when expected_dim is given
+            fam = _unit_family(c.get("unit") or "")
+            if expected_dim and fam and expected_dim != fam:
+                continue
+            best = c
+            break
+
+        if not best:
+            continue
+
+        rebuilt[canonical_key] = {
+            "canonical_key": canonical_key,
+            "name": name,
+            "value": best.get("value"),
+            "unit": best.get("unit") or "",
+            "value_norm": best.get("value_norm"),
+            "source_url": best.get("source_url") or "",
+            "anchor_hash": best.get("anchor_hash") or "",
+            "evidence": [{
+                "source_url": best.get("source_url") or "",
+                "raw": best.get("raw") or "",
+                "context_snippet": (best.get("context") or best.get("context_window") or "")[:400],
+                "anchor_hash": best.get("anchor_hash") or "",
+                "method": "anchor_hash_rebuild",
+            }],
+        }
+
+    return rebuilt
+# =================== END PATCH RMS_AWARE1 (ADDITIVE) ===================
+
 
 
 def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
@@ -12875,7 +13017,22 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             # =========================
             # PATCH RMS_MIN2 (ADDITIVE): prefer schema-only rebuild hook when available
             # =========================
-            fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
+            # ===================== PATCH RMS_DISPATCH1 (ADDITIVE) =====================
+            # Prefer anchor-aware rebuild when metric_anchors exist; otherwise use schema-only; then legacy hook.
+            try:
+                _anchors = (prev_response.get("metric_anchors") or (prev_response.get("primary_response") or {}).get("metric_anchors") or (prev_response.get("results") or {}).get("metric_anchors"))
+            except Exception:
+                _anchors = None
+            fn_anchor = globals().get("rebuild_metrics_from_snapshots_with_anchors")
+            fn_schema = globals().get("rebuild_metrics_from_snapshots_schema_only")
+            fn_legacy = globals().get("rebuild_metrics_from_snapshots")
+            if isinstance(_anchors, dict) and _anchors and callable(fn_anchor):
+                fn_rebuild = fn_anchor
+            elif callable(fn_schema):
+                fn_rebuild = fn_schema
+            else:
+                fn_rebuild = fn_legacy
+            # =================== END PATCH RMS_DISPATCH1 (ADDITIVE) ===================
             if callable(fn_rebuild):
                 # =========================
                 # PATCH (ADDITIVE): pass web_context through to rebuild hook
