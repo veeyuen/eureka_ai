@@ -12555,6 +12555,31 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             return None
 
+    # ============================================================
+    # PATCH CSR_UNWRAP1 (ADDITIVE): robust nested retrieval helpers
+    # Why:
+    # - Some runs store rebuild essentials under primary_response or results.primary_response
+    # - Evolution may look only at top-level keys, causing schema=0 / anchors=0
+    # ============================================================
+    def _get_nested(d, path, default=None):
+        try:
+            x = d
+            for k in path:
+                if not isinstance(x, dict):
+                    return default
+                x = x.get(k)
+            return x if x is not None else default
+        except Exception:
+            return default
+
+    def _first_present(d, paths, default=None):
+        for p in paths:
+            v = _get_nested(d, p, None)
+            if v is not None:
+                return v
+        return default
+    # ============================================================
+
     # ---------- Pull baseline snapshots (VALID only) ----------
     snapshot_origin = "none"
     baseline_sources_cache = []
@@ -13010,6 +13035,117 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # =====================================================================
 
     prev_metrics = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
+
+    # ============================================================
+    # PATCH CSR_INPUTS1 (ADDITIVE): normalize prev schema/anchors/canon
+    # Strictly schema-driven:
+    # - Prefer existing metric_schema_frozen (wherever stored)
+    # - Else derive schema from existing canonical metrics (freeze_metric_schema if available)
+    # - Prefer metric_anchors (wherever stored)
+    # - Else derive anchors from canonical metrics evidence candidate_id/anchor_hash (no heuristics)
+    # ============================================================
+    try:
+        prev_schema = _first_present(prev_analysis, [
+            ("metric_schema_frozen",),
+            ("primary_response", "metric_schema_frozen"),
+            ("results", "metric_schema_frozen"),
+            ("results", "primary_response", "metric_schema_frozen"),
+        ], default=None)
+
+        prev_canon = _first_present(prev_analysis, [
+            ("primary_metrics_canonical",),
+            ("primary_response", "primary_metrics_canonical"),
+            ("results", "primary_metrics_canonical"),
+            ("results", "primary_response", "primary_metrics_canonical"),
+        ], default=None)
+
+        prev_anchors = _first_present(prev_analysis, [
+            ("metric_anchors",),
+            ("primary_response", "metric_anchors"),
+            ("results", "metric_anchors"),
+            ("results", "primary_response", "metric_anchors"),
+        ], default=None)
+
+        # If schema is missing but canonical exists, derive frozen schema deterministically
+        if (not isinstance(prev_schema, dict) or not prev_schema) and isinstance(prev_canon, dict) and prev_canon:
+            try:
+                fn = globals().get("freeze_metric_schema")
+                if callable(fn):
+                    prev_schema = fn(prev_canon)
+            except Exception:
+                pass
+
+        # If anchors missing, derive from canonical metrics evidence only (no heuristic matching)
+        if (not isinstance(prev_anchors, list) or not prev_anchors) and isinstance(prev_canon, dict):
+            derived = []
+            try:
+                for ck, m in prev_canon.items():
+                    if not isinstance(m, dict):
+                        continue
+                    ev = m.get("evidence") or []
+                    if not isinstance(ev, list):
+                        continue
+                    for e in ev:
+                        if not isinstance(e, dict):
+                            continue
+                        # accept either candidate_id or anchor_hash as “anchor identifiers”
+                        ah = e.get("anchor_hash") or e.get("candidate_id")
+                        if ah:
+                            derived.append({
+                                "canonical_key": ck,
+                                "anchor_hash": ah,
+                                "source_url": e.get("url") or e.get("source_url") or ""
+                            })
+                # de-dup deterministically
+                if derived:
+                    seen = set()
+                    uniq = []
+                    for a in derived:
+                        key = (a.get("canonical_key",""), a.get("anchor_hash",""), a.get("source_url",""))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        uniq.append(a)
+                    prev_anchors = uniq
+            except Exception:
+                pass
+
+        # Make these available to the downstream rebuild dispatch without changing existing variable names
+        # (Only set if your function currently uses similarly named variables; otherwise safe no-op.)
+        try:
+            # If you already have locals named metric_schema_frozen / metric_anchors, preserve them
+            if "metric_schema_frozen" in locals():
+                metric_schema_frozen = metric_schema_frozen or (prev_schema if isinstance(prev_schema, dict) else {})
+            else:
+                metric_schema_frozen = prev_schema if isinstance(prev_schema, dict) else {}
+
+            if "metric_anchors" in locals():
+                metric_anchors = metric_anchors or (prev_anchors if isinstance(prev_anchors, list) else [])
+            else:
+                metric_anchors = prev_anchors if isinstance(prev_anchors, list) else []
+
+            if "primary_metrics_canonical_prev" in locals():
+                primary_metrics_canonical_prev = primary_metrics_canonical_prev or (prev_canon if isinstance(prev_canon, dict) else {})
+            else:
+                primary_metrics_canonical_prev = prev_canon if isinstance(prev_canon, dict) else {}
+        except Exception:
+            pass
+
+        # Optional: debug visibility
+        try:
+            if debug and isinstance(cur_analysis, dict):
+                cur_analysis.setdefault("debug", {})
+                if isinstance(cur_analysis["debug"], dict):
+                    cur_analysis["debug"]["prev_schema_found"] = bool(isinstance(prev_schema, dict) and prev_schema)
+                    cur_analysis["debug"]["prev_anchors_found"] = bool(isinstance(prev_anchors, list) and prev_anchors)
+                    cur_analysis["debug"]["prev_schema_keys"] = len(prev_schema) if isinstance(prev_schema, dict) else 0
+                    cur_analysis["debug"]["prev_anchor_count"] = len(prev_anchors) if isinstance(prev_anchors, list) else 0
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+    # ============================================================
 
     # =====================================================================
     # PATCH E1 (ADDITIVE): ensure schema is available inside prev_response
