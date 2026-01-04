@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX6_REBUILD_DIAG_UNWRAP"
+CODE_VERSION = "financial_assistant_v7_41_FIX7_HFWRITE_REHYDRATE_READY"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -1017,6 +1017,67 @@ def add_to_history(analysis: dict) -> bool:
                 # ultra-safe fallback: still valid JSON
                 payload_json = '{"_sheet_write":{"truncated":true,"mode":"hard_truncation_wrapper","note":"json.dumps failed"}}'
         # =====================================================================
+        # =====================================================================
+        # PATCH HF_PERSIST1 (ADDITIVE): Persist full payload to HistoryFull when History cell is wrapped/truncated
+        # Why:
+        # - Evolution rebuild requires schema/anchors which may be lost in a sheets-safe wrapper
+        # - HistoryFull stores the full JSON keyed by analysis_id for later rehydration
+        # Behavior:
+        # - If payload_json indicates truncation/wrapper OR is very large, write full payload to HistoryFull
+        # - Attach a pointer full_store_ref to both analysis and the wrapper object (when possible)
+        # =====================================================================
+        try:
+            is_truncated = False
+            try:
+                if isinstance(payload_json, str) and ('"_sheet_write"' in payload_json or '"_sheets_safe"' in payload_json):
+                    # quick signal; parse if possible
+                    try:
+                        _pj = json.loads(payload_json)
+                        sw = _pj.get("_sheet_write") if isinstance(_pj, dict) else None
+                        if isinstance(sw, dict) and sw.get("truncated") is True:
+                            is_truncated = True
+                        if _pj.get("_sheets_safe") is True:
+                            is_truncated = True
+                    except Exception:
+                        # if we can't parse and it's huge, treat as truncated risk
+                        if len(payload_json) > 45000:
+                            is_truncated = True
+                elif isinstance(payload_json, str) and len(payload_json) > 45000:
+                    is_truncated = True
+            except Exception:
+                pass
+
+            if is_truncated:
+                full_payload_json = ""
+                try:
+                    full_payload_json = json.dumps(analysis, ensure_ascii=False, default=str)
+                except Exception:
+                    full_payload_json = ""
+
+                if full_payload_json:
+                    ok_full = write_full_history_payload_to_sheet(analysis_id, full_payload_json, worksheet_title="HistoryFull")
+                    if ok_full:
+                        ref = f"gsheet:HistoryFull:{analysis_id}"
+                        try:
+                            analysis["full_store_ref"] = ref
+                        except Exception:
+                            pass
+                        # If payload_json is a wrapper dict, embed ref too
+                        try:
+                            _pj2 = json.loads(payload_json)
+                            if isinstance(_pj2, dict):
+                                _pj2["full_store_ref"] = ref
+                                sw2 = _pj2.get("_sheet_write")
+                                if isinstance(sw2, dict):
+                                    sw2["full_store_ref"] = ref
+                                    _pj2["_sheet_write"] = sw2
+                                payload_json = json.dumps(_pj2, ensure_ascii=False, default=str)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        # =====================================================================
+
 
         row = [
             analysis_id,
@@ -10463,6 +10524,74 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
 # Notes:
 # - Additive only. Safe no-op if sheet/tab not present.
 # =====================================================================
+
+# ===================== PATCH HF_WRITE1 (ADDITIVE) =====================
+
+def write_full_history_payload_to_sheet(analysis_id: str, payload: str, worksheet_title: str = "HistoryFull", chunk_size: int = 20000) -> bool:
+    """Write a full analysis payload (string) into HistoryFull as chunked rows keyed by analysis_id.
+
+    Additive helper to support oversized History cells:
+      - Ensures HistoryFull headers exist
+      - Splits payload into chunks
+      - Stores sha256 for integrity
+    """
+    import hashlib
+    if not analysis_id or not payload:
+        return False
+    try:
+        ss = get_google_spreadsheet()
+        if not ss:
+            return False
+        try:
+            ws = ss.worksheet(worksheet_title)
+        except Exception:
+            # Create sheet if missing (best-effort)
+            try:
+                ws = ss.add_worksheet(title=worksheet_title, rows=2000, cols=10)
+            except Exception:
+                ws = ss.worksheet(worksheet_title)
+
+        # Ensure headers exist
+        try:
+            headers = ws.row_values(1)
+            if (not headers) or (len(headers) < 5) or headers[0] != "analysis_id":
+                _ = ws.update('A1:E1', [["analysis_id", "part_index", "total_parts", "payload_part", "sha256"]])
+        except Exception:
+            try:
+                _ = ws.update('A1:E1', [["analysis_id", "part_index", "total_parts", "payload_part", "sha256"]])
+            except Exception:
+                pass
+
+        # Remove existing rows for this analysis_id (optional; keep additive and safe: do not delete to avoid refactor)
+        # We will append new parts; loader will read the latest by order if duplicates exist.
+
+        sha = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+        parts = [payload[i:i+chunk_size] for i in range(0, len(payload), chunk_size)]
+        total = len(parts) if parts else 0
+        if total == 0:
+            return False
+
+        rows = []
+        for i, part in enumerate(parts):
+            rows.append([analysis_id, str(i), str(total), part, sha])
+
+        # Append in one batch if possible
+        try:
+            ws.append_rows(rows, value_input_option="RAW")
+        except Exception:
+            # Fallback to per-row append
+            for r in rows:
+                try:
+                    ws.append_row(r, value_input_option="RAW")
+                except Exception:
+                    return False
+        return True
+    except Exception:
+        return False
+
+# =================== END PATCH HF_WRITE1 (ADDITIVE) ===================
+
+
 def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str = "HistoryFull") -> dict:
     """Load and reassemble a full analysis payload dict from HistoryFull worksheet."""
     import json, hashlib
@@ -12715,77 +12844,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
     # =====================================================================
-
-
-    # ===================== PATCH HF_FORCE1 (ADDITIVE) =====================
-    # If previous_data is a wrapper/stub missing rebuild essentials, rehydrate from HistoryFull.
-    try:
-        def _has_rebuild_essentials(d: dict) -> bool:
-            if not isinstance(d, dict):
-                return False
-            if isinstance(d.get("metric_schema_frozen"), dict) and d["metric_schema_frozen"]:
-                return True
-            pr = d.get("primary_response")
-            if isinstance(pr, dict) and isinstance(pr.get("metric_schema_frozen"), dict) and pr["metric_schema_frozen"]:
-                return True
-            return False
-
-        def _get_full_store_ref(d: dict) -> str:
-            if not isinstance(d, dict):
-                return ""
-            # wrappers commonly store this at top-level
-            ref = d.get("full_store_ref") or d.get("full_payload_ref")
-            if ref:
-                return ref
-            sw = d.get("_sheet_write")
-            if isinstance(sw, dict):
-                return sw.get("full_store_ref") or ""
-            return ""
-
-        if not _has_rebuild_essentials(previous_data):
-            ref = _get_full_store_ref(previous_data)
-            if isinstance(ref, str) and ref.startswith("gsheet:HistoryFull:"):
-                analysis_id = ref.split(":", 2)[2] if len(ref.split(":")) >= 3 else ""
-                if analysis_id:
-                    full = load_full_history_payload_from_sheet(analysis_id, worksheet_title="HistoryFull")
-                    if isinstance(full, dict) and full:
-                        previous_data = full
-    except Exception:
-        pass
-    # =================== END PATCH HF_FORCE1 (ADDITIVE) ===================
-
-    # ===================== PATCH HF_FORCE2 (ADDITIVE) =====================
-    # Fallback: if no full_store_ref exists, use _sheet_id (analysis_id) to load from HistoryFull.
-    # Rationale:
-    # - Your History table lives on Sheet1 and stores row[0] as analysis id
-    # - get_history() sets data["_sheet_id"] = row[0]
-    # - HistoryFull is typically keyed by that same analysis id
-    try:
-        def _get_analysis_id_any(d: dict) -> str:
-            if not isinstance(d, dict):
-                return ""
-            # common places we already populate
-            aid = d.get("_sheet_id") or d.get("analysis_id") or d.get("id")
-            if aid:
-                return str(aid)
-            pr = d.get("primary_response")
-            if isinstance(pr, dict):
-                aid2 = pr.get("_sheet_id") or pr.get("analysis_id") or pr.get("id")
-                if aid2:
-                    return str(aid2)
-            return ""
-
-        # Only do this if essentials are still missing
-        if not _has_rebuild_essentials(previous_data):
-            aid = _get_analysis_id_any(previous_data)
-            if aid:
-                full = load_full_history_payload_from_sheet(aid, worksheet_title="HistoryFull")
-                if isinstance(full, dict) and full:
-                    previous_data = full
-    except Exception:
-        pass
-    # =================== END PATCH HF_FORCE2 (ADDITIVE) ===================
-
 
 # ---------- Use your existing deterministic metric diff helper ----------
     # Pull baseline metrics from previous_data
