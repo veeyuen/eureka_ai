@@ -12754,6 +12754,39 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =================== END PATCH HF_FORCE1 (ADDITIVE) ===================
 
+    # ===================== PATCH HF_FORCE2 (ADDITIVE) =====================
+    # Fallback: if no full_store_ref exists, use _sheet_id (analysis_id) to load from HistoryFull.
+    # Rationale:
+    # - Your History table lives on Sheet1 and stores row[0] as analysis id
+    # - get_history() sets data["_sheet_id"] = row[0]
+    # - HistoryFull is typically keyed by that same analysis id
+    try:
+        def _get_analysis_id_any(d: dict) -> str:
+            if not isinstance(d, dict):
+                return ""
+            # common places we already populate
+            aid = d.get("_sheet_id") or d.get("analysis_id") or d.get("id")
+            if aid:
+                return str(aid)
+            pr = d.get("primary_response")
+            if isinstance(pr, dict):
+                aid2 = pr.get("_sheet_id") or pr.get("analysis_id") or pr.get("id")
+                if aid2:
+                    return str(aid2)
+            return ""
+
+        # Only do this if essentials are still missing
+        if not _has_rebuild_essentials(previous_data):
+            aid = _get_analysis_id_any(previous_data)
+            if aid:
+                full = load_full_history_payload_from_sheet(aid, worksheet_title="HistoryFull")
+                if isinstance(full, dict) and full:
+                    previous_data = full
+    except Exception:
+        pass
+    # =================== END PATCH HF_FORCE2 (ADDITIVE) ===================
+
+
 # ---------- Use your existing deterministic metric diff helper ----------
     # Pull baseline metrics from previous_data
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
