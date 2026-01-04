@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL_FIX2_ANCHOR_REBUILD"
+CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL_FIX3_ANCHOR_DISPATCH_FIX3"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -13018,21 +13018,18 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             # PATCH RMS_MIN2 (ADDITIVE): prefer schema-only rebuild hook when available
             # =========================
             # ===================== PATCH RMS_DISPATCH1 (ADDITIVE) =====================
-            # Prefer anchor-aware rebuild when metric_anchors exist; otherwise use schema-only; then legacy hook.
-            try:
-                _anchors = (prev_response.get("metric_anchors") or (prev_response.get("primary_response") or {}).get("metric_anchors") or (prev_response.get("results") or {}).get("metric_anchors"))
-            except Exception:
-                _anchors = None
-            fn_anchor = globals().get("rebuild_metrics_from_snapshots_with_anchors")
-            fn_schema = globals().get("rebuild_metrics_from_snapshots_schema_only")
-            fn_legacy = globals().get("rebuild_metrics_from_snapshots")
-            if isinstance(_anchors, dict) and _anchors and callable(fn_anchor):
-                fn_rebuild = fn_anchor
-            elif callable(fn_schema):
-                fn_rebuild = fn_schema
+            # Prefer anchor-aware rebuild when anchors exist; otherwise schema-only; otherwise legacy.
+            prev_response_for_dispatch = _coerce_prev_response_any(previous_data)
+            anchors_for_dispatch = _get_metric_anchors_any(prev_response_for_dispatch)
+
+            fn_rebuild = None
+            if anchors_for_dispatch and callable(globals().get("rebuild_metrics_from_snapshots_with_anchors")):
+                fn_rebuild = globals().get("rebuild_metrics_from_snapshots_with_anchors")
+            elif callable(globals().get("rebuild_metrics_from_snapshots_schema_only")):
+                fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only")
             else:
-                fn_rebuild = fn_legacy
-            # =================== END PATCH RMS_DISPATCH1 (ADDITIVE) ===================
+                fn_rebuild = globals().get("rebuild_metrics_from_snapshots")
+# =================== END PATCH RMS_DISPATCH1 (ADDITIVE) ===================
             if callable(fn_rebuild):
                 # =========================
                 # PATCH (ADDITIVE): pass web_context through to rebuild hook
@@ -13114,6 +13111,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         output.setdefault("debug", {})
         output["debug"]["rebuild_fn"] = getattr(fn_rebuild, "__name__", "None")
+
+# ===================== PATCH RMS_DISPATCH3 (ADDITIVE) =====================
+        # Loud warning if anchors exist but we did NOT select anchor-aware rebuild.
+        try:
+            if anchors_for_dispatch and getattr(fn_rebuild, "__name__", "") != "rebuild_metrics_from_snapshots_with_anchors":
+                output["debug"]["rebuild_dispatch_warning"] = "metric_anchors present but anchor-aware rebuild not selected"
+        except Exception:
+            pass
+# =================== END PATCH RMS_DISPATCH3 (ADDITIVE) ===================
         output["debug"]["rebuilt_metric_count"] = len(rebuilt_metrics) if isinstance(rebuilt_metrics, dict) else 0
     except Exception:
         pass
@@ -15634,3 +15640,38 @@ def apply_schema_validation_and_evidence_gating(primary_data: dict) -> dict:
 
 if __name__ == "__main__":
     main()
+
+
+# ===================== PATCH RMS_DISPATCH2 (ADDITIVE) =====================
+def _get_metric_anchors_any(prev_response: dict) -> dict:
+    """Best-effort retrieval of metric_anchors from any plausible location (additive helper)."""
+    try:
+        if not isinstance(prev_response, dict):
+            return {}
+        for path in (
+            ("metric_anchors",),
+            ("results", "metric_anchors"),
+            ("primary_response", "metric_anchors"),
+            ("primary_response", "results", "metric_anchors"),
+        ):
+            cur = prev_response
+            ok = True
+            for k in path:
+                if isinstance(cur, dict) and k in cur:
+                    cur = cur[k]
+                else:
+                    ok = False
+                    break
+            if ok and isinstance(cur, dict) and cur:
+                return cur
+        return {}
+    except Exception:
+        return {}
+
+def _coerce_prev_response_any(previous_data):
+    """Normalize previous_data into a dict-shaped 'prev_response' for rebuild dispatch (additive helper)."""
+    try:
+        return previous_data if isinstance(previous_data, dict) else {}
+    except Exception:
+        return {}
+# =================== END PATCH RMS_DISPATCH2 (ADDITIVE) ===================
