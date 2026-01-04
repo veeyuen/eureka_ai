@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_HF1"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_HF1_A4_RMS1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -1253,6 +1253,38 @@ def rebuild_metrics_from_snapshots(
                         baseline_sources_cache = _full
     except Exception:
         pass
+
+    # =========================
+    # PATCH RMS1 (ADDITIVE): rehydrate when baseline_sources_cache is a list but missing extracted_numbers
+    # Why:
+    # - History/sheets-safe rows may keep baseline_sources_cache as a list but strip bulky extracted_numbers.
+    # - Evolution can report "valid snapshots exist" yet rebuild yields empty because candidates are absent.
+    # Fix:
+    # - If extracted_numbers are missing/empty across the list, attempt to load full snapshots from the snapshot store
+    #   using prev_response.snapshot_store_ref / prev_response.source_snapshot_hash.
+    # =========================
+    try:
+        _has_any_numbers = False
+        if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            for _sr in baseline_sources_cache:
+                if isinstance(_sr, dict) and isinstance(_sr.get("extracted_numbers"), list) and _sr.get("extracted_numbers"):
+                    _has_any_numbers = True
+                    break
+        if (isinstance(baseline_sources_cache, list) and baseline_sources_cache) and (not _has_any_numbers):
+            store_ref = prev_response.get("snapshot_store_ref") or (prev_response.get("results", {}) or {}).get("snapshot_store_ref")
+            _hash = prev_response.get("source_snapshot_hash") or (prev_response.get("results", {}) or {}).get("source_snapshot_hash")
+            if store_ref and isinstance(store_ref, str) and store_ref.strip().startswith("gsheet:Snapshots"):
+                _full = load_full_snapshots_from_sheet(store_ref)
+                if isinstance(_full, list) and _full:
+                    baseline_sources_cache = _full
+            elif _hash:
+                _full = load_full_snapshots_from_sheet(_hash)
+                if isinstance(_full, list) and _full:
+                    baseline_sources_cache = _full
+    except Exception:
+        pass
+    # =========================
+
 
     prev_can = prev_response.get("primary_metrics_canonical") or {}
     if not isinstance(prev_can, dict):
@@ -12736,7 +12768,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 # =========================
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
                 # =========================
-        except Exception:
+        except Exception as e:
+            try:
+                # =========================
+                # PATCH RMS2 (ADDITIVE): preserve rebuild exception for debugging
+                # =========================
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"]["rebuild_metrics_exception"] = str(e)
+                # =========================
+            except Exception:
+                pass
             current_metrics = {}
     # =====================================================================
 
@@ -12916,6 +12958,29 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =====================================================================
 
+
+
+    # =========================
+    # PATCH A4 (ADDITIVE): deterministic ordering of extracted candidates
+    # Why:
+    # - Prevents jitter between identical runs from regex iteration or incidental list append order.
+    # - Stabilizes downstream anchor hashing, snapshots, and diffing.
+    # =========================
+    try:
+        if isinstance(out, list) and out:
+            out = sorted(
+                out,
+                key=lambda x: (
+                    str((x or {}).get("anchor_hash") or ""),
+                    int((x or {}).get("start_idx") or 0),
+                    str((x or {}).get("raw") or ""),
+                    str((x or {}).get("unit") or ""),
+                    str((x or {}).get("value_norm") if (x or {}).get("value_norm") is not None else "")
+                )
+            )
+    except Exception:
+        pass
+    # =========================
 
     return output
 
