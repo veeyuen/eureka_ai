@@ -12656,9 +12656,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     if not isinstance(current_metrics, dict) or not current_metrics:
         try:
             # =========================
-# PATCH RMS_MIN2 (ADDITIVE): prefer schema-only rebuild hook when available
-# =========================
-fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
+            # PATCH RMS_MIN2 (ADDITIVE): prefer schema-only rebuild hook when available
+            # =========================
+            fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
             if callable(fn_rebuild):
                 # =========================
                 # PATCH (ADDITIVE): pass web_context through to rebuild hook
