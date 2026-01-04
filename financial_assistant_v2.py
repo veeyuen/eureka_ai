@@ -74,10 +74,10 @@ from bs4 import BeautifulSoup
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
-# =========================
+            # =========================
 # VERSION STAMP (ADDITIVE)
-# =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_RMS_MIN1"
+            # =========================
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_RMS_MIN2_HF5_fixindent"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -280,7 +280,7 @@ def end_state_validation_harness(baseline_analysis: dict, evolution_output: dict
     return report
 # =====================================================================
 
-# =========================
+            # =========================
 
 
 # =========================================================
@@ -4631,12 +4631,12 @@ class EvolutionDiff:
 # ------------------------------------
 
 # Metric type definitions with aliases
-# =========================
+            # =========================
 # PATCH MR1 (ADDITIVE): de-ambiguate "sales" so unit-sales doesn't map to Revenue
 # - Remove standalone "sales" from Revenue aliases (too ambiguous)
 # - Add money-explicit revenue phrases instead ("sales revenue", "sales value", etc.)
 # - Add a couple of volume-style aliases under units_sold ("sales volume", "volume sales")
-# =========================
+            # =========================
 
 METRIC_REGISTRY = {
     # Market Size metrics
@@ -4812,9 +4812,9 @@ METRIC_REGISTRY = {
     }
 }
 
-# =========================
+            # =========================
 # END PATCH MR1
-# =========================
+            # =========================
 
 # Year extraction pattern
 YEAR_PATTERN = re.compile(r'(20\d{2})')
@@ -9987,11 +9987,11 @@ def compute_source_snapshot_hash(baseline_sources_cache: list) -> str:
 #   source-anchored evolution WITHOUT re-fetching or heuristic matching.
 # =====================================================================
 
-# =========================
+            # =========================
 # PATCH A (ADD): Snapshot hash v2 (stable, content-weighted)
 # - Keeps v1 compute_source_snapshot_hash() for backward compatibility.
 # - v2 includes url + status + fingerprint + (anchor_hash,value_norm,unit_tag) tuples (bounded) for stronger identity.
-# =========================
+            # =========================
 def compute_source_snapshot_hash_v2(baseline_sources_cache: list, max_items_per_source: int = 120) -> str:
     import hashlib
     import json
@@ -10283,6 +10283,82 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
         return data if isinstance(data, list) else []
     except Exception:
         return []
+
+# =====================================================================
+# PATCH HF4 (ADDITIVE): HistoryFull payload rehydration support
+# Why:
+# - Evolution may receive a sheets-safe wrapper that omits primary_response,
+#   metric_schema_frozen, metric_anchors, etc.
+# - When wrapper includes full_store_ref ("gsheet:HistoryFull:<analysis_id>"),
+#   we can deterministically load the full analysis payload (no re-fetch).
+# Notes:
+# - Additive only. Safe no-op if sheet/tab not present.
+# =====================================================================
+def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str = "HistoryFull") -> dict:
+    """Load and reassemble a full analysis payload dict from HistoryFull worksheet."""
+    import json, hashlib
+    if not analysis_id:
+        return {}
+    try:
+        ss = get_google_spreadsheet()
+        ws = ss.worksheet(worksheet_title) if ss else None
+        if not ws:
+            return {}
+
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return {}
+
+        header = values[0]
+        def _idx(name):
+            try:
+                return header.index(name)
+            except Exception:
+                return None
+
+        i_id = _idx("analysis_id")
+        i_part = _idx("part_index")
+        i_total = _idx("total_parts")
+        i_payload = _idx("payload_part")
+        i_sha = _idx("sha256")
+
+        if i_id is None or i_part is None or i_total is None or i_payload is None:
+            return {}
+
+        rows = []
+        expected_sha = None
+        for r in values[1:]:
+            if not r or i_id >= len(r):
+                continue
+            if str(r[i_id]).strip() != str(analysis_id).strip():
+                continue
+            try:
+                part_index = int(r[i_part]) if i_part < len(r) else 0
+            except Exception:
+                part_index = 0
+            if i_sha is not None and i_sha < len(r):
+                if r[i_sha]:
+                    expected_sha = r[i_sha]
+            payload_part = r[i_payload] if i_payload < len(r) else ""
+            rows.append((part_index, payload_part))
+
+        if not rows:
+            return {}
+
+        rows.sort(key=lambda x: x[0])
+        payload = "".join([p for _, p in rows])
+
+        if expected_sha:
+            sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            if sha != expected_sha:
+                return {}
+
+        data = json.loads(payload)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+# =====================================================================
+
 # =====================================================================
 
 
@@ -12432,9 +12508,62 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         return output
 
-    # ---------- Use your existing deterministic metric diff helper ----------
+    # =====================================================================
+    # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
+    # Why:
+    # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
+    #   metric_schema_frozen, metric_anchors, etc.
+    # - If a full_store_ref pointer exists, load the full payload deterministically.
+    # =====================================================================
+    _prev_rehydrated = False
+    _prev_rehydrated_ref = ""
+    try:
+        if isinstance(previous_data, dict):
+            # Determine if we are missing rebuild essentials
+            _pr = previous_data.get("primary_response")
+            _need = (not isinstance(_pr, dict)) or (not _pr) or (not isinstance(_pr.get("metric_schema_frozen"), dict))
+
+            if _need:
+                _ref = previous_data.get("full_store_ref")                     or (previous_data.get("results") or {}).get("full_store_ref")                     or (isinstance(_pr, dict) and _pr.get("full_store_ref"))                     or ""
+
+                if isinstance(_ref, str) and _ref.startswith("gsheet:"):
+                    parts = _ref.split(":")
+                    _ws_title = parts[1] if len(parts) > 1 and parts[1] else "HistoryFull"
+                    _aid = parts[2] if len(parts) > 2 else ""
+                    full = load_full_history_payload_from_sheet(_aid, worksheet_title=_ws_title) if _aid else {}
+                    if isinstance(full, dict) and full:
+                        previous_data = full
+                        _prev_rehydrated = True
+                        _prev_rehydrated_ref = _ref
+    except Exception:
+        pass
+
+    # Attach debug flags (harmless; helps diagnose missing schema)
+    try:
+        if _prev_rehydrated:
+            output["previous_data_rehydrated"] = True
+            output["previous_data_full_store_ref"] = _prev_rehydrated_ref
+    except Exception:
+        pass
+    # =====================================================================
+
+# ---------- Use your existing deterministic metric diff helper ----------
     # Pull baseline metrics from previous_data
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
+    # =====================================================================
+    # PATCH HF6 (ADDITIVE): tolerate previous_data being the primary_response itself
+    # Why:
+    # - Some callers persist only the inner primary_response dict as "previous_data".
+    # - In that case, previous_data won't have a "primary_response" key.
+    # =====================================================================
+    try:
+        if (not isinstance(prev_response, dict) or not prev_response) and isinstance(previous_data, dict):
+            if isinstance(previous_data.get("primary_metrics_canonical"), dict) or isinstance(previous_data.get("metric_schema_frozen"), dict):
+                prev_response = previous_data
+    except Exception:
+        pass
+    # =====================================================================
+
     prev_metrics = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
 
     # =====================================================================
