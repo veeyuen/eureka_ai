@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_PATCHED_FIX1_SV1_EG1"
+CODE_VERSION = "financial_assistant_v7_41_PATCHED_UI_FIX2"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -14742,6 +14742,7 @@ def main():
         query = st.text_input(
             "Enter your question about markets, industries, finance, or economics:",
             placeholder="e.g., What is the size of the global EV battery market?"
+            key="new_analysis_query",  # PATCH UI1 (ADDITIVE): unique Streamlit key
         )
 
         col_opt1, col_opt2 = st.columns(2)
@@ -23738,6 +23739,7 @@ def main():
         query = st.text_input(
             "Enter your question about markets, industries, finance, or economics:",
             placeholder="e.g., What is the size of the global EV battery market?"
+            key="new_analysis_query",  # PATCH UI1 (ADDITIVE): unique Streamlit key
         )
 
         col_opt1, col_opt2 = st.columns(2)
@@ -24143,8 +24145,8 @@ def main():
                     st.error("❌ Analysis failed")
 
 if __name__ == "__main__":
-    main()
+    _yureeka_call_main_once()  # PATCH UI2 (ADDITIVE): prevent double Streamlit render
 
 
 if __name__ == "__main__":
-    main()
+    _yureeka_call_main_once()  # PATCH UI2 (ADDITIVE): prevent double Streamlit render
