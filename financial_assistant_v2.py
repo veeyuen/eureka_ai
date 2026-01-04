@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_HF1_A4_RMS1"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_RMS_MIN1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -966,68 +966,6 @@ def add_to_history(analysis: dict) -> bool:
         payload_json = _try_make_sheet_json(payload_for_sheets)
 
         # =====================================================================
-        # PATCH HF2 (ADDITIVE, REQUIRED): store full History payload when Sheets cell is truncated/wrapped
-        # - If payload_json is a Sheets-safe wrapper/preview (or otherwise truncated),
-        #   persist the full analysis JSON to HistoryFull and add a pointer.
-        # - This is crucial for drift=0 rebuild, since evolution needs rebuild essentials
-        #   even when History cells are summarized.
-        # =====================================================================
-        try:
-            # Ensure analysis_id is also present inside analysis payload (additive)
-            try:
-                if isinstance(analysis, dict):
-                    analysis.setdefault("analysis_id", analysis_id)
-            except Exception:
-                pass
-
-            _needs_full = False
-            _pj = payload_json if isinstance(payload_json, str) else ""
-            if _pj and ('"_sheets_safe"' in _pj or '"truncated"' in _pj):
-                _needs_full = True
-            else:
-                # Fallback: if full analysis JSON exceeds the Sheets cell limit, store full.
-                try:
-                    _full_s = json.dumps(analysis, ensure_ascii=False, separators=(",", ":"), default=str)
-                    if isinstance(_full_s, str) and len(_full_s) > SHEETS_CELL_LIMIT:
-                        _needs_full = True
-                except Exception:
-                    pass
-
-            if _needs_full:
-                _full_ref = ""
-                try:
-                    _full_ref = store_full_history_payload_to_sheet(analysis, analysis_id, worksheet_title="HistoryFull")
-                except Exception:
-                    _full_ref = ""
-
-                if _full_ref:
-                    # Add pointers in both analysis (in-memory) and payload_for_sheets (written)
-                    try:
-                        if isinstance(analysis, dict):
-                            analysis["full_store_ref"] = analysis.get("full_store_ref") or _full_ref
-                            analysis.setdefault("results", {})
-                            if isinstance(analysis["results"], dict):
-                                analysis["results"]["full_store_ref"] = analysis["results"].get("full_store_ref") or _full_ref
-                    except Exception:
-                        pass
-
-                    try:
-                        if isinstance(payload_for_sheets, dict):
-                            payload_for_sheets["full_store_ref"] = payload_for_sheets.get("full_store_ref") or _full_ref
-                            payload_for_sheets.setdefault("results", {})
-                            if isinstance(payload_for_sheets["results"], dict):
-                                payload_for_sheets["results"]["full_store_ref"] = payload_for_sheets["results"].get("full_store_ref") or _full_ref
-
-                            # Regenerate payload_json to ensure the pointer is actually written
-                            payload_json = _try_make_sheet_json(payload_for_sheets)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        # =====================================================================
-
-
-        # =====================================================================
         # PATCH A5 (BUGFIX, REQUIRED): never write invalid JSON to Sheets
         # - Previous hard truncation produced non-JSON (prefix + random suffix),
         #   causing history loaders (json.loads) to skip the row entirely.
@@ -1253,38 +1191,6 @@ def rebuild_metrics_from_snapshots(
                         baseline_sources_cache = _full
     except Exception:
         pass
-
-    # =========================
-    # PATCH RMS1 (ADDITIVE): rehydrate when baseline_sources_cache is a list but missing extracted_numbers
-    # Why:
-    # - History/sheets-safe rows may keep baseline_sources_cache as a list but strip bulky extracted_numbers.
-    # - Evolution can report "valid snapshots exist" yet rebuild yields empty because candidates are absent.
-    # Fix:
-    # - If extracted_numbers are missing/empty across the list, attempt to load full snapshots from the snapshot store
-    #   using prev_response.snapshot_store_ref / prev_response.source_snapshot_hash.
-    # =========================
-    try:
-        _has_any_numbers = False
-        if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
-            for _sr in baseline_sources_cache:
-                if isinstance(_sr, dict) and isinstance(_sr.get("extracted_numbers"), list) and _sr.get("extracted_numbers"):
-                    _has_any_numbers = True
-                    break
-        if (isinstance(baseline_sources_cache, list) and baseline_sources_cache) and (not _has_any_numbers):
-            store_ref = prev_response.get("snapshot_store_ref") or (prev_response.get("results", {}) or {}).get("snapshot_store_ref")
-            _hash = prev_response.get("source_snapshot_hash") or (prev_response.get("results", {}) or {}).get("source_snapshot_hash")
-            if store_ref and isinstance(store_ref, str) and store_ref.strip().startswith("gsheet:Snapshots"):
-                _full = load_full_snapshots_from_sheet(store_ref)
-                if isinstance(_full, list) and _full:
-                    baseline_sources_cache = _full
-            elif _hash:
-                _full = load_full_snapshots_from_sheet(_hash)
-                if isinstance(_full, list) and _full:
-                    baseline_sources_cache = _full
-    except Exception:
-        pass
-    # =========================
-
 
     prev_can = prev_response.get("primary_metrics_canonical") or {}
     if not isinstance(prev_can, dict):
@@ -1902,6 +1808,198 @@ def rebuild_metrics_from_snapshots(
 
 
 
+
+# =====================================================================
+# PATCH RMS_MIN1 (ADDITIVE): Minimal schema-driven rebuild from snapshots
+# ---------------------------------------------------------------------
+# Goal:
+#   - Provide a deterministic, evolution-safe metric rebuild that uses ONLY:
+#       (a) baseline_sources_cache snapshots (and their extracted_numbers)
+#       (b) frozen metric schema (metric_schema_frozen)
+#   - No re-fetch, no LLM inference, no heuristic "best guess" beyond schema fields.
+#
+# Contract:
+#   - Returns a dict shaped like primary_metrics_canonical:
+#       { canonical_key: { ...metric fields... } }
+#   - Deterministic tie-break ordering.
+# =====================================================================
+
+def rebuild_metrics_from_snapshots_schema_only(
+    prev_response: dict,
+    baseline_sources_cache: list,
+    web_context: dict = None
+) -> dict:
+    """Schema-driven deterministic rebuild from cached snapshots only.
+
+    This is intentionally minimal:
+      - It does NOT attempt free-form metric discovery.
+      - It ONLY populates metrics declared in the frozen schema.
+      - Candidate selection is driven by schema fields (keywords + unit family/tag).
+      - Deterministic sorting ensures stable output ordering.
+
+    Returns:
+      Dict[str, Dict] shaped like primary_metrics_canonical.
+    """
+    import re
+
+    # -------------------------
+    # Resolve frozen schema (supports multiple storage locations)
+    # -------------------------
+    schema = None
+    try:
+        if isinstance(prev_response, dict):
+            if isinstance(prev_response.get("metric_schema_frozen"), dict):
+                schema = prev_response.get("metric_schema_frozen")
+            elif isinstance(prev_response.get("primary_response"), dict) and isinstance(prev_response["primary_response"].get("metric_schema_frozen"), dict):
+                schema = prev_response["primary_response"].get("metric_schema_frozen")
+            elif isinstance(prev_response.get("results"), dict) and isinstance(prev_response["results"].get("metric_schema_frozen"), dict):
+                schema = prev_response["results"].get("metric_schema_frozen")
+    except Exception:
+        schema = None
+
+    if not isinstance(schema, dict) or not schema:
+        return {}
+
+    # -------------------------
+    # Collect candidates from snapshots (no re-fetch)
+    # -------------------------
+    candidates = []
+    if isinstance(baseline_sources_cache, list):
+        for src in baseline_sources_cache:
+            if not isinstance(src, dict):
+                continue
+            nums = src.get("extracted_numbers")
+            if not isinstance(nums, list) or not nums:
+                continue
+            for n in nums:
+                if not isinstance(n, dict):
+                    continue
+                # Filter junk deterministically (schema-driven rebuild doesn't want nav chrome)
+                if n.get("is_junk") is True:
+                    continue
+                # Normalize a few fields to ensure stable downstream access
+                c = dict(n)
+                if not c.get("source_url"):
+                    c["source_url"] = src.get("url", "") or src.get("source_url", "") or ""
+                candidates.append(c)
+
+    # Deterministic candidate ordering (no set/dict iteration surprises)
+    def _cand_sort_key(c: dict):
+        return (
+            str(c.get("source_url") or ""),
+            str(c.get("anchor_hash") or ""),
+            int(c.get("start_idx") or 0),
+            str(c.get("raw") or ""),
+            str(c.get("unit_tag") or ""),
+            str(c.get("unit_family") or ""),
+            float(c.get("value_norm") or c.get("value") or 0.0),
+        )
+
+    candidates.sort(key=_cand_sort_key)
+
+    if not candidates:
+        return {}
+
+    # -------------------------
+    # Deterministic schema-driven selection
+    # -------------------------
+    def _norm_text(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").lower()).strip()
+
+    out = {}
+
+    for canonical_key in sorted(schema.keys()):
+        spec = schema.get(canonical_key) or {}
+        if not isinstance(spec, dict):
+            continue
+
+        spec_keywords = spec.get("keywords") or []
+        if not isinstance(spec_keywords, list):
+            spec_keywords = []
+        spec_keywords_norm = [str(k).lower().strip() for k in spec_keywords if str(k).strip()]
+
+        spec_unit_tag = str(spec.get("unit_tag") or spec.get("unit") or "").strip()
+        spec_unit_family = str(spec.get("unit_family") or "").strip()
+
+        # Score candidates by schema keyword hits, then filter by unit constraints if present.
+        best = None
+        best_key = None
+
+        for c in candidates:
+            ctx = _norm_text(c.get("context_snippet") or "")
+            if not ctx:
+                continue
+
+            # Keyword hits: schema-driven (no external heuristics)
+            hits = 0
+            if spec_keywords_norm:
+                for kw in spec_keywords_norm:
+                    if kw and kw in ctx:
+                        hits += 1
+
+            if spec_keywords_norm and hits == 0:
+                continue
+
+            # Unit constraints (only if schema declares them)
+            if spec_unit_family:
+                if str(c.get("unit_family") or "").strip() != spec_unit_family:
+                    # allow a unit_tag-only match when family is missing in candidate
+                    if not (spec_unit_tag and str(c.get("unit_tag") or "").strip() == spec_unit_tag):
+                        continue
+
+            if spec_unit_tag:
+                # if a tag is specified, prefer exact tag matches
+                if str(c.get("unit_tag") or "").strip() != spec_unit_tag:
+                    # allow family match when tag differs
+                    if not (spec_unit_family and str(c.get("unit_family") or "").strip() == spec_unit_family):
+                        continue
+
+            # Deterministic tie-break:
+            #   (-hits, then stable candidate identity tuple)
+            tie = (-hits,) + _cand_sort_key(c)
+            if best is None or tie < best_key:
+                best = c
+                best_key = tie
+
+        if not isinstance(best, dict):
+            continue
+
+        # Emit a minimal canonical metric row (schema-driven, deterministic)
+        metric = {
+            "name": spec.get("name") or spec.get("canonical_id") or canonical_key,
+            "value": best.get("value"),
+            "unit": best.get("unit") or spec.get("unit") or "",
+            "unit_tag": best.get("unit_tag") or spec.get("unit_tag") or "",
+            "unit_family": best.get("unit_family") or spec.get("unit_family") or "",
+            "base_unit": best.get("base_unit") or best.get("unit_tag") or spec.get("unit_tag") or "",
+            "multiplier_to_base": best.get("multiplier_to_base") if best.get("multiplier_to_base") is not None else 1.0,
+            "value_norm": best.get("value_norm") if best.get("value_norm") is not None else best.get("value"),
+            "canonical_id": spec.get("canonical_id") or spec.get("canonical_key") or canonical_key,
+            "canonical_key": canonical_key,
+            "dimension": spec.get("dimension") or "",
+            "original_name": spec.get("name") or "",
+            "geo_scope": "unknown",
+            "geo_name": "",
+            "is_proxy": False,
+            "proxy_type": "",
+            "provenance": {
+                "method": "schema_keyword_match",
+                "best_candidate": {
+                    "raw": best.get("raw"),
+                    "source_url": best.get("source_url"),
+                    "context_snippet": best.get("context_snippet"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "start_idx": best.get("start_idx"),
+                    "end_idx": best.get("end_idx"),
+                },
+            },
+        }
+
+        out[canonical_key] = metric
+
+    return out
+
+
 def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
     """Load analysis history from Google Sheet"""
     sheet = get_google_sheet()
@@ -1946,55 +2044,7 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
 
 
                     # =====================================================================
-
-                    # =====================================================================
-                    # PATCH HF3 (ADDITIVE, REQUIRED): rehydrate full History payload when wrapper includes full_store_ref
-                    # - If History row contains a Sheets-safe wrapper/preview but has a pointer to HistoryFull,
-                    #   load the full JSON so downstream consumers (evolution, regression harness) have
-                    #   rebuild essentials (metric_schema_frozen, metric_anchors, snapshot refs, etc.).
-                    # =====================================================================
-                    try:
-                        if isinstance(data, dict):
-                            _fsr = data.get("full_store_ref") or data.get("results", {}).get("full_store_ref")
-                            _is_wrapped = bool(data.get("_sheets_safe") is True or data.get("_sheet_safe_wrapper") is True)
-                            _is_trunc = False
-                            try:
-                                sw = data.get("_sheet_write") or {}
-                                if isinstance(sw, dict) and sw.get("truncated") is True:
-                                    _is_trunc = True
-                            except Exception:
-                                pass
-
-                            if _fsr and (_is_wrapped or _is_trunc):
-                                _analysis_id = ""
-                                if isinstance(_fsr, str) and _fsr.startswith("gsheet:"):
-                                    parts = _fsr.split(":")
-                                    if len(parts) >= 3:
-                                        _analysis_id = parts[2]
-                                # Fallback: use row-stored id if present
-                                _analysis_id = _analysis_id or (data.get("analysis_id") or data.get("_analysis_id") or "")
-
-                                if _analysis_id:
-                                    _full = load_full_history_payload_from_sheet(_analysis_id, worksheet_title="HistoryFull")
-                                    if isinstance(_full, dict) and _full:
-                                        # Preserve wrapper flags for debugging
-                                        try:
-                                            _full["_history_rehydrated"] = True
-                                            _full["_history_rehydrated_from"] = _fsr
-                                            if isinstance(data.get("_sheet_write"), dict):
-                                                _full["_sheet_write"] = data.get("_sheet_write")
-                                            if data.get("_sheets_safe") is True:
-                                                _full["_sheets_safe"] = True
-                                            if data.get("_sheet_safe_wrapper") is True:
-                                                _full["_sheet_safe_wrapper"] = True
-                                        except Exception:
-                                            pass
-                                        data = _full
-                    except Exception:
-                        pass
-                    # =====================================================================
-
-# PATCH ES1G (ADDITIVE): rehydrate baseline_sources_cache from store ref
+                    # PATCH ES1G (ADDITIVE): rehydrate baseline_sources_cache from store ref
                     # - If Sheets row is a safe wrapper / summary but contains snapshot_store_ref,
                     #   load full snapshots so evolution can run anchor-first (no refetch).
                     # =====================================================================
@@ -10236,162 +10286,6 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
 # =====================================================================
 
 
-
-# =====================================================================
-# PATCH HF1 (ADDITIVE, REQUIRED FOR DRIFT=0): Full History payload persistence
-# - Problem: make_sheet_safe_json() may store a Sheets-safe wrapper/preview when
-#   payload exceeds single-cell limits. Evolution and regression tests may need
-#   rebuild essentials that are not in the preview.
-# - Solution: store the full analysis JSON in a dedicated worksheet ("HistoryFull")
-#   keyed by analysis_id, and store a pointer (full_store_ref) in the wrapper row.
-# - Design goals:
-#     * Additive only; does not alter existing History schema.
-#     * Deterministic chunking, ordering, and hashing.
-#     * Backward compatible: get_history() rehydrates only when pointer present.
-# =====================================================================
-
-def _ensure_historyfull_worksheet(spreadsheet, title: str = "HistoryFull"):
-    """Ensure a worksheet tab exists for full History payload storage."""
-    try:
-        if not spreadsheet:
-            return None
-        try:
-            ws = spreadsheet.worksheet(title)
-            return ws
-        except Exception:
-            ws = spreadsheet.add_worksheet(title=title, rows=2000, cols=8)
-            try:
-                ws.append_row(
-                    ["analysis_id", "part_index", "total_parts", "payload_json", "created_at", "code_version", "sha256"],
-                    value_input_option="RAW",
-                )
-            except Exception:
-                pass
-            return ws
-    except Exception:
-        return None
-
-
-def store_full_history_payload_to_sheet(analysis: dict, analysis_id: str, worksheet_title: str = "HistoryFull", chunk_chars: int = 45000) -> str:
-    """Store full analysis JSON to a dedicated worksheet tab in chunked rows.
-
-    Returns a ref string like: 'gsheet:HistoryFull:<analysis_id>'
-    """
-    import json, hashlib
-    if not analysis_id:
-        return ""
-    if not isinstance(analysis, dict):
-        return ""
-
-    try:
-        ss = get_google_spreadsheet()
-        ws = _ensure_historyfull_worksheet(ss, worksheet_title) if ss else None
-        if not ws:
-            return ""
-
-        # Stable, compact serialization
-        payload = json.dumps(analysis, ensure_ascii=False, separators=(",", ":"), default=str)
-        if not isinstance(payload, str) or not payload.strip():
-            return ""
-
-        sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        total_parts = (len(payload) + chunk_chars - 1) // chunk_chars
-
-        from datetime import datetime
-        created_at = datetime.utcnow().isoformat() + "Z"
-
-        code_version = ""
-        try:
-            code_version = globals().get("CODE_VERSION") or ""
-        except Exception:
-            code_version = ""
-
-        # Append rows in order (deterministic)
-        for part_index in range(total_parts):
-            chunk = payload[part_index * chunk_chars : (part_index + 1) * chunk_chars]
-            ws.append_row(
-                [analysis_id, str(part_index), str(total_parts), chunk, created_at, code_version, sha],
-                value_input_option="RAW",
-            )
-
-        return f"gsheet:{worksheet_title}:{analysis_id}"
-    except Exception:
-        return ""
-
-
-def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str = "HistoryFull") -> dict:
-    """Load and reassemble full analysis JSON dict from dedicated worksheet."""
-    import json, hashlib
-    if not analysis_id:
-        return {}
-    try:
-        ss = get_google_spreadsheet()
-        ws = ss.worksheet(worksheet_title) if ss else None
-        if not ws:
-            return {}
-
-        values = ws.get_all_values()
-        if not values or len(values) < 2:
-            return {}
-
-        header = values[0]
-        def _idx(name: str) -> int:
-            try:
-                return header.index(name)
-            except Exception:
-                return -1
-
-        i_id = _idx("analysis_id")
-        i_part = _idx("part_index")
-        i_total = _idx("total_parts")
-        i_payload = _idx("payload_json")
-        i_sha = _idx("sha256")
-
-        if i_id < 0 or i_part < 0 or i_payload < 0:
-            return {}
-
-        rows = []
-        expected_sha = ""
-        expected_total = None
-
-        for r in values[1:]:
-            try:
-                if i_id < len(r) and (r[i_id] or "").strip() == analysis_id:
-                    part_i = int((r[i_part] or "0").strip()) if i_part < len(r) else 0
-                    total_i = int((r[i_total] or "0").strip()) if (i_total >= 0 and i_total < len(r)) else None
-                    payload_i = r[i_payload] if i_payload < len(r) else ""
-                    sha_i = r[i_sha] if (i_sha >= 0 and i_sha < len(r)) else ""
-                    rows.append((part_i, payload_i))
-                    if sha_i:
-                        expected_sha = expected_sha or sha_i
-                    if total_i is not None:
-                        expected_total = expected_total or total_i
-            except Exception:
-                continue
-
-        if not rows:
-            return {}
-
-        rows.sort(key=lambda x: x[0])
-        payload = "".join([p for (_, p) in rows])
-
-        # Verify hash if present
-        if expected_sha:
-            sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            if sha != expected_sha:
-                return {}
-
-        # Optional: verify part count if present
-        if expected_total is not None and expected_total > 0:
-            if len(rows) != expected_total:
-                # allow partial reads but return empty to avoid inconsistent state
-                return {}
-
-        data = json.loads(payload)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
 def fingerprint_text(text: str) -> str:
     """Stable short fingerprint for fetched content (deterministic)."""
     if not text:
@@ -12761,24 +12655,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # =====================================================================
     if not isinstance(current_metrics, dict) or not current_metrics:
         try:
-            fn_rebuild = globals().get("rebuild_metrics_from_snapshots")
+            # =========================
+# PATCH RMS_MIN2 (ADDITIVE): prefer schema-only rebuild hook when available
+# =========================
+fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
             if callable(fn_rebuild):
                 # =========================
                 # PATCH (ADDITIVE): pass web_context through to rebuild hook
                 # =========================
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
                 # =========================
-        except Exception as e:
-            try:
-                # =========================
-                # PATCH RMS2 (ADDITIVE): preserve rebuild exception for debugging
-                # =========================
-                output.setdefault("debug", {})
-                if isinstance(output.get("debug"), dict):
-                    output["debug"]["rebuild_metrics_exception"] = str(e)
-                # =========================
-            except Exception:
-                pass
+        except Exception:
             current_metrics = {}
     # =====================================================================
 
@@ -12958,29 +12845,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =====================================================================
 
-
-
-    # =========================
-    # PATCH A4 (ADDITIVE): deterministic ordering of extracted candidates
-    # Why:
-    # - Prevents jitter between identical runs from regex iteration or incidental list append order.
-    # - Stabilizes downstream anchor hashing, snapshots, and diffing.
-    # =========================
-    try:
-        if isinstance(out, list) and out:
-            out = sorted(
-                out,
-                key=lambda x: (
-                    str((x or {}).get("anchor_hash") or ""),
-                    int((x or {}).get("start_idx") or 0),
-                    str((x or {}).get("raw") or ""),
-                    str((x or {}).get("unit") or ""),
-                    str((x or {}).get("value_norm") if (x or {}).get("value_norm") is not None else "")
-                )
-            )
-    except Exception:
-        pass
-    # =========================
 
     return output
 
