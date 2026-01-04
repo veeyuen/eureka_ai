@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_PATCHED_SHEETS_CACHE_FIX1"
+CODE_VERSION = "financial_assistant_v7_41_PATCHED_ANALYSIS_SV1_EG1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -6313,6 +6313,182 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
 # =========================================================
 # RANGE + SOURCE ATTRIBUTION (DETERMINISTIC, NO LLM)
 # =========================================================
+
+
+# =========================
+# PATCH SV1 (ADDITIVE): Schema validation helpers for drift-safe metric definitions
+# =========================
+
+def validate_metric_schema_frozen(metric_schema_frozen: dict) -> dict:
+    """Validate frozen schema for internal consistency (additive diagnostics)."""
+    out = {"ok": True, "errors": [], "warnings": [], "by_key": {}}
+    schema = metric_schema_frozen or {}
+
+    def _norm(s: str) -> str:
+        return (s or "").strip().lower()
+
+    if not isinstance(schema, dict):
+        return out
+
+    for ckey, s in schema.items():
+        if not isinstance(s, dict):
+            continue
+        dim = _norm(s.get("dimension"))
+        unit = (s.get("unit") or s.get("unit_tag") or "").strip()
+        unit_tag = (s.get("unit_tag") or unit or "").strip()
+        unit_family = _norm(s.get("unit_family"))
+        name = (s.get("name") or "").strip()
+        keywords = [str(k).lower() for k in (s.get("keywords") or []) if k is not None]
+
+        issues = {"errors": [], "warnings": []}
+
+        # Rule 1: currency dimension cannot have percent units
+        if dim in ("currency", "money", "revenue", "market_value"):
+            if "%" in unit or "%" in unit_tag:
+                issues["errors"].append("dimension=currency with unit=% is invalid; likely market share mislabeled as size.")
+
+        # Rule 2: percent-like dimensions should usually be percent unit
+        if dim in ("percent", "ratio", "share", "growth_rate", "cagr"):
+            if "%" not in unit_tag and "%" not in unit:
+                issues["warnings"].append("dimension=percent-like without % unit; check unit tagging.")
+
+        # Rule 3: unit_family consistency (soft)
+        if unit_family and dim:
+            if dim in ("currency", "money") and unit_family in ("percent", "ratio"):
+                issues["errors"].append("unit_family indicates percent/ratio but dimension indicates currency.")
+            if dim in ("percent", "ratio", "share", "growth_rate", "cagr") and unit_family in ("currency", "money"):
+                issues["errors"].append("unit_family indicates currency but dimension indicates percent-like.")
+
+        # Rule 4: CAGR keyword sanity (soft)
+        if "cagr" in _norm(name) or any("cagr" in k for k in keywords):
+            if any("share" in k for k in keywords):
+                issues["warnings"].append("CAGR schema contains 'share' keyword; may cause share values to satisfy CAGR metric.")
+
+        if issues["errors"] or issues["warnings"]:
+            out["by_key"][ckey] = issues
+            if issues["errors"]:
+                out["ok"] = False
+                for e in issues["errors"]:
+                    out["errors"].append({"canonical_key": ckey, "issue": e, "name": name, "unit": unit_tag, "dimension": dim})
+            for w in issues["warnings"]:
+                out["warnings"].append({"canonical_key": ckey, "issue": w, "name": name, "unit": unit_tag, "dimension": dim})
+
+    return out
+
+
+# =========================
+# PATCH EG1 (ADDITIVE): Evidence gating for canonical metrics
+# =========================
+
+def _compute_anchor_hash_safe(source_url: str, raw: str, context_snippet: str) -> str:
+    try:
+        fn = globals().get("compute_anchor_hash")
+        if callable(fn):
+            return fn(raw or "", context_snippet or "", source_url or "")
+    except Exception:
+        pass
+    return ""
+
+
+def ensure_metric_has_evidence(metric: dict) -> dict:
+    """Ensure metric has evidence list. Synthesizes from value_range.examples when available."""
+    if not isinstance(metric, dict):
+        return metric
+
+    ev = metric.get("evidence")
+    if isinstance(ev, list) and len(ev) > 0:
+        return metric
+
+    synthesized = []
+    vr = metric.get("value_range") or {}
+    examples = vr.get("examples") or []
+    if isinstance(examples, list) and examples:
+        for ex in examples[:5]:
+            if not isinstance(ex, dict):
+                continue
+            src = ex.get("source_url") or ex.get("url") or ""
+            raw = ex.get("raw") or ""
+            ctx = ex.get("context_snippet") or ex.get("context") or ""
+            ah = ex.get("anchor_hash") or _compute_anchor_hash_safe(src, raw, ctx)
+            synthesized.append({
+                "source_url": src,
+                "raw": raw,
+                "context_snippet": ctx,
+                "anchor_hash": ah,
+                "method": "value_range_examples",
+            })
+
+    if synthesized:
+        metric["evidence"] = synthesized
+        metric.setdefault("evidence_note", "Evidence synthesized from value_range examples (additive).")
+        return metric
+
+    # No evidence found: mark as proxy (do not remove to keep JSON stable)
+    metric["is_proxy"] = True
+    metric["proxy_type"] = (metric.get("proxy_type") or "evidence_missing")
+    metric["proxy_reason"] = (metric.get("proxy_reason") or "no_evidence_anchors_available")
+    metric["proxy_confidence"] = float(metric.get("proxy_confidence") or 0.2)
+    metric.setdefault("evidence", [])
+    return metric
+
+
+def enforce_evidence_gating(primary_metrics_canonical: dict) -> dict:
+    """Apply evidence gating to all canonical metrics (additive; does not remove entries)."""
+    if not isinstance(primary_metrics_canonical, dict):
+        return primary_metrics_canonical
+
+    gated = {}
+    for ckey, m in primary_metrics_canonical.items():
+        gated[ckey] = ensure_metric_has_evidence(m) if isinstance(m, dict) else m
+    return gated
+
+
+def apply_schema_validation_and_evidence_gating(primary_data: dict) -> dict:
+    """Additive post-pass: validate schema + gate canonical metrics for evidence."""
+    if not isinstance(primary_data, dict):
+        return primary_data
+
+    schema = primary_data.get("metric_schema_frozen") or {}
+    validation = validate_metric_schema_frozen(schema)
+    primary_data["schema_validation"] = validation
+
+    pmc = primary_data.get("primary_metrics_canonical") or {}
+    if isinstance(pmc, dict) and validation.get("by_key"):
+        for ckey, issues in validation.get("by_key", {}).items():
+            if ckey in pmc and isinstance(pmc[ckey], dict):
+                pmc[ckey].setdefault("schema_issues", issues)
+                if issues.get("errors"):
+                    pmc[ckey]["is_proxy"] = True
+                    pmc[ckey]["proxy_type"] = pmc[ckey].get("proxy_type") or "schema_conflict"
+                    pmc[ckey]["proxy_reason"] = pmc[ckey].get("proxy_reason") or "schema_validation_error"
+                    pmc[ckey]["proxy_confidence"] = float(pmc[ckey].get("proxy_confidence") or 0.15)
+        primary_data["primary_metrics_canonical"] = pmc
+
+    if primary_data.get("primary_metrics_canonical"):
+        primary_data["primary_metrics_canonical"] = enforce_evidence_gating(primary_data["primary_metrics_canonical"])
+
+    try:
+        pmc2 = primary_data.get("primary_metrics_canonical") or {}
+        total = len(pmc2) if isinstance(pmc2, dict) else 0
+        with_evidence = 0
+        proxied = 0
+        for _, mm in (pmc2.items() if isinstance(pmc2, dict) else []):
+            if isinstance(mm, dict):
+                if isinstance(mm.get("evidence"), list) and mm.get("evidence"):
+                    with_evidence += 1
+                if mm.get("is_proxy"):
+                    proxied += 1
+        primary_data["evidence_gating_summary"] = {
+            "total_metrics": total,
+            "metrics_with_evidence": with_evidence,
+            "metrics_marked_proxy": proxied,
+        }
+    except Exception:
+        pass
+
+    return primary_data
+
+
 
 def stable_json_hash(obj: Any) -> str:
     import hashlib, json
@@ -14862,6 +15038,16 @@ def main():
                         web_context,
                         metric_schema=(primary_data.get("metric_schema_frozen") or {}),
                     )
+
+                # =========================
+                # PATCH SV1/EG1 (ADDITIVE): validate frozen schema + enforce evidence gating (analysis-side)
+                # - Adds diagnostics under primary_data['schema_validation']
+                # - Ensures every canonical metric has evidence anchors or is marked as proxy
+                # =========================
+                try:
+                    primary_data = apply_schema_validation_and_evidence_gating(primary_data)
+                except Exception:
+                    pass
 
             except Exception:
                 pass
