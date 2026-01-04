@@ -10338,64 +10338,91 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
         if not ws:
             return []
 
-        # Fetch all values and filter (simple, deterministic). For large sheets, optimize later.
-        values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
+        # =====================================================================
+        # PATCH SNAPLOAD1 (ADDITIVE): cache-safe snapshot read fallback
+        # Why:
+        # - If a prior read hit quota / partial failure and we cached [], evolution
+        #   will permanently think "no snapshots exist" until cache clears.
+        # Behavior:
+        # - Try cached read first (fast)
+        # - If empty/too small, do ONE direct read to bypass stale empty cache
+        # =====================================================================
+        values = []
+        try:
+            values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
+        except Exception:
+            values = []
+
+        if not values or len(values) < 2:
+            # Direct retry (best-effort)
+            try:
+                direct = ws.get_all_values()
+                if direct and len(direct) >= 2:
+                    values = direct
+            except Exception:
+                pass
+        # =====================================================================
+        # END PATCH SNAPLOAD1 (ADDITIVE)
+        # =====================================================================
+
         if not values or len(values) < 2:
             return []
 
-        # Identify header indices
-        header = values[0]
-        def _idx(name):
-            try:
-                return header.index(name)
-            except Exception:
-                return None
-
-        i_hash = _idx("source_snapshot_hash")
-        i_part = _idx("part_index")
-        i_total = _idx("total_parts")
-        i_payload = _idx("payload_part")
-        i_sha = _idx("sha256")
-
-        if i_hash is None or i_part is None or i_total is None or i_payload is None:
+        header = values[0] or []
+        # Expect at least: source_snapshot_hash, part_index, total_parts, payload_part
+        try:
+            col_h = header.index("source_snapshot_hash")
+            col_i = header.index("part_index")
+            col_t = header.index("total_parts")
+            col_p = header.index("payload_part")
+            col_sha = header.index("sha256") if "sha256" in header else None
+        except Exception:
+            # If headers are missing/misaligned, bail safely
             return []
 
+        # Filter rows for this hash
         rows = []
-        expected_total = None
-        expected_sha = None
         for r in values[1:]:
-            if not r or i_hash >= len(r):
-                continue
-            if str(r[i_hash]).strip() != str(source_snapshot_hash).strip():
-                continue
             try:
-                part_index = int(r[i_part]) if i_part < len(r) else 0
+                if len(r) > col_h and r[col_h] == source_snapshot_hash:
+                    rows.append(r)
             except Exception:
-                part_index = 0
-            try:
-                expected_total = int(r[i_total]) if i_total < len(r) else expected_total
-            except Exception:
-                pass
-            if i_sha is not None and i_sha < len(r):
-                if r[i_sha]:
-                    expected_sha = r[i_sha]
-            payload_part = r[i_payload] if i_payload < len(r) else ""
-            rows.append((part_index, payload_part))
+                continue
 
         if not rows:
             return []
 
-        rows.sort(key=lambda x: x[0])
-        payload = "".join([p for _, p in rows])
+        # Deterministic sort by part_index
+        def _safe_int(x):
+            try:
+                return int(x)
+            except Exception:
+                return 0
+        rows.sort(key=lambda r: _safe_int(r[col_i] if len(r) > col_i else 0))
 
-        if expected_sha:
-            sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            if sha != expected_sha:
-                # integrity mismatch; refuse
-                return []
+        # Reassemble
+        payload_parts = []
+        for r in rows:
+            if len(r) > col_p:
+                payload_parts.append(r[col_p] or "")
+        payload = "".join(payload_parts)
 
-        data = json.loads(payload)
-        return data if isinstance(data, list) else []
+        # Optional integrity check
+        try:
+            if col_sha is not None and len(rows[0]) > col_sha:
+                expected = rows[0][col_sha] or ""
+                if expected:
+                    actual = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                    if actual != expected:
+                        return []
+        except Exception:
+            pass
+
+        try:
+            data = json.loads(payload)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
     except Exception:
         return []
 
