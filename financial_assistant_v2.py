@@ -74,10 +74,10 @@ from bs4 import BeautifulSoup
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
-# =========================
+            # =========================
 # VERSION STAMP (ADDITIVE)
-# =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_RMS_MIN2_HF5_fixindent_BSCNORM1_EARLY1"
+            # =========================
+CODE_VERSION = "financial_assistant_v7_41_PATCHED_SHEETS_CACHE"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -2009,7 +2009,21 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
 
     try:
         # Get all rows (skip header)
-        all_rows = sheet.get_all_values()[1:]
+        all_rows = sheets_get_all_values_cached(sheet, cache_key="History")[1:]
+
+
+        # ============================================================
+        # PATCH GH_RL1 (ADDITIVE): Rate-limit fallback for History reads
+        # - If Sheets read quota is exceeded and no cached values are available,
+        #   fall back to in-memory session history to avoid hard failure.
+        # ============================================================
+        try:
+            if (not all_rows) and globals().get("_SHEETS_LAST_READ_ERROR"):
+                if "RESOURCE_EXHAUSTED" in str(_SHEETS_LAST_READ_ERROR) or "Quota exceeded" in str(_SHEETS_LAST_READ_ERROR) or "429" in str(_SHEETS_LAST_READ_ERROR):
+                    return st.session_state.get('analysis_history', [])
+        except Exception:
+            pass
+        # ============================================================
 
         # Parse and return most recent
         history = []
@@ -2225,7 +2239,7 @@ def clear_history() -> bool:
 
     try:
         # Get row count
-        all_rows = sheet.get_all_values()
+        all_rows = sheets_get_all_values_cached(sheet, cache_key="History")
         if len(all_rows) > 1:
             # Delete all rows except header
             sheet.delete_rows(2, len(all_rows))
@@ -10082,6 +10096,80 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
 
 
 # =====================================================================
+
+# =====================================================================
+# PATCH SHEETS_CACHE1 (ADDITIVE): In-run Google Sheets read caching + rate-limit fallback
+# Why:
+# - Google Sheets consumer quota is very low (e.g., 60 reads/min/user). Evolution may trigger
+#   multiple reads (History, HistoryFull, Snapshots) within a single run.
+# - When quota is exceeded (429 RESOURCE_EXHAUSTED), we should:
+#     (1) reuse cached reads within the same run, and
+#     (2) fall back to last cached value (if any) rather than hard-failing.
+# Notes:
+# - Additive only. No behavior changes unless we would otherwise exceed quota.
+# - Cache is in-memory per Python process; it resets when the app restarts.
+# =====================================================================
+_SHEETS_READ_CACHE = {}
+_SHEETS_READ_CACHE_TTL_SEC = 55  # keep under the 60s/min quota window
+_SHEETS_LAST_READ_ERROR = None
+
+def _sheets_now_ts():
+    import time
+    return time.time()
+
+def _sheets_cache_get(key: str):
+    try:
+        item = _SHEETS_READ_CACHE.get(key)
+        if not item:
+            return None
+        ts, val = item
+        if (_sheets_now_ts() - ts) > _SHEETS_READ_CACHE_TTL_SEC:
+            return None
+        return val
+    except Exception:
+        return None
+
+def _sheets_cache_set(key: str, val):
+    try:
+        _SHEETS_READ_CACHE[key] = (_sheets_now_ts(), val)
+    except Exception:
+        pass
+
+def _is_sheets_rate_limit_error(err: Exception) -> bool:
+    s = ""
+    try:
+        s = str(err) or ""
+    except Exception:
+        s = ""
+    # Common markers seen via gspread/googleapiclient:
+    markers = ["RESOURCE_EXHAUSTED", "Quota exceeded", "RATE_LIMIT_EXCEEDED", "429"]
+    return any(m in s for m in markers)
+
+def sheets_get_all_values_cached(ws, cache_key: str):
+    """
+    Cached wrapper for ws.get_all_values() with rate-limit fallback.
+    cache_key should be stable for the worksheet (e.g., 'Snapshots', 'HistoryFull', 'History').
+    """
+    global _SHEETS_LAST_READ_ERROR
+    key = f"get_all_values:{cache_key}"
+    cached = _sheets_cache_get(key)
+    if cached is not None:
+        return cached
+    try:
+        values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
+        _sheets_cache_set(key, values)
+        return values
+    except Exception as e:
+        _SHEETS_LAST_READ_ERROR = str(e)
+        # Rate-limit fallback: return last cached value if we have one, else empty list
+        if _is_sheets_rate_limit_error(e):
+            stale = _SHEETS_READ_CACHE.get(key)
+            if stale and isinstance(stale, tuple) and len(stale) == 2:
+                return stale[1]
+            return []
+        raise
+
+# =====================================================================
 # PATCH SS2 (ADDITIVE): Google Sheets snapshot store (separate worksheet)
 # Purpose:
 #   - Persist full baseline_sources_cache inside the same Spreadsheet
@@ -10224,7 +10312,7 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
             return []
 
         # Fetch all values and filter (simple, deterministic). For large sheets, optimize later.
-        values = ws.get_all_values()
+        values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
         if not values or len(values) < 2:
             return []
 
@@ -10305,7 +10393,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         if not ws:
             return {}
 
-        values = ws.get_all_values()
+        values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
         if not values or len(values) < 2:
             return {}
 
