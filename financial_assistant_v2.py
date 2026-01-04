@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
             # =========================
 # VERSION STAMP (ADDITIVE)
             # =========================
-CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_RMS_MIN2_HF5_fixindent"
+CODE_VERSION = "financial_assistant_v7_41_endstate_final_1_rebuilt_p7_rebuild_fallback_patched_ABC_RH2_RB2_RMS_MIN2_HF5_fixindent_BSCNORM1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -12782,6 +12782,67 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # - Prevents anchor-built current_metrics from being overwritten.
     # - Preserves existing behavior when anchors are missing or yield no hits.
     # =====================================================================
+    # =====================================================================
+    # PATCH BSC_NORM1 (ADDITIVE): baseline_sources_cache normalization
+    # Purpose:
+    #   - Some evolution paths populate "source_results" (current fetch) with extracted_numbers,
+    #     but baseline_sources_cache may still be a snapshot-only list without extracted_numbers.
+    #   - This normalization bridges the two WITHOUT refetching and WITHOUT inventing numbers.
+    #
+    # Behavior:
+    #   - If baseline_sources_cache is list-shaped but has no extracted_numbers payload,
+    #     and a local fetched source_results list exists with extracted_numbers,
+    #     we rebuild a minimal baseline_sources_cache view from it (deterministic ordering).
+    # =====================================================================
+    try:
+        _bsc_has_numbers = False
+        for _sr in (baseline_sources_cache or []):
+            if isinstance(_sr, dict) and isinstance(_sr.get("extracted_numbers"), list) and (_sr.get("extracted_numbers") or []):
+                _bsc_has_numbers = True
+                break
+
+        if (not _bsc_has_numbers) and isinstance(baseline_sources_cache, list):
+            # Try common local variable names used by different code paths.
+            _fetched_sr = None
+            try:
+                _fetched_sr = locals().get("source_results")
+            except Exception:
+                _fetched_sr = None
+            if not isinstance(_fetched_sr, list):
+                try:
+                    _fetched_sr = locals().get("current_source_results")
+                except Exception:
+                    _fetched_sr = _fetched_sr
+            if not isinstance(_fetched_sr, list):
+                try:
+                    _fetched_sr = locals().get("fetched_source_results")
+                except Exception:
+                    _fetched_sr = _fetched_sr
+
+            _rebuilt = []
+            if isinstance(_fetched_sr, list):
+                for _r in (_fetched_sr or []):
+                    if not isinstance(_r, dict):
+                        continue
+                    _ex = _r.get("extracted_numbers")
+                    if not isinstance(_ex, list) or not _ex:
+                        continue
+                    _u = _r.get("source_url") or _r.get("url")
+                    _rebuilt.append({
+                        "source_url": _u,
+                        "extracted_numbers": _ex,
+                        "clean_text": _r.get("clean_text") or _r.get("content") or "",
+                        "fingerprint": _r.get("fingerprint"),
+                        "fetched_at": _r.get("fetched_at"),
+                    })
+            _rebuilt.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+
+            if _rebuilt:
+                baseline_sources_cache = _rebuilt
+                snapshot_origin = "evolution_baseline_cache_normalized_from_source_results"
+    except Exception:
+        pass
+
     if not isinstance(current_metrics, dict) or not current_metrics:
         try:
             # =========================
