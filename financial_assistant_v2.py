@@ -13541,10 +13541,157 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =====================================================================
 
+    # =====================================================================
+    # PATCH RMS_DIAG_DEEP1 (ADDITIVE): deep diagnostics for rebuild inputs
+    # Why:
+    # - anchors=0/schema=0 persists even when prior JSON contains schema/anchors.
+    # - This dumps where (if anywhere) those fields exist inside previous_data.
+    # - No refetch, no heuristics, no behavior changes beyond debug fields.
+    # =====================================================================
+    try:
+        def _dbg_len(x):
+            try:
+                return len(x) if isinstance(x, (dict, list, tuple, set)) else 0
+            except Exception:
+                return 0
+
+        def _pick(d, path):
+            try:
+                x = d
+                for k in path:
+                    if not isinstance(x, dict):
+                        return None
+                    x = x.get(k)
+                return x
+            except Exception:
+                return None
+
+        # Candidate locations we’ve seen in this codebase
+        _schema_paths = [
+            ("metric_schema_frozen",),
+            ("primary_response", "metric_schema_frozen"),
+            ("results", "metric_schema_frozen"),
+            ("results", "primary_response", "metric_schema_frozen"),
+            ("primary_response", "results", "metric_schema_frozen"),
+        ]
+        _anchor_paths = [
+            ("metric_anchors",),
+            ("primary_response", "metric_anchors"),
+            ("results", "metric_anchors"),
+            ("results", "primary_response", "metric_anchors"),
+            ("primary_response", "results", "metric_anchors"),
+        ]
+        _canon_paths = [
+            ("primary_metrics_canonical",),
+            ("primary_response", "primary_metrics_canonical"),
+            ("results", "primary_metrics_canonical"),
+            ("results", "primary_response", "primary_metrics_canonical"),
+            ("primary_response", "results", "primary_metrics_canonical"),
+        ]
+
+        _schema_hits = []
+        for p in _schema_paths:
+            v = _pick(previous_data, p)
+            if isinstance(v, dict) and v:
+                _schema_hits.append({"path": ".".join(p), "keys": list(v.keys())[:8], "count": _dbg_len(v)})
+
+        _anchor_hits = []
+        for p in _anchor_paths:
+            v = _pick(previous_data, p)
+            if isinstance(v, dict) and v:
+                _anchor_hits.append({"path": ".".join(p), "keys": list(v.keys())[:8], "count": _dbg_len(v)})
+
+        _canon_hits = []
+        for p in _canon_paths:
+            v = _pick(previous_data, p)
+            if isinstance(v, dict) and v:
+                _canon_hits.append({"path": ".".join(p), "keys": list(v.keys())[:8], "count": _dbg_len(v)})
+
+        output.setdefault("debug", {})
+        output["debug"]["diag_prevdata_keys_top"] = list(previous_data.keys())[:40] if isinstance(previous_data, dict) else []
+        output["debug"]["diag_schema_hits"] = _schema_hits
+        output["debug"]["diag_anchor_hits"] = _anchor_hits
+        output["debug"]["diag_canon_hits"] = _canon_hits
+    except Exception:
+        pass
+    # =====================================================================
+
+
     rebuilt_metrics = {}
     try:
         if callable(fn_rebuild):
-            rebuilt_metrics = fn_rebuild(previous_data, baseline_sources_cache, web_context=web_context)
+            # =====================================================================
+            # PATCH RMS_INPUT_SHAPE1 (ADDITIVE): normalize rebuild input payload
+            # Why:
+            # - schema-only rebuild may expect metric_schema_frozen / metric_anchors at
+            #   the top-level of the object passed to it.
+            # - previous_data often stores these under previous_data["primary_response"].
+            # - We create a lightweight "rebuild_payload" that guarantees these exist.
+            # Determinism:
+            # - Only copies existing values; does not create new metrics or anchors.
+            # =====================================================================
+            rebuild_payload = previous_data
+            try:
+                if isinstance(previous_data, dict):
+                    rebuild_payload = dict(previous_data)  # shallow copy (additive-safe)
+
+                    # Prefer prev_response (already computed above) as the richest normalized view
+                    try:
+                        pr = prev_response if isinstance(prev_response, dict) else {}
+                    except Exception:
+                        pr = {}
+
+                    # Ensure schema available at top-level
+                    if not isinstance(rebuild_payload.get("metric_schema_frozen"), dict):
+                        msf = None
+                        if isinstance(pr.get("metric_schema_frozen"), dict) and pr.get("metric_schema_frozen"):
+                            msf = pr.get("metric_schema_frozen")
+                        elif isinstance((previous_data.get("primary_response") or {}).get("metric_schema_frozen"), dict):
+                            msf = (previous_data.get("primary_response") or {}).get("metric_schema_frozen")
+                        elif isinstance((previous_data.get("results") or {}).get("metric_schema_frozen"), dict):
+                            msf = (previous_data.get("results") or {}).get("metric_schema_frozen")
+                        if isinstance(msf, dict) and msf:
+                            rebuild_payload["metric_schema_frozen"] = msf
+
+                    # Ensure anchors available at top-level
+                    if not isinstance(rebuild_payload.get("metric_anchors"), dict):
+                        ma = None
+                        if isinstance(pr.get("metric_anchors"), dict) and pr.get("metric_anchors"):
+                            ma = pr.get("metric_anchors")
+                        elif isinstance((previous_data.get("primary_response") or {}).get("metric_anchors"), dict):
+                            ma = (previous_data.get("primary_response") or {}).get("metric_anchors")
+                        elif isinstance((previous_data.get("results") or {}).get("metric_anchors"), dict):
+                            ma = (previous_data.get("results") or {}).get("metric_anchors")
+                        if isinstance(ma, dict) and ma:
+                            rebuild_payload["metric_anchors"] = ma
+
+                    # Ensure canonical metrics (optional but helpful for schema-only rebuild)
+                    if not isinstance(rebuild_payload.get("primary_metrics_canonical"), dict):
+                        pmc = None
+                        if isinstance(pr.get("primary_metrics_canonical"), dict) and pr.get("primary_metrics_canonical"):
+                            pmc = pr.get("primary_metrics_canonical")
+                        elif isinstance((previous_data.get("primary_response") or {}).get("primary_metrics_canonical"), dict):
+                            pmc = (previous_data.get("primary_response") or {}).get("primary_metrics_canonical")
+                        elif isinstance((previous_data.get("results") or {}).get("primary_metrics_canonical"), dict):
+                            pmc = (previous_data.get("results") or {}).get("primary_metrics_canonical")
+                        if isinstance(pmc, dict) and pmc:
+                            rebuild_payload["primary_metrics_canonical"] = pmc
+
+                    # Debug: show what we ended up passing
+                    try:
+                        output.setdefault("debug", {})
+                        output["debug"]["rebuild_payload_schema_count"] = len(rebuild_payload.get("metric_schema_frozen") or {}) if isinstance(rebuild_payload.get("metric_schema_frozen"), dict) else 0
+                        output["debug"]["rebuild_payload_anchor_count"] = len(rebuild_payload.get("metric_anchors") or {}) if isinstance(rebuild_payload.get("metric_anchors"), dict) else 0
+                        output["debug"]["rebuild_payload_canon_count"] = len(rebuild_payload.get("primary_metrics_canonical") or {}) if isinstance(rebuild_payload.get("primary_metrics_canonical"), dict) else 0
+                    except Exception:
+                        pass
+            except Exception:
+                rebuild_payload = previous_data
+            # =====================================================================
+
+
+            rebuilt_metrics = fn_rebuild(rebuild_payload, baseline_sources_cache, web_context=web_context)
+
     except Exception:
         rebuilt_metrics = {}
 
