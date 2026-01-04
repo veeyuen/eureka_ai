@@ -10593,72 +10593,123 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
 
 
 def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str = "HistoryFull") -> dict:
-    """Load and reassemble a full analysis payload dict from HistoryFull worksheet."""
-    import json, hashlib
-    if not analysis_id:
-        return {}
+    """
+    Load the full analysis JSON payload from the HistoryFull worksheet.
+
+    PATCH HF_LOAD_PARTS1 (ADDITIVE):
+    - Supports payloads split across multiple rows (parts) keyed by analysis_id.
+    - Stitches parts by part_index (or row order fallback) into one JSON string.
+    """
     try:
         ss = get_google_spreadsheet()
-        ws = ss.worksheet(worksheet_title) if ss else None
-        if not ws:
+        if not ss:
             return {}
 
-        values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
-        if not values or len(values) < 2:
+        try:
+            ws = ss.worksheet(worksheet_title)
+        except Exception:
             return {}
 
-        header = values[0]
-        def _idx(name):
+        # Read all rows (cached is fine, but direct is ok too)
+        rows = []
+        try:
+            rows = ws.get_all_values() or []
+        except Exception:
+            return {}
+
+        if not rows or len(rows) < 2:
+            return {}
+
+        header = rows[0]
+        body = rows[1:]
+
+        # Column discovery (best-effort; additive)
+        def _col(name: str):
             try:
                 return header.index(name)
             except Exception:
                 return None
 
-        i_id = _idx("analysis_id")
-        i_part = _idx("part_index")
-        i_total = _idx("total_parts")
-        i_payload = _idx("payload_part")
-        i_sha = _idx("sha256")
+        c_id = _col("id")
+        c_part = _col("part_index")
+        c_total = _col("total_parts")
+        c_data = _col("data")
 
-        if i_id is None or i_part is None or i_total is None or i_payload is None:
-            return {}
+        # If headers aren't as expected, fall back to best guess:
+        # assume: id in col0, data in last col
+        if c_id is None:
+            c_id = 0
+        if c_data is None:
+            c_data = len(header) - 1
 
-        rows = []
-        expected_sha = None
-        for r in values[1:]:
-            if not r or i_id >= len(r):
-                continue
-            if str(r[i_id]).strip() != str(analysis_id).strip():
-                continue
+        parts = []
+        for r in body:
             try:
-                part_index = int(r[i_part]) if i_part < len(r) else 0
-            except Exception:
-                part_index = 0
-            if i_sha is not None and i_sha < len(r):
-                if r[i_sha]:
-                    expected_sha = r[i_sha]
-            payload_part = r[i_payload] if i_payload < len(r) else ""
-            rows.append((part_index, payload_part))
+                if not r:
+                    continue
+                rid = (r[c_id] if c_id < len(r) else "").strip()
+                if rid != str(analysis_id):
+                    continue
 
-        if not rows:
+                # pull chunk
+                chunk = r[c_data] if c_data < len(r) else ""
+                if not chunk:
+                    continue
+
+                # part_index if present
+                pidx = None
+                if c_part is not None and c_part < len(r):
+                    try:
+                        pidx = int(str(r[c_part]).strip())
+                    except Exception:
+                        pidx = None
+
+                parts.append((pidx, chunk))
+            except Exception:
+                continue
+
+        if not parts:
             return {}
 
-        rows.sort(key=lambda x: x[0])
-        payload = "".join([p for _, p in rows])
+        # Sort parts
+        # - If part_index exists: sort by it
+        # - Else: keep insertion order by treating pidx as None and stable sorting
+        parts.sort(key=lambda t: (t[0] is None, t[0] if t[0] is not None else 0))
 
-        if expected_sha:
-            sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            if sha != expected_sha:
-                return {}
+        # Stitch
+        full_json_str = "".join([p[1] for p in parts]).strip()
 
-        data = json.loads(payload)
-        return data if isinstance(data, dict) else {}
+        # Parse JSON
+        import json
+        try:
+            obj = json.loads(full_json_str)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            # PATCH HF_LOAD_PARTS2 (ADDITIVE): attempt to salvage if stored as JSON-lines or wrapped
+            try:
+                # Some writers store each part already as a JSON object with {"part":"..."} — handle that
+                # (safe no-op if not matching)
+                acc = []
+                for _, chunk in parts:
+                    try:
+                        o = json.loads(chunk)
+                        if isinstance(o, dict) and isinstance(o.get("part"), str):
+                            acc.append(o["part"])
+                        else:
+                            acc = []
+                            break
+                    except Exception:
+                        acc = []
+                        break
+                if acc:
+                    obj2 = json.loads("".join(acc))
+                    return obj2 if isinstance(obj2, dict) else {}
+            except Exception:
+                pass
+            return {}
+
     except Exception:
         return {}
-# =====================================================================
-
-# =====================================================================
-
 
 def fingerprint_text(text: str) -> str:
     """Stable short fingerprint for fetched content (deterministic)."""
