@@ -303,7 +303,34 @@ def get_google_sheet():
         )
         client = gspread.authorize(creds)
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
-        sheet = client.open(spreadsheet_name).sheet1
+
+        # === PATCH GS1 (ADDITIVE): Prefer an explicit 'History' worksheet over sheet1 ===
+        # Rationale: once you add tabs like 'HistoryFull' / 'Snapshots', sheet1 may no longer be
+        # the History table, causing get_history() to return empty even though saves succeed.
+        ss = client.open(spreadsheet_name)
+        try:
+            sheet = ss.worksheet("History")
+        except Exception:
+            sheet = ss.sheet1  # fallback to legacy behavior
+
+        # === PATCH GS2 (ADDITIVE): If we're not on a History-like sheet, fall back more safely ===
+        # This is defensive: if the first tab is not the History table, attempt to locate a tab that
+        # already has the expected header row.
+        try:
+            headers = sheet.row_values(1)
+            if (not headers) or (len(headers) == 0) or (headers[0] != "id"):
+                # Try to find a worksheet that already looks like the History sheet
+                try:
+                    for ws in ss.worksheets():
+                        h = ws.row_values(1)
+                        if h and len(h) >= 5 and h[0] == "id" and h[1] == "timestamp" and h[4] == "data":
+                            sheet = ws
+                            headers = h
+                            break
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # Ensure headers exist - handle response object
         try:
@@ -333,12 +360,17 @@ def get_google_sheet():
                 )
                 client = gspread.authorize(creds)
                 spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_History")
-                return client.open(spreadsheet_name).sheet1
+
+                # === PATCH GS1 (ADDITIVE): Prefer 'History' worksheet here as well ===
+                ss = client.open(spreadsheet_name)
+                try:
+                    return ss.worksheet("History")
+                except Exception:
+                    return ss.sheet1
             except:
                 pass
         st.error(f"❌ Failed to connect to Google Sheets: {e}")
         return None
-
 
 def generate_analysis_id() -> str:
     """Generate unique ID for analysis"""
