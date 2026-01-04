@@ -12716,6 +12716,44 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =====================================================================
 
+
+    # ===================== PATCH HF_FORCE1 (ADDITIVE) =====================
+    # If previous_data is a wrapper/stub missing rebuild essentials, rehydrate from HistoryFull.
+    try:
+        def _has_rebuild_essentials(d: dict) -> bool:
+            if not isinstance(d, dict):
+                return False
+            if isinstance(d.get("metric_schema_frozen"), dict) and d["metric_schema_frozen"]:
+                return True
+            pr = d.get("primary_response")
+            if isinstance(pr, dict) and isinstance(pr.get("metric_schema_frozen"), dict) and pr["metric_schema_frozen"]:
+                return True
+            return False
+
+        def _get_full_store_ref(d: dict) -> str:
+            if not isinstance(d, dict):
+                return ""
+            # wrappers commonly store this at top-level
+            ref = d.get("full_store_ref") or d.get("full_payload_ref")
+            if ref:
+                return ref
+            sw = d.get("_sheet_write")
+            if isinstance(sw, dict):
+                return sw.get("full_store_ref") or ""
+            return ""
+
+        if not _has_rebuild_essentials(previous_data):
+            ref = _get_full_store_ref(previous_data)
+            if isinstance(ref, str) and ref.startswith("gsheet:HistoryFull:"):
+                analysis_id = ref.split(":", 2)[2] if len(ref.split(":")) >= 3 else ""
+                if analysis_id:
+                    full = load_full_history_payload_from_sheet(analysis_id, worksheet_title="HistoryFull")
+                    if isinstance(full, dict) and full:
+                        previous_data = full
+    except Exception:
+        pass
+    # =================== END PATCH HF_FORCE1 (ADDITIVE) ===================
+
 # ---------- Use your existing deterministic metric diff helper ----------
     # Pull baseline metrics from previous_data
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
