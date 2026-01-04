@@ -14831,15 +14831,8 @@ def main():
             final_conf = calculate_final_confidence(base_conf, veracity_scores.get("overall", 0))
 
             # Optional: canonicalize + attribution + schema freeze (only if your codebase defines these)
+            # Optional: canonicalize + attribution + schema freeze (only if your codebase defines these)
             try:
-                if primary_data.get("primary_metrics"):
-                    primary_data["primary_metrics_canonical"] = canonicalize_metrics(
-                        primary_data.get("primary_metrics", {}),
-                        merge_duplicates_to_range=True,
-                        question_text=query,
-                        category_hint=str(primary_data.get("question_category", ""))
-                    )
-
                 # 1) canonicalize (unchanged)
                 if primary_data.get("primary_metrics"):
                     primary_data["primary_metrics_canonical"] = canonicalize_metrics(
@@ -14849,30 +14842,27 @@ def main():
                         category_hint=str(primary_data.get("question_category", ""))
                     )
 
-                # 2) freeze schema FIRST  ✅ (so attribution can be schema-first)
+                # 2) freeze schema FIRST ✅ (so attribution can be schema-first)
                 if primary_data.get("primary_metrics_canonical"):
                     primary_data["metric_schema_frozen"] = freeze_metric_schema(
                         primary_data["primary_metrics_canonical"]
                     )
 
-                # 3) attribution using frozen schema  ✅
+                # 3) attribution using frozen schema ✅
                 if primary_data.get("primary_metrics_canonical"):
                     primary_data["primary_metrics_canonical"] = add_range_and_source_attribution_to_canonical_metrics(
                         primary_data.get("primary_metrics_canonical", {}),
                         web_context,
                         metric_schema=(primary_data.get("metric_schema_frozen") or {}),
                     )
-            # PATCH SV1/EG1 (ADDITIVE): validate frozen schema + enforce evidence gating (analysis-side)
-        try:
-            fn = globals().get("apply_schema_validation_and_evidence_gating")
-            if callable(fn):
-                primary_data = fn(primary_data)
-        except Exception:
-            pass
-            except Exception:
-                pass
 
-
+                # PATCH SV1/EG1 (ADDITIVE): validate frozen schema + enforce evidence gating (analysis-side)
+                try:
+                    fn = globals().get("apply_schema_validation_and_evidence_gating")
+                    if callable(fn):
+                        primary_data = fn(primary_data)
+                except Exception:
+                    pass
 
             except Exception:
                 pass
