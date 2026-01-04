@@ -13056,6 +13056,33 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         pass
     except Exception:
         pass
+
+    # ===================== PATCH RMS_WIRE1 (ADDITIVE) =====================
+    # Prefer schema-only rebuild if available; fall back to legacy hook if present.
+    fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
+
+    rebuilt_metrics = {}
+    try:
+        if callable(fn_rebuild):
+            rebuilt_metrics = fn_rebuild(previous_data, baseline_sources_cache, web_context=web_context)
+    except Exception:
+        rebuilt_metrics = {}
+
+    # Optional debug visibility (safe additive fields)
+    try:
+        output.setdefault("debug", {})
+        output["debug"]["rebuild_fn"] = getattr(fn_rebuild, "__name__", "None")
+        output["debug"]["rebuilt_metric_count"] = len(rebuilt_metrics) if isinstance(rebuilt_metrics, dict) else 0
+    except Exception:
+        pass
+
+    # If rebuilt_metrics is non-empty, wire it into the expected place for downstream diff.
+    if isinstance(rebuilt_metrics, dict) and rebuilt_metrics:
+        output.setdefault("results", {})
+        output["results"]["rebuilt_primary_metrics_canonical"] = rebuilt_metrics
+    # =================== END PATCH RMS_WIRE1 (ADDITIVE) ===================
+
+
     # =====================================================================
 
     # If we cannot rebuild metrics, return a tight result that still exposes source_results for debugging
@@ -13236,6 +13263,189 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
 
     return output
+
+
+# ===================== PATCH RMS_CORE1 (ADDITIVE) =====================
+def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """
+    Minimal deterministic rebuild:
+      - Uses ONLY: baseline_sources_cache + frozen schema (or derives schema from canonical metrics)
+      - No re-fetch
+      - No heuristic name fallback outside schema fields
+      - Deterministic selection + ordering
+
+    Returns a dict shaped like primary_metrics_canonical (by canonical_key).
+    """
+    import re
+
+    if not isinstance(prev_response, dict):
+        return {}
+
+    # 1) Obtain frozen schema (required contract for schema-driven rebuild)
+    metric_schema = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+    )
+
+    # If schema is missing but canonical metrics exist, derive schema deterministically
+    if not metric_schema:
+        try:
+            canon = (
+                prev_response.get("primary_metrics_canonical")
+                or (prev_response.get("primary_response") or {}).get("primary_metrics_canonical")
+                or (prev_response.get("results") or {}).get("primary_metrics_canonical")
+            )
+            fn_freeze = globals().get("freeze_metric_schema")
+            if canon and callable(fn_freeze):
+                metric_schema = fn_freeze(canon)
+        except Exception:
+            metric_schema = None
+
+    if not isinstance(metric_schema, dict) or not metric_schema:
+        return {}
+
+    # 2) Flatten candidates (must come from snapshots/cache, no re-fetch)
+    candidates = []
+    if isinstance(baseline_sources_cache, dict) and isinstance(baseline_sources_cache.get("snapshots"), list):
+        source_entries = baseline_sources_cache.get("snapshots", [])
+    elif isinstance(baseline_sources_cache, list):
+        source_entries = baseline_sources_cache
+    else:
+        source_entries = []
+
+    # Candidate normalization helpers
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    def _unit_family_guess(unit: str) -> str:
+        u = (unit or "").strip().lower()
+        if u in ("%", "percent", "percentage"):
+            return "percent"
+        if any(x in u for x in ("usd", "$", "eur", "gbp", "jpy", "cny", "aud", "sgd")):
+            return "currency"
+        if any(x in u for x in ("unit", "units", "vehicle", "vehicles", "car", "cars", "kwh", "mwh", "gwh", "twh")):
+            return "quantity"
+        return ""
+
+    # Prefer already-extracted numbers in snapshots; otherwise optionally extract from stored text if present.
+    fn_extract = globals().get("extract_numbers_with_context")
+
+    for s in source_entries:
+        if not isinstance(s, dict):
+            continue
+        url = s.get("source_url") or s.get("url") or ""
+        xs = s.get("extracted_numbers")
+        if isinstance(xs, list) and xs:
+            for c in xs:
+                if isinstance(c, dict):
+                    c2 = dict(c)
+                    c2.setdefault("source_url", url)
+                    candidates.append(c2)
+            continue
+
+        # Optional: if snapshot stores text, we can extract deterministically (no re-fetch).
+        txt = s.get("text") or s.get("raw_text") or s.get("content_text") or ""
+        if txt and callable(fn_extract):
+            try:
+                xs2 = fn_extract(txt, source_url=url)
+                if isinstance(xs2, list):
+                    for c in xs2:
+                        if isinstance(c, dict):
+                            c2 = dict(c)
+                            c2.setdefault("source_url", url)
+                            candidates.append(c2)
+            except Exception:
+                pass
+
+    # Drop junk + enforce deterministic ordering
+    def _cand_sort_key(c: dict):
+        return (
+            str(c.get("anchor_hash") or ""),
+            str(c.get("source_url") or ""),
+            int(c.get("start_idx") or 0),
+            str(c.get("raw") or ""),
+            str(c.get("unit") or ""),
+            float(c.get("value_norm") or 0.0),
+        )
+
+    filtered = []
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        if c.get("is_junk") is True:
+            continue
+        filtered.append(c)
+
+    filtered.sort(key=_cand_sort_key)
+
+    # 3) Schema-driven selection
+    rebuilt = {}
+    for canonical_key, sch in metric_schema.items():
+        if not isinstance(sch, dict):
+            continue
+
+        # Schema tokens/keywords
+        name = sch.get("name") or canonical_key
+        keywords = sch.get("keywords") or sch.get("keyword_hints") or []
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        kw_norm = [_norm(k) for k in keywords if k]
+
+        # Expected family/dimension
+        expected_dim = (sch.get("dimension") or sch.get("unit_family") or "").lower().strip()
+
+        best = None
+        best_score = None
+
+        for c in filtered:
+            ctx = _norm(c.get("context") or c.get("context_window") or "")
+            raw = _norm(c.get("raw") or "")
+            unit = c.get("unit") or ""
+            fam = _unit_family_guess(unit)
+            if expected_dim and fam and expected_dim not in (fam,):
+                # strict family check when we can infer a family
+                continue
+
+            score = 0
+            # keyword match only from schema-provided keywords
+            for k in kw_norm:
+                if k and (k in ctx or k in raw):
+                    score += 10
+
+            # Prefer candidates that have an anchor_hash (stability)
+            if c.get("anchor_hash"):
+                score += 1
+
+            # Deterministic tie-breakers: earlier in list wins if equal score
+            if best is None or score > best_score:
+                best = c
+                best_score = score
+
+        if best is None or (best_score is not None and best_score <= 0):
+            # No schema-consistent evidence found -> omit (or could mark proxy; keep minimal here)
+            continue
+
+        rebuilt[canonical_key] = {
+            "canonical_key": canonical_key,
+            "name": name,
+            "value": best.get("value"),
+            "unit": best.get("unit") or "",
+            "value_norm": best.get("value_norm"),
+            "source_url": best.get("source_url") or "",
+            "anchor_hash": best.get("anchor_hash") or "",
+            "evidence": [{
+                "source_url": best.get("source_url") or "",
+                "raw": best.get("raw") or "",
+                "context_snippet": (best.get("context") or best.get("context_window") or "")[:400],
+                "anchor_hash": best.get("anchor_hash") or "",
+                "method": "schema_only_rebuild",
+            }],
+        }
+
+    return rebuilt
+# =================== END PATCH RMS_CORE1 (ADDITIVE) ===================
+
 
 
 
