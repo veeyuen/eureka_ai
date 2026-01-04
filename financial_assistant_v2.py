@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL_FIX4_REBUILD_GUARD_FIX"
+CODE_VERSION = "financial_assistant_v7_41_FIX5_ANCHOR_DISPATCH_RETRY_DEBUG"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -13100,6 +13100,35 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Prefer schema-only rebuild if available; fall back to legacy hook if present.
     fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
 
+    # =====================================================================
+    # PATCH RMS_DISPATCH4 (ADDITIVE): Prefer anchor-aware rebuild when metric_anchors exist
+    # - Looks for anchors across nested paths via _get_metric_anchors_any (if present)
+    # - Falls back to schema-only, then legacy
+    # - Does NOT refactor existing logic; only overrides fn_rebuild if conditions met.
+    # =====================================================================
+    try:
+        _anchors = None
+        fn_get_anchors = globals().get("_get_metric_anchors_any")
+        if callable(fn_get_anchors):
+            _anchors = fn_get_anchors(previous_data)
+        else:
+            # minimal fallback
+            _anchors = (previous_data or {}).get("metric_anchors") if isinstance(previous_data, dict) else None
+
+        fn_anchor = globals().get("rebuild_metrics_from_snapshots_with_anchors")
+        fn_schema = globals().get("rebuild_metrics_from_snapshots_schema_only")
+        fn_legacy = globals().get("rebuild_metrics_from_snapshots")
+
+        if isinstance(_anchors, dict) and _anchors and callable(fn_anchor):
+            fn_rebuild = fn_anchor
+        elif callable(fn_schema):
+            fn_rebuild = fn_schema
+        elif callable(fn_legacy):
+            fn_rebuild = fn_legacy
+    except Exception:
+        pass
+    # =====================================================================
+
     rebuilt_metrics = {}
     try:
         if callable(fn_rebuild):
@@ -13107,10 +13136,46 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         rebuilt_metrics = {}
 
+    # =====================================================================
+    # PATCH RMS_RETRY1 (ADDITIVE): If anchor-aware rebuild returns empty, retry schema-only
+    # =====================================================================
+    try:
+        if (not isinstance(rebuilt_metrics, dict) or not rebuilt_metrics):
+            fn_schema = globals().get("rebuild_metrics_from_snapshots_schema_only")
+            if callable(fn_schema) and getattr(fn_rebuild, "__name__", "") == "rebuild_metrics_from_snapshots_with_anchors":
+                rebuilt_metrics = fn_schema(previous_data, baseline_sources_cache, web_context=web_context) or {}
+    except Exception:
+        pass
+    # =====================================================================
+
     # Optional debug visibility (safe additive fields)
     try:
         output.setdefault("debug", {})
         output["debug"]["rebuild_fn"] = getattr(fn_rebuild, "__name__", "None")
+        try:
+            # PATCH RMS_DEBUG1 (ADDITIVE): expose counts to diagnose empty rebuilds
+            _anchors2 = None
+            fn_get_anchors2 = globals().get("_get_metric_anchors_any")
+            if callable(fn_get_anchors2):
+                _anchors2 = fn_get_anchors2(previous_data)
+            elif isinstance(previous_data, dict):
+                _anchors2 = previous_data.get("metric_anchors")
+            output["debug"]["anchor_count"] = len(_anchors2) if isinstance(_anchors2, dict) else 0
+
+            _schema2 = None
+            if isinstance(previous_data, dict):
+                _schema2 = previous_data.get("metric_schema_frozen") or (previous_data.get("primary_response") or {}).get("metric_schema_frozen") or (previous_data.get("results") or {}).get("metric_schema_frozen")
+            output["debug"]["schema_count"] = len(_schema2) if isinstance(_schema2, dict) else 0
+
+            # candidate count from baseline_sources_cache extracted_numbers
+            _cand_n = 0
+            if isinstance(baseline_sources_cache, list):
+                for _s in baseline_sources_cache:
+                    if isinstance(_s, dict) and isinstance(_s.get("extracted_numbers"), list):
+                        _cand_n += len(_s.get("extracted_numbers") or [])
+            output["debug"]["snapshot_candidate_count"] = int(_cand_n)
+        except Exception:
+            pass
 
 # ===================== PATCH RMS_DISPATCH3 (ADDITIVE) =====================
         # Loud warning if anchors exist but we did NOT select anchor-aware rebuild.
