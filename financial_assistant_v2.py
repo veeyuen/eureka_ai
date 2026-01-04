@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL"
+CODE_VERSION = "financial_assistant_v7_41_FIX1_SV1_EG1_SURGICAL_FIX1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -14863,10 +14863,12 @@ def main():
                         metric_schema=(primary_data.get("metric_schema_frozen") or {}),
                     )
             # PATCH SV1/EG1 (ADDITIVE): validate frozen schema + enforce evidence gating (analysis-side)
-            try:
-                fn = globals().get("apply_schema_validation_and_evidence_gating")
-                if callable(fn):
-                    primary_data = fn(primary_data)
+        try:
+            fn = globals().get("apply_schema_validation_and_evidence_gating")
+            if callable(fn):
+                primary_data = fn(primary_data)
+        except Exception:
+            pass
             except Exception:
                 pass
 
