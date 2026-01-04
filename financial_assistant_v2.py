@@ -74,10 +74,10 @@ from bs4 import BeautifulSoup
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
-            # =========================
+# =========================
 # VERSION STAMP (ADDITIVE)
-            # =========================
-CODE_VERSION = "financial_assistant_v7_41_PATCHED_SHEETS_CACHE"
+# =========================
+CODE_VERSION = "financial_assistant_v7_41_PATCHED_SHEETS_CACHE_FIX1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -10156,7 +10156,10 @@ def sheets_get_all_values_cached(ws, cache_key: str):
     if cached is not None:
         return cached
     try:
-        values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
+        # === PATCH SHEETS_CACHE1 (CONFLICT FIX, MINIMAL): call the underlying worksheet read ===
+        # Previous draft accidentally recursed into itself and referenced an undefined variable.
+        # This is a direct execution conflict fix (no behavior change intended beyond correctness).
+        values = ws.get_all_values() if ws else []
         _sheets_cache_set(key, values)
         return values
     except Exception as e:
