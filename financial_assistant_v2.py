@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX5_ANCHOR_DISPATCH_RETRY_DEBUG"
+CODE_VERSION = "financial_assistant_v7_41_FIX6_REBUILD_DIAG_UNWRAP"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -13222,7 +13222,23 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # If we cannot rebuild metrics, return a tight result that still exposes source_results for debugging
     if not isinstance(current_metrics, dict) or not current_metrics:
         output["status"] = "failed"
-        output["message"] = "Valid snapshots exist, but no metric rebuild function is wired (rebuild_metrics_from_snapshots missing/empty)."
+        # ===================== PATCH RMS_DIAG1 (ADDITIVE): richer guardrail diagnostics =====================
+        try:
+            output.setdefault("debug", {})
+            _dbg = output.get("debug") if isinstance(output.get("debug"), dict) else {}
+            _fn = _dbg.get("rebuild_fn") or _dbg.get("rebuild_fn_selected") or ""
+            _ac = _dbg.get("anchor_count")
+            _sc = _dbg.get("schema_count")
+            _cc = _dbg.get("snapshot_candidate_count")
+            output["message"] = (
+                "Valid snapshots exist, but metric rebuild returned empty. "
+                f"(rebuild_fn={_fn or 'unknown'}, anchors={_ac}, schema={_sc}, candidates={_cc}). "
+                "No re-fetch / no heuristic matching performed."
+            )
+            _dbg["guardrail_reason"] = "rebuild_empty"
+        except Exception:
+            output["message"] = "Valid snapshots exist, but no metric rebuild function is wired (rebuild_metrics_from_snapshots missing/empty)."
+        # =================== END PATCH RMS_DIAG1 (ADDITIVE) ===================
         output["source_results"] = baseline_sources_cache[:50]
         output["sources_checked"] = len(baseline_sources_cache)
         output["sources_fetched"] = len(baseline_sources_cache)
@@ -15722,6 +15738,43 @@ def apply_schema_validation_and_evidence_gating(primary_data: dict) -> dict:
         }
 
     return primary_data
+
+
+
+# ===================== PATCH RMS_UNWRAP1 (ADDITIVE) =====================
+def _normalize_prev_response_for_rebuild(previous_data):
+    """Best-effort normalization of the loaded baseline object for rebuild dispatch.
+    - If previous_data is a JSON string, parse it.
+    - If it contains nested 'primary_response' as JSON string, parse it.
+    - If it contains a top-level wrapper with 'data' or 'results', keep as dict.
+    This is additive and only affects rebuild dispatch input normalization.
+    """
+    import json
+    try:
+        pd = previous_data
+        if isinstance(pd, str) and pd.strip().startswith(("{","[")):
+            try:
+                pd = json.loads(pd)
+            except Exception:
+                pd = previous_data
+        if isinstance(pd, dict):
+            pr = pd.get("primary_response")
+            if isinstance(pr, str) and pr.strip().startswith(("{","[")):
+                try:
+                    pd["primary_response"] = json.loads(pr)
+                except Exception:
+                    pass
+            # Some callers store the main payload under 'data'
+            d = pd.get("data")
+            if isinstance(d, str) and d.strip().startswith(("{","[")):
+                try:
+                    pd["data"] = json.loads(d)
+                except Exception:
+                    pass
+        return pd
+    except Exception:
+        return previous_data
+# =================== END PATCH RMS_UNWRAP1 (ADDITIVE) ===================
 
 
 if __name__ == "__main__":
