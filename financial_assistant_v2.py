@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX7_HFWRITE_REHYDRATE_READY"
+CODE_VERSION = "financial_assistant_v7_41_FIX8_HF_REHYDRATE_IN_EVOLUTION"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -12847,6 +12847,107 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
 # ---------- Use your existing deterministic metric diff helper ----------
     # Pull baseline metrics from previous_data
+
+# ===================== PATCH HF_FORCE1+2 (ADDITIVE) =====================
+# Ensure evolution has rebuild essentials (metric_schema_frozen + metric_anchors) by rehydrating
+# the full baseline payload from HistoryFull when the History row is a wrapper/stub.
+# - Prefer full_store_ref if present (gsheet:HistoryFull:<analysis_id>)
+# - Fallback to using _sheet_id / analysis_id / id as the HistoryFull key
+try:
+    def _has_rebuild_essentials(d: dict) -> bool:
+        if not isinstance(d, dict):
+            return False
+        msf = d.get("metric_schema_frozen")
+        if isinstance(msf, dict) and msf:
+            return True
+        ma = d.get("metric_anchors")
+        if isinstance(ma, dict) and ma:
+            return True
+        pr = d.get("primary_response")
+        if isinstance(pr, dict):
+            msf2 = pr.get("metric_schema_frozen")
+            ma2 = pr.get("metric_anchors")
+            if isinstance(msf2, dict) and msf2:
+                return True
+            if isinstance(ma2, dict) and ma2:
+                return True
+            r = pr.get("results")
+            if isinstance(r, dict):
+                msf3 = r.get("metric_schema_frozen")
+                ma3 = r.get("metric_anchors")
+                if isinstance(msf3, dict) and msf3:
+                    return True
+                if isinstance(ma3, dict) and ma3:
+                    return True
+        r0 = d.get("results")
+        if isinstance(r0, dict):
+            msf4 = r0.get("metric_schema_frozen")
+            ma4 = r0.get("metric_anchors")
+            if isinstance(msf4, dict) and msf4:
+                return True
+            if isinstance(ma4, dict) and ma4:
+                return True
+        return False
+
+    def _get_full_store_ref(d: dict) -> str:
+        if not isinstance(d, dict):
+            return ""
+        ref = d.get("full_store_ref") or d.get("full_payload_ref")
+        if ref:
+            return str(ref)
+        sw = d.get("_sheet_write")
+        if isinstance(sw, dict):
+            ref2 = sw.get("full_store_ref") or sw.get("full_payload_ref")
+            if ref2:
+                return str(ref2)
+        return ""
+
+    def _get_analysis_id_any(d: dict) -> str:
+        if not isinstance(d, dict):
+            return ""
+        for k in ("_sheet_id", "analysis_id", "id"):
+            v = d.get(k)
+            if v:
+                return str(v)
+        pr = d.get("primary_response")
+        if isinstance(pr, dict):
+            for k in ("_sheet_id", "analysis_id", "id"):
+                v = pr.get(k)
+                if v:
+                    return str(v)
+        return ""
+
+    if not _has_rebuild_essentials(previous_data):
+        # 1) try ref pointer
+        ref = _get_full_store_ref(previous_data)
+        loaded = None
+        if isinstance(ref, str) and ref.startswith("gsheet:HistoryFull:"):
+            parts = ref.split(":", 2)
+            aid = parts[2] if len(parts) >= 3 else ""
+            if aid:
+                loaded = load_full_history_payload_from_sheet(aid, worksheet_title="HistoryFull")
+
+        # 2) fallback to analysis id
+        if not (isinstance(loaded, dict) and loaded):
+            aid2 = _get_analysis_id_any(previous_data)
+            if aid2:
+                loaded = load_full_history_payload_from_sheet(aid2, worksheet_title="HistoryFull")
+
+        if isinstance(loaded, dict) and loaded:
+            previous_data = loaded
+
+    # Also unwrap nested JSON strings if present
+    try:
+        pr = previous_data.get("primary_response") if isinstance(previous_data, dict) else None
+        if isinstance(pr, str) and pr.strip().startswith("{"):
+            import json
+            previous_data["primary_response"] = json.loads(pr)
+    except Exception:
+        pass
+except Exception:
+    pass
+# =================== END PATCH HF_FORCE1+2 (ADDITIVE) ===================
+
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
     # =====================================================================
     # PATCH HF6 (ADDITIVE): tolerate previous_data being the primary_response itself
