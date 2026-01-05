@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix8"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix9_metricanchors"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -997,6 +997,45 @@ def add_to_history(analysis: dict) -> bool:
                 schema = analysis.get("metric_schema_frozen") or {}
 
             metric_anchors = _build_metric_anchors(pmc, schema, evidence_records)
+            # =====================================================================
+            # PATCH ANCH_EMIT1 (ADDITIVE): emit metric_anchors into analysis payload
+            # Why:
+            # - Evolution (and diff) expects anchors to be discoverable without guessing.
+            # - Some storage paths wrap/summarize analysis objects; we persist anchors
+            #   at multiple stable locations to survive those wrappers.
+            # Determinism:
+            # - Anchors are derived only from existing evidence_records / schema / pmc.
+            # - No re-fetching; no heuristic matching.
+            # =====================================================================
+            try:
+                if isinstance(metric_anchors, dict) and metric_anchors:
+                    # Top-level (preferred)
+                    if not isinstance(analysis.get("metric_anchors"), dict):
+                        analysis["metric_anchors"] = metric_anchors
+
+                    # Under primary_response (common for older shapes)
+                    pr = analysis.get("primary_response")
+                    if isinstance(pr, dict) and not isinstance(pr.get("metric_anchors"), dict):
+                        pr["metric_anchors"] = metric_anchors
+
+                    # Under results (some evolution lookups)
+                    res = analysis.get("results")
+                    if isinstance(res, dict) and not isinstance(res.get("metric_anchors"), dict):
+                        res["metric_anchors"] = metric_anchors
+
+                    # Lightweight debug hint for wrappers
+                    try:
+                        dbg = analysis.get("debug")
+                        if not isinstance(dbg, dict):
+                            dbg = {}
+                            analysis["debug"] = dbg
+                        dbg.setdefault("metric_anchor_count", int(len(metric_anchors)))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # =====================================================================
+
             analysis["metric_anchors"] = metric_anchors
 # =====================================================================
             # =====================================================================
