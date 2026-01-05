@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix7"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix8"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -942,6 +942,27 @@ def add_to_history(analysis: dict) -> bool:
         except Exception:
             pass
 
+        # =====================================================================
+        # PATCH AI_ANCHHASH1 (ADDITIVE): propagate anchor_hash into metric rows
+        # Why:
+        # - Drift=0 requires prev metrics to carry anchor_hash so diff can compare
+        #   prev_anchor_hash vs cur_anchor_hash deterministically.
+        # - We ONLY copy existing anchor_hash from anchors map; no fabrication.
+        # =====================================================================
+        try:
+            if isinstance(primary_metrics_canonical, dict) and isinstance(anchors, dict):
+                for _ck, _a in anchors.items():
+                    if not isinstance(_a, dict):
+                        continue
+                    _ah = _a.get("anchor_hash") or _a.get("anchor")
+                    if not _ah:
+                        continue
+                    _mrow = primary_metrics_canonical.get(_ck)
+                    if isinstance(_mrow, dict) and not _mrow.get("anchor_hash"):
+                        _mrow["anchor_hash"] = _ah
+        except Exception:
+            pass
+        # =====================================================================
         return anchors
 
     # -----------------------
@@ -2781,18 +2802,20 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
         expected_dim = ((sch or {}).get("dimension") or (sch or {}).get("unit_family") or "").strip().lower()
 
         best = None
-        for c in candidates:
-            if (c.get("anchor_hash") or "") != ah:
-                continue
-            # If we can infer unit family, enforce compatibility when expected_dim is given
-            fam = _unit_family(c.get("unit") or "")
-            if expected_dim and fam and expected_dim != fam:
-                continue
-            best = c
-            break
 
+        # =====================================================================
+        # PATCH AI_CAND3 (ADDITIVE): pick best candidate among same anchor_hash
+        # =====================================================================
+        same = [c for c in candidates if isinstance(c, dict) and (c.get("anchor_hash") or "") == ah and c.get("is_junk") is not True]
+        best = _pick_best_candidate(
+            same,
+            expected_dim=expected_dim,
+            expected_unit_family=str((schema.get(ckey) or {}).get("unit_family") or ""),
+            expected_base_unit=str((schema.get(ckey) or {}).get("base_unit") or ""),
+        )
         if not best:
             continue
+        # =====================================================================
 
         rebuilt[canonical_key] = {
             "canonical_key": canonical_key,
@@ -13407,6 +13430,41 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
     prev_response = prev_response if isinstance(prev_response, dict) else {}
     cur_response = cur_response if isinstance(cur_response, dict) else {}
 
+    # =====================================================================
+    # PATCH AI_ANCHMAP1 (ADDITIVE): normalize metric_anchors shape (list -> dict)
+    # Why:
+    # - Some pipelines persist metric_anchors as a list of records:
+    #     [{"canonical_key": ..., "anchor_hash": ..., ...}, ...]
+    # - Diff expects a dict mapping canonical_key -> anchor object.
+    # Determinism:
+    # - Pure reshaping; no new anchors invented.
+    # =====================================================================
+    def _coerce_metric_anchors_to_dict(resp: dict):
+        try:
+            if not isinstance(resp, dict):
+                return resp
+            ma = resp.get("metric_anchors")
+            if isinstance(ma, dict) or ma is None:
+                return resp
+            if isinstance(ma, list):
+                out = {}
+                for a in ma:
+                    if not isinstance(a, dict):
+                        continue
+                    ck = a.get("canonical_key") or a.get("ckey") or a.get("metric_key")
+                    if not ck:
+                        continue
+                    if ck not in out:
+                        out[str(ck)] = a
+                resp["metric_anchors"] = out
+            return resp
+        except Exception:
+            return resp
+
+    prev_response = _coerce_metric_anchors_to_dict(prev_response)
+    cur_response = _coerce_metric_anchors_to_dict(cur_response)
+    # =====================================================================
+
     prev_can = prev_response.get("primary_metrics_canonical")
     cur_can = cur_response.get("primary_metrics_canonical")
 
@@ -13943,6 +14001,41 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
     prev_response = prev_response if isinstance(prev_response, dict) else {}
     cur_response = cur_response if isinstance(cur_response, dict) else {}
+
+    # =====================================================================
+    # PATCH AI_ANCHMAP1 (ADDITIVE): normalize metric_anchors shape (list -> dict)
+    # Why:
+    # - Some pipelines persist metric_anchors as a list of records:
+    #     [{"canonical_key": ..., "anchor_hash": ..., ...}, ...]
+    # - Diff expects a dict mapping canonical_key -> anchor object.
+    # Determinism:
+    # - Pure reshaping; no new anchors invented.
+    # =====================================================================
+    def _coerce_metric_anchors_to_dict(resp: dict):
+        try:
+            if not isinstance(resp, dict):
+                return resp
+            ma = resp.get("metric_anchors")
+            if isinstance(ma, dict) or ma is None:
+                return resp
+            if isinstance(ma, list):
+                out = {}
+                for a in ma:
+                    if not isinstance(a, dict):
+                        continue
+                    ck = a.get("canonical_key") or a.get("ckey") or a.get("metric_key")
+                    if not ck:
+                        continue
+                    if ck not in out:
+                        out[str(ck)] = a
+                resp["metric_anchors"] = out
+            return resp
+        except Exception:
+            return resp
+
+    prev_response = _coerce_metric_anchors_to_dict(prev_response)
+    cur_response = _coerce_metric_anchors_to_dict(cur_response)
+    # =====================================================================
 
     prev_can = prev_response.get("primary_metrics_canonical")
     cur_can = cur_response.get("primary_metrics_canonical")
