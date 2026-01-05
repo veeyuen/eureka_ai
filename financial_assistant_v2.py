@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix11_metricanchors_ABCD_fix1"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix12_year_suppression"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -2923,6 +2923,20 @@ def rebuild_metrics_from_snapshots_schema_only(
                         if not isinstance(cand, dict):
                             return False
                         raw = str(cand.get('raw') or cand.get('value') or '').strip()
+                        # =====================================================================
+                        # PATCH YEAR1 (ADDITIVE): treat numeric years like 2024.0 as year-only too
+                        # Why: some extractors store year as float/string '2024.0', bypassing raw.isdigit().
+                        # =====================================================================
+                        try:
+                            vraw = cand.get('value_norm') if cand.get('value_norm') is not None else cand.get('value')
+                            iv = int(float(str(vraw).strip())) if vraw is not None else None
+                            if iv is not None and 1900 <= iv <= 2105:
+                                u0 = str(cand.get('unit') or cand.get('base_unit') or '').strip()
+                                if not u0:
+                                    raw = str(iv)
+                        except Exception:
+                            pass
+                        # =====================================================================
                         if raw.endswith('%'):
                             return False
                         # accept plain 4-digit years in a plausible range
@@ -2951,6 +2965,23 @@ def rebuild_metrics_from_snapshots_schema_only(
                 _sd = locals().get('schema_def')
                 if _ai2_schema_currencyish(_sd) and _ai2_is_year_only(c):
                     continue
+
+                # =====================================================================
+                # PATCH YEAR3 (ADDITIVE): suppress year-only candidates for percent/CAGR-like metrics too
+                # Why: year tokens (e.g., 2025) can outrank true percent values when unit evidence is weak.
+                # Safe: only suppress when candidate has no explicit unit and looks like a bare year.
+                # =====================================================================
+                try:
+                    if _ai2_is_year_only(c):
+                        _sd_name = str((_sd or {}).get('name') or '').lower()
+                        _sd_ckey = str((_sd or {}).get('canonical_key') or ckey or '').lower()
+                        _sd_unit_tag = str((_sd or {}).get('unit_tag') or '').lower()
+                        _sd_unit_family = str((_sd or {}).get('unit_family') or '').lower()
+                        if ('cagr' in _sd_name) or ('cagr' in _sd_ckey) or (_sd_unit_tag in ('percent','pct')) or (_sd_unit_family in ('percent','ratio','rate')):
+                            continue
+                except Exception:
+                    pass
+                # =====================================================================
             except Exception:
                 pass
             # =====================================================================
@@ -12643,6 +12674,19 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
     def _looks_like_year_only(n: dict) -> bool:
         try:
             raw = str(n.get("raw") or "").strip()
+            # =====================================================================
+            # PATCH YEAR2 (ADDITIVE): handle years stored as numeric/float strings
+            # - If raw is empty or looks like '2024.0', normalize to '2024' for checks.
+            # =====================================================================
+            try:
+                if (not raw) or (raw and raw.replace('.', '', 1).isdigit() and '.' in raw):
+                    vraw = n.get('value_norm') if n.get('value_norm') is not None else n.get('value')
+                    iv = int(float(str(vraw).strip())) if vraw is not None else None
+                    if iv is not None and 1900 <= iv <= 2105:
+                        raw = str(iv)
+            except Exception:
+                pass
+            # =====================================================================
             unit = str(n.get("unit") or "").strip()
             ctx = str(n.get("context") or n.get("context_snippet") or "").strip()
             # exactly 4 digits year and nothing else
