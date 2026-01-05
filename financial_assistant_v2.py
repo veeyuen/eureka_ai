@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX8_HF_REHYDRATE_IN_EVOLUTION_FIX4"
+CODE_VERSION = "financial_assistant_v7_41_FIX8_HF_REHYDRATE_IN_EVOLUTION_EXTRACTING"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -12753,6 +12753,59 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
     # =====================================================================
+
+    # =====================================================================
+    # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
+    # Why:
+    # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
+    #   metric_schema_frozen, metric_anchors, etc.
+    # - If a full_store_ref pointer exists, load the full payload deterministically.
+    # =====================================================================
+    _prev_rehydrated = False
+    _prev_rehydrated_ref = ""
+    try:
+        if isinstance(previous_data, dict):
+            _pr = previous_data.get("primary_response")
+
+            # Determine if we are missing rebuild essentials
+            _need = (
+                (not isinstance(_pr, dict))
+                or (not _pr)
+                or (not isinstance(_pr.get("metric_schema_frozen"), dict))
+            )
+
+            if _need:
+                # Explicit line (requested): try the simplest location first
+                ref = previous_data.get("full_store_ref", "")  # <-- requested line
+
+                # Then fall back to other known wrapper locations (more robust)
+                _ref = (
+                    ref
+                    or (previous_data.get("results") or {}).get("full_store_ref")
+                    or (isinstance(_pr, dict) and _pr.get("full_store_ref"))
+                    or ""
+                )
+
+                if isinstance(_ref, str) and _ref.startswith("gsheet:"):
+                    parts = _ref.split(":")
+                    _ws_title = parts[1] if len(parts) > 1 and parts[1] else "HistoryFull"
+                    _aid = parts[2] if len(parts) > 2 else ""
+                    full = load_full_history_payload_from_sheet(_aid, worksheet_title=_ws_title) if _aid else {}
+                    if isinstance(full, dict) and full:
+                        previous_data = full
+                        _prev_rehydrated = True
+                        _prev_rehydrated_ref = _ref
+    except Exception:
+        pass
+
+    # Attach debug flags (harmless; helps diagnose missing schema)
+    try:
+        if _prev_rehydrated:
+            output["previous_data_rehydrated"] = True
+            output["previous_data_full_store_ref"] = _prev_rehydrated_ref
+    except Exception:
+        pass
+
 
 
     # =====================================================================
