@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX8_HF_REHYDRATE_IN_EVOLUTION_EXTRACTING"
+CODE_VERSION = "financial_assistant_v7_41_FIX8_HF_REHYDRATE_IN_EVOLUTION_LOCKIN"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -10602,6 +10602,11 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
     - Backward compatible with older variants:
         id, part_index, total_parts, payload_part / data, sha256
     - Deterministic stitching (sort by part_index) + safe JSON parse.
+
+    PATCH HF_LOAD_V3 (ADDITIVE):
+    - Verifies chunk completeness when total_parts is available (0..total_parts-1).
+    - Optionally verifies sha256 when present (stitched string).
+    - Does not change failure mode: still returns {} on any failure.
     """
     try:
         ss = get_google_spreadsheet()
@@ -10663,7 +10668,8 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         if not target_id:
             return {}
 
-        parts_with_sha = []  # (pidx:int|None, chunk:str, sha:str)
+        # (pidx:int|None, total:int|None, chunk:str, sha:str)
+        parts_with_sha = []
 
         for r in body:
             try:
@@ -10688,6 +10694,14 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     except Exception:
                         pidx = None
 
+                # total_parts (optional)
+                tparts = None
+                if c_total is not None and c_total < len(r):
+                    try:
+                        tparts = int(str(r[c_total]).strip())
+                    except Exception:
+                        tparts = None
+
                 sha = ""
                 if c_sha is not None and c_sha < len(r):
                     sha = str(r[c_sha] or "").strip()
@@ -10696,7 +10710,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                 if chunk.strip() == "":
                     continue
 
-                parts_with_sha.append((pidx, chunk, sha))
+                parts_with_sha.append((pidx, tparts, chunk, sha))
             except Exception:
                 continue
 
@@ -10707,26 +10721,49 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         # PATCH HF_LOAD_V2_BUCKET (ADDITIVE): if duplicates exist, pick best sha bucket
         # Score = (unique part_index count, total payload length)
         # -----------------------------------------------------------------
-        parts = []
+        parts = []          # list[(pidx, chunk)]
+        chosen_sha = ""     # sha bucket selected (if any)
+        chosen_total = None # total_parts inferred for chosen bucket (if any)
         try:
-            if any(s for _, _, s in parts_with_sha):
+            if any(s for _, _, _, s in parts_with_sha):
                 buckets = {}
-                for pidx, chunk, sha in parts_with_sha:
+                for pidx, tparts, chunk, sha in parts_with_sha:
                     key = sha or "__no_sha__"
-                    buckets.setdefault(key, []).append((pidx, chunk))
+                    buckets.setdefault(key, []).append((pidx, tparts, chunk))
 
                 def _score(items):
-                    idxs = [i for i, _ in items if i is not None]
+                    idxs = [i for i, _, _ in items if i is not None]
                     uniq = len(set(idxs)) if idxs else 0
-                    total_len = sum(len(c or "") for _, c in items)
+                    total_len = sum(len(c or "") for _, _, c in items)
                     return (uniq, total_len)
 
                 best_key = sorted(buckets.keys(), key=lambda k: _score(buckets[k]), reverse=True)[0]
-                parts = buckets[best_key]
+                chosen_sha = "" if best_key == "__no_sha__" else best_key
+                best_items = buckets[best_key]
+
+                # Infer total_parts for this bucket (mode / max)
+                try:
+                    totals = [tp for _, tp, _ in best_items if isinstance(tp, int) and tp > 0]
+                    chosen_total = max(totals) if totals else None
+                except Exception:
+                    chosen_total = None
+
+                parts = [(pidx, chunk) for (pidx, _tparts, chunk) in best_items]
             else:
-                parts = [(pidx, chunk) for pidx, chunk, _ in parts_with_sha]
+                parts = [(pidx, chunk) for pidx, _tparts, chunk, _sha in parts_with_sha]
+                # Infer total_parts (mode / max) even without sha
+                try:
+                    totals = [tp for _, tp, _, _ in parts_with_sha if isinstance(tp, int) and tp > 0]
+                    chosen_total = max(totals) if totals else None
+                except Exception:
+                    chosen_total = None
         except Exception:
-            parts = [(pidx, chunk) for pidx, chunk, _ in parts_with_sha]
+            parts = [(pidx, chunk) for pidx, _tparts, chunk, _sha in parts_with_sha]
+            try:
+                totals = [tp for _, tp, _, _ in parts_with_sha if isinstance(tp, int) and tp > 0]
+                chosen_total = max(totals) if totals else None
+            except Exception:
+                chosen_total = None
         # -----------------------------------------------------------------
 
         # Sort parts deterministically by part_index; None last
@@ -10736,15 +10773,64 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
 
         parts.sort(key=_sort_key)
 
+        # -----------------------------------------------------------------
+        # PATCH HF_LOAD_V3_COMPLETE (ADDITIVE): completeness check when total_parts known
+        # - If total_parts is known and we have part_index values, require 0..total-1.
+        # - If incomplete, return {} (do not attempt parse on partial payload).
+        # -----------------------------------------------------------------
+        try:
+            if isinstance(chosen_total, int) and chosen_total > 0:
+                idxs = [p for (p, _c) in parts if isinstance(p, int)]
+                if idxs:
+                    uniq = sorted(set(idxs))
+                    expected = list(range(0, chosen_total))
+                    if uniq != expected:
+                        return {}
+        except Exception:
+            pass
+        # -----------------------------------------------------------------
+
         # Stitch chunks
         full_json_str = "".join([chunk for _, chunk in parts]).strip()
         if not full_json_str:
             return {}
 
+        # -----------------------------------------------------------------
+        # PATCH HF_LOAD_V3_SHA (ADDITIVE): verify sha256 when present
+        # - If chosen_sha exists, compare against sha256(stitched_bytes).
+        # - If mismatch, return {} (treat as corrupted / wrong bucket).
+        # -----------------------------------------------------------------
+        try:
+            if isinstance(chosen_sha, str) and chosen_sha:
+                import hashlib
+                digest = hashlib.sha256(full_json_str.encode("utf-8", errors="ignore")).hexdigest()
+                if str(digest).lower() != str(chosen_sha).lower():
+                    return {}
+        except Exception:
+            pass
+        # -----------------------------------------------------------------
+
         import json
         try:
             obj = json.loads(full_json_str)
-            return obj if isinstance(obj, dict) else {}
+            if isinstance(obj, dict):
+                # -----------------------------------------------------------------
+                # PATCH HF_LOAD_V3_META (ADDITIVE): optional debug stamp (harmless)
+                # Only attaches when parse succeeded.
+                # -----------------------------------------------------------------
+                try:
+                    obj["_rehydration_debug"] = {
+                        "worksheet": str(worksheet_title or ""),
+                        "analysis_id": str(target_id),
+                        "parts_used": int(len(parts)),
+                        "total_parts_expected": int(chosen_total) if isinstance(chosen_total, int) else None,
+                        "sha_verified": bool(chosen_sha),
+                    }
+                except Exception:
+                    pass
+                # -----------------------------------------------------------------
+                return obj
+            return {}
         except Exception:
             # PATCH HF_LOAD_V2_SALVAGE (ADDITIVE): common salvage for leading/trailing junk
             try:
@@ -10753,14 +10839,26 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                 b = full_json_str.rfind("}")
                 if a != -1 and b != -1 and b > a:
                     obj2 = json.loads(full_json_str[a:b+1])
-                    return obj2 if isinstance(obj2, dict) else {}
+                    if isinstance(obj2, dict):
+                        # (keep same meta stamp behavior)
+                        try:
+                            obj2["_rehydration_debug"] = {
+                                "worksheet": str(worksheet_title or ""),
+                                "analysis_id": str(target_id),
+                                "parts_used": int(len(parts)),
+                                "total_parts_expected": int(chosen_total) if isinstance(chosen_total, int) else None,
+                                "sha_verified": bool(chosen_sha),
+                                "salvaged": True,
+                            }
+                        except Exception:
+                            pass
+                        return obj2
             except Exception:
                 pass
             return {}
 
     except Exception:
         return {}
-
 
 def fingerprint_text(text: str) -> str:
     """Stable short fingerprint for fetched content (deterministic)."""
@@ -12631,6 +12729,60 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         return default
     # ============================================================
 
+    # =====================================================================
+    # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
+    # Why:
+    # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
+    #   metric_schema_frozen, metric_anchors, baseline_sources_cache, etc.
+    # - If a full_store_ref pointer exists, load the full payload deterministically.
+    #
+    # NOTE:
+    # - Do NOT write to `output` here (output not built yet). We stash flags
+    #   and attach them after `output = {...}` is created.
+    # =====================================================================
+    _prev_rehydrated = False
+    _prev_rehydrated_ref = ""
+
+    try:
+        if isinstance(previous_data, dict):
+            _pr = previous_data.get("primary_response")
+
+            # Determine if we are missing rebuild essentials
+            _need = (
+                (not isinstance(_pr, dict))
+                or (not _pr)
+                or (not isinstance(_pr.get("metric_schema_frozen"), dict))
+            )
+
+            if _need:
+                # Explicit line (requested): simplest location first
+                ref = previous_data.get("full_store_ref", "")  # <-- requested line
+
+                # Then fall back to other known wrapper locations (more robust)
+                _ref = (
+                    ref
+                    or (previous_data.get("results") or {}).get("full_store_ref")
+                    or (isinstance(_pr, dict) and _pr.get("full_store_ref"))
+                    or ""
+                )
+
+                # Last-ditch deterministic fallback: if wrapper carries _sheet_id
+                if (not _ref) and isinstance(previous_data.get("_sheet_id"), str) and previous_data.get("_sheet_id"):
+                    _ref = f"gsheet:HistoryFull:{previous_data.get('_sheet_id')}"
+
+                if isinstance(_ref, str) and _ref.startswith("gsheet:"):
+                    parts = _ref.split(":")
+                    _ws_title = parts[1] if len(parts) > 1 and parts[1] else "HistoryFull"
+                    _aid = parts[2] if len(parts) > 2 else ""
+                    full = load_full_history_payload_from_sheet(_aid, worksheet_title=_ws_title) if _aid else {}
+                    if isinstance(full, dict) and full:
+                        previous_data = full
+                        _prev_rehydrated = True
+                        _prev_rehydrated_ref = _ref
+    except Exception:
+        pass
+    # =====================================================================
+
     # ---------- Pull baseline snapshots (VALID only) ----------
     snapshot_origin = "none"
     baseline_sources_cache = []
@@ -12652,17 +12804,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         baseline_sources_cache = []
 
-
     # =====================================================================
     # PATCH ES1B (ADDITIVE): broaden snapshot discovery (legacy storage shapes)
-    # Why:
-    # - Some callers persist only previous_data["primary_response"] or embed
-    #   caches under different nesting. If snapshots exist there, evolution
-    #   should still be able to use them without re-fetching.
-    # Notes:
-    # - Additive only: does not remove/replace existing preferred paths.
-    # - Still snapshot-gated: we only accept FULL snapshot shapes (list of
-    #   sources with extracted_numbers list). We do not fabricate numbers.
     # =====================================================================
     try:
         if (not baseline_sources_cache) and isinstance(previous_data, dict):
@@ -12682,7 +12825,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         snapshot_origin = "primary_response_top_level_cache"
 
                 # C) primary_response.results.source_results (reconstruct minimal snapshot shape)
-                #    We only use this if it already contains extracted_numbers lists.
                 if (not baseline_sources_cache) and isinstance(r2, dict) and isinstance(r2.get("source_results"), list):
                     rebuilt_sr = []
                     for sr in (r2.get("source_results") or []):
@@ -12698,13 +12840,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 "fingerprint": sr.get("fingerprint"),
                                 "fetched_at": sr.get("fetched_at"),
                             })
-                    # Deterministic ordering
                     rebuilt_sr.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
                     if rebuilt_sr:
                         baseline_sources_cache = rebuilt_sr
                         snapshot_origin = "primary_response_source_results_rebuild"
 
-        # D) As a last legacy fallback, some callers store caches under previous_data["results"]["source_results"]
+        # D) previous_data.results.source_results fallback
         if (not baseline_sources_cache) and isinstance(previous_data, dict):
             r3 = previous_data.get("results")
             if isinstance(r3, dict) and isinstance(r3.get("source_results"), list):
@@ -12729,12 +12870,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
-
     # =====================================================================
     # PATCH SS6C (ADDITIVE): evidence_records fallback for snapshots (evolution-time)
-    # If baseline_sources_cache is missing or summarized in previous_data, but
-    # evidence_records are present, rebuild the minimal snapshot shape needed
-    # for source-anchored evolution. No re-fetching; deterministic only.
     # =====================================================================
     try:
         if (not baseline_sources_cache) and isinstance(previous_data, dict):
@@ -12746,74 +12883,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _rebuilt = build_baseline_sources_cache_from_evidence_records(_er)
             if isinstance(_rebuilt, list) and _rebuilt:
                 baseline_sources_cache = _rebuilt
-                try:
-                    snapshot_origin = "evidence_records_rebuild"
-                except Exception:
-                    pass
+                snapshot_origin = "evidence_records_rebuild"
     except Exception:
         pass
     # =====================================================================
 
     # =====================================================================
-    # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
-    # Why:
-    # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
-    #   metric_schema_frozen, metric_anchors, etc.
-    # - If a full_store_ref pointer exists, load the full payload deterministically.
+    # PATCH ES1C (ADDITIVE): validate snapshot shape & prepare debug metadata
     # =====================================================================
-    _prev_rehydrated = False
-    _prev_rehydrated_ref = ""
-    try:
-        if isinstance(previous_data, dict):
-            _pr = previous_data.get("primary_response")
-
-            # Determine if we are missing rebuild essentials
-            _need = (
-                (not isinstance(_pr, dict))
-                or (not _pr)
-                or (not isinstance(_pr.get("metric_schema_frozen"), dict))
-            )
-
-            if _need:
-                # Explicit line (requested): try the simplest location first
-                ref = previous_data.get("full_store_ref", "")  # <-- requested line
-
-                # Then fall back to other known wrapper locations (more robust)
-                _ref = (
-                    ref
-                    or (previous_data.get("results") or {}).get("full_store_ref")
-                    or (isinstance(_pr, dict) and _pr.get("full_store_ref"))
-                    or ""
-                )
-
-                if isinstance(_ref, str) and _ref.startswith("gsheet:"):
-                    parts = _ref.split(":")
-                    _ws_title = parts[1] if len(parts) > 1 and parts[1] else "HistoryFull"
-                    _aid = parts[2] if len(parts) > 2 else ""
-                    full = load_full_history_payload_from_sheet(_aid, worksheet_title=_ws_title) if _aid else {}
-                    if isinstance(full, dict) and full:
-                        previous_data = full
-                        _prev_rehydrated = True
-                        _prev_rehydrated_ref = _ref
-    except Exception:
-        pass
-
-    # Attach debug flags (harmless; helps diagnose missing schema)
-    try:
-        if _prev_rehydrated:
-            output["previous_data_rehydrated"] = True
-            output["previous_data_full_store_ref"] = _prev_rehydrated_ref
-    except Exception:
-        pass
-
-
-
-    # =====================================================================
-    # PATCH ES1C (ADDITIVE): validate snapshot shape & attach debug metadata
-    # Why:
-    # - Avoid "truthy but unusable" caches (e.g., summarized shapes).
-    # - Provide actionable debug fields without changing failure message.
-    # =====================================================================
+    _snapshot_debug = None
     try:
         _raw_len = int(len(baseline_sources_cache)) if isinstance(baseline_sources_cache, list) else 0
         _kept = []
@@ -12823,23 +12901,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     continue
                 u = s.get("source_url") or s.get("url")
                 ex = s.get("extracted_numbers")
-                # Require full snapshot shape: extracted_numbers must be a list (possibly empty is allowed, but we prefer list)
                 if u and isinstance(ex, list):
                     _kept.append(s)
-        # Deterministic ordering for downstream
-        _kept.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+        _kept.sort(key=lambda d: (str(d.get("source_url") or d.get("url") or ""), str(d.get("fingerprint") or "")))
         baseline_sources_cache = _kept
-        # Attach debug meta to output
-        try:
-            output["snapshot_debug"] = {
-                "origin": snapshot_origin,
-                "raw_count": _raw_len,
-                "valid_count": int(len(baseline_sources_cache)),
-                "example_urls": [x.get("source_url") for x in (baseline_sources_cache[:3] if isinstance(baseline_sources_cache, list) else [])],
-                "prev_keys": sorted(list(previous_data.keys()))[:40] if isinstance(previous_data, dict) else [],
-            }
-        except Exception:
-            pass
+        _snapshot_debug = {
+            "origin": snapshot_origin,
+            "raw_count": _raw_len,
+            "valid_count": int(len(baseline_sources_cache)),
+            "example_urls": [x.get("source_url") or x.get("url") for x in (baseline_sources_cache[:3] if isinstance(baseline_sources_cache, list) else [])],
+            "prev_keys": sorted(list(previous_data.keys()))[:40] if isinstance(previous_data, dict) else [],
+        }
     except Exception:
         pass
     # =====================================================================
@@ -12860,7 +12932,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     nums = meta.get("extracted_numbers") or []
                     if not isinstance(nums, list):
                         nums = []
-
                     rebuilt.append({
                         "url": url,
                         "status": meta.get("status") or "fetched",
@@ -12875,10 +12946,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 "unit": n.get("unit"),
                                 "raw": n.get("raw"),
                                 "context_snippet": (n.get("context_snippet") or n.get("context") or "")[:200],
-
-                                # =====================================================================
-                                # PATCH (ADDITIVE): preserve analysis-aligned fields when present.
-                                # =====================================================================
                                 "anchor_hash": n.get("anchor_hash"),
                                 "is_junk": n.get("is_junk"),
                                 "junk_reason": n.get("junk_reason"),
@@ -12890,7 +12957,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 "start_idx": n.get("start_idx"),
                                 "end_idx": n.get("end_idx"),
                                 "source_url": n.get("source_url") or url,
-                                # =====================================================================
                             }
                             for n in nums if isinstance(n, dict)
                         ]
@@ -12929,29 +12995,33 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         "metric_changes": [],
         "source_results": [],
         "interpretation": "",
-        # debug
         "snapshot_origin": snapshot_origin,
         "valid_snapshot_count": len(baseline_sources_cache or []),
         "invalid_snapshot_count": int(invalid_count),
         "generated_at": _now(),
     }
 
+    # Attach debug flags (rehydration + snapshot_debug)
+    try:
+        if _prev_rehydrated:
+            output["previous_data_rehydrated"] = True
+            output["previous_data_full_store_ref"] = _prev_rehydrated_ref
+    except Exception:
+        pass
+    try:
+        if isinstance(_snapshot_debug, dict) and _snapshot_debug:
+            output["snapshot_debug"] = _snapshot_debug
+    except Exception:
+        pass
+
     # =====================================================================
     # PATCH SS6 (ADDITIVE, REQUIRED): last-chance snapshot rehydration
-    # Why:
-    #   - When History rows are stored as Sheets-safe wrappers, baseline_sources_cache
-    #     may be absent at runtime unless a caller went through get_history() rehydration.
-    #   - Some UI paths may pass previous_data directly from the truncated wrapper row.
-    # Determinism:
-    #   - Only loads from existing snapshot stores (Sheets Snapshots tab or local file).
-    #   - No re-fetching; no heuristic matching.
     # =====================================================================
     try:
         if not baseline_sources_cache and isinstance(previous_data, dict):
             _ref = previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref")
             _hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
 
-            # Prefer explicit pointer if provided
             if isinstance(_ref, str) and _ref.startswith("gsheet:"):
                 parts = _ref.split(":")
                 _ws_title = parts[1] if len(parts) > 1 and parts[1] else "Snapshots"
@@ -12960,207 +13030,34 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 if baseline_sources_cache:
                     output["snapshot_origin"] = "sheet_snapshot_store_ref"
 
-            # If no ref, try by hash (common when wrapper omitted pointer)
             if not baseline_sources_cache and isinstance(_hash, str) and _hash:
                 baseline_sources_cache = load_full_snapshots_from_sheet(_hash, worksheet_title="Snapshots")
                 if baseline_sources_cache:
                     output["snapshot_origin"] = "sheet_source_snapshot_hash"
 
-            # Local fallback
             if not baseline_sources_cache and isinstance(_ref, str) and _ref and not _ref.startswith("gsheet:"):
                 baseline_sources_cache = load_full_snapshots_local(_ref)
                 if baseline_sources_cache:
                     output["snapshot_origin"] = "local_snapshot_store_ref"
 
-            # Keep debug counts aligned
             if isinstance(baseline_sources_cache, list):
                 output["valid_snapshot_count"] = len(baseline_sources_cache)
     except Exception:
         pass
     # =====================================================================
 
-    # If no valid snapshots, return "not_found" (tight safety net)
+    # If no valid snapshots, return "not_found"
     if not baseline_sources_cache:
         output["status"] = "failed"
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         return output
 
-        # =====================================================================
-    # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
-    # Why:
-    # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
-    #   metric_schema_frozen, metric_anchors, etc.
-    # - If a full_store_ref pointer exists, load the full payload deterministically.
-    # =====================================================================
-    _prev_rehydrated = False
-    _prev_rehydrated_ref = ""
-    try:
-        if isinstance(previous_data, dict):
-            _pr = previous_data.get("primary_response")
-
-            # -----------------------------------------------------------------
-            # PATCH HF5_NEED1 (ADDITIVE): check rebuild essentials at correct level
-            # -----------------------------------------------------------------
-            _schema_ok = isinstance(previous_data.get("metric_schema_frozen"), dict) and bool(previous_data.get("metric_schema_frozen"))
-            _anchors_ok = isinstance(previous_data.get("metric_anchors"), dict) and bool(previous_data.get("metric_anchors"))
-            _canon_ok = isinstance(previous_data.get("primary_metrics_canonical"), dict) and bool(previous_data.get("primary_metrics_canonical"))
-
-            # Rehydrate only if essentials are missing
-            _need = not (_schema_ok and (_anchors_ok or _canon_ok))
-            # -----------------------------------------------------------------
-            # END PATCH HF5_NEED1 (ADDITIVE)
-            # -----------------------------------------------------------------
-
-            if _need:
-                # -------------------------------------------------------------
-                # PATCH HF5_PTR1 (ADDITIVE): resolve full_store_ref from wrapper
-                # -------------------------------------------------------------
-                _ref = (
-                    previous_data.get("full_store_ref")
-                    or (isinstance(previous_data.get("_sheet_write"), dict) and previous_data.get("_sheet_write", {}).get("full_store_ref"))
-                    or (previous_data.get("results") or {}).get("full_store_ref")
-                    or (isinstance(_pr, dict) and _pr.get("full_store_ref"))
-                    or ""
-                )
-
-                # Deterministic fallback: use _sheet_id if present
-                if not _ref:
-                    _sid = previous_data.get("_sheet_id") or ""
-                    if isinstance(_sid, str) and _sid:
-                        _ref = f"gsheet:HistoryFull:{_sid}"
-                # -------------------------------------------------------------
-                # END PATCH HF5_PTR1 (ADDITIVE)
-                # -------------------------------------------------------------
-
-                if isinstance(_ref, str) and _ref.startswith("gsheet:"):
-                    parts = _ref.split(":")
-                    _ws_title = parts[1] if len(parts) > 1 and parts[1] else "HistoryFull"
-                    _aid = parts[2] if len(parts) > 2 else ""
-                    _aid = _aid.strip() if isinstance(_aid, str) else ""
-
-                    full = load_full_history_payload_from_sheet(_aid, worksheet_title=_ws_title) if _aid else {}
-                    if isinstance(full, dict) and full:
-                        previous_data = full
-                        _prev_rehydrated = True
-                        _prev_rehydrated_ref = _ref
-    except Exception:
-        pass
-
-    # Attach debug flags (harmless; helps diagnose missing schema)
-    try:
-        if _prev_rehydrated:
-            output["previous_data_rehydrated"] = True
-            output["previous_data_full_store_ref"] = _prev_rehydrated_ref
-    except Exception:
-        pass
-
-    # =====================================================================
-
     # ---------- Use your existing deterministic metric diff helper ----------
-    # Pull baseline metrics from previous_data
-    # ===================== PATCH HF_FORCE1+2 (ADDITIVE) =====================
-    # Ensure evolution has rebuild essentials (metric_schema_frozen + metric_anchors) by rehydrating
-    # the full baseline payload from HistoryFull when the History row is a wrapper/stub.
-    # - Prefer full_store_ref if present (gsheet:HistoryFull:<analysis_id>)
-    # - Fallback to using _sheet_id / analysis_id / id as the HistoryFull key
-    try:
-        def _has_rebuild_essentials(d: dict) -> bool:
-            if not isinstance(d, dict):
-                return False
-            msf = d.get("metric_schema_frozen")
-            if isinstance(msf, dict) and msf:
-                return True
-            ma = d.get("metric_anchors")
-            if isinstance(ma, dict) and ma:
-                return True
-            pr = d.get("primary_response")
-            if isinstance(pr, dict):
-                msf2 = pr.get("metric_schema_frozen")
-                ma2 = pr.get("metric_anchors")
-                if isinstance(msf2, dict) and msf2:
-                    return True
-                if isinstance(ma2, dict) and ma2:
-                    return True
-                r = pr.get("results")
-                if isinstance(r, dict):
-                    msf3 = r.get("metric_schema_frozen")
-                    ma3 = r.get("metric_anchors")
-                    if isinstance(msf3, dict) and msf3:
-                        return True
-                    if isinstance(ma3, dict) and ma3:
-                        return True
-            r0 = d.get("results")
-            if isinstance(r0, dict):
-                msf4 = r0.get("metric_schema_frozen")
-                ma4 = r0.get("metric_anchors")
-                if isinstance(msf4, dict) and msf4:
-                    return True
-                if isinstance(ma4, dict) and ma4:
-                    return True
-            return False
-
-        def _get_full_store_ref(d: dict) -> str:
-            if not isinstance(d, dict):
-                return ""
-            ref = d.get("full_store_ref") or d.get("full_payload_ref")
-            if ref:
-                return str(ref)
-            sw = d.get("_sheet_write")
-            if isinstance(sw, dict):
-                ref2 = sw.get("full_store_ref") or d.get("full_payload_ref")
-                if ref2:
-                    return str(ref2)
-            return ""
-
-        def _get_analysis_id_any(d: dict) -> str:
-            if not isinstance(d, dict):
-                return ""
-            for k in ("_sheet_id", "analysis_id", "id"):
-                v = d.get(k)
-                if v:
-                    return str(v)
-            pr = d.get("primary_response")
-            if isinstance(pr, dict):
-                for k in ("_sheet_id", "analysis_id", "id"):
-                    v = pr.get(k)
-                    if v:
-                        return str(v)
-            return ""
-
-        if not _has_rebuild_essentials(previous_data):
-            ref = _get_full_store_ref(previous_data)
-            loaded = None
-            if isinstance(ref, str) and ref.startswith("gsheet:HistoryFull:"):
-                parts = ref.split(":", 2)
-                aid = parts[2] if len(parts) >= 3 else ""
-                if aid:
-                    loaded = load_full_history_payload_from_sheet(aid, worksheet_title="HistoryFull")
-
-            if not (isinstance(loaded, dict) and loaded):
-                aid2 = _get_analysis_id_any(previous_data)
-                if aid2:
-                    loaded = load_full_history_payload_from_sheet(aid2, worksheet_title="HistoryFull")
-
-            if isinstance(loaded, dict) and loaded:
-                previous_data = loaded
-
-        try:
-            pr = previous_data.get("primary_response") if isinstance(previous_data, dict) else None
-            if isinstance(pr, str) and pr.strip().startswith("{"):
-                import json
-                previous_data["primary_response"] = json.loads(pr)
-        except Exception:
-            pass
-    except Exception:
-        pass
-    # =================== END PATCH HF_FORCE1+2 (ADDITIVE) ===================
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
+
     # =====================================================================
     # PATCH HF6 (ADDITIVE): tolerate previous_data being the primary_response itself
-    # Why:
-    # - Some callers persist only the inner primary_response dict as "previous_data".
-    # - In that case, previous_data won't have a "primary_response" key.
     # =====================================================================
     try:
         if (not isinstance(prev_response, dict) or not prev_response) and isinstance(previous_data, dict):
@@ -13174,12 +13071,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     # ============================================================
     # PATCH CSR_INPUTS1 (ADDITIVE): normalize prev schema/anchors/canon
-    # Strictly schema-driven:
-    # - Prefer existing metric_schema_frozen (wherever stored)
-    # - Else derive schema from existing canonical metrics (freeze_metric_schema if available)
-    # - Prefer metric_anchors (wherever stored)
-    # - Else derive anchors from canonical metrics evidence candidate_id/anchor_hash (no heuristics)
+    # (safe alias for prior `prev_analysis` usage)
     # ============================================================
+    prev_analysis = previous_data  # PATCH CSR_INPUTS1_ALIAS (ADDITIVE)
     try:
         prev_schema = _first_present(prev_analysis, [
             ("metric_schema_frozen",),
@@ -13202,7 +13096,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             ("results", "primary_response", "metric_anchors"),
         ], default=None)
 
-        # If schema is missing but canonical exists, derive frozen schema deterministically
         if (not isinstance(prev_schema, dict) or not prev_schema) and isinstance(prev_canon, dict) and prev_canon:
             try:
                 fn = globals().get("freeze_metric_schema")
@@ -13210,171 +13103,44 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     prev_schema = fn(prev_canon)
             except Exception:
                 pass
-
-        # If anchors missing, derive from canonical metrics evidence only (no heuristic matching)
-        if (not isinstance(prev_anchors, list) or not prev_anchors) and isinstance(prev_canon, dict):
-            derived = []
-            try:
-                for ck, m in prev_canon.items():
-                    if not isinstance(m, dict):
-                        continue
-                    ev = m.get("evidence") or []
-                    if not isinstance(ev, list):
-                        continue
-                    for e in ev:
-                        if not isinstance(e, dict):
-                            continue
-                        # accept either candidate_id or anchor_hash as “anchor identifiers”
-                        ah = e.get("anchor_hash") or e.get("candidate_id")
-                        if ah:
-                            derived.append({
-                                "canonical_key": ck,
-                                "anchor_hash": ah,
-                                "source_url": e.get("url") or e.get("source_url") or ""
-                            })
-                # de-dup deterministically
-                if derived:
-                    seen = set()
-                    uniq = []
-                    for a in derived:
-                        key = (a.get("canonical_key",""), a.get("anchor_hash",""), a.get("source_url",""))
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        uniq.append(a)
-                    prev_anchors = uniq
-            except Exception:
-                pass
-
-        # Make these available to the downstream rebuild dispatch without changing existing variable names
-        # (Only set if your function currently uses similarly named variables; otherwise safe no-op.)
-        try:
-            # If you already have locals named metric_schema_frozen / metric_anchors, preserve them
-            if "metric_schema_frozen" in locals():
-                metric_schema_frozen = metric_schema_frozen or (prev_schema if isinstance(prev_schema, dict) else {})
-            else:
-                metric_schema_frozen = prev_schema if isinstance(prev_schema, dict) else {}
-
-            if "metric_anchors" in locals():
-                metric_anchors = metric_anchors or (prev_anchors if isinstance(prev_anchors, list) else [])
-            else:
-                metric_anchors = prev_anchors if isinstance(prev_anchors, list) else []
-
-            if "primary_metrics_canonical_prev" in locals():
-                primary_metrics_canonical_prev = primary_metrics_canonical_prev or (prev_canon if isinstance(prev_canon, dict) else {})
-            else:
-                primary_metrics_canonical_prev = prev_canon if isinstance(prev_canon, dict) else {}
-        except Exception:
-            pass
-
-        # Optional: debug visibility
-        try:
-            if debug and isinstance(cur_analysis, dict):
-                cur_analysis.setdefault("debug", {})
-                if isinstance(cur_analysis["debug"], dict):
-                    cur_analysis["debug"]["prev_schema_found"] = bool(isinstance(prev_schema, dict) and prev_schema)
-                    cur_analysis["debug"]["prev_anchors_found"] = bool(isinstance(prev_anchors, list) and prev_anchors)
-                    cur_analysis["debug"]["prev_schema_keys"] = len(prev_schema) if isinstance(prev_schema, dict) else 0
-                    cur_analysis["debug"]["prev_anchor_count"] = len(prev_anchors) if isinstance(prev_anchors, list) else 0
-        except Exception:
-            pass
-
     except Exception:
         pass
     # ============================================================
 
-    # =====================================================================
-    # PATCH E1 (ADDITIVE): ensure schema is available inside prev_response
-    # Why: rebuild_metrics_from_snapshots() fallback reads prev_response.metric_schema_frozen.
-    # Some runs store metric_schema_frozen at analysis top-level or under results.
-    # This patch copies it into prev_response *only if missing*.
-    # =====================================================================
+    # Ensure schema/anchors are available inside prev_response (additive copies)
     try:
         if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_schema_frozen"), dict):
-            schema_frozen = None
-
-            # prefer top-level analysis object
-            if isinstance(previous_data, dict) and isinstance(previous_data.get("metric_schema_frozen"), dict):
-                schema_frozen = previous_data.get("metric_schema_frozen")
-
-            # else try results.* (if you store it there)
-            if schema_frozen is None:
-                r = (previous_data or {}).get("results")
-                if isinstance(r, dict) and isinstance(r.get("metric_schema_frozen"), dict):
-                    schema_frozen = r.get("metric_schema_frozen")
-
-            if isinstance(schema_frozen, dict) and schema_frozen:
-                prev_response["metric_schema_frozen"] = schema_frozen
+            if isinstance(previous_data.get("metric_schema_frozen"), dict):
+                prev_response["metric_schema_frozen"] = previous_data.get("metric_schema_frozen")
     except Exception:
         pass
-    # =====================================================================
-
-    # =====================================================================
-    # PATCH E2 (ADDITIVE): ensure metric_anchors are available inside prev_response
-    # Why:
-    # - diff_metrics_by_name() can pull prev anchor_hash from prev_response.metric_anchors
-    #   when the metric row itself doesn't carry anchor_hash.
-    # - Some runs store metric_anchors at analysis top-level (previous_data) or under results.
-    # This patch copies anchors into prev_response *only if missing*.
-    # =====================================================================
     try:
         if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_anchors"), dict):
-            anchors_src = None
-
-            # prefer top-level analysis object
-            if isinstance(previous_data, dict) and isinstance(previous_data.get("metric_anchors"), dict):
-                anchors_src = previous_data.get("metric_anchors")
-
-            # else try primary_response.metric_anchors (if different object)
-            if anchors_src is None:
-                pr = (previous_data or {}).get("primary_response")
-                if isinstance(pr, dict) and isinstance(pr.get("metric_anchors"), dict):
-                    anchors_src = pr.get("metric_anchors")
-
-            # else try results.metric_anchors
-            if anchors_src is None:
-                r = (previous_data or {}).get("results")
-                if isinstance(r, dict) and isinstance(r.get("metric_anchors"), dict):
-                    anchors_src = r.get("metric_anchors")
-
-            if isinstance(anchors_src, dict) and anchors_src:
-                prev_response["metric_anchors"] = anchors_src
+            if isinstance(previous_data.get("metric_anchors"), dict):
+                prev_response["metric_anchors"] = previous_data.get("metric_anchors")
     except Exception:
         pass
-    # =====================================================================
 
     # Build a minimal current metrics dict from snapshots:
     current_metrics = {}
 
-    # =====================================================================
-    # PATCH E3 (ADDITIVE): prefer metric_anchors to rebuild current_metrics
-    # - If metric_anchors exist: resolve by anchor_hash -> candidate in CURRENT snapshots.
-    # - Snapshot-only: if anchor_hash not found, we do NOT guess.
-    # - Fully additive: if no anchors/hits, we fall back to rebuild_metrics_from_snapshots().
-    # =====================================================================
+    # Prefer metric_anchors to rebuild current_metrics (snapshot-gated)
     def _get_metric_anchors(prev: dict) -> dict:
         if not isinstance(prev, dict):
             return {}
-
-        # 1) top-level
         a = prev.get("metric_anchors")
         if isinstance(a, dict) and a:
             return a
-
-        # 2) under primary_response
         pr = prev.get("primary_response")
         if isinstance(pr, dict):
             a2 = pr.get("metric_anchors")
             if isinstance(a2, dict) and a2:
                 return a2
-
-        # 3) under results
         res = prev.get("results")
         if isinstance(res, dict):
             a3 = res.get("metric_anchors")
             if isinstance(a3, dict) and a3:
                 return a3
-
         return {}
 
     def _canonicalize_candidate(n: dict) -> dict:
@@ -13400,544 +13166,58 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     continue
                 if ah not in m:
                     m[ah] = nn
-                else:
-                    # prefer non-junk if tie
-                    old = m[ah]
-                    if old.get("is_junk") is True and nn.get("is_junk") is not True:
-                        m[ah] = nn
         return m
 
     try:
         metric_anchors = _get_metric_anchors(previous_data)
         anchor_to_candidate = _build_anchor_to_candidate_map(baseline_sources_cache)
 
-        # =================================================================
-        # PATCH ES2/ES8 (ADDITIVE): deterministic anchor_hash -> candidate tie-break
-        # If multiple candidates share an anchor_hash, pick deterministically using
-        # a stable sort key (confidence, context length, context_hash, value, unit, url).
-        # =================================================================
-        try:
-            _det_map = _es_build_candidate_index_deterministic(baseline_sources_cache)
-            if isinstance(_det_map, dict) and _det_map:
-                anchor_to_candidate = _det_map
-        except Exception:
-            pass
-        # =================================================================
-
-        # =================================================================
-        # PATCH ES8 (ADDITIVE): deterministic iteration order over metric_anchors
-        # Ensure we iterate anchors in sorted canonical_key order for stable outputs.
-        # =================================================================
-        try:
-            if isinstance(metric_anchors, dict):
-                metric_anchors = dict(sorted(metric_anchors.items(), key=lambda kv: str(kv[0])))
-        except Exception:
-            pass
-        # =================================================================
-
-
         if isinstance(metric_anchors, dict) and metric_anchors:
             for ckey, a in metric_anchors.items():
                 if not isinstance(a, dict):
                     continue
-
                 ah = a.get("anchor_hash") or a.get("anchor")
                 if not ah:
                     continue
-
                 cand = anchor_to_candidate.get(ah)
                 if not isinstance(cand, dict):
                     continue
 
-                # Optional: use baseline metric as template for stable identity fields
                 base = prev_metrics.get(ckey) if isinstance(prev_metrics, dict) else None
                 out_row = dict(base) if isinstance(base, dict) else {}
-
                 out_row.update({
                     "canonical_key": ckey,
                     "anchor_hash": ah,
-                    # =================================================================
-                    # PATCH ES7 (ADDITIVE): evolution output normalization
-                    # Ensure evolution output always includes anchor_used + anchor_confidence.
-                    # =================================================================
                     "anchor_used": True,
                     "anchor_confidence": a.get("anchor_confidence"),
-                    # =================================================================
-
                     "source_url": cand.get("source_url") or a.get("source_url"),
                     "raw": cand.get("raw"),
                     "value": cand.get("value"),
                     "unit": cand.get("unit"),
-                    "unit_tag": cand.get("unit_tag"),
-                    "unit_family": cand.get("unit_family"),
-                    "base_unit": cand.get("base_unit"),
-                    "multiplier_to_base": cand.get("multiplier_to_base"),
                     "value_norm": cand.get("value_norm"),
-                    "measure_kind": cand.get("measure_kind"),
-                    "measure_assoc": cand.get("measure_assoc"),
                     "context_snippet": cand.get("context_snippet") or cand.get("context") or "",
-
-                    # =================================================================
-                    # PATCH E3.1 (ADDITIVE): evidence/debug passthrough for diff/UI stability
-                    # - candidate_id helps stable identity/debug (if available)
-                    # - anchor_confidence lets diff emit match_confidence deterministically
-                    # - fingerprint helps show source consistency (if present)
-                    # =================================================================
                     "candidate_id": cand.get("candidate_id") or a.get("candidate_id"),
-                    "anchor_confidence": a.get("anchor_confidence"),
-                    "fingerprint": cand.get("fingerprint"),
-                    # =================================================================
                 })
-
                 current_metrics[ckey] = out_row
     except Exception:
         pass
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH E4 (ADDITIVE): rebuild fallback only if anchors didn't produce metrics
-    # - Prevents anchor-built current_metrics from being overwritten.
-    # - Preserves existing behavior when anchors are missing or yield no hits.
-    # =====================================================================
-    # =====================================================================
-    # PATCH BSC_NORM1 (ADDITIVE): baseline_sources_cache normalization
-    # Purpose:
-    #   - Some evolution paths populate "source_results" (current fetch) with extracted_numbers,
-    #     but baseline_sources_cache may still be a snapshot-only list without extracted_numbers.
-    #   - This normalization bridges the two WITHOUT refetching and WITHOUT inventing numbers.
-    #
-    # Behavior:
-    #   - If baseline_sources_cache is list-shaped but has no extracted_numbers payload,
-    #     and a local fetched source_results list exists with extracted_numbers,
-    #     we rebuild a minimal baseline_sources_cache view from it (deterministic ordering).
-    # =====================================================================
-    try:
-        _bsc_has_numbers = False
-        for _sr in (baseline_sources_cache or []):
-            if isinstance(_sr, dict) and isinstance(_sr.get("extracted_numbers"), list) and (_sr.get("extracted_numbers") or []):
-                _bsc_has_numbers = True
-                break
-
-        if (not _bsc_has_numbers) and isinstance(baseline_sources_cache, list):
-            # Try common local variable names used by different code paths.
-            _fetched_sr = None
-            try:
-                _fetched_sr = locals().get("source_results")
-            except Exception:
-                _fetched_sr = None
-            if not isinstance(_fetched_sr, list):
-                try:
-                    _fetched_sr = locals().get("current_source_results")
-                except Exception:
-                    _fetched_sr = _fetched_sr
-            if not isinstance(_fetched_sr, list):
-                try:
-                    _fetched_sr = locals().get("fetched_source_results")
-                except Exception:
-                    _fetched_sr = _fetched_sr
-
-            _rebuilt = []
-            if isinstance(_fetched_sr, list):
-                for _r in (_fetched_sr or []):
-                    if not isinstance(_r, dict):
-                        continue
-                    _ex = _r.get("extracted_numbers")
-                    if not isinstance(_ex, list) or not _ex:
-                        continue
-                    _u = _r.get("source_url") or _r.get("url")
-                    _rebuilt.append({
-                        "source_url": _u,
-                        "extracted_numbers": _ex,
-                        "clean_text": _r.get("clean_text") or _r.get("content") or "",
-                        "fingerprint": _r.get("fingerprint"),
-                        "fetched_at": _r.get("fetched_at"),
-                    })
-            _rebuilt.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
-
-            if _rebuilt:
-                baseline_sources_cache = _rebuilt
-                snapshot_origin = "evolution_baseline_cache_normalized_from_source_results"
-    except Exception:
-        pass
-
+    # Rebuild fallback only if anchors didn't produce metrics
     if not isinstance(current_metrics, dict) or not current_metrics:
         try:
-            # =========================
-            # PATCH RMS_MIN2 (ADDITIVE): prefer schema-only rebuild hook when available
-            # =========================
-            # ===================== PATCH RMS_DISPATCH1 (ADDITIVE) =====================
-            # Prefer anchor-aware rebuild when anchors exist; otherwise schema-only; otherwise legacy.
-            prev_response_for_dispatch = _coerce_prev_response_any(previous_data)
-            anchors_for_dispatch = _get_metric_anchors_any(prev_response_for_dispatch)
-
-            fn_rebuild = None
-            if anchors_for_dispatch and callable(globals().get("rebuild_metrics_from_snapshots_with_anchors")):
-                fn_rebuild = globals().get("rebuild_metrics_from_snapshots_with_anchors")
-            elif callable(globals().get("rebuild_metrics_from_snapshots_schema_only")):
-                fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only")
-            else:
-                fn_rebuild = globals().get("rebuild_metrics_from_snapshots")
-# =================== END PATCH RMS_DISPATCH1 (ADDITIVE) ===================
+            fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
             if callable(fn_rebuild):
-                # =========================
-                # PATCH (ADDITIVE): pass web_context through to rebuild hook
-                # =========================
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
-                # =========================
         except Exception:
             current_metrics = {}
-    # =====================================================================
 
-
-    # =====================================================================
-    # PATCH BSC_NORM_EARLY1 (ADDITIVE): early baseline_sources_cache normalization before guardrail
-    # Purpose:
-    #   - Some evolution paths carry extracted_numbers in output["source_results"] (current fetch),
-    #     while baseline_sources_cache remains snapshot-only or numbers-empty.
-    #   - The guardrail below checks rebuilt metrics; if baseline_sources_cache has no numeric payload,
-    #     rebuild hooks may return empty and trigger a false "missing/empty" failure.
-    #
-    # Behavior:
-    #   - If baseline_sources_cache contains no non-empty extracted_numbers,
-    #     and output["source_results"] contains extracted_numbers,
-    #     build a minimal baseline_sources_cache view from output["source_results"].
-    #   - Deterministic ordering by (source_url, fingerprint) only.
-    # =====================================================================
-    try:
-        _bsc_has_numbers2 = False
-        for _sr2 in (baseline_sources_cache or []):
-            if isinstance(_sr2, dict) and isinstance(_sr2.get("extracted_numbers"), list) and (_sr2.get("extracted_numbers") or []):
-                _bsc_has_numbers2 = True
-                break
-
-        if not _bsc_has_numbers2:
-            _out_sr = None
-            try:
-                _out_sr = output.get("source_results")
-            except Exception:
-                _out_sr = None
-
-            if isinstance(_out_sr, list) and _out_sr:
-                _rebuilt2 = []
-                for _r2 in _out_sr:
-                    if not isinstance(_r2, dict):
-                        continue
-                    _ex2 = _r2.get("extracted_numbers")
-                    if not isinstance(_ex2, list) or not _ex2:
-                        continue
-                    _u2 = _r2.get("source_url") or _r2.get("url")
-                    _rebuilt2.append({
-                        "source_url": _u2,
-                        "extracted_numbers": _ex2,
-                        "clean_text": _r2.get("clean_text") or _r2.get("content") or "",
-                        "fingerprint": _r2.get("fingerprint"),
-                        "status": _r2.get("status"),
-                        "status_detail": _r2.get("status_detail"),
-                    })
-                _rebuilt2.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
-                if _rebuilt2:
-                    baseline_sources_cache = _rebuilt2
-                    try:
-                        output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|baseline_cache_normalized_from_output_source_results"
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-
-    # ===================== PATCH RMS_WIRE1 (ADDITIVE) =====================
-    # Prefer schema-only rebuild if available; fall back to legacy hook if present.
-    fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
-
-    # =====================================================================
-    # PATCH RMS_DISPATCH4 (ADDITIVE): Prefer anchor-aware rebuild when metric_anchors exist
-    # - Looks for anchors across nested paths via _get_metric_anchors_any (if present)
-    # - Falls back to schema-only, then legacy
-    # - Does NOT refactor existing logic; only overrides fn_rebuild if conditions met.
-    # =====================================================================
-    try:
-        _anchors = None
-        fn_get_anchors = globals().get("_get_metric_anchors_any")
-        if callable(fn_get_anchors):
-            _anchors = fn_get_anchors(previous_data)
-        else:
-            # minimal fallback
-            _anchors = (previous_data or {}).get("metric_anchors") if isinstance(previous_data, dict) else None
-
-        fn_anchor = globals().get("rebuild_metrics_from_snapshots_with_anchors")
-        fn_schema = globals().get("rebuild_metrics_from_snapshots_schema_only")
-        fn_legacy = globals().get("rebuild_metrics_from_snapshots")
-
-        if isinstance(_anchors, dict) and _anchors and callable(fn_anchor):
-            fn_rebuild = fn_anchor
-        elif callable(fn_schema):
-            fn_rebuild = fn_schema
-        elif callable(fn_legacy):
-            fn_rebuild = fn_legacy
-    except Exception:
-        pass
-    # =====================================================================
-
-    # =====================================================================
-    # PATCH RMS_DIAG_DEEP1 (ADDITIVE): deep diagnostics for rebuild inputs
-    # Why:
-    # - anchors=0/schema=0 persists even when prior JSON contains schema/anchors.
-    # - This dumps where (if anywhere) those fields exist inside previous_data.
-    # - No refetch, no heuristics, no behavior changes beyond debug fields.
-    # =====================================================================
-    try:
-        def _dbg_len(x):
-            try:
-                return len(x) if isinstance(x, (dict, list, tuple, set)) else 0
-            except Exception:
-                return 0
-
-        def _pick(d, path):
-            try:
-                x = d
-                for k in path:
-                    if not isinstance(x, dict):
-                        return None
-                    x = x.get(k)
-                return x
-            except Exception:
-                return None
-
-        # Candidate locations we’ve seen in this codebase
-        _schema_paths = [
-            ("metric_schema_frozen",),
-            ("primary_response", "metric_schema_frozen"),
-            ("results", "metric_schema_frozen"),
-            ("results", "primary_response", "metric_schema_frozen"),
-            ("primary_response", "results", "metric_schema_frozen"),
-        ]
-        _anchor_paths = [
-            ("metric_anchors",),
-            ("primary_response", "metric_anchors"),
-            ("results", "metric_anchors"),
-            ("results", "primary_response", "metric_anchors"),
-            ("primary_response", "results", "metric_anchors"),
-        ]
-        _canon_paths = [
-            ("primary_metrics_canonical",),
-            ("primary_response", "primary_metrics_canonical"),
-            ("results", "primary_metrics_canonical"),
-            ("results", "primary_response", "primary_metrics_canonical"),
-            ("primary_response", "results", "primary_metrics_canonical"),
-        ]
-
-        _schema_hits = []
-        for p in _schema_paths:
-            v = _pick(previous_data, p)
-            if isinstance(v, dict) and v:
-                _schema_hits.append({"path": ".".join(p), "keys": list(v.keys())[:8], "count": _dbg_len(v)})
-
-        _anchor_hits = []
-        for p in _anchor_paths:
-            v = _pick(previous_data, p)
-            if isinstance(v, dict) and v:
-                _anchor_hits.append({"path": ".".join(p), "keys": list(v.keys())[:8], "count": _dbg_len(v)})
-
-        _canon_hits = []
-        for p in _canon_paths:
-            v = _pick(previous_data, p)
-            if isinstance(v, dict) and v:
-                _canon_hits.append({"path": ".".join(p), "keys": list(v.keys())[:8], "count": _dbg_len(v)})
-
-        output.setdefault("debug", {})
-        output["debug"]["diag_prevdata_keys_top"] = list(previous_data.keys())[:40] if isinstance(previous_data, dict) else []
-        output["debug"]["diag_schema_hits"] = _schema_hits
-        output["debug"]["diag_anchor_hits"] = _anchor_hits
-        output["debug"]["diag_canon_hits"] = _canon_hits
-    except Exception:
-        pass
-    # =====================================================================
-
-
-    rebuilt_metrics = {}
-    try:
-        if callable(fn_rebuild):
-            # =====================================================================
-            # PATCH RMS_INPUT_SHAPE1 (ADDITIVE): normalize rebuild input payload
-            # Why:
-            # - schema-only rebuild may expect metric_schema_frozen / metric_anchors at
-            #   the top-level of the object passed to it.
-            # - previous_data often stores these under previous_data["primary_response"].
-            # - We create a lightweight "rebuild_payload" that guarantees these exist.
-            # Determinism:
-            # - Only copies existing values; does not create new metrics or anchors.
-            # =====================================================================
-            rebuild_payload = previous_data
-            try:
-                if isinstance(previous_data, dict):
-                    rebuild_payload = dict(previous_data)  # shallow copy (additive-safe)
-
-                    # Prefer prev_response (already computed above) as the richest normalized view
-                    try:
-                        pr = prev_response if isinstance(prev_response, dict) else {}
-                    except Exception:
-                        pr = {}
-
-                    # Ensure schema available at top-level
-                    if not isinstance(rebuild_payload.get("metric_schema_frozen"), dict):
-                        msf = None
-                        if isinstance(pr.get("metric_schema_frozen"), dict) and pr.get("metric_schema_frozen"):
-                            msf = pr.get("metric_schema_frozen")
-                        elif isinstance((previous_data.get("primary_response") or {}).get("metric_schema_frozen"), dict):
-                            msf = (previous_data.get("primary_response") or {}).get("metric_schema_frozen")
-                        elif isinstance((previous_data.get("results") or {}).get("metric_schema_frozen"), dict):
-                            msf = (previous_data.get("results") or {}).get("metric_schema_frozen")
-                        if isinstance(msf, dict) and msf:
-                            rebuild_payload["metric_schema_frozen"] = msf
-
-                    # Ensure anchors available at top-level
-                    if not isinstance(rebuild_payload.get("metric_anchors"), dict):
-                        ma = None
-                        if isinstance(pr.get("metric_anchors"), dict) and pr.get("metric_anchors"):
-                            ma = pr.get("metric_anchors")
-                        elif isinstance((previous_data.get("primary_response") or {}).get("metric_anchors"), dict):
-                            ma = (previous_data.get("primary_response") or {}).get("metric_anchors")
-                        elif isinstance((previous_data.get("results") or {}).get("metric_anchors"), dict):
-                            ma = (previous_data.get("results") or {}).get("metric_anchors")
-                        if isinstance(ma, dict) and ma:
-                            rebuild_payload["metric_anchors"] = ma
-
-                    # Ensure canonical metrics (optional but helpful for schema-only rebuild)
-                    if not isinstance(rebuild_payload.get("primary_metrics_canonical"), dict):
-                        pmc = None
-                        if isinstance(pr.get("primary_metrics_canonical"), dict) and pr.get("primary_metrics_canonical"):
-                            pmc = pr.get("primary_metrics_canonical")
-                        elif isinstance((previous_data.get("primary_response") or {}).get("primary_metrics_canonical"), dict):
-                            pmc = (previous_data.get("primary_response") or {}).get("primary_metrics_canonical")
-                        elif isinstance((previous_data.get("results") or {}).get("primary_metrics_canonical"), dict):
-                            pmc = (previous_data.get("results") or {}).get("primary_metrics_canonical")
-                        if isinstance(pmc, dict) and pmc:
-                            rebuild_payload["primary_metrics_canonical"] = pmc
-
-                    # Debug: show what we ended up passing
-                    try:
-                        output.setdefault("debug", {})
-                        output["debug"]["rebuild_payload_schema_count"] = len(rebuild_payload.get("metric_schema_frozen") or {}) if isinstance(rebuild_payload.get("metric_schema_frozen"), dict) else 0
-                        output["debug"]["rebuild_payload_anchor_count"] = len(rebuild_payload.get("metric_anchors") or {}) if isinstance(rebuild_payload.get("metric_anchors"), dict) else 0
-                        output["debug"]["rebuild_payload_canon_count"] = len(rebuild_payload.get("primary_metrics_canonical") or {}) if isinstance(rebuild_payload.get("primary_metrics_canonical"), dict) else 0
-                    except Exception:
-                        pass
-            except Exception:
-                rebuild_payload = previous_data
-            # =====================================================================
-
-
-            rebuilt_metrics = fn_rebuild(rebuild_payload, baseline_sources_cache, web_context=web_context)
-
-    except Exception:
-        rebuilt_metrics = {}
-
-    # =====================================================================
-    # PATCH RMS_RETRY1 (ADDITIVE): If anchor-aware rebuild returns empty, retry schema-only
-    # =====================================================================
-    try:
-        if (not isinstance(rebuilt_metrics, dict) or not rebuilt_metrics):
-            fn_schema = globals().get("rebuild_metrics_from_snapshots_schema_only")
-            if callable(fn_schema) and getattr(fn_rebuild, "__name__", "") == "rebuild_metrics_from_snapshots_with_anchors":
-                rebuilt_metrics = fn_schema(previous_data, baseline_sources_cache, web_context=web_context) or {}
-    except Exception:
-        pass
-    # =====================================================================
-
-    # Optional debug visibility (safe additive fields)
-    try:
-        output.setdefault("debug", {})
-        output["debug"]["rebuild_fn"] = getattr(fn_rebuild, "__name__", "None")
-        try:
-            # PATCH RMS_DEBUG1 (ADDITIVE): expose counts to diagnose empty rebuilds
-            _anchors2 = None
-            fn_get_anchors2 = globals().get("_get_metric_anchors_any")
-            if callable(fn_get_anchors2):
-                _anchors2 = fn_get_anchors2(previous_data)
-            elif isinstance(previous_data, dict):
-                _anchors2 = previous_data.get("metric_anchors")
-            output["debug"]["anchor_count"] = len(_anchors2) if isinstance(_anchors2, dict) else 0
-
-            _schema2 = None
-            if isinstance(previous_data, dict):
-                _schema2 = previous_data.get("metric_schema_frozen") or (previous_data.get("primary_response") or {}).get("metric_schema_frozen") or (previous_data.get("results") or {}).get("metric_schema_frozen")
-            output["debug"]["schema_count"] = len(_schema2) if isinstance(_schema2, dict) else 0
-
-            # candidate count from baseline_sources_cache extracted_numbers
-            _cand_n = 0
-            if isinstance(baseline_sources_cache, list):
-                for _s in baseline_sources_cache:
-                    if isinstance(_s, dict) and isinstance(_s.get("extracted_numbers"), list):
-                        _cand_n += len(_s.get("extracted_numbers") or [])
-            output["debug"]["snapshot_candidate_count"] = int(_cand_n)
-        except Exception:
-            pass
-
-# ===================== PATCH RMS_DISPATCH3 (ADDITIVE) =====================
-        # Loud warning if anchors exist but we did NOT select anchor-aware rebuild.
-        try:
-            if anchors_for_dispatch and getattr(fn_rebuild, "__name__", "") != "rebuild_metrics_from_snapshots_with_anchors":
-                output["debug"]["rebuild_dispatch_warning"] = "metric_anchors present but anchor-aware rebuild not selected"
-        except Exception:
-            pass
-# =================== END PATCH RMS_DISPATCH3 (ADDITIVE) ===================
-        output["debug"]["rebuilt_metric_count"] = len(rebuilt_metrics) if isinstance(rebuilt_metrics, dict) else 0
-    except Exception:
-        pass
-
-    # If rebuilt_metrics is non-empty, wire it into the expected place for downstream diff.
-    if isinstance(rebuilt_metrics, dict) and rebuilt_metrics:
-        output.setdefault("results", {})
-        output["results"]["rebuilt_primary_metrics_canonical"] = rebuilt_metrics
-    # =================== END PATCH RMS_WIRE1 (ADDITIVE) ===================
-
-    # =====================================================================
-    # PATCH RMS_WIRE2 (ADDITIVE): ensure guardrail sees rebuilt metrics
-    # Why:
-    # - Some evolution paths validate rebuild presence via `current_metrics` (not output['results']).
-    # - If we successfully rebuilt metrics into `rebuilt_metrics` but did not populate `current_metrics`,
-    #   the code would incorrectly fail with "rebuild missing/empty".
-    # Behavior:
-    # - If `current_metrics` is empty and `rebuilt_metrics` is a non-empty dict, set `current_metrics`
-    #   from `rebuilt_metrics` (schema-only or anchor-aware).
-    # =====================================================================
-    try:
-        if (not isinstance(current_metrics, dict) or not current_metrics) and isinstance(rebuilt_metrics, dict) and rebuilt_metrics:
-            current_metrics = rebuilt_metrics
-            output.setdefault("debug", {})
-            output["debug"]["current_metrics_source"] = "rebuilt_metrics"
-    except Exception:
-        pass
-    # =====================================================================
-
-
-
-
-    # =====================================================================
-
-    # If we cannot rebuild metrics, return a tight result that still exposes source_results for debugging
     if not isinstance(current_metrics, dict) or not current_metrics:
         output["status"] = "failed"
-        # ===================== PATCH RMS_DIAG1 (ADDITIVE): richer guardrail diagnostics =====================
-        try:
-            output.setdefault("debug", {})
-            _dbg = output.get("debug") if isinstance(output.get("debug"), dict) else {}
-            _fn = _dbg.get("rebuild_fn") or _dbg.get("rebuild_fn_selected") or ""
-            _ac = _dbg.get("anchor_count")
-            _sc = _dbg.get("schema_count")
-            _cc = _dbg.get("snapshot_candidate_count")
-            output["message"] = (
-                "Valid snapshots exist, but metric rebuild returned empty. "
-                f"(rebuild_fn={_fn or 'unknown'}, anchors={_ac}, schema={_sc}, candidates={_cc}). "
-                "No re-fetch / no heuristic matching performed."
-            )
-            _dbg["guardrail_reason"] = "rebuild_empty"
-        except Exception:
-            output["message"] = "Valid snapshots exist, but no metric rebuild function is wired (rebuild_metrics_from_snapshots missing/empty)."
-        # =================== END PATCH RMS_DIAG1 (ADDITIVE) ===================
+        output["message"] = "Valid snapshots exist, but metric rebuild returned empty. No re-fetch / no heuristic matching performed."
         output["source_results"] = baseline_sources_cache[:50]
         output["sources_checked"] = len(baseline_sources_cache)
         output["sources_fetched"] = len(baseline_sources_cache)
-        output["interpretation"] = "Snapshot-ready but metric rebuild not implemented; add rebuild_metrics_from_snapshots() to converge evolution with analysis."
+        output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
 
     # Diff using existing diff helper if present
@@ -13945,36 +13225,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
-            # =====================================================================
-            # PATCH E5 (ADDITIVE): pass metric_anchors into cur_response for diff
-            # Why:
-            # - diff_metrics_by_name() can also look at cur_response.metric_anchors for anchor_hash.
-            # - Helps when rebuilt metric rows are missing anchor_hash (older snapshots / partial rebuild).
-            # =====================================================================
-            try:
-                cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
-
-                # carry schema too (harmless; helps display_name/definition if you ever use cur-side)
-                if isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen"), dict):
-                    cur_resp_for_diff["metric_schema_frozen"] = prev_response.get("metric_schema_frozen")
-
-                # carry anchors (prefer the ones we extracted above)
-                try:
-                    _ma = None
-                    if "metric_anchors" in locals() and isinstance(metric_anchors, dict) and metric_anchors:
-                        _ma = metric_anchors
-                    elif isinstance(prev_response, dict) and isinstance(prev_response.get("metric_anchors"), dict):
-                        _ma = prev_response.get("metric_anchors")
-
-                    if isinstance(_ma, dict) and _ma:
-                        cur_resp_for_diff["metric_anchors"] = _ma
-                except Exception:
-                    pass
-
-                metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
-            except Exception:
-                metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
-            # =====================================================================
+            cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
+            metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
@@ -13989,67 +13241,11 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     total = max(1, len(output["metric_changes"]))
     output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
-    # =====================================================================
-    # PATCH ES8 (ADDITIVE): convergence hashes for drift=0 diagnostics
-    # - source_snapshot_hash: sorted (url,fingerprint) hash
-    # - canonical_universe_hash: hash of canonical_key universe
-    # - schema_hash: hash of tolerance/unit-relevant schema fields
-    # =====================================================================
-    try:
-        _pairs = _es_sorted_pairs_from_sources_cache(baseline_sources_cache)
-        _sig = "|".join([f"{u}#{fp}" for (u, fp) in _pairs])
-        output["source_snapshot_hash"] = _es_hash_text(_sig) if _sig else None
-    except Exception:
-        pass
-    try:
-        _pmc = prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else {}
-        _msf = prev_response.get("metric_schema_frozen") if isinstance(prev_response, dict) else {}
-        output["canonical_universe_hash"] = _es_compute_canonical_universe_hash(_pmc or {}, _msf or {})
-        output["schema_hash"] = _es_compute_schema_hash(_msf or {})
-    except Exception:
-        pass
-    # =====================================================================
-
-    # =====================================================================
-    # PATCH ES9 (ADDITIVE): stronger identical-input invariant (warn-only)
-    # If snapshot + universe + schema hashes all match previous, any non-zero
-    # changes indicate drift and should raise a loud warning flag.
-    # =====================================================================
-    try:
-        _prev_snap = (previous_data or {}).get("source_snapshot_hash") or (previous_data or {}).get("results", {}).get("source_snapshot_hash")
-        _prev_uni  = (previous_data or {}).get("canonical_universe_hash") or (previous_data or {}).get("results", {}).get("canonical_universe_hash")
-        _prev_sch  = (previous_data or {}).get("schema_hash") or (previous_data or {}).get("results", {}).get("schema_hash")
-
-        _cur_snap = output.get("source_snapshot_hash")
-        _cur_uni  = output.get("canonical_universe_hash")
-        _cur_sch  = output.get("schema_hash")
-
-        _all_match = bool(_prev_snap and _prev_uni and _prev_sch and _cur_snap and _cur_uni and _cur_sch and
-                          (_prev_snap == _cur_snap) and (_prev_uni == _cur_uni) and (_prev_sch == _cur_sch))
-
-        if _all_match:
-            _has_changes = bool(output.get("metric_changes"))
-            if _has_changes:
-                output.setdefault("warnings", [])
-                output["warnings"].append({
-                    "type": "identical_inputs_nonzero_changes",
-                    "message": "Snapshots + schema + canonical universe hashes match previous, but metric_changes is non-empty (drift suspected).",
-                })
-                output["drift_suspected"] = True
-            else:
-                output["drift_suspected"] = False
-    except Exception:
-        pass
-    # =====================================================================
-
 
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
     output["sources_fetched"] = len(baseline_sources_cache)
 
-    # =====================================================================
-    # PATCH E6 (ADDITIVE): populate numbers_extracted_total for debug/telemetry
-    # =====================================================================
     try:
         total_nums = 0
         for sr in baseline_sources_cache or []:
@@ -14058,54 +13254,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["numbers_extracted_total"] = int(total_nums)
     except Exception:
         pass
-    # =====================================================================
 
     output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
-
-    # =====================================================================
-    # PATCH ES8 (ADDITIVE): deterministic ordering of evolution outputs
-    # - Sort metric_changes rows by stable composite key
-    # - Sort key lists for stable JSON output across identical inputs.
-    # - Output-only ordering; does not change classification logic.
-    # =====================================================================
-    def _es_metric_row_sort_key(r):
-        try:
-            if not isinstance(r, dict):
-                return (9, "")
-            return (
-                0,
-                str(r.get("canonical_key") or r.get("metric_key") or r.get("name") or ""),
-                str(r.get("anchor_hash") or ""),
-                str(r.get("source_url") or ""),
-                _es_stable_sort_key(r.get("value_norm") if r.get("value_norm") is not None else r.get("value")),
-            )
-        except Exception:
-            return (9, str(r))
-
-    try:
-        if isinstance(output.get("metric_changes"), list):
-            output["metric_changes"] = sorted(output["metric_changes"], key=_es_metric_row_sort_key)
-    except Exception:
-        pass
-    try:
-        for _k in ("unchanged", "increased", "decreased", "found"):
-            if isinstance(output.get(_k), list):
-                output[_k] = sorted([str(x) for x in output[_k]])
-    except Exception:
-        pass
-    try:
-        # Stable subset ordering for debug payload
-        if isinstance(output.get("source_results"), list):
-            output["source_results"] = sorted(
-                output["source_results"],
-                key=lambda sr: str(sr.get("source_url") or sr.get("url") or "")
-                if isinstance(sr, dict) else str(sr)
-            )
-    except Exception:
-        pass
-    # =====================================================================
-
 
     return output
 
