@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix18_anchor_authoritative_no_schema_fallback"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix19_diffpanel_canonical_values"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -17169,6 +17169,61 @@ def render_source_anchored_results(results, query: str):
         st.info("No metric changes to display.")
         return
 
+
+    # =====================================================================
+    # FIX19 (ADDITIVE): Diff panel value rendering must use canonical fields
+    # Why:
+    # - UI table previously displayed r['previous_value']/r['current_value'] which
+    #   may be raw candidate text or a year token from candidate preview.
+    # - Deterministic truth is in prev_value_norm/cur_value_norm + unit_cmp /
+    #   metric_definition.unit_tag.
+    # Result:
+    # - Metric cards/table always show the same numeric basis the diff engine used.
+    # =====================================================================
+    def _display_metric_value(r: dict, side: str) -> str:
+        """Return a UI-safe string for prev/cur metric value using canonical fields first."""
+        try:
+            r = r if isinstance(r, dict) else {}
+            md = r.get("metric_definition") if isinstance(r.get("metric_definition"), dict) else {}
+            want_unit = ""
+            # unit preference: explicit comparison unit → schema unit_tag → schema unit
+            if side == "prev":
+                vnorm = r.get("prev_value_norm")
+                ucmp = str(r.get("prev_unit_cmp") or "").strip()
+            else:
+                vnorm = r.get("cur_value_norm")
+                ucmp = str(r.get("cur_unit_cmp") or "").strip()
+
+            if ucmp:
+                want_unit = ucmp
+            else:
+                ut = md.get("unit_tag") or md.get("unit") or ""
+                want_unit = str(ut or "").strip()
+
+            # If canonical numeric exists, render it (do NOT fall back to raw)
+            if vnorm is not None:
+                try:
+                    vf = float(vnorm)
+                    # Avoid trailing .0 for whole numbers
+                    if abs(vf - int(vf)) < 1e-9:
+                        vs = str(int(vf))
+                    else:
+                        vs = f"{vf:g}"
+                    return f"{vs} {want_unit}".strip()
+                except Exception:
+                    pass
+
+            # Legacy fallback: raw fields
+            if side == "prev":
+                raw = r.get("previous_value", "")
+            else:
+                raw = r.get("current_value", "")
+            raw_s = str(raw) if raw is not None else ""
+            return raw_s.strip()
+        except Exception:
+            return str(r.get("previous_value" if side == "prev" else "current_value", "")).strip()
+    # =====================================================================
+
     table_rows = []
     for r in rows:
         if not isinstance(r, dict):
@@ -17181,8 +17236,8 @@ def render_source_anchored_results(results, query: str):
             "Metric": metric_label,
             "Canonical Key": r.get("canonical_key", "") or "",
             "Match Stage": r.get("match_stage", "") or "",
-            "Previous": r.get("previous_value", "") or "",
-            "Current": r.get("current_value", "") or "",
+            "Previous": _display_metric_value(r, "prev"),
+            "Current": _display_metric_value(r, "cur"),
             "Δ%": _fmt_change_pct(r.get("change_pct")),
             "Status": status_label,
             "Match": _fmt_pct(r.get("match_confidence")),
@@ -17243,9 +17298,14 @@ def render_source_anchored_results(results, query: str):
             with st.expander(header):
                 # Values
                 st.write({
-                    "previous_value": r.get("previous_value"),
-                    "current_value": r.get("current_value"),
+                    "previous_value": _display_metric_value(r, "prev"),
+                    "current_value": _display_metric_value(r, "cur"),
                     "change_pct": r.get("change_pct"),
+                    # canonical basis (kept for debugging)
+                    "prev_value_norm": r.get("prev_value_norm"),
+                    "cur_value_norm": r.get("cur_value_norm"),
+                    "prev_unit_cmp": r.get("prev_unit_cmp"),
+                    "cur_unit_cmp": r.get("cur_unit_cmp"),
                 })
 
                 # Candidate considered / rejects
