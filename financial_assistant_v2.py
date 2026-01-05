@@ -12991,7 +12991,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         return output
 
-    # =====================================================================
+        # =====================================================================
     # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
     # Why:
     # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
@@ -13002,17 +13002,48 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     _prev_rehydrated_ref = ""
     try:
         if isinstance(previous_data, dict):
-            # Determine if we are missing rebuild essentials
             _pr = previous_data.get("primary_response")
-            _need = (not isinstance(_pr, dict)) or (not _pr) or (not isinstance(_pr.get("metric_schema_frozen"), dict))
+
+            # -----------------------------------------------------------------
+            # PATCH HF5_NEED1 (ADDITIVE): check rebuild essentials at correct level
+            # -----------------------------------------------------------------
+            _schema_ok = isinstance(previous_data.get("metric_schema_frozen"), dict) and bool(previous_data.get("metric_schema_frozen"))
+            _anchors_ok = isinstance(previous_data.get("metric_anchors"), dict) and bool(previous_data.get("metric_anchors"))
+            _canon_ok = isinstance(previous_data.get("primary_metrics_canonical"), dict) and bool(previous_data.get("primary_metrics_canonical"))
+
+            # Rehydrate only if essentials are missing
+            _need = not (_schema_ok and (_anchors_ok or _canon_ok))
+            # -----------------------------------------------------------------
+            # END PATCH HF5_NEED1 (ADDITIVE)
+            # -----------------------------------------------------------------
 
             if _need:
-                _ref = previous_data.get("full_store_ref")                     or (previous_data.get("results") or {}).get("full_store_ref")                     or (isinstance(_pr, dict) and _pr.get("full_store_ref"))                     or ""
+                # -------------------------------------------------------------
+                # PATCH HF5_PTR1 (ADDITIVE): resolve full_store_ref from wrapper
+                # -------------------------------------------------------------
+                _ref = (
+                    previous_data.get("full_store_ref")
+                    or (isinstance(previous_data.get("_sheet_write"), dict) and previous_data.get("_sheet_write", {}).get("full_store_ref"))
+                    or (previous_data.get("results") or {}).get("full_store_ref")
+                    or (isinstance(_pr, dict) and _pr.get("full_store_ref"))
+                    or ""
+                )
+
+                # Deterministic fallback: use _sheet_id if present
+                if not _ref:
+                    _sid = previous_data.get("_sheet_id") or ""
+                    if isinstance(_sid, str) and _sid:
+                        _ref = f"gsheet:HistoryFull:{_sid}"
+                # -------------------------------------------------------------
+                # END PATCH HF5_PTR1 (ADDITIVE)
+                # -------------------------------------------------------------
 
                 if isinstance(_ref, str) and _ref.startswith("gsheet:"):
                     parts = _ref.split(":")
                     _ws_title = parts[1] if len(parts) > 1 and parts[1] else "HistoryFull"
                     _aid = parts[2] if len(parts) > 2 else ""
+                    _aid = _aid.strip() if isinstance(_aid, str) else ""
+
                     full = load_full_history_payload_from_sheet(_aid, worksheet_title=_ws_title) if _aid else {}
                     if isinstance(full, dict) and full:
                         previous_data = full
@@ -13028,6 +13059,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["previous_data_full_store_ref"] = _prev_rehydrated_ref
     except Exception:
         pass
+
     # =====================================================================
 
     # ---------- Use your existing deterministic metric diff helper ----------
