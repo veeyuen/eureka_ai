@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix10_metricanchors_ABC_fix1"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix11_metricanchors_ABCD_fix1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -1289,6 +1289,102 @@ def add_to_history(analysis: dict) -> bool:
     # -----------------------
     except Exception:
         pass
+
+    # =====================================================================
+    # PATCH D (ADDITIVE): propagate metric_anchors onto metric rows + evidence
+    # Why:
+    # - Drift=0 depends on analysis and evolution sharing the SAME anchor IDs.
+    # - Some downstream code paths expect anchor_hash on the metric row itself
+    #   and/or inside evidence entries (not only in analysis["metric_anchors"]).
+    # - This patch copies existing anchor metadata only (no fabrication, no refetch).
+    # =====================================================================
+    try:
+        import re
+        import hashlib
+
+        def _norm_ctx(s: str) -> str:
+            try:
+                return re.sub(r"\s+", " ", (s or "").strip())
+            except Exception:
+                return (s or "").strip()
+
+        def _compute_anchor_hash_fallback(url: str, ctx: str) -> str:
+            try:
+                u = (url or "").strip()
+                c = _norm_ctx(ctx or "")
+                if not u or not c:
+                    return ""
+                return hashlib.sha1((u + "||" + c).encode("utf-8")).hexdigest()[:16]
+            except Exception:
+                return ""
+
+        def _compute_anchor_hash(url: str, ctx: str) -> str:
+            try:
+                fn = globals().get("compute_anchor_hash")
+                if callable(fn):
+                    return str(fn(url, ctx) or "")
+            except Exception:
+                pass
+            return _compute_anchor_hash_fallback(url, ctx)
+
+        # Locate canonical metrics dict (prefer primary_response)
+        _pmc = None
+        _pr0 = analysis.get("primary_response") if isinstance(analysis, dict) else None
+        if isinstance(_pr0, dict) and isinstance(_pr0.get("primary_metrics_canonical"), dict):
+            _pmc = _pr0.get("primary_metrics_canonical")
+        if _pmc is None and isinstance(analysis, dict) and isinstance(analysis.get("primary_metrics_canonical"), dict):
+            _pmc = analysis.get("primary_metrics_canonical")
+
+        if isinstance(metric_anchors, dict) and isinstance(_pmc, dict):
+            for _ckey, _a in metric_anchors.items():
+                if not isinstance(_ckey, str) or not _ckey:
+                    continue
+                if not isinstance(_a, dict) or not _a:
+                    continue
+
+                _m = _pmc.get(_ckey)
+                if not isinstance(_m, dict):
+                    continue
+
+                _ah = str(_a.get("anchor_hash") or _a.get("anchor") or "").strip()
+                _src = str(_a.get("source_url") or _a.get("url") or "").strip()
+                _ctx = _a.get("context_snippet") or _a.get("context") or ""
+                _ctx = _ctx.strip() if isinstance(_ctx, str) else ""
+
+                # Copy onto metric row (only if missing)
+                if _ah and not _m.get("anchor_hash"):
+                    _m["anchor_hash"] = _ah
+                if _src and not (_m.get("source_url") or _m.get("url")):
+                    _m["source_url"] = _src
+                if _ctx and not (_m.get("context_snippet") or _m.get("context")):
+                    _m["context_snippet"] = _ctx[:220]
+
+                # Pass through extra metadata if present (additive)
+                if _a.get("anchor_confidence") is not None and _m.get("anchor_confidence") is None:
+                    _m["anchor_confidence"] = _a.get("anchor_confidence")
+                if _a.get("candidate_id") and not _m.get("candidate_id"):
+                    _m["candidate_id"] = _a.get("candidate_id")
+                if _a.get("fingerprint") and not _m.get("fingerprint"):
+                    _m["fingerprint"] = _a.get("fingerprint")
+
+                # Ensure evidence entries carry anchor_hash (deterministic; no new evidence)
+                _ev = _m.get("evidence")
+                if isinstance(_ev, list) and _ev:
+                    for _e in _ev:
+                        if not isinstance(_e, dict):
+                            continue
+                        if _e.get("anchor_hash"):
+                            continue
+                        _e_url = str(_e.get("url") or _e.get("source_url") or _src or "").strip()
+                        _e_ctx = _e.get("context_snippet") or _e.get("context") or _ctx or ""
+                        _e_ctx = _e_ctx.strip() if isinstance(_e_ctx, str) else ""
+                        _eh = _compute_anchor_hash(_e_url, _e_ctx)
+                        if _eh:
+                            _e["anchor_hash"] = _eh
+    except Exception:
+        pass
+    # =====================================================================
+
 
     def _try_make_sheet_json(obj: dict) -> str:
         try:
