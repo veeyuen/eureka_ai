@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_steps2_4_patched_additive"
+CODE_VERSION = "v7_41_endstate_wip_8_steps2_4_patched_additive_driftfix1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -6272,7 +6272,66 @@ def canonicalize_metrics(
                     pass
         # =========================
 
-        if vals:
+        # =====================================================================
+        # PATCH ANCHOR_VAL1 (ADDITIVE): set metric value from selected evidence candidate
+        # Why:
+        # - Avoid median/aggregate drift between analysis and evolution.
+        # - If we already chose a specific evidence candidate (candidate_id/anchor_hash),
+        #   that candidate should determine the metric's reported value/value_norm/unit.
+        # Determinism:
+        # - Select the evidence row with highest confidence if present, else first.
+        # - No re-fetching, no new extraction; uses existing evidence payload only.
+        # =====================================================================
+        _anchored_value_set = False
+        try:
+            _ev = base_metric.get("evidence")
+            if isinstance(_ev, list) and _ev:
+                # pick best evidence deterministically
+                def _ev_score(e):
+                    try:
+                        c = e.get("confidence")
+                        return float(c) if c is not None else 0.0
+                    except Exception:
+                        return 0.0
+                _ev_sorted = sorted([e for e in _ev if isinstance(e, dict)], key=_ev_score, reverse=True)
+                _best = _ev_sorted[0] if _ev_sorted else None
+
+                if isinstance(_best, dict):
+                    # Prefer canonical normalized fields if present
+                    _bn = _best.get("value_norm")
+                    _bu = _best.get("base_unit") or _best.get("unit")
+                    _rawv = _best.get("raw") if _best.get("raw") is not None else _best.get("value")
+
+                    if _bn is not None:
+                        try:
+                            base_metric["value_norm"] = float(_bn)
+                        except Exception:
+                            pass
+
+                    # Preserve unit/base_unit
+                    if _bu:
+                        try:
+                            base_metric["base_unit"] = str(_bu)
+                        except Exception:
+                            pass
+                    if _best.get("unit"):
+                        base_metric["unit"] = _best.get("unit")
+
+                    # Preserve raw/value display from evidence (preferred)
+                    if _rawv is not None:
+                        base_metric["raw"] = _rawv
+                        base_metric["value"] = _rawv
+
+                    # Helpful debug: show that we anchored value from evidence
+                    base_metric.setdefault("debug", {})
+                    if isinstance(base_metric.get("debug"), dict):
+                        base_metric["debug"]["value_origin"] = "evidence_best_candidate"
+                        base_metric["debug"]["evidence_candidate_id"] = _best.get("candidate_id") or _best.get("anchor_hash")
+                    _anchored_value_set = True
+        except Exception:
+            pass
+        if vals and not _anchored_value_set:
+
             vals_sorted = sorted(vals)
             vmin, vmax = vals_sorted[0], vals_sorted[-1]
             vmed = vals_sorted[len(vals_sorted) // 2]
