@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix1"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix7"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -978,69 +978,60 @@ def add_to_history(analysis: dict) -> bool:
             metric_anchors = _build_metric_anchors(pmc, schema, evidence_records)
             analysis["metric_anchors"] = metric_anchors
 # =====================================================================
-# PATCH AI4 (ADDITIVE): anchor integrity audit (analysis-time)
-# Why:
-# - Prevent silent "anchor drift" where anchors point to candidates that are
-#   not present in the persisted snapshot cache (breaking evolution determinism).
-# What it does:
-# - Builds an index of anchor_hash values present in baseline_sources_cache.
-# - Flags anchors whose anchor_hash is missing from that index.
-# - Adds a compact audit block to the analysis payload for debugging.
-# Notes:
-# - Additive only: does NOT mutate anchors or snapshots; it only reports.
-# =====================================================================
-try:
-    _bsc = []
-    r0 = analysis.get("results") if isinstance(analysis, dict) else None
-    if isinstance(r0, dict) and isinstance(r0.get("baseline_sources_cache"), list):
-        _bsc = r0.get("baseline_sources_cache") or []
-    elif isinstance(analysis.get("baseline_sources_cache"), list):
-        _bsc = analysis.get("baseline_sources_cache") or []
-
-    _present = set()
-    if isinstance(_bsc, list):
-        for _sr in _bsc:
-            if not isinstance(_sr, dict):
-                continue
-            for _n in (_sr.get("extracted_numbers") or []):
-                if not isinstance(_n, dict):
-                    continue
-                _ah = _n.get("anchor_hash")
-                if _ah:
-                    _present.add(str(_ah))
-
-    _bad = []
-    if isinstance(metric_anchors, dict):
-        for _ckey, _a in metric_anchors.items():
-            if not isinstance(_a, dict):
-                continue
-            _ah = _a.get("anchor_hash")
-            if _ah and str(_ah) not in _present:
-                _bad.append({
-                    "canonical_key": _ckey,
-                    "anchor_hash": _ah,
-                    "source_url": _a.get("source_url") or _a.get("url"),
-                })
-
-    analysis.setdefault("anchor_integrity_audit", {})
-    if isinstance(analysis["anchor_integrity_audit"], dict):
-except Exception:
-    pass
-        analysis["anchor_integrity_audit"].update({
-            "present_anchor_hash_count": int(len(_present)),
-            "anchor_count": int(len(metric_anchors)) if isinstance(metric_anchors, dict) else 0,
-            "missing_anchor_count": int(len(_bad)),
-            "missing_anchors_sample": _bad[:25],
-        })
-except Exception:
-    pass
-# =====================================================================
-    except Exception:
-        pass
+            # =====================================================================
+            # PATCH AI4 (ADDITIVE): anchor integrity audit (analysis-time)
+            # Why:
+            # - Detect duplicate anchor_hash values across canonical keys.
+            # - Detect missing anchor_hash on anchors and on baseline canonical metrics.
+            # - Provide non-breaking debug/audit fields for drift investigations.
+            # Notes:
+            # - Purely additive; does not mutate anchors beyond attaching audit metadata.
+            # =====================================================================
+            try:
+                if isinstance(analysis, dict):
+                    _ma = analysis.get('metric_anchors')
+                    _pmc = analysis.get('primary_metrics_canonical')
+                    _dup = {}  # anchor_hash -> [canonical_key,...]
+                    _missing_anchor = []
+                    _missing_metric_anchor = []
+                    if isinstance(_ma, dict):
+                        for _ck, _a in _ma.items():
+                            if not isinstance(_a, dict):
+                                _missing_anchor.append(str(_ck))
+                                continue
+                            _ah = _a.get('anchor_hash') or _a.get('anchor')
+                            if not _ah:
+                                _missing_anchor.append(str(_ck))
+                                continue
+                            _ah = str(_ah)
+                            _dup.setdefault(_ah, []).append(str(_ck))
+                    # anchors missing on baseline metrics (best-effort diagnostic)
+                    if isinstance(_pmc, dict):
+                        for _ck, _m in _pmc.items():
+                            if not isinstance(_m, dict):
+                                continue
+                            if not (_m.get('anchor_hash') or _m.get('anchor') or _m.get('candidate_id')):
+                                _missing_metric_anchor.append(str(_ck))
+                    _dup_only = {k: v for k, v in _dup.items() if isinstance(v, list) and len(v) > 1}
+                    analysis['anchor_integrity_audit'] = {
+                        'anchor_count': int(len(_ma)) if isinstance(_ma, dict) else 0,
+                        'duplicate_anchor_hash_count': int(len(_dup_only)),
+                        'duplicate_anchor_hash_examples': dict(list(_dup_only.items())[:10]) if _dup_only else {},
+                        'missing_anchor_hash_count': int(len(_missing_anchor)),
+                        'missing_anchor_hash_examples': _missing_anchor[:20],
+                        'metrics_missing_any_anchor_id_count': int(len(_missing_metric_anchor)),
+                        'metrics_missing_any_anchor_id_examples': _missing_metric_anchor[:20],
+                    }
+            except Exception:
+                pass
+            # =====================================================================
 
     # -----------------------
     # Existing Google Sheet save behavior (guarded)
     # -----------------------
+    except Exception:
+        pass
+
     def _try_make_sheet_json(obj: dict) -> str:
         try:
             fn = globals().get("make_sheet_safe_json")
@@ -2564,49 +2555,51 @@ def rebuild_metrics_from_snapshots_schema_only(
         best_key = None
 
         for c in candidates:
-# =====================================================================
-# PATCH AI2 (ADDITIVE): reject year-only tokens for currency-like metrics
-# Why:
-# - We observed drift where analysis picked a real currency amount, but
-#   evolution/schema-only rebuild latched onto a nearby year token (e.g. 2023/2024).
-# - This is especially common when unit is missing and context contains currency words.
-# Behavior:
-# - If the metric schema suggests currency AND the candidate looks like a bare year,
-#   skip it. (No heuristics beyond year-shape; deterministic.)
-# =====================================================================
-try:
-    def _is_year_only_candidate(cand: dict) -> bool:
-        if not isinstance(cand, dict):
-            return False
-        raw = str(cand.get("raw") or cand.get("value") or "").strip()
-        unit = str(cand.get("unit") or "").strip()
-        # year-like: 4 digits between 1900 and 2100, with no explicit unit
-        if unit:
-            return False
-        if raw.isdigit() and len(raw) == 4:
-            y = int(raw)
-            return 1900 <= y <= 2100
-        return False
+            # =====================================================================
+            # PATCH AI2 (ADDITIVE): guard against year-only candidates on currency-like metrics
+            # Why:
+            # - Some sources contain many years (e.g., 2023, 2024) that can outscore true values.
+            # - For currency-ish metrics, suppress candidates that look like bare years unless context clearly indicates money.
+            # Determinism:
+            # - Pure filter; does not invent candidates or refetch content.
+            # =====================================================================
+            try:
+                def _ai2_is_year_only(cand: dict) -> bool:
+                    try:
+                        if not isinstance(cand, dict):
+                            return False
+                        raw = str(cand.get('raw') or cand.get('value') or '').strip()
+                        if raw.endswith('%'):
+                            return False
+                        # accept plain 4-digit years in a plausible range
+                        if raw.isdigit() and len(raw) == 4:
+                            y = int(raw)
+                            return 1900 <= y <= 2100
+                        return False
+                    except Exception:
+                        return False
 
-    def _schema_is_currencyish(sd: dict) -> bool:
-        if not isinstance(sd, dict):
-            return False
-        uf = str(sd.get("unit_family") or "").lower()
-        ut = str(sd.get("unit_tag") or "").lower()
-        bu = str(sd.get("base_unit") or "").lower()
-        name = str(sd.get("name") or "").lower()
-        return (
-            "currency" in uf
-            or any(x in ut for x in ("$", "usd", "eur", "gbp", "sgd", "aud", "cad", "¥", "£", "€"))
-            or any(x in bu for x in ("usd", "eur", "gbp", "sgd", "aud", "cad"))
-            or any(x in name for x in ("usd", "eur", "revenue", "cost", "price", "value"))
-        )
+                def _ai2_schema_currencyish(sd: dict) -> bool:
+                    try:
+                        if not isinstance(sd, dict):
+                            return False
+                        u = str(sd.get('unit') or sd.get('base_unit') or '').lower()
+                        if any(x in u for x in ('usd','sgd','eur','gbp','jpy','$','€','£')):
+                            return True
+                        # heuristic keywords on definition (safe, schema-driven-ish)
+                        nm = str(sd.get('name') or '').lower()
+                        if any(x in nm for x in ('revenue','sales','cost','price','capex','opex','investment','spend','spending','expenditure','value')):
+                            return True
+                        return False
+                    except Exception:
+                        return False
 
-    if _schema_is_currencyish(schema_def) and _is_year_only_candidate(c):
-        continue
-except Exception:
-    pass
-# =====================================================================
+                _sd = locals().get('schema_def')
+                if _ai2_schema_currencyish(_sd) and _ai2_is_year_only(c):
+                    continue
+            except Exception:
+                pass
+            # =====================================================================
             ctx = _norm_text(c.get("context_snippet") or "")
             if not ctx:
                 continue
