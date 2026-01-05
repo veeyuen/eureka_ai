@@ -10591,21 +10591,17 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
 
 # =================== END PATCH HF_WRITE1 (ADDITIVE) ===================
 
-
 def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str = "HistoryFull") -> dict:
     """
     Load the full analysis JSON payload from the HistoryFull worksheet.
 
-    PATCH HF_LOAD_PARTS1 (ADDITIVE):
-    - Supports payloads split across multiple rows (parts) keyed by analysis_id.
-    - Stitches parts by part_index (or row order fallback) into one JSON string.
-
-    PATCH HF_LOAD_PARTS1B (ADDITIVE):
-    - Supports *current* HistoryFull headers written by write_full_history_payload_to_sheet():
-        ["analysis_id", "part_index", "total_parts", "payload_part", "sha256", ...]
-      as well as legacy headers:
-        ["id", "part_index", "total_parts", "data", ...]
-    - Optional sha256 bucketing to select the best complete set when duplicates exist.
+    PATCH HF_LOAD_V2 (ADDITIVE):
+    - Supports payloads split across multiple rows (chunked writes).
+    - Supports current HistoryFull headers:
+        analysis_id, part_index, total_parts, payload_json, created_at, code_version, sha256
+    - Backward compatible with older variants:
+        id, part_index, total_parts, payload_part / data, sha256
+    - Deterministic stitching (sort by part_index) + safe JSON parse.
     """
     try:
         ss = get_google_spreadsheet()
@@ -10617,14 +10613,10 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         except Exception:
             return {}
 
-        # Read all rows (cached if available, else direct)
-        rows = []
+        # Read all rows (prefer cached getter if present)
         try:
             fn = globals().get("sheets_get_all_values_cached")
-            if callable(fn):
-                rows = fn(ws, cache_key=worksheet_title) or []
-            else:
-                rows = ws.get_all_values() or []
+            rows = fn(ws, cache_key=worksheet_title) if callable(fn) else (ws.get_all_values() or [])
         except Exception:
             try:
                 rows = ws.get_all_values() or []
@@ -10637,56 +10629,58 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         header = rows[0] or []
         body = rows[1:] or []
 
-        # Column discovery (best-effort; additive)
         def _col(name: str):
             try:
                 return header.index(name)
             except Exception:
                 return None
 
-        # ---------------------------------------------------------------------
-        # PATCH HF_LOAD_PARTS1B (ADDITIVE): support current + legacy column names
-        # ---------------------------------------------------------------------
+        # -----------------------------------------------------------------
+        # PATCH HF_LOAD_V2_COLS (ADDITIVE): map to real sheet headers + legacy
+        # -----------------------------------------------------------------
         c_id = _col("analysis_id")
         if c_id is None:
             c_id = _col("id")
+        if c_id is None:
+            c_id = 0  # last-ditch fallback
 
         c_part = _col("part_index")
         c_total = _col("total_parts")
 
-        c_data = _col("payload_part")
-        if c_data is None:
-            c_data = _col("data")
+        # IMPORTANT: your sheet uses payload_json
+        c_payload = _col("payload_json")
+        if c_payload is None:
+            c_payload = _col("payload_part")
+        if c_payload is None:
+            c_payload = _col("data")
+        if c_payload is None:
+            c_payload = len(header) - 1  # last-ditch fallback
 
         c_sha = _col("sha256")
-        # ---------------------------------------------------------------------
+        # -----------------------------------------------------------------
 
-        # If headers aren't as expected, fall back to best guess:
-        # assume: id in col0, payload in last col
-        if c_id is None:
-            c_id = 0
-        if c_data is None:
-            c_data = len(header) - 1
+        target_id = str(analysis_id).strip()
+        if not target_id:
+            return {}
 
-        parts = []
-        parts_with_sha = []
+        parts_with_sha = []  # (pidx:int|None, chunk:str, sha:str)
 
         for r in body:
             try:
                 if not r:
                     continue
 
-                rid = (r[c_id] if c_id < len(r) else "")
+                rid = r[c_id] if c_id < len(r) else ""
                 rid = str(rid).strip()
-                if rid != str(analysis_id):
+                if rid != target_id:
                     continue
 
-                chunk = r[c_data] if c_data < len(r) else ""
+                chunk = r[c_payload] if c_payload < len(r) else ""
                 chunk = chunk or ""
-                if not chunk:
-                    continue
+                if not isinstance(chunk, str):
+                    chunk = str(chunk)
 
-                # part_index if present
+                # part_index (optional)
                 pidx = None
                 if c_part is not None and c_part < len(r):
                     try:
@@ -10698,88 +10692,74 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                 if c_sha is not None and c_sha < len(r):
                     sha = str(r[c_sha] or "").strip()
 
-                parts.append((pidx, chunk))
+                # keep even tiny chunks; concatenation is deterministic
+                if chunk.strip() == "":
+                    continue
+
                 parts_with_sha.append((pidx, chunk, sha))
             except Exception:
                 continue
 
-        if not parts:
+        if not parts_with_sha:
             return {}
 
-        # ---------------------------------------------------------------------
-        # PATCH HF_LOAD_PARTS1C (ADDITIVE): choose best set deterministically
-        # If multiple writes exist for same analysis_id, prefer the "best" sha bucket.
+        # -----------------------------------------------------------------
+        # PATCH HF_LOAD_V2_BUCKET (ADDITIVE): if duplicates exist, pick best sha bucket
         # Score = (unique part_index count, total payload length)
-        # ---------------------------------------------------------------------
+        # -----------------------------------------------------------------
+        parts = []
         try:
-            if parts_with_sha and any(s for _, _, s in parts_with_sha):
+            if any(s for _, _, s in parts_with_sha):
                 buckets = {}
                 for pidx, chunk, sha in parts_with_sha:
                     key = sha or "__no_sha__"
                     buckets.setdefault(key, []).append((pidx, chunk))
 
-                def _bucket_score(items):
+                def _score(items):
                     idxs = [i for i, _ in items if i is not None]
                     uniq = len(set(idxs)) if idxs else 0
                     total_len = sum(len(c or "") for _, c in items)
                     return (uniq, total_len)
 
-                best_key = sorted(
-                    buckets.keys(),
-                    key=lambda k: _bucket_score(buckets[k]),
-                    reverse=True
-                )[0]
+                best_key = sorted(buckets.keys(), key=lambda k: _score(buckets[k]), reverse=True)[0]
                 parts = buckets[best_key]
+            else:
+                parts = [(pidx, chunk) for pidx, chunk, _ in parts_with_sha]
         except Exception:
-            pass
-        # ---------------------------------------------------------------------
+            parts = [(pidx, chunk) for pidx, chunk, _ in parts_with_sha]
+        # -----------------------------------------------------------------
 
-        # Sort parts:
-        # - If part_index exists: sort by it
-        # - Else: keep insertion order by stable sorting on (None-last)
+        # Sort parts deterministically by part_index; None last
         def _sort_key(t):
             pidx, _ = t
             return (pidx is None, pidx if pidx is not None else 0)
 
         parts.sort(key=_sort_key)
 
-        # Stitch
+        # Stitch chunks
         full_json_str = "".join([chunk for _, chunk in parts]).strip()
         if not full_json_str:
             return {}
 
-        # Parse JSON
         import json
         try:
             obj = json.loads(full_json_str)
             return obj if isinstance(obj, dict) else {}
         except Exception:
-            # PATCH HF_LOAD_PARTS2 (ADDITIVE): attempt salvage if chunks are JSON objects like {"part":"..."}
+            # PATCH HF_LOAD_V2_SALVAGE (ADDITIVE): common salvage for leading/trailing junk
             try:
-                acc = []
-                for _, chunk in parts:
-                    try:
-                        o = json.loads(chunk)
-                        if isinstance(o, dict) and isinstance(o.get("part"), str):
-                            acc.append(o["part"])
-                        else:
-                            acc = []
-                            break
-                    except Exception:
-                        acc = []
-                        break
-
-                if acc:
-                    obj2 = json.loads("".join(acc))
+                # Try to isolate first "{" and last "}" if accidental prefix/suffix exists
+                a = full_json_str.find("{")
+                b = full_json_str.rfind("}")
+                if a != -1 and b != -1 and b > a:
+                    obj2 = json.loads(full_json_str[a:b+1])
                     return obj2 if isinstance(obj2, dict) else {}
             except Exception:
                 pass
-
             return {}
 
     except Exception:
         return {}
-
 
 
 def fingerprint_text(text: str) -> str:
