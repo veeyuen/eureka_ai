@@ -10592,6 +10592,7 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
 # =================== END PATCH HF_WRITE1 (ADDITIVE) ===================
 
 
+
 def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str = "HistoryFull") -> dict:
     """
     Load the full analysis JSON payload from the HistoryFull worksheet.
@@ -10610,12 +10611,19 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         except Exception:
             return {}
 
-        # Read all rows (cached is fine, but direct is ok too)
+        # Read all rows (cached if available)
         rows = []
         try:
-            rows = ws.get_all_values() or []
+            fn = globals().get("sheets_get_all_values_cached")
+            if callable(fn):
+                rows = fn(ws, cache_key=worksheet_title) or []
+            else:
+                rows = ws.get_all_values() or []
         except Exception:
-            return {}
+            try:
+                rows = ws.get_all_values() or []
+            except Exception:
+                return {}
 
         if not rows or len(rows) < 2:
             return {}
@@ -10630,19 +10638,30 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
             except Exception:
                 return None
 
-        c_id = _col("id")
+        # PATCH HF_LOAD_PARTS1B (ADDITIVE): support current writer headers + legacy headers
+        c_id = _col("analysis_id")
+        if c_id is None:
+            c_id = _col("id")
+
         c_part = _col("part_index")
         c_total = _col("total_parts")
-        c_data = _col("data")
+
+        c_data = _col("payload_part")
+        if c_data is None:
+            c_data = _col("data")
+
+        # Optional integrity / multi-write disambiguation (safe no-op if absent)
+        c_sha = _col("sha256")
 
         # If headers aren't as expected, fall back to best guess:
-        # assume: id in col0, data in last col
         if c_id is None:
             c_id = 0
         if c_data is None:
             c_data = len(header) - 1
 
         parts = []
+        # PATCH HF_LOAD_PARTS1C (ADDITIVE): parallel capture with sha (does not affect existing flow)
+        parts_with_sha = []
         for r in body:
             try:
                 if not r:
@@ -10664,20 +10683,60 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     except Exception:
                         pidx = None
 
+                # PATCH HF_LOAD_PARTS1C (ADDITIVE): capture sha if present
+                sha = ""
+                if 'c_sha' in locals() and c_sha is not None and c_sha < len(r):
+                    try:
+                        sha = str(r[c_sha] or "").strip()
+                    except Exception:
+                        sha = ""
+
                 parts.append((pidx, chunk))
+                # PATCH HF_LOAD_PARTS1C (ADDITIVE)
+                try:
+                    parts_with_sha.append((pidx, chunk, sha))
+                except Exception:
+                    pass
             except Exception:
                 continue
 
         if not parts:
             return {}
 
-        # Sort parts
-        # - If part_index exists: sort by it
-        # - Else: keep insertion order by treating pidx as None and stable sorting
-        parts.sort(key=lambda t: (t[0] is None, t[0] if t[0] is not None else 0))
+        # PATCH HF_LOAD_PARTS1D (ADDITIVE): if multiple writes exist, choose best set deterministically
+        # Uses sha256 if present; otherwise behaves exactly like before.
+        try:
+            if 'parts_with_sha' in locals() and parts_with_sha and any(s for _, _, s in parts_with_sha):
+                buckets = {}
+                for pidx, chunk, sha in parts_with_sha:
+                    key = sha or "__no_sha__"
+                    buckets.setdefault(key, []).append((pidx, chunk))
 
-        # Stitch
-        full_json_str = "".join([p[1] for p in parts]).strip()
+                def _bucket_score(items):
+                    idxs = [i[0] for i in items if i[0] is not None]
+                    uniq = len(set(idxs)) if idxs else 0
+                    total_len = sum(len(i[1] or "") for i in items)
+                    return (uniq, total_len)
+
+                best_key = sorted(buckets.keys(), key=lambda k: _bucket_score(buckets[k]), reverse=True)[0]
+                parts = buckets[best_key]
+        except Exception:
+            pass
+
+        # Sort parts
+        # - If part_index exists, sort by it
+        # - Else preserve row order
+        def _sort_key(t):
+            pidx, _ = t
+            # None goes last
+            return (pidx is None, pidx if pidx is not None else 0)
+
+        parts.sort(key=_sort_key)
+
+        # Stitch into JSON string
+        full_json_str = "".join([chunk for _, chunk in parts]).strip()
+        if not full_json_str:
+            return {}
 
         # Parse JSON
         import json
@@ -10710,6 +10769,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
 
     except Exception:
         return {}
+
 
 def fingerprint_text(text: str) -> str:
     """Stable short fingerprint for fetched content (deterministic)."""
