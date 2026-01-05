@@ -10625,6 +10625,25 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
             except Exception:
                 return {}
 
+        # =====================================================================
+        # PATCH HF_LOAD_CACHE1 (ADDITIVE): cache-safe HistoryFull read fallback
+        # Why:
+        # - If a prior cached read returned [] (quota/timeout), evolution rehydration
+        #   will deterministically fail until cache expiry.
+        # Behavior:
+        # - If cached rows are empty/too-small, do ONE direct read to bypass cache.
+        # =====================================================================
+        if not rows or len(rows) < 2:
+            try:
+                direct = ws.get_all_values()
+                if direct and len(direct) >= 2:
+                    rows = direct
+            except Exception:
+                pass
+        # =====================================================================
+        # END PATCH HF_LOAD_CACHE1 (ADDITIVE)
+        # =====================================================================
+
         if not rows or len(rows) < 2:
             return {}
 
@@ -10653,25 +10672,22 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         # Optional integrity / multi-write disambiguation (safe no-op if absent)
         c_sha = _col("sha256")
 
-        # If headers aren't as expected, fall back to best guess:
-        if c_id is None:
-            c_id = 0
-        if c_data is None:
-            c_data = len(header) - 1
+        if c_id is None or c_data is None:
+            return {}
 
         parts = []
-        # PATCH HF_LOAD_PARTS1C (ADDITIVE): parallel capture with sha (does not affect existing flow)
         parts_with_sha = []
+
+        # Collect all rows for this analysis_id
         for r in body:
             try:
-                if not r:
+                if not isinstance(r, list) or len(r) <= max(c_id, c_data):
                     continue
-                rid = (r[c_id] if c_id < len(r) else "").strip()
-                if rid != str(analysis_id):
+                rid = (r[c_id] or "").strip()
+                if rid != analysis_id:
                     continue
 
-                # pull chunk
-                chunk = r[c_data] if c_data < len(r) else ""
+                chunk = r[c_data] or ""
                 if not chunk:
                     continue
 
@@ -10683,22 +10699,55 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     except Exception:
                         pidx = None
 
-                # PATCH HF_LOAD_PARTS1C (ADDITIVE): capture sha if present
                 sha = ""
-                if 'c_sha' in locals() and c_sha is not None and c_sha < len(r):
-                    try:
-                        sha = str(r[c_sha] or "").strip()
-                    except Exception:
-                        sha = ""
+                if c_sha is not None and c_sha < len(r):
+                    sha = (r[c_sha] or "").strip()
 
                 parts.append((pidx, chunk))
-                # PATCH HF_LOAD_PARTS1C (ADDITIVE)
-                try:
-                    parts_with_sha.append((pidx, chunk, sha))
-                except Exception:
-                    pass
+                parts_with_sha.append((pidx, chunk, sha))
             except Exception:
                 continue
+
+        # =====================================================================
+        # PATCH HF_LOAD_PREFIX1 (ADDITIVE): deterministic prefix match fallback
+        # Why:
+        # - If a legacy writer stored analysis_id with a suffix/prefix (rare), exact
+        #   match yields zero rows and rehydration fails.
+        # Behavior:
+        # - Only if exact match returns none: include rows whose id startswith analysis_id.
+        # - Still sorts deterministically by part_index (or stable row order fallback).
+        # =====================================================================
+        if not parts:
+            for r in body:
+                try:
+                    if not isinstance(r, list) or len(r) <= max(c_id, c_data):
+                        continue
+                    rid = (r[c_id] or "").strip()
+                    if not rid or not rid.startswith(analysis_id):
+                        continue
+
+                    chunk = r[c_data] or ""
+                    if not chunk:
+                        continue
+
+                    pidx = None
+                    if c_part is not None and c_part < len(r):
+                        try:
+                            pidx = int(str(r[c_part]).strip())
+                        except Exception:
+                            pidx = None
+
+                    sha = ""
+                    if c_sha is not None and c_sha < len(r):
+                        sha = (r[c_sha] or "").strip()
+
+                    parts.append((pidx, chunk))
+                    parts_with_sha.append((pidx, chunk, sha))
+                except Exception:
+                    continue
+        # =====================================================================
+        # END PATCH HF_LOAD_PREFIX1 (ADDITIVE)
+        # =====================================================================
 
         if not parts:
             return {}
@@ -10706,7 +10755,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         # PATCH HF_LOAD_PARTS1D (ADDITIVE): if multiple writes exist, choose best set deterministically
         # Uses sha256 if present; otherwise behaves exactly like before.
         try:
-            if 'parts_with_sha' in locals() and parts_with_sha and any(s for _, _, s in parts_with_sha):
+            if parts_with_sha and any(s for _, _, s in parts_with_sha):
                 buckets = {}
                 for pidx, chunk, sha in parts_with_sha:
                     key = sha or "__no_sha__"
@@ -10746,7 +10795,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         except Exception:
             # PATCH HF_LOAD_PARTS2 (ADDITIVE): attempt to salvage if stored as JSON-lines or wrapped
             try:
-                # Some writers store each part already as a JSON object with {"part":"..."} — handle that
+                # Some writers store each part already as a JSON object with {"part":"."} — handle that
                 # (safe no-op if not matching)
                 acc = []
                 for _, chunk in parts:
