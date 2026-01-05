@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "financial_assistant_v7_41_FIX8_HF_REHYDRATE_IN_EVOLUTION_LOCKIN"
+CODE_VERSION = "financial_assistant_v7_41_FIX8_HF_FIXED_METRIC_DIFF"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -11885,10 +11885,12 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
     # =========================================================================
     # PATCH D0 (ADDITIVE): anchor helpers (drift=0 stability)
-    # - If the SAME anchor_hash is present on both sides, treat metric as unchanged
-    # - Pull prev anchor_hash from prev_response.metric_anchors when metric row lacks it
-    # - Purely additive: does not remove or alter existing diff logic; only short-circuits
-    #   to "unchanged" when anchors are identical.
+    # NOTE (IMPORTANT):
+    # - Anchor_hash equality should NOT force "unchanged" if numeric values differ.
+    #   It means "we matched the same evidence anchor" (identity/matching), not
+    #   that the metric's value necessarily didn't change.
+    # - This patch keeps anchor_same, but uses it only for match_confidence +
+    #   diagnostics, not as a classification override.
     # =========================================================================
     def _get_anchor_hash_from_metric(m: dict):
         try:
@@ -11943,7 +11945,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
     # =========================================================================
     # PATCH MA2 (ADDITIVE): wire metric_anchors into row fields
     # - Populate context_snippet/source_url from prev_response.metric_anchors[ckey] when available
-    # - Keep existing anchor_same logic untouched; this is output enrichment only
+    # - Output enrichment only
     # =========================================================================
     def _get_prev_anchor_obj(prev_resp: dict, ckey: str):
         try:
@@ -12075,7 +12077,6 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
     # =========================================================================
     # PATCH D3 (ADDITIVE): schema-driven tolerances (optional)
     # - If schema provides abs_eps/rel_eps use them, else default.
-    # - Safe: only affects comparisons when schema explicitly opts in.
     # =========================================================================
     def get_eps_for_metric(prev_resp: dict, ckey: str):
         ae = ABS_EPS
@@ -12125,11 +12126,8 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
             # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
             if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
-                # =========================================================================
                 # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
-                # =========================================================================
                 _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
-                # =========================================================================
 
                 metric_changes.append({
                     "name": display_name,
@@ -12138,16 +12136,11 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     "change_pct": None,
                     "change_type": "not_found",
                     "match_confidence": 0.0,
-
-                    # PATCH MA2 (ADDITIVE): was None
                     "context_snippet": _ctx,
                     "source_url": _src,
-
-                    "anchor_used": False,  # (kept) not applicable when current metric missing
+                    "anchor_used": False,  # not applicable when current metric missing
                     "canonical_key": ckey,
                     "metric_definition": definition,
-
-                    # PATCH MA2 (ADDITIVE): extra debug field (harmless if ignored)
                     "anchor_confidence": _aconf,
                 })
                 continue
@@ -12157,38 +12150,32 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
 
             # =========================================================================
-            # PATCH D0 (ADDITIVE): anchor-first unchanged shortcut
-            # - If anchor_hash matches, mark unchanged regardless of value formatting/range
+            # PATCH D0 (ADDITIVE): anchor identity (do NOT force unchanged)
             # =========================================================================
             prev_ah = _get_prev_anchor_hash(prev_response, ckey, pm)
             cur_ah = _get_cur_anchor_hash(cur_response, ckey, cm)
             anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
             # =========================================================================
 
-            # =========================================================================
             # PATCH D2 (ADDITIVE): use canonical values for diff when available
-            # =========================================================================
             prev_val, prev_unit_cmp = get_canonical_value_and_unit(pm)
             cur_val, cur_unit_cmp = get_canonical_value_and_unit(cm)
-            # =========================================================================
 
-            # =========================================================================
             # PATCH D3 (ADDITIVE): metric-specific tolerances (schema overrides)
-            # =========================================================================
             abs_eps, rel_eps = get_eps_for_metric(prev_response, ckey)
-            # =========================================================================
 
             change_type = "unknown"
             change_pct = None
 
             # =========================================================================
-            # PATCH D0 (ADDITIVE): apply anchor-first result
+            # PATCH D0B (ADDITIVE, REQUIRED): numeric-first classification even if anchors match
+            # Why:
+            # - anchor_same means "we matched the same evidence anchor"
+            # - It MUST NOT short-circuit classification to "unchanged" when values differ.
+            # - This fixes the exact bug you observed: prev_value_norm != cur_value_norm
+            #   while change_type incorrectly says "unchanged".
             # =========================================================================
-            if anchor_same:
-                change_type = "unchanged"
-                change_pct = 0.0
-                unchanged += 1
-            elif prev_val is not None and cur_val is not None:
+            if prev_val is not None and cur_val is not None:
                 if abs(prev_val - cur_val) <= max(abs_eps, abs(prev_val) * rel_eps):
                     change_type = "unchanged"
                     change_pct = 0.0
@@ -12201,24 +12188,32 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     change_type = "decreased"
                     change_pct = ((cur_val - prev_val) / max(abs_eps, abs(prev_val))) * 100.0
                     decreased += 1
+            # If we cannot compare numerically, fall back:
+            # - If anchors match, treat as unchanged ONLY as a last resort (formatting issue)
+            elif anchor_same:
+                change_type = "unchanged"
+                change_pct = 0.0
+                unchanged += 1
             # =========================================================================
 
-            # =========================================================================
             # PATCH D4 (ADDITIVE): unit mismatch flag (debug only)
-            # =========================================================================
             unit_mismatch = False
             try:
                 if prev_unit_cmp and cur_unit_cmp and str(prev_unit_cmp) != str(cur_unit_cmp):
                     unit_mismatch = True
             except Exception:
                 unit_mismatch = False
-            # =========================================================================
 
-            # =========================================================================
             # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
-            # =========================================================================
             _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, cm)
-            # =========================================================================
+
+            # PATCH D0C (ADDITIVE): match_confidence reflects anchor identity
+            match_conf = 92.0
+            try:
+                if anchor_same:
+                    match_conf = 98.0
+            except Exception:
+                match_conf = 92.0
 
             metric_changes.append({
                 "name": display_name,
@@ -12226,29 +12221,22 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 "current_value": cur_raw,
                 "change_pct": change_pct,
                 "change_type": change_type,
-                "match_confidence": 92.0,
+                "match_confidence": float(match_conf),
 
-                # PATCH MA2 (ADDITIVE): was None
                 "context_snippet": _ctx,
                 "source_url": _src,
 
-                # =========================================================================
-                # PATCH D0 (ADDITIVE): mark anchor usage + expose hashes
-                # =========================================================================
+                # anchor identity (matching), not classification
                 "anchor_used": bool(anchor_same),
                 "prev_anchor_hash": prev_ah,
                 "cur_anchor_hash": cur_ah,
-                # =========================================================================
 
                 "canonical_key": ckey,
                 "metric_definition": definition,
 
-                # PATCH MA2 (ADDITIVE): extra debug field (harmless if ignored)
                 "anchor_confidence": _aconf,
 
-                # =========================================================================
-                # PATCH D2 (ADDITIVE): expose canonical comparison basis for debugging/convergence
-                # =========================================================================
+                # expose canonical comparison basis for debugging/convergence
                 "prev_value_norm": prev_val,
                 "cur_value_norm": cur_val,
                 "prev_unit_cmp": prev_unit_cmp,
@@ -12256,7 +12244,6 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 "unit_mismatch": bool(unit_mismatch),
                 "abs_eps_used": abs_eps,
                 "rel_eps_used": rel_eps,
-                # =========================================================================
             })
 
         return metric_changes, unchanged, increased, decreased, found
@@ -12307,33 +12294,18 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
         _, cm = cur_index[nk]
         cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
 
-        # =========================================================================
-        # PATCH D2 (ADDITIVE): use canonical values when present (legacy path too)
-        # =========================================================================
         prev_val, _prev_unit_cmp = get_canonical_value_and_unit(pm)
         cur_val, _cur_unit_cmp = get_canonical_value_and_unit(cm)
-        # =========================================================================
 
-        # =========================================================================
-        # PATCH D0 (ADDITIVE): legacy-path anchor-first unchanged shortcut
-        # - Only engages if both metric dicts carry anchor_hash (rare on legacy path)
-        # =========================================================================
         prev_ah = _get_anchor_hash_from_metric(pm)
         cur_ah = _get_anchor_hash_from_metric(cm)
         anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
-        # =========================================================================
 
         change_type = "unknown"
         change_pct = None
 
-        # =========================================================================
-        # PATCH D0 (ADDITIVE): apply anchor-first result
-        # =========================================================================
-        if anchor_same:
-            change_type = "unchanged"
-            change_pct = 0.0
-            unchanged += 1
-        elif prev_val is not None and cur_val is not None:
+        # PATCH D0B mirrors canonical path: numeric-first, anchor fallback only if numeric missing
+        if prev_val is not None and cur_val is not None:
             if abs(prev_val - cur_val) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
                 change_type = "unchanged"
                 change_pct = 0.0
@@ -12346,7 +12318,10 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 change_type = "decreased"
                 change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
                 decreased += 1
-        # =========================================================================
+        elif anchor_same:
+            change_type = "unchanged"
+            change_pct = 0.0
+            unchanged += 1
 
         metric_changes.append({
             "name": display_name or "Unknown Metric",
@@ -12354,19 +12329,14 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             "current_value": cur_raw,
             "change_pct": change_pct,
             "change_type": change_type,
-            "match_confidence": 80.0,
+            "match_confidence": 90.0 if anchor_same else 80.0,
             "context_snippet": None,
             "source_url": None,
 
-            # =========================================================================
-            # PATCH D0 (ADDITIVE): anchor usage + expose hashes (legacy)
-            # =========================================================================
             "anchor_used": bool(anchor_same),
             "prev_anchor_hash": prev_ah,
             "cur_anchor_hash": cur_ah,
-            # =========================================================================
 
-            # PATCH D2 (ADDITIVE): expose basis
             "prev_value_norm": prev_val,
             "cur_value_norm": cur_val,
         })
