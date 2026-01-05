@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix12_year_suppression"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix13_metricanchors_ABCDE_yearfix"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -2918,35 +2918,76 @@ def rebuild_metrics_from_snapshots_schema_only(
             # - Pure filter; does not invent candidates or refetch content.
             # =====================================================================
             try:
-                def _ai2_is_year_only(cand: dict) -> bool:
+                def _ai2_is_year_only(c: dict):
+                    """Return True if candidate is a likely standalone year (1900-2100) with no unit."""
                     try:
-                        if not isinstance(cand, dict):
-                            return False
-                        raw = str(cand.get('raw') or cand.get('value') or '').strip()
-                        # =====================================================================
-                        # PATCH YEAR1 (ADDITIVE): treat numeric years like 2024.0 as year-only too
-                        # Why: some extractors store year as float/string '2024.0', bypassing raw.isdigit().
-                        # =====================================================================
+                        c = c if isinstance(c, dict) else {}
+                        # Prefer canonical numeric
+                        v = c.get("value_norm")
+                        if v is None:
+                            v = c.get("value")
                         try:
-                            vraw = cand.get('value_norm') if cand.get('value_norm') is not None else cand.get('value')
-                            iv = int(float(str(vraw).strip())) if vraw is not None else None
-                            if iv is not None and 1900 <= iv <= 2105:
-                                u0 = str(cand.get('unit') or cand.get('base_unit') or '').strip()
-                                if not u0:
-                                    raw = str(iv)
+                            iv = int(float(v))
+                        except Exception:
+                            return False
+                        if iv < 1900 or iv > 2100:
+                            return False
+                        # Must be truly 4-digit (avoid 2023.5 etc)
+                        try:
+                            if abs(float(v) - float(iv)) > 1e-9:
+                                return False
                         except Exception:
                             pass
-                        # =====================================================================
-                        if raw.endswith('%'):
+
+                        # If the candidate itself signals time/year, do not treat as "junk year".
+                        u = str(c.get("base_unit") or c.get("unit") or "").strip().lower()
+                        ut = str(c.get("unit_tag") or "").strip().lower()
+                        uf = str(c.get("unit_family") or "").strip().lower()
+                        if "year" in u or "year" in ut or "year" in uf or "time" in uf:
                             return False
-                        # accept plain 4-digit years in a plausible range
-                        if raw.isdigit() and len(raw) == 4:
-                            y = int(raw)
-                            return 1900 <= y <= 2100
-                        return False
+
+                        raw = str(c.get("raw") or "").strip()
+                        sval = str(iv)
+
+                        # -------------------------------------------------------------
+                        # PATCH E (ADDITIVE): strict handling when raw contains context
+                        # - Some extractors store a wider raw window (e.g. includes '$721m ... in 2023')
+                        # - Currency symbols elsewhere in raw should NOT make a year candidate non-year.
+                        # - Only treat as non-year if the currency symbol is directly attached to the year.
+                        # -------------------------------------------------------------
+                        try:
+                            if re.search(r"(\$|usd|eur|gbp|aud|cad|sgd)\s*"+re.escape(sval)+r"\b", raw.lower()):
+                                return False
+                        except Exception:
+                            pass
+
+                        # If raw is basically just the year token (allow brackets/punctuation), it's year-only.
+                        try:
+                            raw2 = re.sub(r"[\s,.;:()\[\]{}<>]", "", raw)
+                            if raw2 == sval:
+                                return True
+                        except Exception:
+                            pass
+
+                        # If raw contains multiple numbers, it's likely context; still treat as year-only
+                        # when this candidate has no unit.
+                        try:
+                            nums = re.findall(r"\d{2,}", raw)
+                            if len(nums) >= 2:
+                                return True
+                        except Exception:
+                            pass
+
+                        # If raw contains month names, likely a date; treat as year-only (we suppress dates too).
+                        try:
+                            if re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b", raw.lower()):
+                                return True
+                        except Exception:
+                            pass
+
+                        return True
                     except Exception:
                         return False
-
                 def _ai2_schema_currencyish(sd: dict) -> bool:
                     try:
                         if not isinstance(sd, dict):
