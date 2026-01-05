@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix13_metricanchors_ABCDE_yearfix"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix14_yearonly_anchorhash"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -655,6 +655,8 @@ def add_to_history(analysis: dict) -> bool:
                         "raw": raw,
                         "context_snippet": ctx[:240],
                         "anchor_hash": anchor_hash,
+                "candidate_id": hashlib.sha1(str(anchor_hash or "").encode("utf-8")).hexdigest()[:16] if anchor_hash else None,
+
             # =====================================================================
             # PATCH AI2 (ADDITIVE): anchor integrity fields
             # - candidate_id is a stable short id derived from anchor_hash
@@ -8093,7 +8095,16 @@ def attribute_span_to_sources(
             "measure_kind": it.get("measure_kind"),
             "measure_assoc": it.get("measure_assoc"),
             "value_norm": it.get("value_norm"),
-            "candidate_id": it.get("candidate_id"),  # PATCH S11: exposed for transparency
+            "candidate_id": it.get("candidate_id"),
+            # PATCH EVID_AH1 (ADDITIVE): carry anchor_hash for evolution matching
+            "anchor_hash": it.get("anchor_hash"),
+            # PATCH EVID_AH2 (ADDITIVE): carry stable span fields when present
+            "start_idx": it.get("start_idx"),
+            "end_idx": it.get("end_idx"),
+            # PATCH EVID_AH3 (ADDITIVE): carry normalized value basis when present
+            "value_norm": it.get("value_norm"),
+            "base_unit": it.get("base_unit"),
+            "multiplier_to_base": it.get("multiplier_to_base"),  # PATCH S11: exposed for transparency
             "context_snippet": (it.get("context") or "")[:220],
             "context_score": round(float(it.get("ctx_score", 0.0)) * 100, 1),
         })
@@ -16767,7 +16778,52 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             junk_reason = "year_range_negative_endpoint"
         # =========================
 
-        # semantic association tags
+
+            # =================================================================
+            # PATCH YEAR_ONLY_V2 (ADDITIVE): suppress standalone years as datapoints
+            # Why:
+            # - Years (e.g., 2025) frequently appear in headings/ranges and should not
+            #   compete with real metric values (currency, %, volumes) in evolution.
+            # - We keep years only if there is strong metric context nearby.
+            # Rules:
+            # - If value is an integer-like 4-digit year in [1900..2100],
+            #   unit is empty, and context lacks currency/%/magnitude cues => mark junk.
+            # =================================================================
+            try:
+                if (not is_junk) and (not str(unit or "").strip()):
+                    _v_int = None
+                    try:
+                        _v_int = int(float(val)) if val is not None else None
+                    except Exception:
+                        _v_int = None
+
+                    if _v_int is not None and 1900 <= _v_int <= 2100:
+                        _ctx = str(ctx_store or "")
+                        _ctx_l = _ctx.lower()
+
+                        # Strong numeric-metric cues that should keep the candidate
+                        _keep_cue = False
+                        try:
+                            if re.search(r"[$€£¥]|\b(usd|sgd|eur|gbp|jpy|aud|cad|chf)\b", _ctx_l):
+                                _keep_cue = True
+                            elif re.search(r"%|\b(cagr|yoy|growth|increase|decrease)\b", _ctx_l):
+                                _keep_cue = True
+                            elif re.search(r"\b(million|billion|trillion|mn|bn|m|b)\b", _ctx_l):
+                                _keep_cue = True
+                            elif re.search(r"\b(kwh|mwh|gwh|twh|mw|gw|tw|kg|tonnes?|mt|kt)\b", _ctx_l):
+                                _keep_cue = True
+                            elif re.search(r"\b(revenue|sales|market\s*size|valuation|profit|earnings)\b", _ctx_l):
+                                _keep_cue = True
+                        except Exception:
+                            _keep_cue = False
+
+                        if not _keep_cue:
+                            is_junk = True
+                            junk_reason = "year_only"
+            except Exception:
+                pass
+            # =================================================================
+# semantic association tags
         measure_kind, measure_assoc = _classify_measure(unit, ctx_store)
 
         out.append({
