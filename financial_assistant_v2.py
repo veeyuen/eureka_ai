@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix17_anchor_reject_debug_strict_unit_gate"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix18_anchor_authoritative_no_schema_fallback"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -19492,4 +19492,86 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
 
 # =====================================================================
 # END PATCH FIX17
+# =====================================================================
+
+
+
+# =====================================================================
+# PATCH FIX18 (ADDITIVE): Anchor-authoritative rebuild (no schema fallback)
+# Goal:
+#   - If analysis emitted an anchor for a canonical metric, evolution MUST NOT
+#     fall back to schema-only selection when the anchor cannot be used.
+#   - This closes the final loophole where unitless year tokens win schema-only
+#     scoring after an anchor rejection.
+# Implementation:
+#   - Provide a FIX18 schema-only rebuild that:
+#       (1) rebuilds anchored metrics via rebuild_metrics_from_snapshots_with_anchors_fix17
+#       (2) rebuilds ONLY unanchored metrics via rebuild_metrics_from_snapshots_schema_only_fix17
+#       (3) merges results deterministically (anchored first)
+#   - Re-wire the public rebuild_metrics_from_snapshots_schema_only to FIX18.
+# Notes:
+#   - Fully deterministic; no refetch; no LLM.
+#   - Additive only: leaves FIX17 implementations intact.
+# =====================================================================
+
+def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """
+    FIX18 rebuild:
+      - Anchored metrics: ONLY from anchor-aware rebuild (fix17), or skipped if rejected.
+      - Unanchored metrics: schema-only rebuild (fix17) as before.
+      - Never allows schema-only fallback to fill an anchored canonical_key.
+    """
+    if not isinstance(prev_response, dict):
+        return {}
+
+    # Anchored part (authoritative when present)
+    fn_anchor = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix17")
+    anchored = fn_anchor(prev_response, baseline_sources_cache, web_context=web_context) if callable(fn_anchor) else {}
+
+    # Identify anchored keys (only those with a concrete anchor_hash)
+    metric_anchors_any = globals().get("_get_metric_anchors_any")
+    metric_anchors = metric_anchors_any(prev_response) if callable(metric_anchors_any) else (
+        prev_response.get("metric_anchors") or {}
+    )
+    anchored_keys = set()
+    try:
+        for k, a in (metric_anchors or {}).items():
+            if isinstance(a, dict) and (a.get("anchor_hash") or a.get("anchor")):
+                anchored_keys.add(k)
+    except Exception:
+        anchored_keys = set()
+
+    # Build a shallow prev_response copy where schema-only sees ONLY unanchored metrics
+    pr2 = dict(prev_response)
+    ms = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or {}
+    )
+    if isinstance(ms, dict) and anchored_keys:
+        ms2 = {k: v for k, v in ms.items() if k not in anchored_keys}
+        pr2["metric_schema_frozen"] = ms2
+
+    # Unanchored part
+    fn_schema = globals().get("rebuild_metrics_from_snapshots_schema_only_fix17")
+    unanchored = fn_schema(pr2, baseline_sources_cache, web_context=web_context) if callable(fn_schema) else {}
+
+    # Deterministic merge: anchored first, then unanchored
+    rebuilt = {}
+    if isinstance(anchored, dict):
+        rebuilt.update(anchored)
+    if isinstance(unanchored, dict):
+        for k, v in unanchored.items():
+            if k not in rebuilt:
+                rebuilt[k] = v
+    return rebuilt
+
+
+# Re-wire schema-only entrypoint to FIX18 (keep names identical for evolution dispatch)
+def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    return rebuild_metrics_from_snapshots_schema_only_fix18(prev_response, baseline_sources_cache, web_context=web_context)
+
+# =====================================================================
+# END PATCH FIX18
 # =====================================================================
