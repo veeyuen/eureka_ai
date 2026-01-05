@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix9_metricanchors"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix10_metricanchors_ABC_fix1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -368,6 +368,194 @@ def generate_analysis_id() -> str:
     """Generate unique ID for analysis"""
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:6]}"
 
+
+# =====================================================================
+# PATCH AI_A (ADDITIVE): emit metric_anchors in analysis payload (analysis-time)
+# Why:
+# - Evolution/diff are now anchor-driven; analysis must persist a deterministic
+#   canonical_key -> anchor_hash mapping for drift=0 convergence.
+# - Some UI/Sheets wrappers omit anchors unless explicitly emitted.
+# Determinism:
+# - Only uses existing evidence/candidates already present in the analysis payload.
+# - No re-fetching; no heuristic matching.
+# =====================================================================
+def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
+    try:
+        if not isinstance(analysis_obj, dict):
+            return analysis_obj
+
+        # If already present and non-empty, keep as-is
+        existing = analysis_obj.get("metric_anchors")
+        if isinstance(existing, dict) and existing:
+            return analysis_obj
+
+        # Identify the primary response container (some payloads store it nested)
+        pr = analysis_obj.get("primary_response") if isinstance(analysis_obj.get("primary_response"), dict) else None
+        pr = pr or analysis_obj
+
+        # Canonical metrics (preferred)
+        pmc = pr.get("primary_metrics_canonical") if isinstance(pr, dict) else None
+        if not isinstance(pmc, dict) or not pmc:
+            pmc = analysis_obj.get("primary_metrics_canonical") if isinstance(analysis_obj.get("primary_metrics_canonical"), dict) else {}
+
+        # Candidate lookup table from baseline snapshots (if present)
+        bsc = None
+        try:
+            r = analysis_obj.get("results")
+            if isinstance(r, dict) and isinstance(r.get("baseline_sources_cache"), list):
+                bsc = r.get("baseline_sources_cache")
+        except Exception:
+            bsc = None
+        if bsc is None and isinstance(analysis_obj.get("baseline_sources_cache"), list):
+            bsc = analysis_obj.get("baseline_sources_cache")
+
+        def _safe_str(x):
+            try:
+                return str(x).strip()
+            except Exception:
+                return ""
+
+        # Build (anchor_hash -> best candidate) index deterministically
+        anchor_to_candidate = {}
+        cand_to_candidate = {}
+        try:
+            if isinstance(bsc, list):
+                for sr in bsc:
+                    if not isinstance(sr, dict):
+                        continue
+                    surl = sr.get("source_url") or sr.get("url")
+                    for n in (sr.get("extracted_numbers") or []):
+                        if not isinstance(n, dict):
+                            continue
+                        ah = _safe_str(n.get("anchor_hash"))
+                        cid = _safe_str(n.get("candidate_id"))
+                        if ah and ah not in anchor_to_candidate:
+                            anchor_to_candidate[ah] = dict(n, source_url=n.get("source_url") or surl)
+                        if cid and cid not in cand_to_candidate:
+                            cand_to_candidate[cid] = dict(n, source_url=n.get("source_url") or surl)
+        except Exception:
+            pass
+
+        metric_anchors = {}
+
+        # Deterministic iteration for stable JSON output
+        for ckey in sorted([str(k) for k in (pmc or {}).keys()]):
+            m = pmc.get(ckey)
+            if not isinstance(m, dict):
+                continue
+
+            # Pick anchor identifiers from evidence first (most authoritative)
+            ev = m.get("evidence") or []
+            if not isinstance(ev, list):
+                ev = []
+
+            best = None
+            for e in ev:
+                if not isinstance(e, dict):
+                    continue
+                ah = _safe_str(e.get("anchor_hash") or e.get("anchor"))
+                cid = _safe_str(e.get("candidate_id"))
+                if ah or cid:
+                    best = e
+                    break
+
+            # Fallback: sometimes metric row carries anchor_hash directly
+            if best is None:
+                best = {
+                    "anchor_hash": m.get("anchor_hash") or m.get("anchor"),
+                    "candidate_id": m.get("candidate_id"),
+                    "source_url": m.get("source_url") or m.get("url"),
+                    "context_snippet": m.get("context_snippet") or m.get("context"),
+                    "anchor_confidence": m.get("anchor_confidence"),
+                }
+
+            ah = _safe_str(best.get("anchor_hash") or best.get("anchor"))
+            cid = _safe_str(best.get("candidate_id"))
+            surl = best.get("source_url") or best.get("url")
+            ctx = best.get("context_snippet") or best.get("context")
+            aconf = best.get("anchor_confidence")
+
+            # Enrich from candidate index if needed
+            if (not surl) or (not ctx):
+                cand = None
+                if ah and ah in anchor_to_candidate:
+                    cand = anchor_to_candidate.get(ah)
+                elif cid and cid in cand_to_candidate:
+                    cand = cand_to_candidate.get(cid)
+                if isinstance(cand, dict):
+                    surl = surl or (cand.get("source_url") or cand.get("url"))
+                    ctx = ctx or (cand.get("context_snippet") or cand.get("context"))
+
+            # Only emit if we actually have an anchor id
+            if not (ah or cid):
+                continue
+
+            try:
+                if isinstance(ctx, str):
+                    ctx = ctx.strip()[:220]
+                else:
+                    ctx = None
+            except Exception:
+                ctx = None
+
+            try:
+                aconf = float(aconf) if aconf is not None else None
+            except Exception:
+                aconf = None
+
+            metric_anchors[ckey] = {
+                "canonical_key": ckey,
+                "anchor_hash": ah or None,
+                "candidate_id": cid or None,
+                "source_url": surl or None,
+                "context_snippet": ctx,
+                "anchor_confidence": aconf,
+            }
+
+            # -----------------------------------------------------------------
+            # PATCH AI_B (ADDITIVE): also backfill anchor fields onto the metric row
+            # -----------------------------------------------------------------
+            try:
+                if ah and not _safe_str(m.get("anchor_hash")):
+                    m["anchor_hash"] = ah
+                if cid and not _safe_str(m.get("candidate_id")):
+                    m["candidate_id"] = cid
+                if surl and not (m.get("source_url") or m.get("url")):
+                    m["source_url"] = surl
+                if ctx and not (m.get("context_snippet") or m.get("context")):
+                    m["context_snippet"] = ctx
+                if aconf is not None and m.get("anchor_confidence") is None:
+                    m["anchor_confidence"] = aconf
+            except Exception:
+                pass
+            # -----------------------------------------------------------------
+
+        if metric_anchors:
+            # -----------------------------------------------------------------
+            # PATCH AI_C (ADDITIVE): persist in all common locations
+            # -----------------------------------------------------------------
+            try:
+                analysis_obj["metric_anchors"] = metric_anchors
+            except Exception:
+                pass
+            try:
+                if isinstance(pr, dict):
+                    pr.setdefault("metric_anchors", metric_anchors)
+            except Exception:
+                pass
+            try:
+                analysis_obj.setdefault("results", {})
+                if isinstance(analysis_obj["results"], dict):
+                    analysis_obj["results"].setdefault("metric_anchors", metric_anchors)
+            except Exception:
+                pass
+            # -----------------------------------------------------------------
+
+        return analysis_obj
+    except Exception:
+        return analysis_obj
+# =====================================================================
+
 def add_to_history(analysis: dict) -> bool:
     """
     Save analysis to Google Sheet (or session fallback).
@@ -384,6 +572,16 @@ def add_to_history(analysis: dict) -> bool:
       - Never blocks saving if enrichment fails.
       - If Sheets unavailable, falls back to session_state.
     """
+
+    # =====================================================================
+    # PATCH AI_A_CALL (ADDITIVE): ensure metric_anchors emitted before persistence
+    # =====================================================================
+    try:
+        analysis = _emit_metric_anchors_in_analysis_payload(analysis)
+    except Exception:
+        pass
+    # =====================================================================
+
     import json
     import re
     import streamlit as st
