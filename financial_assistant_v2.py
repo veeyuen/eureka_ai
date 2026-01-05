@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix19_diffpanel_canonical_values"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix20_diffpanel_use_canonical_metrics"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -8641,6 +8641,86 @@ def compute_component_similarity(comp1: Dict, comp2: Dict) -> float:
 # Using canonical IDs
 # ------------------------------------
 
+
+# =====================================================================
+# PATCH FIX20 (ADDITIVE): diff panel must use canonical numeric fields
+#
+# Problem observed:
+# - UI diff rows were showing years (e.g., "2024 %", "2024 $M") even when
+#   primary_metrics_canonical had correct numeric values.
+#
+# Root cause:
+# - compute_evolution_diff() fed compute_metric_diffs_canonical() with
+#   primary_metrics (LLM/raw) rather than primary_metrics_canonical.
+# - compute_metric_diffs_canonical() always re-canonicalized, which is correct
+#   for raw metrics but unnecessary (and potentially harmful) for already-
+#   canonical metrics.
+#
+# Fix:
+# - Allow compute_metric_diffs_canonical() to accept either raw metrics OR
+#   already-canonical metrics.
+# - Prefer primary_metrics_canonical at call sites.
+# =====================================================================
+
+def _fix20_is_canonical_metrics_dict(d: Any) -> bool:
+    """Heuristic: detect primary_metrics_canonical-style dict."""
+    try:
+        if not isinstance(d, dict) or not d:
+            return False
+        # Look at a few values
+        for _, v in list(d.items())[:5]:
+            if isinstance(v, dict) and (
+                'value_norm' in v or 'base_unit' in v or 'canonical_key' in v
+            ):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _fix20_canonical_to_metricdiff_shape(canon: Dict) -> Dict:
+    """Convert canonical metric objects -> minimal dict used by diffing."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(canon, dict):
+        return out
+
+    for k, m in canon.items():
+        if not isinstance(m, dict):
+            continue
+        key = str(m.get('canonical_key') or k)
+
+        # Prefer normalized numeric
+        v = m.get('value_norm')
+        if v is None:
+            # fall back: some code paths store mid/span
+            v = m.get('value')
+
+        unit = (
+            m.get('base_unit')
+            or m.get('unit')
+            or (m.get('value_span') or {}).get('unit')
+            or ''
+        )
+
+        # Raw/display: try to preserve analysis-side display if present
+        raw = (
+            m.get('value_display')
+            or m.get('raw')
+            or m.get('value')
+            or ''
+        )
+
+        out[key] = {
+            'name': m.get('name') or m.get('label') or key,
+            'value': v,
+            'unit': unit,
+            'raw': raw,
+            # keep span fields if present (helps range overlap)
+            'low': m.get('low'),
+            'high': m.get('high'),
+        }
+    return out
+
 def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List[MetricDiff]:
     """
     Compute metric diffs using canonical IDs for stable matching.
@@ -8648,8 +8728,16 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
     """
     diffs: List[MetricDiff] = []
 
-    old_canonical = canonicalize_metrics(old_metrics)
-    new_canonical = canonicalize_metrics(new_metrics)
+    # PATCH FIX20: accept either already-canonical metrics or raw metrics
+    if _fix20_is_canonical_metrics_dict(old_metrics):
+        old_canonical = _fix20_canonical_to_metricdiff_shape(old_metrics)
+    else:
+        old_canonical = canonicalize_metrics(old_metrics)
+
+    if _fix20_is_canonical_metrics_dict(new_metrics):
+        new_canonical = _fix20_canonical_to_metricdiff_shape(new_metrics)
+    else:
+        new_canonical = canonicalize_metrics(new_metrics)
 
     matched_new_ids = set()
 
@@ -8658,7 +8746,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
         old_name = old_m.get("name", old_id)
 
         old_span = get_metric_value_span(old_m)
-        old_raw = str(old_m.get("value", ""))
+        old_raw = str(old_m.get('raw') or old_m.get('value') or '')
         old_unit = old_span.get("unit") or old_m.get("unit", "")
         old_val = old_span.get("mid")
 
@@ -8669,7 +8757,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
             new_m = new_canonical[old_id]
             matched_new_ids.add(old_id)
 
-            new_raw = str(new_m.get("value", ""))
+            new_raw = str(new_m.get('raw') or new_m.get('value') or '')
             new_span = get_metric_value_span(new_m)
             new_val = new_span.get("mid")
             new_unit = new_span.get("unit") or new_m.get("unit", old_unit)
@@ -8715,7 +8803,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
             matched_new_ids.add(new_id)
             found = True
 
-            new_raw = str(new_m.get("value", ""))
+            new_raw = str(new_m.get('raw') or new_m.get('value') or '')
             new_span = get_metric_value_span(new_m)
             new_val = new_span.get("mid")
             new_unit = new_span.get("unit") or new_m.get("unit", old_unit)
@@ -8762,7 +8850,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
             continue
 
         new_name = new_m.get("name", new_id)
-        new_raw = str(new_m.get("value", ""))
+        new_raw = str(new_m.get('raw') or new_m.get('value') or '')
         new_span = get_metric_value_span(new_m)
         new_val = new_span.get("mid")
         new_unit = new_span.get("unit") or new_m.get("unit", "")
@@ -10268,9 +10356,13 @@ def compute_evolution_diff(old_analysis: Dict, new_analysis: Dict) -> EvolutionD
         pass
 
     # Compute diffs using CANONICAL metric registry for stable matching
+    # PATCH FIX20: prefer analysis/evolution canonical artifacts if present
+    old_metrics_for_diff = (old_response.get('primary_metrics_canonical') or old_response.get('primary_metrics') or {})
+    new_metrics_for_diff = (new_response.get('primary_metrics_canonical') or new_response.get('primary_metrics') or {})
+
     metric_diffs = compute_metric_diffs_canonical(
-        old_response.get('primary_metrics', {}),
-        new_response.get('primary_metrics', {})
+        old_metrics_for_diff,
+        new_metrics_for_diff
     )
 
     entity_diffs = compute_entity_diffs(
