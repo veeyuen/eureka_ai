@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix15_strict_junk_exclusion"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix16_keyword_deyear_unitgate_anchorpriority"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -18699,3 +18699,384 @@ def _coerce_prev_response_any(previous_data):
     except Exception:
         return {}
 # =================== END PATCH RMS_DISPATCH2 (ADDITIVE) ===================
+
+# =====================================================================
+# PATCH FIX16 (ADDITIVE): close analysis↔evolution metric lock-down gaps
+# Goals (deterministic, no re-architecture):
+#   1) De-year schema keyword scoring for non-year metrics
+#   2) Hard unit expectation gating (unitless years can't win currency/percent)
+#   3) Absolute anchor priority when anchors exist
+# Notes:
+#   - Additive only: we define FIX16 rebuild functions and re-wire dispatch
+#   - No refetch, no heuristics beyond schema/unit/anchors
+# =====================================================================
+
+def _fix16_is_year_token(s: str) -> bool:
+    try:
+        s2 = str(s or "").strip()
+        return bool(re.fullmatch(r"(19\d{2}|20\d{2})", s2))
+    except Exception:
+        return False
+
+
+def _fix16_metric_is_year_like(metric_spec: dict, canonical_key: str = "") -> bool:
+    """Deterministic allow-list for metrics whose value is genuinely a year."""
+    try:
+        spec = metric_spec or {}
+        blob = " ".join([
+            str(canonical_key or ""),
+            str(spec.get("name") or ""),
+            str(spec.get("canonical_key") or spec.get("canonical_id") or ""),
+            " ".join([str(x) for x in (spec.get("keywords") or spec.get("keyword_hints") or []) if x]),
+            str(spec.get("dimension") or ""),
+        ]).lower()
+        # year-ish intents
+        return any(k in blob for k in (" year", "year_", "founded", "since", "established", "launch year", "model year"))
+    except Exception:
+        return False
+
+
+def _fix16_prune_year_keywords(keywords: list, metric_is_year_like: bool) -> list:
+    """Remove YYYY tokens from keyword scoring unless the metric is year-like."""
+    try:
+        if metric_is_year_like:
+            return list(keywords or [])
+        out = []
+        for k in (keywords or []):
+            if _fix16_is_year_token(k):
+                continue
+            out.append(k)
+        return out
+    except Exception:
+        return list(keywords or [])
+
+
+def _fix16_expected_dimension(metric_spec: dict) -> str:
+    try:
+        spec = metric_spec or {}
+        dim = (spec.get("dimension") or spec.get("unit_family") or spec.get("expected_unit_family") or "").strip().lower()
+        return dim
+    except Exception:
+        return ""
+
+
+def _fix16_candidate_has_any_unit(c: dict) -> bool:
+    try:
+        if not isinstance(c, dict):
+            return False
+        for k in ("base_unit", "unit", "unit_tag", "unit_family"):
+            if str(c.get(k) or "").strip():
+                return True
+        # raw sometimes carries $ or % even if unit field blank
+        raw = str(c.get("raw") or "")
+        if "$" in raw or "%" in raw:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
+    """Hard gate: if schema expects a unit family, candidate must be compatible."""
+    try:
+        if not expected_dim:
+            return True
+        if not isinstance(c, dict):
+            return False
+
+        # Treat these as requiring explicit unit-ness
+        requires_unit = expected_dim in ("currency", "percent", "rate", "ratio")
+        if requires_unit and not _fix16_candidate_has_any_unit(c):
+            return False
+
+        # If candidate has a unit_family, require match
+        cand_fam = (c.get("unit_family") or "").strip().lower()
+        if cand_fam:
+            return cand_fam == expected_dim
+
+        # Infer from unit/raw when unit_family missing
+        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip().lower()
+        raw = str(c.get("raw") or "").lower()
+
+        if expected_dim == "percent":
+            return ("%" in u) or ("percent" in u) or ("%" in raw)
+
+        if expected_dim == "currency":
+            # currency symbols/codes or magnitude suffix paired with a currency marker in raw
+            if any(x in u for x in ("usd", "eur", "gbp", "jpy", "cny", "aud", "sgd", "$", "€", "£", "¥")):
+                return True
+            if "$" in raw or "usd" in raw or "sgd" in raw or "eur" in raw or "gbp" in raw:
+                return True
+            # if unit is magnitude only (M/B/K), require a currency marker in raw
+            if u in ("m", "b", "k", "t", "mn", "bn", "million", "billion"):
+                return ("$" in raw) or ("usd" in raw) or ("sgd" in raw) or ("eur" in raw) or ("gbp" in raw)
+            return False
+
+        # Quantity/rate/ratio are tricky; enforce only the unit-presence gate above.
+        return True
+    except Exception:
+        return True
+
+
+def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = "") -> bool:
+    """Compose fix15 exclusion + fix16 hard unit gate + year-token guard."""
+    try:
+        if not isinstance(c, dict):
+            return False
+
+        # Respect fix15 junk/year-only exclusion if present
+        fn = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn):
+            if fn(c, dict(metric_spec or {}, canonical_key=canonical_key)):
+                return False
+
+        expected_dim = _fix16_expected_dimension(metric_spec)
+        if not _fix16_unit_compatible(c, expected_dim):
+            return False
+
+        # Extra deterministic guard: unitless year-like numbers should never compete
+        # for non-year metrics even if upstream tagging missed them.
+        if not _fix16_metric_is_year_like(metric_spec, canonical_key=canonical_key):
+            v = c.get("value_norm")
+            u = (c.get("base_unit") or c.get("unit") or "").strip()
+            if u == "" and isinstance(v, (int, float)):
+                iv = int(v)
+                if 1900 <= iv <= 2100:
+                    return False
+
+        return True
+    except Exception:
+        return True
+
+
+def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """
+    FIX16 anchor-aware rebuild:
+      - Absolute anchor priority when anchor_hash exists in prev_response.metric_anchors
+      - Hard disallow junk/year-like unitless candidates for non-year metrics
+      - Hard unit expectation gating for currency/percent/rate/ratio dimensions
+    """
+    import re
+
+    if not isinstance(prev_response, dict):
+        return {}
+
+    metric_anchors = (
+        prev_response.get("metric_anchors")
+        or (prev_response.get("primary_response") or {}).get("metric_anchors")
+        or (prev_response.get("results") or {}).get("metric_anchors")
+        or {}
+    )
+    if not isinstance(metric_anchors, dict) or not metric_anchors:
+        return {}
+
+    metric_schema = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or {}
+    )
+
+    # Build deterministic candidate index (anchor_hash -> best candidate)
+    fn_idx = globals().get("_es_build_candidate_index_deterministic")
+    cand_index = fn_idx(baseline_sources_cache) if callable(fn_idx) else {}
+
+    rebuilt = {}
+
+    for canonical_key, a in (metric_anchors or {}).items():
+        if not isinstance(a, dict):
+            continue
+        ah = a.get("anchor_hash") or a.get("anchor") or ""
+        if not ah:
+            continue
+
+        spec = (metric_schema.get(canonical_key) if isinstance(metric_schema, dict) else None) or {}
+        spec = dict(spec)
+        spec.setdefault("name", a.get("name") or canonical_key)
+        spec.setdefault("canonical_key", canonical_key)
+
+        c = cand_index.get(ah)
+        if not isinstance(c, dict):
+            continue
+
+        # FIX16 eligibility hard-gates
+        if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
+            continue
+
+        rebuilt[canonical_key] = {
+            "canonical_key": canonical_key,
+            "name": spec.get("name") or canonical_key,
+            "value": c.get("value"),
+            "unit": c.get("unit") or "",
+            "value_norm": c.get("value_norm"),
+            "source_url": c.get("source_url") or "",
+            "anchor_hash": c.get("anchor_hash") or ah,
+            "evidence": [{
+                "source_url": c.get("source_url") or "",
+                "raw": c.get("raw") or "",
+                "context_snippet": (c.get("context_snippet") or c.get("context") or c.get("context_window") or "")[:400],
+                "anchor_hash": c.get("anchor_hash") or ah,
+                "method": "anchor_hash_rebuild_fix16",
+            }],
+            "anchor_used": True,
+        }
+
+    return rebuilt
+
+
+def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """
+    FIX16 schema-only rebuild:
+      - Removes YYYY tokens from keyword scoring for non-year metrics
+      - Hard unit expectation gating
+      - Applies fix15 junk/year exclusion + fix16 extra year-token disallow
+      - Deterministic selection/tie-breaks
+    """
+    import re
+
+    if not isinstance(prev_response, dict):
+        return {}
+
+    metric_schema = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or {}
+    )
+    if not isinstance(metric_schema, dict) or not metric_schema:
+        return {}
+
+    # Flatten snapshot candidates (no re-fetch)
+    if isinstance(baseline_sources_cache, dict) and isinstance(baseline_sources_cache.get("snapshots"), list):
+        sources = baseline_sources_cache.get("snapshots", [])
+    elif isinstance(baseline_sources_cache, list):
+        sources = baseline_sources_cache
+    else:
+        sources = []
+
+    candidates = []
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        url = s.get("source_url") or s.get("url") or ""
+        xs = s.get("extracted_numbers")
+        if isinstance(xs, list) and xs:
+            for c in xs:
+                if not isinstance(c, dict):
+                    continue
+                c2 = dict(c)
+                c2.setdefault("source_url", url)
+                candidates.append(c2)
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    def _cand_sort_key(c: dict):
+        try:
+            return (
+                str(c.get("anchor_hash") or ""),
+                str(c.get("source_url") or ""),
+                int(c.get("start_idx") or 0),
+                str(c.get("raw") or ""),
+                str(c.get("unit") or ""),
+                float(c.get("value_norm") or 0.0),
+            )
+        except Exception:
+            return ("", "", 0, "", "", 0.0)
+
+    # Deterministic global ordering of candidates
+    candidates.sort(key=_cand_sort_key)
+
+    rebuilt = {}
+
+    for canonical_key, sch in metric_schema.items():
+        if not isinstance(sch, dict):
+            continue
+
+        spec = dict(sch)
+        spec.setdefault("canonical_key", canonical_key)
+        spec.setdefault("name", sch.get("name") or canonical_key)
+
+        metric_is_year_like = _fix16_metric_is_year_like(spec, canonical_key=canonical_key)
+
+        keywords = sch.get("keywords") or sch.get("keyword_hints") or []
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        keywords = _fix16_prune_year_keywords(list(keywords), metric_is_year_like)
+        kw_norm = [_norm(k) for k in keywords if k]
+
+        expected_dim = _fix16_expected_dimension(spec)
+
+        best = None
+        best_tie = None
+
+        for c in candidates:
+            # FIX16 hard eligibility gates
+            if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
+                continue
+
+            # keyword relevance
+            ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
+            raw = _norm(c.get("raw") or "")
+
+            hits = 0
+            for k in kw_norm:
+                if k and (k in ctx or k in raw):
+                    hits += 1
+
+            # If there are no keyword hits at all, keep as weak fallback only if unit family matches strongly
+            # but do not select zero-hit candidates over hit candidates.
+            tie = (-hits,) + _cand_sort_key(c)
+            if best is None or tie < best_tie:
+                best = c
+                best_tie = tie
+
+        if not isinstance(best, dict):
+            continue
+
+        # Require at least one keyword hit unless the schema has no keywords
+        if kw_norm:
+            if best_tie is not None and isinstance(best_tie, tuple):
+                try:
+                    if (-best_tie[0]) <= 0:
+                        continue
+                except Exception:
+                    pass
+
+        rebuilt[canonical_key] = {
+            "canonical_key": canonical_key,
+            "name": spec.get("name") or canonical_key,
+            "value": best.get("value"),
+            "unit": best.get("unit") or "",
+            "value_norm": best.get("value_norm"),
+            "source_url": best.get("source_url") or "",
+            "anchor_hash": best.get("anchor_hash") or "",
+            "evidence": [{
+                "source_url": best.get("source_url") or "",
+                "raw": best.get("raw") or "",
+                "context_snippet": (best.get("context_snippet") or best.get("context") or best.get("context_window") or "")[:400],
+                "anchor_hash": best.get("anchor_hash") or "",
+                "method": "schema_only_rebuild_fix16",
+            }],
+            "anchor_used": False,
+        }
+
+    return rebuilt
+
+
+# =====================================================================
+# PATCH FIX16 (ADDITIVE): wire FIX16 rebuilds into the existing dispatch
+# - Keep names identical so evolution uses these as the LAST definitions
+# - We expose both functions while preserving older ones for reference
+# =====================================================================
+
+def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    return rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response, baseline_sources_cache, web_context=web_context)
+
+
+def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    return rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, baseline_sources_cache, web_context=web_context)
+
+# =====================================================================
+# END PATCH FIX16
+# =====================================================================
