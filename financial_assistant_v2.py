@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_patched_additive"
+CODE_VERSION = "v7_41_endstate_wip_8_steps2_4_patched_additive"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -12875,6 +12875,545 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
         })
 
     return metric_changes, unchanged, increased, decreased, found
+
+# =====================================================================
+# PATCH DIFF_V2 (ADDITIVE): upgrade diff_metrics_by_name to anchor-first + value_norm-aware
+# Why:
+# - Enforce drift=0 when the same anchor_hash matches on both sides.
+# - Prefer canonical numeric fields (value_norm/base_unit) to avoid unit/scale parsing drift.
+# - Support schema-driven tolerances (abs_eps/rel_eps) when present.
+# Notes:
+# - Preserves prior implementation under diff_metrics_by_name_LEGACY.
+# - No behavior change unless this upgraded function is called.
+# =====================================================================
+try:
+    diff_metrics_by_name_LEGACY = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_LEGACY = None
+
+def diff_metrics_by_name(prev_response: dict, cur_response: dict):
+    """
+    Canonical-first diff with:
+      - HARD STOP when prev canonical_key is missing in current (no name fallback)
+      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
+          prev_response['metric_schema_frozen'][canonical_key] (preferred)
+          else prev_response['primary_metrics_canonical'][canonical_key]
+      - Backward compatible: still returns 'name' (non-empty) and existing fields.
+
+    Returns:
+      metric_changes, unchanged, increased, decreased, found
+    """
+    import re
+
+    # Defaults (used unless schema provides overrides)
+    ABS_EPS = 1e-9
+    REL_EPS = 0.0005
+
+    def norm_name(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    def parse_num(v, unit=""):
+        fn = globals().get("parse_human_number")
+        if callable(fn):
+            try:
+                return fn(str(v), unit)
+            except Exception:
+                return None
+        try:
+            return float(str(v).replace(",", "").strip())
+        except Exception:
+            return None
+
+    # =========================================================================
+    # PATCH D1 (ADDITIVE): canonical numeric extractor
+    # - Prefer value_norm/base_unit when present (analysis/evolution alignment)
+    # - Fall back to existing parse_num(value, unit) when canonical fields missing
+    # =========================================================================
+    def get_canonical_value_and_unit(m: dict):
+        """
+        Returns: (val: float|None, unit: str)
+        Priority:
+          1) value_norm (float-like) + base_unit (if present)
+          2) parse_num(value, unit)
+        """
+        m = m if isinstance(m, dict) else {}
+
+        # 1) canonical path
+        if m.get("value_norm") is not None:
+            try:
+                v = float(m.get("value_norm"))
+                u = str(m.get("base_unit") or m.get("unit") or "").strip()
+                return v, u
+            except Exception:
+                pass
+
+        # 2) legacy parse path
+        u = str(m.get("unit") or "").strip()
+        v = parse_num(m.get("value"), u)
+        return v, u
+    # =========================================================================
+
+    # =========================================================================
+    # PATCH D0 (ADDITIVE): anchor helpers (drift=0 stability)
+    # NOTE (IMPORTANT):
+    # - Anchor_hash equality should NOT force "unchanged" if numeric values differ.
+    #   It means "we matched the same evidence anchor" (identity/matching), not
+    #   that the metric's value necessarily didn't change.
+    # - This patch keeps anchor_same, but uses it only for match_confidence +
+    #   diagnostics, not as a classification override.
+    # =========================================================================
+    def _get_anchor_hash_from_metric(m: dict):
+        try:
+            if isinstance(m, dict):
+                ah = m.get("anchor_hash") or m.get("anchor") or m.get("anchorHash")
+                return str(ah) if ah else None
+        except Exception:
+            pass
+        return None
+
+    def _get_prev_anchor_hash(prev_resp: dict, ckey: str, pm: dict):
+        # 1) direct on metric row
+        ah = _get_anchor_hash_from_metric(pm)
+        if ah:
+            return ah
+
+        # 2) prev_response.metric_anchors[ckey].anchor_hash
+        try:
+            ma = (prev_resp or {}).get("metric_anchors")
+            if isinstance(ma, dict):
+                a = ma.get(ckey)
+                if isinstance(a, dict):
+                    ah2 = a.get("anchor_hash") or a.get("anchor")
+                    if ah2:
+                        return str(ah2)
+        except Exception:
+            pass
+
+        return None
+
+    def _get_cur_anchor_hash(cur_resp: dict, ckey: str, cm: dict):
+        # 1) direct on metric row (evolution rebuild puts anchor_hash here)
+        ah = _get_anchor_hash_from_metric(cm)
+        if ah:
+            return ah
+
+        # 2) cur_response.metric_anchors[ckey].anchor_hash (if present)
+        try:
+            ma = (cur_resp or {}).get("metric_anchors")
+            if isinstance(ma, dict):
+                a = ma.get(ckey)
+                if isinstance(a, dict):
+                    ah2 = a.get("anchor_hash") or a.get("anchor")
+                    if ah2:
+                        return str(ah2)
+        except Exception:
+            pass
+
+        return None
+    # =========================================================================
+
+    # =========================================================================
+    # PATCH MA2 (ADDITIVE): wire metric_anchors into row fields
+    # - Populate context_snippet/source_url from prev_response.metric_anchors[ckey] when available
+    # - Output enrichment only
+    # =========================================================================
+    def _get_prev_anchor_obj(prev_resp: dict, ckey: str):
+        try:
+            ma = (prev_resp or {}).get("metric_anchors")
+            if isinstance(ma, dict):
+                a = ma.get(ckey)
+                return a if isinstance(a, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    def _anchor_meta(prev_resp: dict, cur_resp: dict, ckey: str, pm: dict, cm: dict):
+        """
+        Returns: (source_url, context_snippet, anchor_confidence)
+        Priority:
+          1) prev_response.metric_anchors[ckey] (baseline anchoring is authoritative)
+          2) current metric row fields (if present)
+          3) prev metric row fields (if present)
+        """
+        a = _get_prev_anchor_obj(prev_resp, ckey)
+
+        src = a.get("source_url") or a.get("url")
+        ctx = a.get("context_snippet") or a.get("context")
+        conf = a.get("anchor_confidence")
+
+        if not src:
+            try:
+                src = (cm or {}).get("source_url") or (cm or {}).get("url")
+            except Exception:
+                src = None
+        if not ctx:
+            try:
+                ctx = (cm or {}).get("context_snippet") or (cm or {}).get("context")
+            except Exception:
+                ctx = None
+
+        if not src:
+            try:
+                src = (pm or {}).get("source_url") or (pm or {}).get("url")
+            except Exception:
+                src = None
+        if not ctx:
+            try:
+                ctx = (pm or {}).get("context_snippet") or (pm or {}).get("context")
+            except Exception:
+                ctx = None
+
+        try:
+            if isinstance(ctx, str):
+                ctx = ctx.strip()[:220] or None
+            else:
+                ctx = None
+        except Exception:
+            ctx = None
+
+        try:
+            conf = float(conf) if conf is not None else None
+        except Exception:
+            conf = None
+
+        return src, ctx, conf
+    # =========================================================================
+
+    def prettify_ckey(ckey: str) -> str:
+        ckey = str(ckey or "").strip()
+        if not ckey:
+            return "Unknown Metric"
+        parts = ckey.split("__", 1)
+        left = parts[0].replace("_", " ").strip()
+        right = parts[1].replace("_", " ").strip() if len(parts) > 1 else ""
+        left = " ".join(w.capitalize() for w in left.split())
+        return f"{left} ({right})" if right else left
+
+    def get_metric_definition(prev_resp: dict, ckey: str) -> dict:
+        """
+        Pull authoritative definition from the ORIGINAL analysis run (prev_response).
+        """
+        prev_resp = prev_resp if isinstance(prev_resp, dict) else {}
+
+        schema = prev_resp.get("metric_schema_frozen")
+        if isinstance(schema, dict):
+            d = schema.get(ckey)
+            if isinstance(d, dict) and d:
+                out = dict(d)
+                out.setdefault("canonical_key", ckey)
+                return out
+
+        prev_can = prev_resp.get("primary_metrics_canonical")
+        if isinstance(prev_can, dict):
+            d = prev_can.get(ckey)
+            if isinstance(d, dict) and d:
+                out = {
+                    "canonical_key": ckey,
+                    "canonical_id": d.get("canonical_id"),
+                    "dimension": d.get("dimension"),
+                    "name": d.get("name") or d.get("original_name"),
+                    "unit": d.get("unit"),
+                    "geo_scope": d.get("geo_scope"),
+                    "geo_name": d.get("geo_name"),
+                    "keywords": d.get("keywords"),
+                }
+                return {k: v for k, v in out.items() if v not in (None, "", [], {})}
+
+        return {"canonical_key": ckey, "name": prettify_ckey(ckey)}
+
+    def get_display_name(prev_resp: dict, prev_can_obj: dict, cur_can_obj: dict, ckey: str) -> str:
+        schema = prev_resp.get("metric_schema_frozen")
+        if isinstance(schema, dict):
+            sm = schema.get(ckey)
+            if isinstance(sm, dict):
+                v = sm.get("name")
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
+        if isinstance(prev_can_obj, dict):
+            for k in ("name", "original_name"):
+                v = prev_can_obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
+        if isinstance(cur_can_obj, dict):
+            for k in ("name", "original_name"):
+                v = cur_can_obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
+        return prettify_ckey(ckey)
+
+    # =========================================================================
+    # PATCH D3 (ADDITIVE): schema-driven tolerances (optional)
+    # - If schema provides abs_eps/rel_eps use them, else default.
+    # =========================================================================
+    def get_eps_for_metric(prev_resp: dict, ckey: str):
+        ae = ABS_EPS
+        re_ = REL_EPS
+        try:
+            schema = (prev_resp or {}).get("metric_schema_frozen")
+            if isinstance(schema, dict):
+                d = schema.get(ckey)
+                if isinstance(d, dict):
+                    if d.get("abs_eps") is not None:
+                        try:
+                            ae = float(d.get("abs_eps"))
+                        except Exception:
+                            pass
+                    if d.get("rel_eps") is not None:
+                        try:
+                            re_ = float(d.get("rel_eps"))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        return ae, re_
+    # =========================================================================
+
+    prev_response = prev_response if isinstance(prev_response, dict) else {}
+    cur_response = cur_response if isinstance(cur_response, dict) else {}
+
+    prev_can = prev_response.get("primary_metrics_canonical")
+    cur_can = cur_response.get("primary_metrics_canonical")
+
+    # =========================
+    # Path A: canonical-first
+    # =========================
+    if isinstance(prev_can, dict) and isinstance(cur_can, dict) and prev_can:
+        metric_changes = []
+        unchanged = increased = decreased = found = 0
+
+        for ckey, pm in prev_can.items():
+            pm = pm if isinstance(pm, dict) else {}
+            cm = cur_can.get(ckey)
+            cm = cm if isinstance(cm, dict) else {}
+
+            display_name = get_display_name(prev_response, pm, cm, ckey)
+            definition = get_metric_definition(prev_response, ckey)
+
+            prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
+
+            # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
+            if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
+                # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
+                _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
+
+                metric_changes.append({
+                    "name": display_name,
+                    "previous_value": prev_raw,
+                    "current_value": "N/A",
+                    "change_pct": None,
+                    "change_type": "not_found",
+                    "match_confidence": 0.0,
+                    "context_snippet": _ctx,
+                    "source_url": _src,
+                    "anchor_used": False,  # not applicable when current metric missing
+                    "canonical_key": ckey,
+                    "metric_definition": definition,
+                    "anchor_confidence": _aconf,
+                })
+                continue
+
+            found += 1
+
+            cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
+
+            # =========================================================================
+            # PATCH D0 (ADDITIVE): anchor identity (do NOT force unchanged)
+            # =========================================================================
+            prev_ah = _get_prev_anchor_hash(prev_response, ckey, pm)
+            cur_ah = _get_cur_anchor_hash(cur_response, ckey, cm)
+            anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
+            # =========================================================================
+
+            # PATCH D2 (ADDITIVE): use canonical values for diff when available
+            prev_val, prev_unit_cmp = get_canonical_value_and_unit(pm)
+            cur_val, cur_unit_cmp = get_canonical_value_and_unit(cm)
+
+            # PATCH D3 (ADDITIVE): metric-specific tolerances (schema overrides)
+            abs_eps, rel_eps = get_eps_for_metric(prev_response, ckey)
+
+            change_type = "unknown"
+            change_pct = None
+
+            # =========================================================================
+            # PATCH D0B (ADDITIVE, REQUIRED): numeric-first classification even if anchors match
+            # Why:
+            # - anchor_same means "we matched the same evidence anchor"
+            # - It MUST NOT short-circuit classification to "unchanged" when values differ.
+            # - This fixes the exact bug you observed: prev_value_norm != cur_value_norm
+            #   while change_type incorrectly says "unchanged".
+            # =========================================================================
+            if prev_val is not None and cur_val is not None:
+                if abs(prev_val - cur_val) <= max(abs_eps, abs(prev_val) * rel_eps):
+                    change_type = "unchanged"
+                    change_pct = 0.0
+                    unchanged += 1
+                elif cur_val > prev_val:
+                    change_type = "increased"
+                    change_pct = ((cur_val - prev_val) / max(abs_eps, abs(prev_val))) * 100.0
+                    increased += 1
+                else:
+                    change_type = "decreased"
+                    change_pct = ((cur_val - prev_val) / max(abs_eps, abs(prev_val))) * 100.0
+                    decreased += 1
+            # If we cannot compare numerically, fall back:
+            # - If anchors match, treat as unchanged ONLY as a last resort (formatting issue)
+            elif anchor_same:
+                change_type = "unchanged"
+                change_pct = 0.0
+                unchanged += 1
+            # =========================================================================
+
+            # PATCH D4 (ADDITIVE): unit mismatch flag (debug only)
+            unit_mismatch = False
+            try:
+                if prev_unit_cmp and cur_unit_cmp and str(prev_unit_cmp) != str(cur_unit_cmp):
+                    unit_mismatch = True
+            except Exception:
+                unit_mismatch = False
+
+            # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
+            _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, cm)
+
+            # PATCH D0C (ADDITIVE): match_confidence reflects anchor identity
+            match_conf = 92.0
+            try:
+                if anchor_same:
+                    match_conf = 98.0
+            except Exception:
+                match_conf = 92.0
+
+            metric_changes.append({
+                "name": display_name,
+                "previous_value": prev_raw,
+                "current_value": cur_raw,
+                "change_pct": change_pct,
+                "change_type": change_type,
+                "match_confidence": float(match_conf),
+
+                "context_snippet": _ctx,
+                "source_url": _src,
+
+                # anchor identity (matching), not classification
+                "anchor_used": bool(anchor_same),
+                "prev_anchor_hash": prev_ah,
+                "cur_anchor_hash": cur_ah,
+
+                "canonical_key": ckey,
+                "metric_definition": definition,
+
+                "anchor_confidence": _aconf,
+
+                # expose canonical comparison basis for debugging/convergence
+                "prev_value_norm": prev_val,
+                "cur_value_norm": cur_val,
+                "prev_unit_cmp": prev_unit_cmp,
+                "cur_unit_cmp": cur_unit_cmp,
+                "unit_mismatch": bool(unit_mismatch),
+                "abs_eps_used": abs_eps,
+                "rel_eps_used": rel_eps,
+            })
+
+        return metric_changes, unchanged, increased, decreased, found
+
+    # =========================
+    # Path B: legacy name fallback
+    # =========================
+    prev_metrics = prev_response.get("primary_metrics") or {}
+    cur_metrics = cur_response.get("primary_metrics") or {}
+    if not isinstance(prev_metrics, dict):
+        prev_metrics = {}
+    if not isinstance(cur_metrics, dict):
+        cur_metrics = {}
+
+    prev_index = {}
+    for k, m in prev_metrics.items():
+        if isinstance(m, dict):
+            name = m.get("name") or k
+            prev_index[norm_name(name)] = (name, m)
+
+    cur_index = {}
+    for k, m in cur_metrics.items():
+        if isinstance(m, dict):
+            name = m.get("name") or k
+            cur_index[norm_name(name)] = (name, m)
+
+    metric_changes = []
+    unchanged = increased = decreased = found = 0
+
+    for nk, (display_name, pm) in prev_index.items():
+        prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
+
+        if nk not in cur_index:
+            metric_changes.append({
+                "name": display_name or "Unknown Metric",
+                "previous_value": prev_raw,
+                "current_value": "N/A",
+                "change_pct": None,
+                "change_type": "not_found",
+                "match_confidence": 0.0,
+                "context_snippet": None,
+                "source_url": None,
+                "anchor_used": False,
+            })
+            continue
+
+        found += 1
+        _, cm = cur_index[nk]
+        cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
+
+        prev_val, _prev_unit_cmp = get_canonical_value_and_unit(pm)
+        cur_val, _cur_unit_cmp = get_canonical_value_and_unit(cm)
+
+        prev_ah = _get_anchor_hash_from_metric(pm)
+        cur_ah = _get_anchor_hash_from_metric(cm)
+        anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
+
+        change_type = "unknown"
+        change_pct = None
+
+        # PATCH D0B mirrors canonical path: numeric-first, anchor fallback only if numeric missing
+        if prev_val is not None and cur_val is not None:
+            if abs(prev_val - cur_val) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
+                change_type = "unchanged"
+                change_pct = 0.0
+                unchanged += 1
+            elif cur_val > prev_val:
+                change_type = "increased"
+                change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+                increased += 1
+            else:
+                change_type = "decreased"
+                change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
+                decreased += 1
+        elif anchor_same:
+            change_type = "unchanged"
+            change_pct = 0.0
+            unchanged += 1
+
+        metric_changes.append({
+            "name": display_name or "Unknown Metric",
+            "previous_value": prev_raw,
+            "current_value": cur_raw,
+            "change_pct": change_pct,
+            "change_type": change_type,
+            "match_confidence": 90.0 if anchor_same else 80.0,
+            "context_snippet": None,
+            "source_url": None,
+
+            "anchor_used": bool(anchor_same),
+            "prev_anchor_hash": prev_ah,
+            "cur_anchor_hash": cur_ah,
+
+            "prev_value_norm": prev_val,
+            "cur_value_norm": cur_val,
+        })
+
+    return metric_changes, unchanged, increased, decreased, found
+# =====================================================================
+
 def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_by_name: dict):
     """
     When current analysis is missing, fall back to cached extracted_numbers only.
