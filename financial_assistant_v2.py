@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix1"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -1024,6 +1024,8 @@ try:
 
     analysis.setdefault("anchor_integrity_audit", {})
     if isinstance(analysis["anchor_integrity_audit"], dict):
+except Exception:
+    pass
         analysis["anchor_integrity_audit"].update({
             "present_anchor_hash_count": int(len(_present)),
             "anchor_count": int(len(metric_anchors)) if isinstance(metric_anchors, dict) else 0,
