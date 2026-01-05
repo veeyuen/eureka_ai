@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix14_yearonly_anchorhash"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix15_strict_junk_exclusion"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -2809,6 +2809,69 @@ def rebuild_metrics_from_snapshots(
 #   - Deterministic tie-break ordering.
 # =====================================================================
 
+
+# =====================================================================
+# PATCH F (deterministic): Explicit candidate exclusion in rebuild stage
+#   - Enforce that ANY candidate flagged as junk is excluded from:
+#       * candidate indexing
+#       * candidate scoring
+#       * final metric assignment
+#   - Additionally, suppress "year-like" unitless tokens (e.g., 2024/2025) for
+#     non-year metrics (currency/percent/rate/ratio/growth/etc.) to prevent
+#     year fixation during evolution.
+#   - Purely deterministic: no LLM, no refetch, no heuristics outside schema cues.
+# =====================================================================
+
+def _candidate_disallowed_for_metric(_cand: dict, _spec: dict = None) -> bool:
+    """Return True if a snapshot candidate must not be used to assign a metric value."""
+    if not isinstance(_cand, dict):
+        return True
+
+    # 1) Hard exclusion: explicit junk flags / reasons from extraction phase
+    if _cand.get("is_junk") is True:
+        return True
+    jr = str(_cand.get("junk_reason") or "").strip().lower()
+    if jr:
+        # If a junk_reason exists, treat it as non-selectable deterministically.
+        return True
+
+    # 2) Deterministic anti-year-fixation: unitless year-like tokens are disallowed
+    #    for most numeric metrics (unless schema clearly indicates a "year" metric).
+    try:
+        v = _cand.get("value_norm", _cand.get("value"))
+        unitish = str(_cand.get("base_unit") or _cand.get("unit_tag") or _cand.get("unit") or "").strip()
+        if unitish == "" and isinstance(v, (int, float)):
+            if abs(float(v) - round(float(v))) < 1e-9:
+                vi = int(round(float(v)))
+                if 1900 <= vi <= 2100:
+                    if isinstance(_spec, dict):
+                        nm = str(_spec.get("name") or "").lower()
+                        cid = str(_spec.get("canonical_id") or _spec.get("canonical_key") or "").lower()
+                        kws = _spec.get("keywords") or []
+                        kws_s = " ".join([str(k).lower() for k in kws]) if isinstance(kws, list) else str(kws).lower()
+
+                        # Allow explicit year metrics
+                        if ("year" in nm) or ("year" in cid) or ("founded" in nm) or ("since" in nm) or ("year" in kws_s):
+                            return False
+
+                        uf = str(_spec.get("unit_family") or "").lower().strip()
+                        ut = str(_spec.get("unit_tag") or _spec.get("unit") or "").lower().strip()
+
+                        # For common non-year metric families, exclude year-like tokens.
+                        if uf in ("currency", "percent", "rate", "ratio", "growth", "share"):
+                            return True
+                        if "%" in ut:
+                            return True
+                        if any(w in nm for w in ("cagr", "revenue", "growth", "market", "sales", "profit", "margin", "volume")):
+                            return True
+
+                    # Default: unitless year-like token is not a valid metric value.
+                    return True
+    except Exception:
+        pass
+
+    return False
+
 def rebuild_metrics_from_snapshots_schema_only(
     prev_response: dict,
     baseline_sources_cache: list,
@@ -2859,8 +2922,8 @@ def rebuild_metrics_from_snapshots_schema_only(
             for n in nums:
                 if not isinstance(n, dict):
                     continue
-                # Filter junk deterministically (schema-driven rebuild doesn't want nav chrome)
-                if n.get("is_junk") is True:
+                # Filter junk deterministically (strict rebuild exclusion)
+                if _candidate_disallowed_for_metric(n, None):
                     continue
                 # Normalize a few fields to ensure stable downstream access
                 c = dict(n)
@@ -2911,6 +2974,9 @@ def rebuild_metrics_from_snapshots_schema_only(
         best_key = None
 
         for c in candidates:
+            # PATCH F: strict candidate exclusion at scoring time
+            if _candidate_disallowed_for_metric(c, spec):
+                continue
             # =====================================================================
             # PATCH AI2 (ADDITIVE): guard against year-only candidates on currency-like metrics
             # Why:
@@ -3161,7 +3227,7 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
             for c in xs:
                 if not isinstance(c, dict):
                     continue
-                if c.get("is_junk") is True:
+                if _candidate_disallowed_for_metric(c, None):
                     continue
                 c2 = dict(c)
                 c2.setdefault("source_url", url)
