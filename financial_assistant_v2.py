@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41f_force_rebuild_honored_finalindent.py"  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41g_force_rebuild_honored_nameerrorfix.py"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
@@ -11133,6 +11133,19 @@ NON_DATA_CONTEXT_HINTS = [
 
 def _truncate_json_safely_for_sheets(json_str: str, max_chars: int = 45000) -> str:
     """
+# =====================================================================
+# PATCH FIX41G (ADDITIVE): Normalize web_context and capture force_rebuild
+# Ensures the UI flag reaches the fastpath gate and is recorded in output.
+# =====================================================================
+if web_context is None or not isinstance(web_context, dict):
+    web_context = {}
+_fix41_force_rebuild_seen = False
+try:
+    _fix41_force_rebuild_seen = bool(web_context.get("force_rebuild"))
+except Exception:
+    _fix41_force_rebuild_seen = False
+# =====================================================================
+
     PATCH TS1 (ADDITIVE): JSON-safe truncation wrapper
     - Ensures json.loads always succeeds for any returned value.
     - Stores a preview when oversized.
@@ -20711,18 +20724,8 @@ def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
     }
 
 
-# =====================================================================
-# PATCH FIX41 (ADDITIVE): Normalize web_context and capture force_rebuild
-# Ensures the UI flag reaches the fastpath gate and is recorded in output.
-# =====================================================================
-if web_context is None or not isinstance(web_context, dict):
-    web_context = {}
-_fix41_force_rebuild_seen = False
-try:
-    _fix41_force_rebuild_seen = bool(web_context.get("force_rebuild"))
-except Exception:
-    _fix41_force_rebuild_seen = False
-# =====================================================================
+# PATCH FIX41G: removed misplaced top-level web_context normalization block (was causing NameError)
+
 
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
     """
