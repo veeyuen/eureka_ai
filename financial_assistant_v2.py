@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate"
+CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -216,6 +216,19 @@ def _es_build_candidate_index_deterministic(baseline_sources_cache):
                 ctx_hash = c.get("context_hash") or ""
                 val = c.get("value")
                 unit = c.get("unit") or ""
+            # PATCH FIX27 (ADDITIVE): Eligibility gate BEFORE scoring.
+            # Reject bare-year tokens for non-year metrics when there is no token unit evidence.
+            if expected_kind != "year":
+                raw_token = (c.get("raw") or "").strip()
+                if _fix27_is_bare_year_token(raw_token, c.get("value_norm")) and not _fix27_has_any_unit_evidence(c):
+                    continue
+            # Typed metrics require explicit token-level unit evidence
+            if expected_kind == "currency" and not _fix27_has_currency_evidence(c):
+                continue
+            if expected_kind == "percent" and not _fix27_has_percent_evidence(c):
+                continue
+            if expected_kind == "unit" and not _fix27_has_any_unit_evidence(c):
+                continue
                 su = c.get("source_url") or ""
                 return (conf_key, ctx_len, str(ctx_hash), _es_stable_sort_key(val), str(unit), str(su))
             cands_sorted = sorted(cands, key=_cand_key)
@@ -16369,73 +16382,78 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
 
     filtered.sort(key=_cand_sort_key)
 
+    # =====================================================================
+    # PATCH FIX27 (ADDITIVE): Strict schema-only eligibility gate to prevent
+    # bare-year tokens (e.g., "2024") from winning typed metrics (currency,
+    # percent, unit_sales) due to keyword overlap.
+    #
+    # Key rules (token-level evidence):
+    #   - If raw looks like a bare year (1900–2100) AND token has no unit
+    #     evidence, reject for non-year metrics.
+    #   - For currency metrics, require explicit currency evidence on the token.
+    #   - For percent metrics, require explicit percent evidence on the token.
+    #   - For unit/unit_sales metrics, require some unit evidence on the token.
+    # NOTE: This is enforced inside schema-only selection, BEFORE scoring.
+    # =====================================================================
 
-# =====================================================================
-# PATCH FIX27 (ADDITIVE): strict schema-only eligibility gate to prevent
-# year-only tokens (e.g., "2024") and unitless tokens from winning for
-# currency/percent/unit metrics during evolution rebuild.
-#
-# Rationale:
-# - Years are high-frequency and often overlap schema keywords ("2024", "2034").
-# - Schema-only rebuild must enforce token-level unit evidence BEFORE scoring.
-# - This patch is deterministic and does not change extraction.
-# =====================================================================
-
-_FIX27_YEAR_MIN = 1900
-_FIX27_YEAR_MAX = 2100
-
-def _fix27_norm(s: str) -> str:
-    return (s or "").strip().lower()
-
-def _fix27_is_bare_year_token(raw_token: str, value_norm, unit_s: str, base_unit: str) -> bool:
-    """Return True if candidate looks like a bare year with no unit evidence."""
-    rt = (raw_token or "").strip()
-    if not rt:
-        return False
-    if not re.fullmatch(r"\d{4}(?:\.0+)?", rt):
-        return False
-    try:
-        v = int(float(value_norm))
-    except Exception:
+    def _fix27_is_bare_year_token(raw_token: str, value_norm):
         try:
-            v = int(rt.split('.')[0])
+            s = (raw_token or "").strip()
+            # Allow formats like "2024" or "2024.0"
+            if re.fullmatch(r"\d{4}(?:\.0+)?", s):
+                y = int(float(s))
+                return 1900 <= y <= 2100
         except Exception:
-            return False
-    if v < _FIX27_YEAR_MIN or v > _FIX27_YEAR_MAX:
+            pass
+        # fallback: numeric year-like
+        try:
+            if value_norm is not None:
+                y = int(float(value_norm))
+                if abs(float(value_norm) - float(y)) < 1e-9:
+                    return 1900 <= y <= 2100
+        except Exception:
+            pass
         return False
-    # token-level unit evidence must be absent
-    return (_fix27_norm(unit_s) == "" and _fix27_norm(base_unit) == "")
 
-def _fix27_expected_kind(canonical_key: str, sch: dict, expected_dim: str) -> str:
-    """Infer expected kind for strict eligibility."""
-    ck = (canonical_key or "").lower()
-    ed = (expected_dim or "").lower()
-    ut = (sch.get("unit_tag") or "").lower()
-    name = (sch.get("name") or "").lower()
-    kw = " ".join([str(x).lower() for x in (sch.get("keywords") or sch.get("keyword_hints") or [])])
+    def _fix27_expected_kind(canonical_key: str, sch: dict) -> str:
+        ck = (canonical_key or "").lower()
+        dim = ((sch or {}).get("dimension") or (sch or {}).get("unit_family") or "").lower().strip()
+        if ck.endswith("__percent") or "percent" in dim:
+            return "percent"
+        if ck.endswith("__currency") or "currency" in dim or "money" in dim:
+            return "currency"
+        if ck.endswith("__unit_sales") or "unit" in ck or "sales" in ck:
+            return "unit"
+        if "year" in dim or ck.endswith("__year"):
+            return "year"
+        return "other"
 
-    blob = " ".join([ck, ed, ut, name, kw])
+    def _fix27_has_currency_evidence(c: dict) -> bool:
+        raw = (c.get("raw") or "")
+        u = (c.get("unit") or "")
+        bu = (c.get("base_unit") or "")
+        ut = (c.get("unit_tag") or "")
+        blob = f"{raw} {u} {bu} {ut}".lower()
+        # Token-level currency signals
+        if "$" in raw:
+            return True
+        for t in ("usd", "eur", "gbp", "sgd", "aud", "cad", "chf", "jpy", "cny", "rmb", "hkd", "inr", "krw"):
+            if re.search(rf"\b{t}\b", blob):
+                return True
+        return False
 
-    if "__percent" in ck or "percent" in blob or "%" in blob or "cagr" in blob or "growth" in blob:
-        return "percent"
-    if "__currency" in ck or "currency" in blob or "usd" in blob or "$" in blob:
-        return "currency"
-    if "__unit_sales" in ck or "unit" in blob or "liter" in blob or "litre" in blob or "ton" in blob or "kg" in blob:
-        return "unit"
-    if "year" in blob:
-        return "year"
-    return ""
+    def _fix27_has_percent_evidence(c: dict) -> bool:
+        raw = (c.get("raw") or "")
+        u = (c.get("unit") or "")
+        bu = (c.get("base_unit") or "")
+        ut = (c.get("unit_tag") or "")
+        blob = f"{raw} {u} {bu} {ut}".lower()
+        return ("%" in raw) or ("%" in blob) or ("percent" in blob)
 
-_FIX27_CCY_MARKERS = ("$", "usd", "us$", "eur", "gbp", "sgd", "aud", "cad", "jpy", "cny", "rmb", "inr")
-def _fix27_has_currency_evidence(raw_token: str, unit_s: str, base_unit: str) -> bool:
-    t = _fix27_norm(raw_token) + " " + _fix27_norm(unit_s) + " " + _fix27_norm(base_unit)
-    return any(m in t for m in _FIX27_CCY_MARKERS)
-
-def _fix27_has_percent_evidence(raw_token: str, unit_s: str, base_unit: str) -> bool:
-    t = _fix27_norm(raw_token) + " " + _fix27_norm(unit_s) + " " + _fix27_norm(base_unit)
-    return ("%" in t) or ("percent" in t) or (base_unit.strip() == "%")
-
-# 3) Schema-driven selection
+    def _fix27_has_any_unit_evidence(c: dict) -> bool:
+        # Any unit evidence captured on the token (not schema defaults)
+        return bool((c.get("unit") or "").strip() or (c.get("base_unit") or "").strip() or (c.get("unit_tag") or "").strip())
+    # 3) Schema-driven selection
     rebuilt = {}
     for canonical_key, sch in metric_schema.items():
         if not isinstance(sch, dict):
@@ -16450,6 +16468,7 @@ def _fix27_has_percent_evidence(raw_token: str, unit_s: str, base_unit: str) -> 
 
         # Expected family/dimension
         expected_dim = (sch.get("dimension") or sch.get("unit_family") or "").lower().strip()
+        expected_kind = _fix27_expected_kind(canonical_key, sch)  # PATCH FIX27
 
         best = None
         best_score = None
@@ -16458,28 +16477,6 @@ def _fix27_has_percent_evidence(raw_token: str, unit_s: str, base_unit: str) -> 
             ctx = _norm(c.get("context") or c.get("context_window") or "")
             raw = _norm(c.get("raw") or "")
             unit = c.get("unit") or ""
-
-# -----------------------------------------------------------------
-# PATCH FIX27 (ADDITIVE): strict eligibility gate BEFORE scoring.
-# Prevent year-only and unitless tokens from winning typed metrics.
-# -----------------------------------------------------------------
-raw_token = (c.get("raw") or "").strip()
-unit_s = (c.get("unit") or "").strip()
-base_unit = (c.get("base_unit") or c.get("unit_tag") or "").strip()
-expected_kind = _fix27_expected_kind(canonical_key, sch, expected_dim)
-
-# Reject bare years (e.g., "2024") for non-year metrics unless token carries units.
-if _fix27_is_bare_year_token(raw_token, c.get("value_norm"), unit_s, base_unit) and expected_kind != "year":
-    continue
-
-# Typed metrics require token-level unit evidence.
-if expected_kind == "currency" and not _fix27_has_currency_evidence(raw_token, unit_s, base_unit):
-    continue
-if expected_kind == "percent" and not _fix27_has_percent_evidence(raw_token, unit_s, base_unit):
-    continue
-if expected_kind == "unit" and (_fix27_norm(unit_s) == "" and _fix27_norm(base_unit) == ""):
-    continue
-
             fam = _unit_family_guess(unit)
             if expected_dim and fam and expected_dim not in (fam,):
                 # strict family check when we can infer a family
