@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_patches_fix23_unified_deterministic_metric_engine"
+CODE_VERSION = "v7_41_endstate_patches_fix24_replay_if_unchanged"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -16348,6 +16348,266 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
 
     return output
+
+
+# =====================================================================
+# PATCH FIX24 (ADDITIVE): Evolution "REPLAY-IF-UNCHANGED" short-circuit
+#
+# Goal:
+#   - If sources + snapshot data (and optionally schema/canon hashes) have NOT changed,
+#     evolution should NOT rebuild metrics from candidate pools.
+#   - Instead, evolution should replay the prior analysis canonical metrics verbatim.
+#
+# Rationale:
+#   - Prevents any re-selection volatility (e.g., year tokens winning) when nothing changed.
+#   - Keeps drift=0 a structural invariant rather than an empirical outcome.
+#
+# Implementation notes:
+#   - Additive only: we DO NOT refactor compute_source_anchored_diff above.
+#   - We wrap the existing compute_source_anchored_diff implementation (FIX23 behavior)
+#     and add a deterministic "no-change" gate *before* it runs.
+#   - Change detection uses snapshot hashes computed from:
+#       * previous_data baseline_sources_cache (prev_hash)
+#       * web_context scraped_meta / baseline_sources_cache when available (cur_hash)
+#     If web_context is absent, we cannot verify change against live sources here,
+#     so we fall back to the existing FIX23 behavior.
+# =====================================================================
+
+# Preserve the FIX23 implementation under a stable alias
+_compute_source_anchored_diff_FIX23 = compute_source_anchored_diff
+
+def _fix24_get_nested(d, path, default=None):
+    try:
+        x = d
+        for k in path:
+            if not isinstance(x, dict):
+                return default
+            x = x.get(k)
+        return x if x is not None else default
+    except Exception:
+        return default
+
+def _fix24_first_present(d, paths, default=None):
+    for p in paths:
+        v = _fix24_get_nested(d, p, None)
+        if v is not None:
+            return v
+    return default
+
+def _fix24_compute_snapshot_hash(cache: object) -> str:
+    """Prefer v2 snapshot hash if available, else v1, else empty."""
+    try:
+        fn2 = globals().get("compute_source_snapshot_hash_v2")
+        if callable(fn2):
+            return fn2(cache if isinstance(cache, list) else [])
+    except Exception:
+        pass
+    try:
+        fn1 = globals().get("compute_source_snapshot_hash")
+        if callable(fn1):
+            return fn1(cache if isinstance(cache, list) else [])
+    except Exception:
+        pass
+    return ""
+
+def _fix24_extract_cache_from_web_context(web_context: dict) -> list:
+    """Build a snapshot-like list from web_context if present (no refetch)."""
+    if not isinstance(web_context, dict):
+        return []
+    # Prefer: web_context.baseline_sources_cache (analysis-aligned)
+    bsc = web_context.get("baseline_sources_cache")
+    if isinstance(bsc, list) and bsc:
+        return bsc
+    # Next: web_context.results.baseline_sources_cache
+    bsc2 = _fix24_get_nested(web_context, ("results","baseline_sources_cache"), None)
+    if isinstance(bsc2, list) and bsc2:
+        return bsc2
+    # Next: web_context.scraped_meta (reconstruct minimal list, mirroring FIX23 logic)
+    sm = web_context.get("scraped_meta")
+    if not isinstance(sm, dict) or not sm:
+        return []
+    rebuilt = []
+    try:
+        for url, meta in sm.items():
+            if not isinstance(meta, dict):
+                continue
+            nums = meta.get("extracted_numbers") or []
+            if not isinstance(nums, list):
+                nums = []
+            rebuilt.append({
+                "source_url": url,
+                "fingerprint": meta.get("fingerprint"),
+                "fetched_at": meta.get("fetched_at"),
+                "extracted_numbers": [n for n in nums if isinstance(n, dict)],
+            })
+        rebuilt.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+    except Exception:
+        return []
+    return rebuilt
+
+def _fix24_replay_payload(previous_data: dict, prev_response: dict, metric_changes: list, unchanged: int, increased: int, decreased: int, found: int,
+                         prev_hash: str, cur_hash: str, hash_equal: bool, schema_equal: bool, canon_equal: bool, source_count: int) -> dict:
+    """Renderer-compatible replay payload (no rebuild)."""
+    out = {
+        "status": "success",
+        "message": "Evolution replayed prior canonical metrics (no-change short-circuit, FIX24).",
+        "interpretation": "No change detected in snapshots/hashes; metrics were replayed verbatim without rebuild.",
+        "evolution_mode": "replay_nochange_fix24",
+        "sources_checked": int(source_count or 0),
+        "sources_fetched": 0,  # no fetch in this function; any fetch would have occurred upstream in analysis
+        "numbers_extracted_total": 0,
+        "stability_score": 100.0,
+        "summary": {
+            "total_metrics": int(len(metric_changes or [])),
+            "metrics_found": int(found or 0),
+            "metrics_increased": int(increased or 0),
+            "metrics_decreased": int(decreased or 0),
+            "metrics_unchanged": int(unchanged or 0),
+        },
+        "metric_changes": metric_changes or [],
+        "source_results": [],
+        "fix24_change_gate": {
+            "prev_source_snapshot_hash": prev_hash,
+            "cur_source_snapshot_hash": cur_hash,
+            "snapshot_hash_equal": bool(hash_equal),
+            "schema_hash_equal": bool(schema_equal),
+            "canonical_universe_hash_equal": bool(canon_equal),
+        },
+    }
+    # Preserve essential artifacts for downstream UI/debug (additive)
+    try:
+        pr = (previous_data or {}).get("primary_response") if isinstance(previous_data, dict) else None
+        if isinstance(pr, dict):
+            out["primary_response_replayed"] = True
+            out["replayed_metric_schema_frozen"] = pr.get("metric_schema_frozen")
+            out["replayed_metric_anchors"] = pr.get("metric_anchors")
+    except Exception:
+        pass
+    return out
+
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX24 wrapper: replay prior metrics when snapshot/hashes indicate no change."""
+    # If we don't have web_context, we cannot verify "no change" against a fresh snapshot here.
+    if not isinstance(web_context, dict) or not web_context:
+        return _compute_source_anchored_diff_FIX23(previous_data, web_context=web_context)
+
+    try:
+        # Pull previous response and snapshot cache
+        prev_response = _fix24_first_present(previous_data, [
+            ("primary_response",),
+            ("results","primary_response"),
+        ], default=None)
+        if not isinstance(prev_response, dict):
+            prev_response = previous_data if isinstance(previous_data, dict) else {}
+
+        prev_cache = _fix24_first_present(previous_data, [
+            ("results","baseline_sources_cache"),
+            ("baseline_sources_cache",),
+            ("primary_response","results","baseline_sources_cache"),
+            ("primary_response","baseline_sources_cache"),
+        ], default=None)
+        if not isinstance(prev_cache, list):
+            prev_cache = []
+
+        cur_cache = _fix24_extract_cache_from_web_context(web_context)
+
+        prev_hash = (
+            _fix24_first_present(previous_data, [
+                ("source_snapshot_hash",),
+                ("results","source_snapshot_hash"),
+                ("primary_response","source_snapshot_hash"),
+                ("primary_response","results","source_snapshot_hash"),
+            ], default=None) or ""
+        )
+        if not prev_hash:
+            prev_hash = _fix24_compute_snapshot_hash(prev_cache)
+
+        cur_hash = _fix24_compute_snapshot_hash(cur_cache)
+
+        # Optional schema / canonical universe hash gating (if present on both sides)
+        prev_schema_hash = _fix24_first_present(previous_data, [
+            ("schema_hash",),
+            ("results","schema_hash"),
+            ("primary_response","schema_hash"),
+            ("primary_response","results","schema_hash"),
+        ], default=None)
+        cur_schema_hash = _fix24_first_present(web_context, [
+            ("schema_hash",),
+            ("results","schema_hash"),
+            ("primary_response","schema_hash"),
+            ("primary_response","results","schema_hash"),
+        ], default=None)
+
+        prev_canon_hash = _fix24_first_present(previous_data, [
+            ("canonical_universe_hash",),
+            ("results","canonical_universe_hash"),
+            ("primary_response","canonical_universe_hash"),
+            ("primary_response","results","canonical_universe_hash"),
+        ], default=None)
+        cur_canon_hash = _fix24_first_present(web_context, [
+            ("canonical_universe_hash",),
+            ("results","canonical_universe_hash"),
+            ("primary_response","canonical_universe_hash"),
+            ("primary_response","results","canonical_universe_hash"),
+        ], default=None)
+
+        hash_equal = bool(prev_hash and cur_hash and prev_hash == cur_hash)
+        schema_equal = (prev_schema_hash is None or cur_schema_hash is None or prev_schema_hash == cur_schema_hash)
+        canon_equal = (prev_canon_hash is None or cur_canon_hash is None or prev_canon_hash == cur_canon_hash)
+
+        # Change-gate: only replay when snapshot hash matches AND optional hashes do not disagree.
+        if hash_equal and schema_equal and canon_equal:
+            # Deterministic "unchanged" diff: prev vs prev
+            prev_metrics = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
+            metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+            try:
+                fn_diff = globals().get("diff_metrics_by_name")
+                if callable(fn_diff):
+                    cur_resp_for_diff = {"primary_metrics_canonical": prev_metrics}
+                    metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+            except Exception:
+                pass
+
+            return _fix24_replay_payload(
+                previous_data=previous_data,
+                prev_response=prev_response,
+                metric_changes=metric_changes,
+                unchanged=unchanged,
+                increased=increased,
+                decreased=decreased,
+                found=found,
+                prev_hash=prev_hash,
+                cur_hash=cur_hash,
+                hash_equal=hash_equal,
+                schema_equal=schema_equal,
+                canon_equal=canon_equal,
+                source_count=len(cur_cache or []),
+            )
+
+    except Exception:
+        # If anything goes wrong, fall back to existing behavior (additive, safe).
+        return _compute_source_anchored_diff_FIX23(previous_data, web_context=web_context)
+
+    # If changed (or can't prove unchanged), run the existing FIX23 snapshot-gated rebuild.
+    out = _compute_source_anchored_diff_FIX23(previous_data, web_context=web_context)
+    try:
+        if isinstance(out, dict):
+            out.setdefault("evolution_mode", "recompute_fix24")
+            out.setdefault("fix24_change_gate", {})
+            if isinstance(out["fix24_change_gate"], dict):
+                out["fix24_change_gate"].setdefault("prev_source_snapshot_hash", prev_hash if 'prev_hash' in locals() else "")
+                out["fix24_change_gate"].setdefault("cur_source_snapshot_hash", cur_hash if 'cur_hash' in locals() else "")
+                out["fix24_change_gate"].setdefault("snapshot_hash_equal", False)
+                out["fix24_change_gate"].setdefault("schema_hash_equal", True)
+                out["fix24_change_gate"].setdefault("canonical_universe_hash_equal", True)
+    except Exception:
+        pass
+    return out
+
+# =====================================================================
+# END PATCH FIX24
+# =====================================================================
+
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     Minimal deterministic rebuild:
