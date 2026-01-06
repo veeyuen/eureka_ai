@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_patches_fix24_replay_if_unchanged"
+CODE_VERSION = "v7_41_endstate_patches_fix25_evolution_unified_engine_enforced"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -21545,4 +21545,170 @@ def build_metrics_deterministic_unified(prev_response: dict,
         pass
 
     return pr.get("primary_metrics_canonical") or {}
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX25 (ADDITIVE): Enforce unified deterministic engine on evolution recompute
+#
+# Goal:
+# - If FIX24 determines "changed" (i.e., recompute path), DO NOT allow
+#   anchor-fast-path candidate assignment to become the final metric set.
+# - Instead, compute current canonical metrics via the unified deterministic
+#   engine (Fix23) using the current snapshot cache, then compute diffs.
+#
+# Rationale:
+# - Prevent year tokens (e.g., 2024/2034) from being promoted as currency/percent
+#   values via pre-engine anchor mapping.
+# - Ensure evolution recompute uses the same deterministic metric engine that
+#   analysis uses.
+#
+# Constraints:
+# - Purely additive: preserve existing compute_source_anchored_diff behavior as a
+#   baseline and override it below.
+# =====================================================================
+
+try:
+    _compute_source_anchored_diff_FIX24 = compute_source_anchored_diff  # preserve current FIX24 wrapper
+except Exception:
+    _compute_source_anchored_diff_FIX24 = None
+
+
+def _fix25_get_prev_response(previous_data: dict) -> dict:
+    """Best-effort extraction of the previous primary_response (additive helper)."""
+    if not isinstance(previous_data, dict):
+        return {}
+    pr = previous_data.get('primary_response')
+    if isinstance(pr, dict) and pr:
+        return pr
+    rpr = (previous_data.get('results') or {}).get('primary_response')
+    if isinstance(rpr, dict) and rpr:
+        return rpr
+    # Some shapes store the whole payload at top-level
+    return previous_data
+
+
+def _fix25_extract_cache_from_web_context(web_context: dict):
+    """Extract baseline_sources_cache-like list from web_context (additive helper)."""
+    if not isinstance(web_context, dict):
+        return []
+    for path in (
+        ('results','baseline_sources_cache'),
+        ('baseline_sources_cache',),
+        ('primary_response','results','baseline_sources_cache'),
+        ('primary_response','baseline_sources_cache'),
+    ):
+        x = web_context
+        ok = True
+        for k in path:
+            if not isinstance(x, dict):
+                ok = False
+                break
+            x = x.get(k)
+        if ok and isinstance(x, list) and x:
+            return x
+    return []
+
+
+def _fix25_apply_unified_engine_to_output(output: dict, prev_response: dict, web_context: dict):
+    """Recompute metric_changes using the unified engine, then overwrite panel fields (additive)."""
+    if not isinstance(output, dict):
+        return output
+
+    # Only apply when a unified engine is available and current snapshots exist
+    engine = globals().get('build_metrics_deterministic_unified')
+    if not callable(engine):
+        return output
+
+    cur_cache = _fix25_extract_cache_from_web_context(web_context)
+    if not isinstance(cur_cache, list) or not cur_cache:
+        return output
+
+    try:
+        cur_metrics = engine(prev_response, cur_cache, web_context=web_context, mode='evolution')
+    except Exception:
+        return output
+
+    if not isinstance(cur_metrics, dict):
+        return output
+
+    # Compute diffs using canonical-first diff if available
+    metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+    try:
+        fn_diff = globals().get('diff_metrics_by_name')
+        if callable(fn_diff):
+            cur_resp_for_diff = {
+                'primary_metrics_canonical': cur_metrics,
+                'metric_schema_frozen': prev_response.get('metric_schema_frozen'),
+                'metric_anchors': prev_response.get('metric_anchors'),
+            }
+            metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+    except Exception:
+        pass
+
+    # Overwrite the evolution panel fields to ensure UI renders canonical values
+    try:
+        output['metric_changes'] = metric_changes or []
+        if isinstance(output.get('summary'), dict):
+            output['summary'].update({
+                'total_metrics': int(len(metric_changes or [])),
+                'metrics_found': int(found or 0),
+                'metrics_increased': int(increased or 0),
+                'metrics_decreased': int(decreased or 0),
+                'metrics_unchanged': int(unchanged or 0),
+            })
+        else:
+            output['summary'] = {
+                'total_metrics': int(len(metric_changes or [])),
+                'metrics_found': int(found or 0),
+                'metrics_increased': int(increased or 0),
+                'metrics_decreased': int(decreased or 0),
+                'metrics_unchanged': int(unchanged or 0),
+            }
+
+        # Additive debug markers
+        output.setdefault('evolution_mode', 'recompute_fix25_unified_engine')
+        output.setdefault('rebuild_fn', 'build_metrics_deterministic_unified_fix25')
+        output.setdefault('_fix25_unified_engine', {})
+        if isinstance(output.get('_fix25_unified_engine'), dict):
+            output['_fix25_unified_engine'].update({
+                'applied': True,
+                'cur_metric_count': int(len(cur_metrics or {})),
+                'source_count': int(len(cur_cache or [])),
+            })
+    except Exception:
+        pass
+
+    return output
+
+
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX25 wrapper: reuse FIX24 replay gate, but enforce unified engine for recompute."""
+    # First, run FIX24 behavior (replay if unchanged; otherwise existing recompute path)
+    if callable(_compute_source_anchored_diff_FIX24):
+        out = _compute_source_anchored_diff_FIX24(previous_data, web_context=web_context)
+    else:
+        # Ultimate fallback (should not happen)
+        fn = globals().get('compute_source_anchored_diff_BASE')
+        out = fn(previous_data, web_context=web_context) if callable(fn) else {}
+
+    # If FIX24 replayed, do nothing further
+    try:
+        if isinstance(out, dict) and out.get('evolution_mode') in ('replay_nochange_fix24', 'replay_nochange_fix24b', 'replay_nochange_fix25'):
+            return out
+    except Exception:
+        pass
+
+    # On recompute path: overwrite metric_changes using unified engine outputs
+    try:
+        prev_response = _fix25_get_prev_response(previous_data)
+        if isinstance(out, dict) and isinstance(prev_response, dict) and isinstance(web_context, dict):
+            out = _fix25_apply_unified_engine_to_output(out, prev_response, web_context)
+    except Exception:
+        pass
+
+    return out
+
+# =====================================================================
+# END PATCH FIX25
 # =====================================================================
