@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix37_hash_align.py"  # PATCH FIX36 (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix38_fastpath_schema_wiring.py"  # PATCH FIX36 (ADD): set CODE_VERSION to filename
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
@@ -15786,8 +15786,78 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     try:
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
+            # ============================================================
+            # PATCH FIX38 (ADDITIVE): ensure schema is wired into diff layer + emit lookup provenance
+            # - Some runs showed schema_unit_family=None in diff rows, preventing unit-required mismatch logic.
+            # - We attach metric_schema_frozen to prev_response if missing, and post-process diff rows
+            #   to populate schema_unit_family + schema_lookup_source.
+            # ============================================================
+            _fix38_schema = None
+            _fix38_schema_src = ""
+            try:
+                # Prefer schema already on prev_response
+                if isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen"), dict) and prev_response.get("metric_schema_frozen"):
+                    _fix38_schema = prev_response.get("metric_schema_frozen")
+                    _fix38_schema_src = "prev_response.metric_schema_frozen"
+                # Else try common containers on previous_data
+                elif isinstance(previous_data, dict):
+                    if isinstance(previous_data.get("metric_schema_frozen"), dict) and previous_data.get("metric_schema_frozen"):
+                        _fix38_schema = previous_data.get("metric_schema_frozen")
+                        _fix38_schema_src = "previous_data.metric_schema_frozen"
+                    elif isinstance(previous_data.get("primary_response"), dict) and isinstance(previous_data["primary_response"].get("metric_schema_frozen"), dict) and previous_data["primary_response"].get("metric_schema_frozen"):
+                        _fix38_schema = previous_data["primary_response"].get("metric_schema_frozen")
+                        _fix38_schema_src = "previous_data.primary_response.metric_schema_frozen"
+                # Attach if missing
+                if isinstance(_fix38_schema, dict) and _fix38_schema and isinstance(prev_response, dict):
+                    if not (isinstance(prev_response.get("metric_schema_frozen"), dict) and prev_response.get("metric_schema_frozen")):
+                        prev_response["metric_schema_frozen"] = _fix38_schema
+            except Exception:
+                pass
+
+            # Record schema wiring debug
+            try:
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix38", {})
+                    output["debug"]["fix38"]["schema_attached"] = bool(isinstance(_fix38_schema, dict) and _fix38_schema)
+                    output["debug"]["fix38"]["schema_source"] = _fix38_schema_src
+            except Exception:
+                pass
+
             cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+
+            # ============================================================
+            # PATCH FIX38 (ADDITIVE): populate schema_unit_family on diff rows (if missing)
+            # ============================================================
+            try:
+                if isinstance(metric_changes, list) and metric_changes and isinstance(_fix38_schema, dict) and _fix38_schema:
+                    bad = {}
+                    for row in metric_changes:
+                        if not isinstance(row, dict):
+                            continue
+                        ckey = row.get("canonical_key") or row.get("canonical") or row.get("key") or ""
+                        if not ckey:
+                            continue
+                        if row.get("schema_unit_family") in (None, "", "None"):
+                            md = _fix38_schema.get(ckey) if isinstance(_fix38_schema.get(ckey), dict) else None
+                            uf = ""
+                            if isinstance(md, dict):
+                                uf = (md.get("unit_family") or md.get("unit") or "").strip()
+                            if uf:
+                                row["schema_unit_family"] = uf
+                                row["fix38_schema_lookup"] = _fix38_schema_src or "attached_schema"
+                        # Track any remaining year-like current with missing unit-family for diagnosis
+                        try:
+                            cv = row.get("cur_value_norm")
+                            cu = (row.get("cur_unit_cmp") or "").strip()
+                            if isinstance(cv, (int, float)) and 1900 <= float(cv) <= 2100 and not cu:
+                                bad[ckey] = {"cur_value_norm": cv, "cur_unit_cmp": cu, "schema_unit_family": row.get("schema_unit_family")}
+                        except Exception:
+                            pass
+                    if bad:
+                        output.setdefault("debug", {}).setdefault("fix38", {})["bad_year_currents_sample"] = dict(list(bad.items())[:10])
+            except Exception:
+                pass
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
@@ -16459,8 +16529,22 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         # Only attempt fast-path if we have snapshots AND prior canonical metrics to reuse
         if isinstance(baseline_sources_cache, list) and baseline_sources_cache and isinstance(prev_metrics, dict) and prev_metrics:
-            _cur_hash = _fix31_snapshot_fingerprint(baseline_sources_cache)
-            if isinstance(_prev_hash, str) and _prev_hash and _cur_hash == _prev_hash:
+            # ============================================================
+            # PATCH FIX38 (ADDITIVE): align FIX31 authoritative reuse with FIX37 stable hash
+            # - Previously FIX31 compared a v1 fingerprint against prev source_snapshot_hash,
+            #   which could mismatch even when data was unchanged.
+            # - We now prefer the same stable/v2 hash used by analysis & FIX37 debug.
+            # ============================================================
+            _cur_hash_v1 = _fix31_snapshot_fingerprint(baseline_sources_cache)
+            try:
+                _cur_hash = _fix37_snapshot_hash_stable(baseline_sources_cache)
+            except Exception:
+                _cur_hash = _cur_hash_v1
+
+            # Prefer stable/v2 previous hash if present
+            _prev_hash_pref = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
+
+            if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
                 _fix31_authoritative_reuse = True
                 try:
                     output["rebuild_skipped"] = True
