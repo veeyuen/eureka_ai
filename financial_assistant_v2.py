@@ -20770,7 +20770,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         _fix41_force_rebuild_honored = False
     # =====================================================================
 
-    if unchanged:
+     if unchanged:
         hashes = {
             "prev_v2": prev_hashes.get("v2",""),
             "cur_v2": cur_hashes.get("v2",""),
@@ -20778,25 +20778,28 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             "cur_v1": cur_hashes.get("v1",""),
         }
         out_replay = _fix24_make_replay_output(prev_full, hashes)
-# =====================================================================
-# PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to replay output
-# =====================================================================
-try:
-    if isinstance(out_replay, dict):
-        out_replay.setdefault("code_version", CODE_VERSION)
-        out_replay.setdefault("debug", {}).setdefault("fix41", {})
-        out_replay["debug"]["fix41"].update({
-            "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
-            "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)),
-            "path": "replay_unchanged",
-        })
-except Exception:
-    pass
-return out_replay
+
+        # =====================================================================
+        # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to replay output
+        # =====================================================================
+        try:
+            if isinstance(out_replay, dict):
+                out_replay.setdefault("code_version", CODE_VERSION)
+                out_replay.setdefault("debug", {}).setdefault("fix41", {})
+                out_replay["debug"]["fix41"].update({
+                    "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
+                    "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)),
+                    "path": "replay_unchanged",
+                })
+        except Exception:
+            pass
+
+        return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
     # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
-        wc = {"scraped_meta": scraped_meta}  # FIX41B: normalized indent
+    wc = {"scraped_meta": scraped_meta}
+
     # =====================================================================
     # PATCH FIX40 (ADDITIVE): Preserve caller flags (e.g., force_rebuild) into web_context
     # so downstream diff/rebuild logic can record provenance if needed.
@@ -20806,9 +20809,6 @@ return out_replay
             wc.update({k: v for k, v in web_context.items() if k != "scraped_meta"})
     except Exception:
         pass
-    # =====================================================================
-
-
 
     if callable(run_source_anchored_evolution_BASE):
         try:
@@ -20823,16 +20823,12 @@ return out_replay
                     # =====================================================================
                     out["debug"]["fix40_force_rebuild"] = bool(_force_rebuild)
                     # =====================================================================
-# =====================================================================
-# =====================================================================
-# =====================================================================
-# =====================================================================
                     out["debug"]["prev_source_snapshot_hash_v2"] = prev_hashes.get("v2","")
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
                     out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
             return out
-        except Exception as e:
+        except Exception:
             # Fall through to original behavior if anything unexpected
             pass
 
