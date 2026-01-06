@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2_fix31_authoritative_unchanged_fastpath"
+CODE_VERSION = "fix32_unit_gate"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -20109,3 +20109,141 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         "metric_changes": [],
         "debug": {"fix24": True, "fix24_mode": "recompute_failed"},
     }
+
+
+# ==============================================================================
+# FIX32 (ADDITIVE): Unit-required hard gate in evolution diff rendering
+#
+# Problem:
+# - Evolution diff table can show unit-less / year-like integers (e.g. 2024, 2033, 1500)
+#   in the "Current" column for metrics whose schema requires currency/percent/rate/ratio.
+# - This happens when upstream selection or LLM delta yields a numeric candidate that lacks
+#   token-level unit evidence (unit_tag/unit_family/base_unit empty), and the diff layer
+#   currently treats it as a valid numeric current value.
+#
+# Target invariant:
+# - For any metric with unit_family in {currency, percent, rate, ratio} (or with a non-empty
+#   unit_tag/unit), a unit-less candidate must be treated as ineligible and must not be
+#   rendered as a valid "Current" value in the evolution table/output.
+#
+# Approach (purely additive):
+# - Preserve existing diff implementation as diff_metrics_by_name_FIX31_BASE.
+# - Override diff_metrics_by_name with a wrapper that post-processes each row:
+#     * if schema says unit is required AND current unit evidence is missing,
+#       then mark unit_mismatch=True and render current_value="N/A" (and cur_value_norm=None).
+# - No refactors; does not change upstream extraction/building logic, only prevents
+#   unit-less values from appearing as "valid" in evolution output.
+# ==============================================================================
+try:
+    diff_metrics_by_name_FIX31_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_FIX31_BASE = None  # type: ignore
+
+def _fix32_metric_requires_unit(metric_def: dict) -> bool:
+    """Return True if schema implies this metric requires unit evidence."""
+    try:
+        spec = metric_def if isinstance(metric_def, dict) else {}
+        uf = str(spec.get("unit_family") or "").strip().lower()
+        ut = str(spec.get("unit_tag") or spec.get("unit") or "").strip()
+        # Core families we treat as unit-required
+        if uf in ("currency", "percent", "rate", "ratio"):
+            return True
+        # If schema explicitly declares a unit tag/unit, treat as required (except year/time-ish)
+        if ut:
+            # Avoid requiring "year" units
+            blob = (uf + " " + ut + " " + str(spec.get("name") or "")).lower()
+            if "year" in blob or "time" in blob:
+                return False
+            return True
+    except Exception:
+        pass
+    return False
+
+def _fix32_has_token_unit_evidence(metric_row: dict) -> bool:
+    """
+    Token-level unit evidence heuristic:
+    - Prefer structured fields: base_unit/unit/unit_tag/unit_family
+    - Fall back to raw token containing '$' or '%' or currency code immediately adjacent.
+    Deterministic; does NOT attempt any NLP.
+    """
+    try:
+        m = metric_row if isinstance(metric_row, dict) else {}
+        for k in ("base_unit", "unit", "unit_tag", "unit_family"):
+            if str(m.get(k) or "").strip():
+                return True
+
+        raw = str(m.get("raw") or m.get("value") or "")
+        if not raw:
+            return False
+        r = raw.strip()
+        rl = r.lower()
+
+        # direct symbol evidence on the token
+        if any(sym in r for sym in ("$", "€", "£", "¥", "%")):
+            return True
+
+        # compact currency codes adjacent to the token
+        # NOTE: keep conservative (requires code in same token string)
+        if any(code in rl for code in ("usd", "sgd", "eur", "gbp", "aud", "cad", "jpy", "cny")):
+            return True
+
+    except Exception:
+        return False
+    return False
+
+def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
+    """
+    FIX32 wrapper: calls existing diff, then enforces the unit-required hard gate at render time.
+    """
+    if not callable(diff_metrics_by_name_FIX31_BASE):
+        # Fallback: nothing we can do
+        return ([], 0, 0, 0, 0)
+
+    metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_FIX31_BASE(prev_response, cur_response)
+
+    try:
+        if not isinstance(metric_changes, list):
+            return metric_changes, unchanged, increased, decreased, found
+
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+
+            md = row.get("metric_definition") or {}
+            if not _fix32_metric_requires_unit(md):
+                continue
+
+            cur_unit_cmp = str(row.get("cur_unit_cmp") or "").strip()
+            # If diff already says mismatch, keep it; we only add the missing-unit mismatch
+            if cur_unit_cmp:
+                continue
+
+            # Determine whether the current-side metric row shows any unit evidence at all
+            # We use the current canonical row when present; else fall back to row fields.
+            cur_metrics = (cur_response or {}).get("primary_metrics_canonical") or {}
+            ck = row.get("canonical_key") or ""
+            cm = cur_metrics.get(ck) if isinstance(cur_metrics, dict) else None
+
+            has_ev = _fix32_has_token_unit_evidence(cm or {})
+            if not has_ev:
+                # Enforce: missing unit where required => mismatch + no current value rendered
+                row["unit_mismatch"] = True
+                row["cur_unit_cmp"] = ""
+                row["current_value"] = "N/A"
+                row["cur_value_norm"] = None
+
+                # Make the reason machine-detectable (non-breaking extra field)
+                row.setdefault("guardrail_reason", "unit_required_missing_current_unit")
+
+                # Re-classify change as unit_mismatch (keeps deterministic reporting)
+                row["change_type"] = "unit_mismatch"
+                row["change_pct"] = None
+
+    except Exception:
+        pass
+
+    return metric_changes, unchanged, increased, decreased, found
+
+# ==============================================================================
+# END FIX32
+# ==============================================================================
