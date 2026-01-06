@@ -20796,7 +20796,7 @@ return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
     # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
-    wc = {"scraped_meta": scraped_meta}
+        wc = {"scraped_meta": scraped_meta}  # FIX41B: normalized indent
     # =====================================================================
     # PATCH FIX40 (ADDITIVE): Preserve caller flags (e.g., force_rebuild) into web_context
     # so downstream diff/rebuild logic can record provenance if needed.
