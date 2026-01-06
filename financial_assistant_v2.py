@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
+CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2_fix29_shared_processed_metrics"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -2802,6 +2802,27 @@ def rebuild_metrics_from_snapshots(
         pass
     # =====================================================================
 
+    # =====================================================================
+    # PATCH FIX29 (ADDITIVE): reuse new-analysis post-pass schema validation + evidence gating
+    # Applies the same schema validation/evidence gating logic that new analysis uses,
+    # so evolution rebuild outputs converge with analysis outputs when fed identical data.
+    # =====================================================================
+    try:
+        fn_gate = globals().get("apply_schema_validation_and_evidence_gating")
+        if callable(fn_gate):
+            tmp_primary = {
+                "primary_response": {
+                    "metric_schema_frozen": schema,
+                    "primary_metrics_canonical": rebuilt,
+                }
+            }
+            tmp_primary = fn_gate(tmp_primary) or tmp_primary
+            pr = (tmp_primary or {}).get("primary_response") or {}
+            if isinstance(pr, dict) and isinstance(pr.get("primary_metrics_canonical"), dict):
+                rebuilt = pr.get("primary_metrics_canonical") or rebuilt
+    except Exception:
+        pass
+    # =====================================================================
     return rebuilt
 
 
@@ -12507,6 +12528,77 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # =========================
 
 
+    # =====================================================================
+    # PATCH FIX29 (ADDITIVE): emit processed_metrics_package + fingerprints
+    # Goal:
+    #   - Allow Evolution to reuse already processed + schema-gated metrics when
+    #     sources/data are unchanged (drift=0 fast path).
+    #   - Provide stable hashes for "same input => same output" invariants.
+    # Notes:
+    #   - Purely additive: does not alter existing keys or behaviors.
+    # =====================================================================
+    try:
+        import hashlib
+        import json
+
+        def _stable_json(obj) -> str:
+            try:
+                return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+            except Exception:
+                return json.dumps(str(obj), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+        def _sha256_text(s: str) -> str:
+            try:
+                return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
+            except Exception:
+                return ""
+
+        # Pull canonical metrics + schema from either top-level or primary_response (both supported)
+        _pmc = pmc if isinstance(pmc, dict) else None
+        _schema = schema if isinstance(schema, dict) else None
+        _anchors = None
+        try:
+            if isinstance(analysis.get("primary_response"), dict):
+                _anchors = analysis["primary_response"].get("metric_anchors")
+        except Exception:
+            _anchors = None
+
+        # Build a compact processed package (safe for Sheets + reuse)
+        processed_pkg = {
+            "metric_schema_frozen": _schema or {},
+            "primary_metrics_canonical": _pmc or {},
+            "metric_anchors": _anchors or {},
+            "analysis_pipeline_version": analysis.get("analysis_pipeline_version"),
+            "metric_identity_version": analysis.get("metric_identity_version"),
+            "schema_freeze_version": analysis.get("schema_freeze_version"),
+            "code_version": analysis.get("code_version") or CODE_VERSION,
+        }
+
+        processed_pkg_schema_hash = _sha256_text(_stable_json(processed_pkg.get("metric_schema_frozen") or {}))
+        processed_pkg_metrics_hash = _sha256_text(_stable_json(processed_pkg.get("primary_metrics_canonical") or {}))
+        processed_pkg_hash = _sha256_text(_stable_json(processed_pkg))
+
+        analysis["processed_metrics_package"] = processed_pkg
+        analysis["processed_metrics_package_hash"] = processed_pkg_hash
+        analysis["processed_metrics_schema_hash"] = processed_pkg_schema_hash
+        analysis["processed_metrics_metrics_hash"] = processed_pkg_metrics_hash
+
+        # Also mirror into primary_response for backward compatibility with older readers
+        try:
+            pr = analysis.setdefault("primary_response", {})
+            if isinstance(pr, dict):
+                pr.setdefault("processed_metrics_package", processed_pkg)
+                pr.setdefault("processed_metrics_package_hash", processed_pkg_hash)
+                pr.setdefault("processed_metrics_schema_hash", processed_pkg_schema_hash)
+                pr.setdefault("processed_metrics_metrics_hash", processed_pkg_metrics_hash)
+        except Exception:
+            pass
+
+    except Exception:
+        # never break analysis serialization
+        pass
+    # =====================================================================
+
     return analysis
 
 
@@ -15615,8 +15707,90 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     # Rebuild fallback only if anchors didn't produce metrics
     if not isinstance(current_metrics, dict) or not current_metrics:
         try:
+            # =====================================================================
+            # PATCH FIX29 (ADDITIVE): drift=0 FAST PATH (reuse processed metrics)
+            # If sources + extracted candidate data are unchanged vs previous_data,
+            # skip rebuild and reuse the already processed + schema-gated metrics
+            # from the prior analysis payload (typically persisted to Sheets).
+            # =====================================================================
+            try:
+                import hashlib, json
+
+                def _stable_json(obj) -> str:
+                    try:
+                        return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                    except Exception:
+                        return json.dumps(str(obj), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+                def _sha256_text(s: str) -> str:
+                    try:
+                        return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
+                    except Exception:
+                        return ""
+
+                # Compute a stable current snapshot hash from baseline_sources_cache extracted_numbers
+                cur_snapshot_obj = []
+                for sr in (baseline_sources_cache or []):
+                    if not isinstance(sr, dict):
+                        continue
+                    u = sr.get("source_url") or sr.get("url") or ""
+                    ex = sr.get("extracted_numbers") or []
+                    if isinstance(ex, list):
+                        ex_sorted = sorted(
+                            [e for e in ex if isinstance(e, dict)],
+                            key=lambda e: (
+                                str(e.get("anchor_hash") or ""),
+                                str(e.get("unit") or e.get("unit_raw") or e.get("unit_norm") or ""),
+                                str(e.get("currency") or e.get("currency_symbol") or ""),
+                                str(e.get("value_norm") or e.get("value") or ""),
+                                str(e.get("context") or e.get("context_snippet") or "")
+                            )
+                        )
+                    else:
+                        ex_sorted = []
+                    cur_snapshot_obj.append({"url": str(u), "extracted_numbers": ex_sorted})
+                cur_snapshot_obj.sort(key=lambda d: str(d.get("url") or ""))
+
+                current_source_snapshot_hash = _sha256_text(_stable_json(cur_snapshot_obj))
+                prev_source_snapshot_hash = (previous_data or {}).get("source_snapshot_hash") or ""
+
+                # Try to compare schema hashes too (if present); schema is frozen from prev_response
+                prev_schema_hash = (
+                    (previous_data or {}).get("processed_metrics_schema_hash")
+                    or ((previous_data or {}).get("primary_response") or {}).get("processed_metrics_schema_hash")
+                    or ""
+                )
+                cur_schema = (
+                    prev_response.get("metric_schema_frozen")
+                    or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+                    or {}
+                )
+                cur_schema_hash = _sha256_text(_stable_json(cur_schema or {}))
+
+                if prev_source_snapshot_hash and (current_source_snapshot_hash == prev_source_snapshot_hash) and (not prev_schema_hash or (cur_schema_hash == prev_schema_hash)):
+                    processed_pkg = (
+                        (previous_data or {}).get("processed_metrics_package")
+                        or ((previous_data or {}).get("primary_response") or {}).get("processed_metrics_package")
+                        or {}
+                    )
+                    if isinstance(processed_pkg, dict) and isinstance(processed_pkg.get("primary_metrics_canonical"), dict):
+                        current_metrics = processed_pkg.get("primary_metrics_canonical") or {}
+                        output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|fastpath_processed_metrics"
+                        output["rebuild_skipped"] = True
+                        output["rebuild_skipped_reason"] = "inputs_unchanged_reuse_processed_metrics"
+                        output["current_source_snapshot_hash"] = current_source_snapshot_hash
+                    elif isinstance(prev_response.get("primary_metrics_canonical"), dict):
+                        current_metrics = prev_response.get("primary_metrics_canonical") or {}
+                        output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|fastpath_prev_canonical"
+                        output["rebuild_skipped"] = True
+                        output["rebuild_skipped_reason"] = "inputs_unchanged_reuse_prev_primary_metrics_canonical"
+                        output["current_source_snapshot_hash"] = current_source_snapshot_hash
+            except Exception:
+                pass
+            # =====================================================================
+
             fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
-            if callable(fn_rebuild):
+            if callable(fn_rebuild) and (not isinstance(current_metrics, dict) or not current_metrics):
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
         except Exception:
             current_metrics = {}
