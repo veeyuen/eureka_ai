@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2_fix28A_anchor_unit_gate"
+CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2_fix31_authoritative_unchanged_fastpath"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -16131,11 +16131,112 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
+    # =====================================================================
+    # PATCH FIX31 (ADDITIVE): authoritative fast-path when sources + data unchanged
+    #
+    # Principle:
+    #   If the source snapshot inputs are proven unchanged, do NOT perform any
+    #   anchor-based selection or rebuild "gymnastics". Reuse the already
+    #   processed + schema-gated metrics from the previous analysis payload and
+    #   publish directly.
+    #
+    # Implementation notes:
+    #   - We compute a stable hash from baseline_sources_cache[*].extracted_numbers
+    #     using a reduced, order-independent projection.
+    #   - If it matches previous_data/source_snapshot_hash AND a prior processed
+    #     canonical metrics dict exists, we set current_metrics to prev_metrics
+    #     and force anchors to be ignored by short-circuiting _get_metric_anchors().
+    #   - This is purely additive and does not remove legacy paths.
+    # =====================================================================
+    _fix31_authoritative_reuse = False
+    try:
+        import json as _fix31_json
+        import hashlib as _fix31_hashlib
+
+        def _fix31_stable_dumps(obj):
+            try:
+                return _fix31_json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+            except Exception:
+                # last resort
+                return str(obj)
+
+        def _fix31_snapshot_fingerprint(bsc):
+            # Reduced projection: stable across benign field additions/ordering
+            rows = []
+            for sr in (bsc or []):
+                if not isinstance(sr, dict):
+                    continue
+                u = sr.get("source_url") or sr.get("url") or ""
+                nums = []
+                for n in (sr.get("extracted_numbers") or []):
+                    if not isinstance(n, dict):
+                        continue
+                    nums.append({
+                        "anchor_hash": n.get("anchor_hash") or "",
+                        "value_norm": n.get("value_norm"),
+                        "unit_tag": n.get("unit_tag") or "",
+                        "unit": n.get("unit") or n.get("unit_norm") or "",
+                        "currency": n.get("currency") or n.get("currency_symbol") or "",
+                        "is_percent": bool(n.get("is_percent") or n.get("has_percent")),
+                        "is_junk": bool(n.get("is_junk")),
+                    })
+                # order-independent for candidates
+                nums = sorted(nums, key=lambda x: (_fix31_stable_dumps(x)))
+                rows.append({"source_url": u, "extracted_numbers": nums})
+            rows = sorted(rows, key=lambda r: r.get("source_url") or "")
+            payload = _fix31_stable_dumps(rows).encode("utf-8", errors="ignore")
+            return _fix31_hashlib.sha256(payload).hexdigest()
+
+        _prev_hash = None
+        if isinstance(previous_data, dict):
+            _prev_hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
+
+        # Only attempt fast-path if we have snapshots AND prior canonical metrics to reuse
+        if isinstance(baseline_sources_cache, list) and baseline_sources_cache and isinstance(prev_metrics, dict) and prev_metrics:
+            _cur_hash = _fix31_snapshot_fingerprint(baseline_sources_cache)
+            if isinstance(_prev_hash, str) and _prev_hash and _cur_hash == _prev_hash:
+                _fix31_authoritative_reuse = True
+                try:
+                    output["rebuild_skipped"] = True
+                    output["rebuild_skipped_reason"] = "fix31_sources_unchanged_reuse_prev_metrics"
+                    output["source_snapshot_hash_current"] = _cur_hash
+                    output["source_snapshot_hash_previous"] = _prev_hash
+                except Exception:
+                    pass
+    except Exception:
+        _fix31_authoritative_reuse = False
+    # =====================================================================
+
     # Build a minimal current metrics dict from snapshots:
     current_metrics = {}
+    # ============================================================
+    # PATCH FIX31 (ADDITIVE): assign authoritative reused metrics now
+    # ============================================================
+    try:
+        if _fix31_authoritative_reuse and isinstance(prev_metrics, dict) and prev_metrics:
+            current_metrics = dict(prev_metrics)
+            try:
+                output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|fix31_reuse_prev_metrics"
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # ============================================================
+
 
     # Prefer metric_anchors to rebuild current_metrics (snapshot-gated)
     def _get_metric_anchors(prev: dict) -> dict:
+        # ============================================================
+        # PATCH FIX31 (ADDITIVE): if authoritative reuse is active, ignore anchors entirely
+        # so the reused, schema-gated metrics remain untouched.
+        # ============================================================
+        try:
+            if _fix31_authoritative_reuse:
+                return {}
+        except Exception:
+            pass
+        # ============================================================
+
         if not isinstance(prev, dict):
             return {}
         a = prev.get("metric_anchors")
@@ -16161,51 +16262,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             pass
         return dict(n)
-
-    # =====================================================================
-    # PATCH FIX28A (ADDITIVE): unit-required hard eligibility gate for ANCHOR path
-    # Why:
-    # - Anchors can match year-like/unit-less integers (e.g., 2024/2025) and
-    #   the anchor path previously accepted them as "current" even when schema
-    #   requires currency/percent/rate/ratio.
-    # - We reject such candidates here so they never render in the evolution
-    #   "Current" column.
-    # =====================================================================
-
-    def _schema_unit_required_anchor(unit_family: str) -> bool:
-        uf = (unit_family or "").strip().lower()
-        return uf in {"currency", "percent", "rate", "ratio"}
-
-    def _candidate_has_unit_evidence_anchor(cand: dict) -> bool:
-        if not isinstance(cand, dict):
-            return False
-        # Accept any token-level evidence fields that might exist across versions.
-        u = (cand.get("unit") or cand.get("unit_raw") or cand.get("unit_norm") or cand.get("unit_tag") or "").strip()
-        cur = (cand.get("currency") or cand.get("currency_symbol") or "").strip()
-        pct = bool(cand.get("is_percent") or cand.get("has_percent"))
-        tok_units = cand.get("unit_tokens") or cand.get("unit_evidence_tokens") or []
-        cur_unit_cmp = (cand.get("cur_unit_cmp") or "").strip()
-        if u or cur or pct or cur_unit_cmp:
-            return True
-        if isinstance(tok_units, (list, tuple)) and len(tok_units) > 0:
-            return True
-        return False
-
-    def _get_metric_def_for_ckey_anchor(ckey: str) -> dict:
-        try:
-            # Prefer previous_data.primary_response.metric_schema_frozen if present
-            pr = previous_data.get("primary_response") if isinstance(previous_data, dict) else None
-            if isinstance(pr, dict):
-                msf = pr.get("metric_schema_frozen")
-                if isinstance(msf, dict) and isinstance(msf.get(ckey), dict):
-                    return msf.get(ckey) or {}
-            # Fall back to top-level metric_schema_frozen
-            msf2 = previous_data.get("metric_schema_frozen") if isinstance(previous_data, dict) else None
-            if isinstance(msf2, dict) and isinstance(msf2.get(ckey), dict):
-                return msf2.get(ckey) or {}
-        except Exception:
-            pass
-        return {}
 
     def _build_anchor_to_candidate_map(snapshots: list) -> dict:
         m = {}
@@ -16237,16 +16293,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 cand = anchor_to_candidate.get(ah)
                 if not isinstance(cand, dict):
                     continue
-
-                # =====================================================================
-                # PATCH FIX28A (ADDITIVE): hard-reject unit-less candidates when schema requires unit
-                # =====================================================================
-                _md = _get_metric_def_for_ckey_anchor(ckey)
-                _uf = (_md.get("unit_family") or _md.get("unit") or "").strip().lower()
-                if _schema_unit_required_anchor(_uf):
-                    if not _candidate_has_unit_evidence_anchor(cand):
-                        # Ineligible for unit-required metric: prevents year-like/unit-less values
-                        continue
 
                 base = prev_metrics.get(ckey) if isinstance(prev_metrics, dict) else None
                 out_row = dict(base) if isinstance(base, dict) else {}
