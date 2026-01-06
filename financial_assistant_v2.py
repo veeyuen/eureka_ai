@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix33_fixed_indent_ok.py"  # PATCH FIX33E (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix35_debug_origin_tags.py"  # PATCH FIX33E (ADD): set CODE_VERSION to filename
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
@@ -16130,6 +16130,26 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         "generated_at": _now(),
     }
 
+    # =====================================================================
+    # PATCH FIX35 (ADDITIVE): emit origin + hash debugging for process-of-elimination
+    # - Always stamp CODE_VERSION into output
+    # - Create output['debug'] container (non-breaking)
+    # - Track fastpath eligibility + reason in a deterministic way
+    # =====================================================================
+    try:
+        output["code_version"] = CODE_VERSION
+    except Exception:
+        pass
+    try:
+        if not isinstance(output.get("debug"), dict):
+            output["debug"] = {}
+        output["debug"].setdefault("fix35", {})
+        output["debug"]["fix35"]["current_metrics_origin"] = "unknown"
+        output["debug"]["fix35"]["fastpath_eligible"] = False
+        output["debug"]["fix35"]["fastpath_reason"] = ""
+    except Exception:
+        pass
+
     # Attach debug flags (rehydration + snapshot_debug)
     try:
         if _prev_rehydrated:
@@ -16320,10 +16340,25 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["rebuild_skipped_reason"] = "fix31_sources_unchanged_reuse_prev_metrics"
                     output["source_snapshot_hash_current"] = _cur_hash
                     output["source_snapshot_hash_previous"] = _prev_hash
+                    try:
+                        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                            output["debug"]["fix35"]["fastpath_eligible"] = True
+                            output["debug"]["fix35"]["fastpath_reason"] = "hash_match_and_prev_metrics_present"
+                            output["debug"]["fix35"]["source_snapshot_hash_current"] = _cur_hash
+                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+                            output["debug"]["fix35"]["current_metrics_origin"] = "reuse_processed_metrics_fastpath"
+                    except Exception:
+                        pass
                 except Exception:
                     pass
     except Exception:
         _fix31_authoritative_reuse = False
+        try:
+            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                if not output["debug"]["fix35"].get("fastpath_reason"):
+                    output["debug"]["fix35"]["fastpath_reason"] = "fastpath_not_taken_or_exception"
+        except Exception:
+            pass
     # =====================================================================
 
     # Build a minimal current metrics dict from snapshots:
@@ -16487,6 +16522,122 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
+
+    # =====================================================================
+    # PATCH FIX35 (ADDITIVE): attach bad-current traces for unit-required metrics
+    # - If a diff row shows a year-like integer as current for a unit-required metric,
+    #   emit a compact trace: origin, schema unit_family, current fields, and top candidates.
+    # =====================================================================
+    try:
+        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+            bad_traces = {}
+            # Build a flattened candidate pool once (from snapshots only)
+            flat = []
+            for sr in baseline_sources_cache or []:
+                if isinstance(sr, dict):
+                    for c in (sr.get("extracted_numbers") or []):
+                        if isinstance(c, dict):
+                            flat.append(c)
+
+            def _is_yearlike(v):
+                try:
+                    iv = int(float(v))
+                    return 1900 <= iv <= 2100
+                except Exception:
+                    return False
+
+            def _schema_unit_required(md: dict, ckey: str = "") -> bool:
+                uf = ((md or {}).get("unit_family") or (md or {}).get("unit") or "").strip().lower()
+                if uf in {"currency", "percent", "rate", "ratio"}:
+                    return True
+                ck = (ckey or "").lower().strip()
+                return ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio")
+
+            def _cand_unit_evidence(c: dict) -> bool:
+                if not isinstance(c, dict):
+                    return False
+                if (c.get("unit_tag") or c.get("unit") or c.get("unit_norm") or c.get("unit_raw") or "").strip():
+                    return True
+                if (c.get("currency") or c.get("currency_symbol") or "").strip():
+                    return True
+                if c.get("is_percent") or c.get("has_percent"):
+                    return True
+                if (c.get("base_unit") or "").strip():
+                    return True
+                if (c.get("unit_family") or "").strip():
+                    return True
+                if isinstance(c.get("unit_tokens"), list) and c.get("unit_tokens"):
+                    return True
+                return False
+
+            schema = {}
+            try:
+                if isinstance(previous_data, dict):
+                    pr = previous_data.get("primary_response") if isinstance(previous_data.get("primary_response"), dict) else previous_data
+                    schema = (pr.get("metric_schema_frozen") or {}) if isinstance(pr, dict) else {}
+            except Exception:
+                schema = {}
+
+            for row in output.get("metric_changes") or []:
+                try:
+                    ckey = row.get("canonical_key") or row.get("canonical") or ""
+                    md = schema.get(ckey) if isinstance(schema, dict) else None
+                    if not _schema_unit_required(md or {}, ckey):
+                        continue
+
+                    cur_val = row.get("current_value_norm")
+                    cur_unit = (row.get("cur_unit_cmp") or row.get("current_unit") or "").strip()
+                    if cur_val is None:
+                        continue
+                    if not _is_yearlike(cur_val):
+                        continue
+                    if cur_unit:
+                        continue
+
+                    kws = []
+                    if isinstance(md, dict):
+                        kws = md.get("keywords") or md.get("keyword_hints") or []
+                    kws = [str(k).lower() for k in kws if str(k).strip()]
+
+                    def _hit_score(c):
+                        ctx = (c.get("context") or c.get("window") or c.get("context_window") or "").lower()
+                        score = 0
+                        for k in kws[:25]:
+                            if k and k in ctx:
+                                score += 1
+                        if _cand_unit_evidence(c):
+                            score += 5
+                        if _is_yearlike(c.get("value_norm")) and not _cand_unit_evidence(c):
+                            score -= 5
+                        return score
+
+                    top = sorted(flat, key=_hit_score, reverse=True)[:10]
+                    bad_traces[ckey or row.get("name") or "unknown_metric"] = {
+                        "current_value_norm": cur_val,
+                        "cur_unit_cmp": cur_unit,
+                        "schema_unit_family": (md or {}).get("unit_family") if isinstance(md, dict) else "",
+                        "origin": output["debug"]["fix35"].get("current_metrics_origin", "unknown"),
+                        "top_candidates": [
+                            {
+                                "raw": t.get("raw"),
+                                "value_norm": t.get("value_norm"),
+                                "unit_tag": t.get("unit_tag"),
+                                "unit_family": t.get("unit_family"),
+                                "base_unit": t.get("base_unit"),
+                                "has_unit_evidence": bool(_cand_unit_evidence(t)),
+                                "anchor_hash": t.get("anchor_hash"),
+                            }
+                            for t in top
+                        ],
+                    }
+                except Exception:
+                    continue
+
+            if bad_traces:
+                output["debug"]["fix35"]["bad_current_traces"] = bad_traces
+                output["debug"]["fix35"]["bad_current_trace_count"] = len(bad_traces)
+    except Exception:
+        pass
 
     return output
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
