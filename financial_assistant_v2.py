@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix39_publish_unit_gate.py"  # PATCH FIX36 (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix40_force_rebuild_toggle.py"  # PATCH FIX40 (ADD): set CODE_VERSION to filename
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
@@ -19121,6 +19121,20 @@ def main():
             else:
                 st.warning("⚠️ Using session storage")
 
+            # =====================================================================
+            # PATCH FIX40 (ADDITIVE): Scenario B control — Force rebuild toggle
+            # - Streamlit Cloud UI has no free-text question editing (dropdown-only).
+            # - This toggle lets you intentionally bypass the unchanged fastpath so you
+            #   can validate the rebuild path + FIX39 publish invariants.
+            # - Pure UI flag; no logic changes unless explicitly enabled.
+            # =====================================================================
+            force_rebuild = st.checkbox(
+                "🧪 Force rebuild (ignore snapshot fastpath)",
+                value=False,
+                help="Debug only: forces evolution to rebuild even if sources+data are unchanged."
+            )
+            # =====================================================================
+
         # ✅ FIX: your codebase uses get_history(), not load_history()
         history = get_history()
 
@@ -19170,7 +19184,7 @@ def main():
 
                 with st.spinner("🧬 Running source-anchored evolution..."):
                     try:
-                        results = run_source_anchored_evolution(baseline_data)
+                        results = run_source_anchored_evolution(baseline_data, web_context={"force_rebuild": bool(locals().get('force_rebuild'))})  # PATCH FIX40 (ADD): pass force_rebuild flag
                     except Exception as e:
                         st.error(f"❌ Evolution failed: {e}")
                         return
@@ -20724,6 +20738,20 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     equal_v1 = bool(prev_hashes.get("v1") and cur_hashes.get("v1") and prev_hashes["v1"] == cur_hashes["v1"])
     unchanged = equal_v2 or (not prev_hashes.get("v2") and equal_v1)
 
+    # =====================================================================
+    # PATCH FIX40 (ADDITIVE): Force rebuild override (Scenario B)
+    # If the UI (or caller) requests force_rebuild, we intentionally bypass
+    # the unchanged fastpath even if hashes match, to exercise rebuild logic.
+    # =====================================================================
+    _force_rebuild = False
+    try:
+        _force_rebuild = bool((web_context or {}).get("force_rebuild"))
+    except Exception:
+        _force_rebuild = False
+    if _force_rebuild:
+        unchanged = False
+    # =====================================================================
+
     if unchanged:
         hashes = {
             "prev_v2": prev_hashes.get("v2",""),
@@ -20736,6 +20764,18 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
     # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
     wc = {"scraped_meta": scraped_meta}
+    # =====================================================================
+    # PATCH FIX40 (ADDITIVE): Preserve caller flags (e.g., force_rebuild) into web_context
+    # so downstream diff/rebuild logic can record provenance if needed.
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            wc.update({k: v for k, v in web_context.items() if k != "scraped_meta"})
+    except Exception:
+        pass
+    # =====================================================================
+
+
 
     if callable(run_source_anchored_evolution_BASE):
         try:
@@ -20745,6 +20785,15 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 if isinstance(out["debug"], dict):
                     out["debug"]["fix24"] = True
                     out["debug"]["fix24_mode"] = "recompute_changed"
+                    # =====================================================================
+                    # PATCH FIX40 (ADDITIVE): record Scenario B override
+                    # =====================================================================
+                    out["debug"]["fix40_force_rebuild"] = bool(_force_rebuild)
+                    # =====================================================================
+# =====================================================================
+# =====================================================================
+# =====================================================================
+# =====================================================================
                     out["debug"]["prev_source_snapshot_hash_v2"] = prev_hashes.get("v2","")
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
