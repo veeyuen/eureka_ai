@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix35_debug_origin_tags.py"  # PATCH FIX33E (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix36_debug_provenance.py"  # PATCH FIX36 (ADD): set CODE_VERSION to filename
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
@@ -15726,10 +15726,24 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                     "value_norm": cand.get("value_norm"),
                     "context_snippet": cand.get("context_snippet") or cand.get("context") or "",
                     "candidate_id": cand.get("candidate_id") or a.get("candidate_id"),
+                    "fix36_origin": "anchor_mapping",  # PATCH FIX36 (ADD): per-metric provenance
                 })
                 current_metrics[ckey] = out_row
     except Exception:
         pass
+
+    # ============================================================
+    # PATCH FIX36 (ADDITIVE): set current_metrics_origin when anchor mapping populated any metrics
+    # ============================================================
+    try:
+        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+            if output["debug"]["fix35"].get("current_metrics_origin") in (None, "", "unknown"):
+                # If any current metric was filled via anchor mapping, stamp origin
+                if isinstance(current_metrics, dict) and any(isinstance(v, dict) and v.get("anchor_used") for v in current_metrics.values()):
+                    output["debug"]["fix35"]["current_metrics_origin"] = "anchor_mapping"
+    except Exception:
+        pass
+    # ============================================================
 
     # Rebuild fallback only if anchors didn't produce metrics
     if not isinstance(current_metrics, dict) or not current_metrics:
@@ -15737,6 +15751,13 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
             if callable(fn_rebuild):
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
+                # PATCH FIX36 (ADD): provenance for rebuild fallback
+                try:
+                    if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                        if output["debug"]["fix35"].get("current_metrics_origin") in (None, "", "unknown"):
+                            output["debug"]["fix35"]["current_metrics_origin"] = "schema_only_rebuild"
+                except Exception:
+                    pass
         except Exception:
             current_metrics = {}
 
@@ -15760,6 +15781,23 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
         metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+
+    # ============================================================
+    # PATCH FIX36 (ADDITIVE): attach per-row provenance from current_metrics
+    # - Adds row['fix36_origin'] when available so we can see which path produced 'Current'
+    # ============================================================
+    try:
+        if isinstance(metric_changes, list) and isinstance(current_metrics, dict):
+            for r in metric_changes:
+                if not isinstance(r, dict):
+                    continue
+                ck = r.get("canonical_key") or r.get("canonical") or ""
+                if ck and isinstance(current_metrics.get(ck), dict):
+                    if current_metrics[ck].get("fix36_origin"):
+                        r["fix36_origin"] = current_metrics[ck].get("fix36_origin")
+    except Exception:
+        pass
+    # ============================================================
 
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
@@ -16329,6 +16367,39 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         _prev_hash = None
         if isinstance(previous_data, dict):
             _prev_hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
+
+        # ============================================================
+        # PATCH FIX36 (ADDITIVE): populate explicit fastpath ineligibility reasons
+        # - Record current/previous hashes even on mismatch
+        # - Explain which prerequisite failed (no_prev_hash / no_prev_metrics / no_snapshots / hash_mismatch)
+        # ============================================================
+        _fix36_cur_hash = None
+        _fix36_reason = ""
+        try:
+            if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
+                _fix36_reason = "no_snapshots"
+            elif not (isinstance(prev_metrics, dict) and prev_metrics):
+                _fix36_reason = "no_prev_metrics"
+            else:
+                _fix36_cur_hash = _fix31_snapshot_fingerprint(baseline_sources_cache)
+                if not (isinstance(_prev_hash, str) and _prev_hash):
+                    _fix36_reason = "no_prev_hash"
+                elif _fix36_cur_hash != _prev_hash:
+                    _fix36_reason = "hash_mismatch"
+                else:
+                    _fix36_reason = "hash_match_and_prev_metrics_present"
+            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                # Preserve any earlier reason, but fill if empty
+                if not output["debug"]["fix35"].get("fastpath_reason"):
+                    output["debug"]["fix35"]["fastpath_reason"] = _fix36_reason
+                output["debug"]["fix35"]["fastpath_eligible"] = bool(_fix36_reason == "hash_match_and_prev_metrics_present")
+                if _fix36_cur_hash:
+                    output["debug"]["fix35"]["source_snapshot_hash_current"] = _fix36_cur_hash
+                if isinstance(_prev_hash, str) and _prev_hash:
+                    output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+        except Exception:
+            pass
+        # ============================================================
 
         # Only attempt fast-path if we have snapshots AND prior canonical metrics to reuse
         if isinstance(baseline_sources_cache, list) and baseline_sources_cache and isinstance(prev_metrics, dict) and prev_metrics:
