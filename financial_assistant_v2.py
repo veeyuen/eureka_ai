@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix38_fastpath_schema_wiring.py"  # PATCH FIX36 (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix39_publish_unit_gate.py"  # PATCH FIX36 (ADD): set CODE_VERSION to filename
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
@@ -10618,6 +10618,19 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
     st.markdown("---")
 
     # Interpretation
+
+    # =====================================================================
+    # PATCH FIX39 (ADDITIVE): enforce unit-required gate at render time
+    # =====================================================================
+    try:
+        # best effort: use schema carried on diff (if any) else global latest schema
+        schema = getattr(diff, "metric_schema_frozen", None)
+        if not isinstance(schema, dict):
+            schema = {}
+        _fix39_sanitize_evolutiondiff_object(diff, schema)
+    except Exception:
+        pass
+
     st.subheader("📋 Interpretation")
     st.markdown(explanation.get('interpretation', 'No interpretation available'))
 
@@ -11098,10 +11111,15 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     out.setdefault("metric_changes", [])
     out.setdefault("source_results", [])
     out.setdefault("interpretation", "")
+    # =====================================================================
+    # PATCH FIX39 (ADDITIVE): sanitize evolution output before publish/render
+    # =====================================================================
+    try:
+        _fix39_sanitize_metric_change_rows(out)
+    except Exception:
+        pass
 
     return out
-
-
 # =========================================================
 # ROBUST EVOLUTION HELPERS (DETERMINISTIC)
 # =========================================================
@@ -18674,6 +18692,168 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 # =========================================================
 # 10. MAIN APPLICATION
 # =========================================================
+
+# ==============================================================================
+# PATCH FIX39 (ADDITIVE): Final publish/render unit-required hard gate
+#
+# Why:
+# - Even if upstream selection is tightened, some paths (UI render, sheet publish,
+#   legacy mappings) can still surface unit-less year-like integers (e.g., 2024/2025)
+#   in the "Current" column for unit-required metrics (currency/percent/rate/ratio).
+# - FIX39 enforces the invariant at the last mile: right before rendering/publishing.
+#
+# Behavior:
+# - For each metric change row (dict-form) and each EvolutionDiff metric entry (object-form),
+#   if schema indicates unit required (via unit_family or canonical_key suffix) AND
+#   current value lacks token-level unit evidence, then:
+#     * blank out Current/new_raw
+#     * set unit_mismatch flag / change_type to "unit_mismatch" where possible
+# - Purely additive; does not refactor upstream pipelines.
+# ==============================================================================
+
+def _fix39_schema_unit_required(metric_def: dict, canonical_key: str = "") -> bool:
+    try:
+        uf = str((metric_def or {}).get("unit_family") or (metric_def or {}).get("unit") or "").strip().lower()
+        if uf in {"currency", "percent", "rate", "ratio"}:
+            return True
+    except Exception:
+        pass
+    ck = (canonical_key or "").strip().lower()
+    if ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio"):
+        return True
+    # unit_tag explicit
+    try:
+        ut = str((metric_def or {}).get("unit_tag") or "").strip()
+        if ut:
+            # if schema explicitly wants a unit token, treat as required
+            return True
+    except Exception:
+        pass
+    return False
+
+def _fix39_has_unit_evidence(metric_like: dict) -> bool:
+    """Token-level unit evidence check (tolerant across shapes)."""
+    try:
+        m = metric_like if isinstance(metric_like, dict) else {}
+        for k in ("unit", "unit_tag", "base_unit", "unit_family", "currency", "currency_symbol"):
+            if str(m.get(k) or "").strip():
+                return True
+        if bool(m.get("is_percent") or m.get("has_percent")):
+            return True
+        # Some rows store comparator field
+        if str(m.get("cur_unit_cmp") or "").strip():
+            return True
+        raw = str(m.get("raw") or m.get("value") or m.get("new_raw") or "")
+        if raw and any(sym in raw for sym in ("$", "€", "£", "¥", "%")):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _fix39_sanitize_metric_change_rows(results_dict: dict) -> None:
+    """Sanitize dict-based evolution results before publishing/rendering."""
+    if not isinstance(results_dict, dict):
+        return
+    try:
+        schema = results_dict.get("metric_schema_frozen") or results_dict.get("schema") or {}
+        metric_changes = None
+        # common nesting patterns
+        if isinstance(results_dict.get("results"), dict) and isinstance(results_dict["results"].get("metric_changes"), list):
+            metric_changes = results_dict["results"]["metric_changes"]
+        elif isinstance(results_dict.get("metric_changes"), list):
+            metric_changes = results_dict.get("metric_changes")
+
+        if not isinstance(metric_changes, list):
+            return
+
+        bad = []
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+            ck = row.get("canonical_key") or row.get("canonical") or row.get("key") or ""
+            md = {}
+            try:
+                if isinstance(schema, dict) and ck in schema:
+                    md = schema.get(ck) or {}
+            except Exception:
+                md = {}
+            if _fix39_schema_unit_required(md, ck):
+                # current fields may be in different keys
+                cur_like = {
+                    "unit": row.get("current_unit") or row.get("cur_unit") or row.get("unit") or "",
+                    "unit_tag": row.get("current_unit_tag") or row.get("unit_tag") or "",
+                    "unit_family": row.get("schema_unit_family") or "",
+                    "cur_unit_cmp": row.get("cur_unit_cmp") or "",
+                    "raw": row.get("current_value") or row.get("current_raw") or row.get("Current") or "",
+                    "new_raw": row.get("new_raw") or "",
+                    "currency_symbol": row.get("currency_symbol") or "",
+                    "is_percent": row.get("is_percent") or False,
+                }
+                if not _fix39_has_unit_evidence(cur_like):
+                    # invalidate
+                    row["unit_mismatch"] = True
+                    # prefer explicit fields if present
+                    for k in ("current_value", "current_raw", "new_raw", "Current"):
+                        if k in row:
+                            row[k] = ""
+                    if "current_value_norm" in row:
+                        row["current_value_norm"] = None
+                    if "cur_value_norm" in row:
+                        row["cur_value_norm"] = None
+                    # normalize change_type
+                    if row.get("change_type") not in ("unit_mismatch", "invalid_current"):
+                        row["change_type"] = "unit_mismatch"
+                    bad.append(str(ck))
+        # small debug marker
+        dbg = results_dict.setdefault("debug", {})
+        f39 = dbg.setdefault("fix39", {})
+        f39["invalidated_count"] = len(bad)
+        if bad:
+            f39["invalidated_keys_sample"] = bad[:20]
+    except Exception:
+        return
+
+def _fix39_sanitize_evolutiondiff_object(diff_obj, metric_schema_frozen: dict = None):
+    """Sanitize object-based EvolutionDiff (used by Streamlit renderer)."""
+    try:
+        schema = metric_schema_frozen or {}
+        mdiffs = getattr(diff_obj, "metric_diffs", None)
+        if not mdiffs:
+            return diff_obj
+        bad = []
+        for m in mdiffs:
+            try:
+                ck = getattr(m, "canonical_key", "") or getattr(m, "canonical", "") or ""
+                md = schema.get(ck) if isinstance(schema, dict) else {}
+                if _fix39_schema_unit_required(md or {}, ck):
+                    unit = getattr(m, "unit", "") or ""
+                    new_raw = getattr(m, "new_raw", None)
+                    # basic evidence check: unit or symbol in new_raw
+                    has_e = bool(str(unit).strip())
+                    if not has_e:
+                        s = str(new_raw or "")
+                        if any(sym in s for sym in ("$", "€", "£", "¥", "%")):
+                            has_e = True
+                    if not has_e:
+                        # invalidate
+                        try: setattr(m, "new_raw", "")
+                        except Exception: pass
+                        try: setattr(m, "new_value", None)
+                        except Exception: pass
+                        try: setattr(m, "change_type", "unit_mismatch")
+                        except Exception: pass
+                        bad.append(str(ck))
+            except Exception:
+                continue
+        try:
+            dbg = getattr(diff_obj, "debug", None)
+            if isinstance(dbg, dict):
+                dbg.setdefault("fix39", {})["invalidated_count"] = len(bad)
+        except Exception:
+            pass
+        return diff_obj
+    except Exception:
+        return diff_obj
 
 def main():
     st.set_page_config(
