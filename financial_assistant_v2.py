@@ -77,7 +77,8 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix40_force_rebuild_toggle.py"  # PATCH FIX40 (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41_force_rebuild_honored.py"  # PATCH FIX41 (ADD): set CODE_VERSION to filename
+# PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
@@ -19131,6 +19132,7 @@ def main():
             force_rebuild = st.checkbox(
                 "🧪 Force rebuild (ignore snapshot fastpath)",
                 value=False,
+                key="fix41_force_rebuild_toggle",
                 help="Debug only: forces evolution to rebuild even if sources+data are unchanged."
             )
             # =====================================================================
@@ -19184,7 +19186,7 @@ def main():
 
                 with st.spinner("🧬 Running source-anchored evolution..."):
                     try:
-                        results = run_source_anchored_evolution(baseline_data, web_context={"force_rebuild": bool(locals().get('force_rebuild'))})  # PATCH FIX40 (ADD): pass force_rebuild flag
+                        results = run_source_anchored_evolution(baseline_data, web_context={"force_rebuild": bool(force_rebuild)})  # PATCH FIX41 (ADD): pass force_rebuild flag explicitly  # PATCH FIX40 (ADD): pass force_rebuild flag
                     except Exception as e:
                         st.error(f"❌ Evolution failed: {e}")
                         return
@@ -20709,6 +20711,19 @@ def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
     }
 
 
+# =====================================================================
+# PATCH FIX41 (ADDITIVE): Normalize web_context and capture force_rebuild
+# Ensures the UI flag reaches the fastpath gate and is recorded in output.
+# =====================================================================
+if web_context is None or not isinstance(web_context, dict):
+    web_context = {}
+_fix41_force_rebuild_seen = False
+try:
+    _fix41_force_rebuild_seen = bool(web_context.get("force_rebuild"))
+except Exception:
+    _fix41_force_rebuild_seen = False
+# =====================================================================
+
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
     """
     PATCH FIX24 (ADDITIVE): Evolution flow is:
@@ -20750,6 +20765,9 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         _force_rebuild = False
     if _force_rebuild:
         unchanged = False
+        _fix41_force_rebuild_honored = True
+    else:
+        _fix41_force_rebuild_honored = False
     # =====================================================================
 
     if unchanged:
@@ -20759,7 +20777,22 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             "prev_v1": prev_hashes.get("v1",""),
             "cur_v1": cur_hashes.get("v1",""),
         }
-        return _fix24_make_replay_output(prev_full, hashes)
+        out_replay = _fix24_make_replay_output(prev_full, hashes)
+# =====================================================================
+# PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to replay output
+# =====================================================================
+try:
+    if isinstance(out_replay, dict):
+        out_replay.setdefault("code_version", CODE_VERSION)
+        out_replay.setdefault("debug", {}).setdefault("fix41", {})
+        out_replay["debug"]["fix41"].update({
+            "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
+            "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)),
+            "path": "replay_unchanged",
+        })
+except Exception:
+    pass
+return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
     # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
@@ -20807,7 +20840,22 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     fn = globals().get("compute_source_anchored_diff")
     if callable(fn):
         try:
-            return fn(prev_full, web_context=wc)
+            out_changed = fn(prev_full, web_context=wc)
+# =====================================================================
+# PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to changed output
+# =====================================================================
+try:
+    if isinstance(out_changed, dict):
+        out_changed.setdefault("code_version", CODE_VERSION)
+        out_changed.setdefault("debug", {}).setdefault("fix41", {})
+        out_changed["debug"]["fix41"].update({
+            "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
+            "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)) or bool(_fix41_force_rebuild_seen),
+            "path": "changed_compute_source_anchored_diff",
+        })
+except Exception:
+    pass
+return out_changed
         except Exception:
             pass
 
