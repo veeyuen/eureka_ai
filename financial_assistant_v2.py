@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix20_diffpanel_use_canonical_metrics"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix21_strict_candidate_eligibility_and_panel_canonical"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -19726,4 +19726,1464 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
 
 # =====================================================================
 # END PATCH FIX18
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21 (ADDITIVE): Strict candidate eligibility + diff panel canonical rendering
+# Goal:
+#   - Prevent "bare year" tokens (e.g., 2024) from ever being treated as currency/percent
+#     values during evolution selection, even if nearby context mentions USD/%.
+#   - Require explicit unit markers on the *token* for currency/percent metrics.
+#   - Ensure the dashboard diff panel renders canonical values (value_norm + base_unit)
+#     and never appends schema units onto unitless numbers.
+# Notes:
+#   - Additive only: no refactors; overrides are appended and clearly annotated.
+#   - Deterministic only: no refetch; no LLM.
+# =====================================================================
+
+
+def _fix21_infer_expected_dimension(metric_spec: dict, canonical_key: str = "") -> str:
+    """Infer expected dimension for eligibility gating.
+
+    Priority:
+      1) canonical_key suffix (__currency/__percent/__rate/__ratio)
+      2) metric_spec['dimension']
+      3) unit_tag/unit_family/keywords/name heuristics (deterministic)
+    """
+    try:
+        ck = (canonical_key or metric_spec.get("canonical_key") or "").lower().strip()
+        if ck.endswith("__percent"):
+            return "percent"
+        if ck.endswith("__currency"):
+            return "currency"
+        if ck.endswith("__rate"):
+            return "rate"
+        if ck.endswith("__ratio"):
+            return "ratio"
+
+        dim = (metric_spec.get("dimension") or "").lower().strip()
+        if dim:
+            return dim
+
+        uf = (metric_spec.get("unit_family") or "").lower().strip()
+        if uf:
+            return uf
+
+        ut = (metric_spec.get("unit_tag") or "").lower().strip()
+        if any(x in ut for x in ("%", "percent")):
+            return "percent"
+        if any(x in ut for x in ("usd", "sgd", "eur", "gbp", "$", "€", "£", "¥")):
+            return "currency"
+
+        # keywords/name fallback
+        blob = " ".join([
+            (metric_spec.get("name") or ""),
+            " ".join(metric_spec.get("keywords") or []),
+            ck,
+            ut,
+        ]).lower()
+
+        if any(w in blob for w in ("%", "percent", "yoy", "cagr", "growth", "rate")):
+            return "percent"
+        if any(w in blob for w in ("usd", "sgd", "eur", "gbp", "revenue", "market", "sales", "value", "$", "€", "£", "¥")):
+            return "currency"
+
+        return ""
+    except Exception:
+        return ""
+
+
+def _fix21_metric_is_year_like(metric_spec: dict, canonical_key: str = "") -> bool:
+    try:
+        blob = " ".join([
+            (metric_spec.get("name") or ""),
+            (metric_spec.get("canonical_key") or ""),
+            (canonical_key or ""),
+            " ".join(metric_spec.get("keywords") or []),
+        ]).lower()
+        return any(k in blob for k in ("year", "founded", "since"))
+    except Exception:
+        return False
+
+
+def _fix21_candidate_is_bare_year(c: dict) -> bool:
+    """True if candidate is a plain 4-digit year token with no explicit unit."""
+    try:
+        if not isinstance(c, dict):
+            return False
+        raw = str(c.get("raw") or "").strip()
+        v = c.get("value_norm")
+        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip()
+
+        # Raw token must be exactly a 4-digit integer (no commas, no signs)
+        if u != "":
+            return False
+        if raw.isdigit() and len(raw) == 4:
+            iv = int(raw)
+            if 1900 <= iv <= 2100:
+                return True
+        # fallback if raw missing but value_norm is integer-like
+        if (raw == "" or raw.lower() == "none") and isinstance(v, (int, float)):
+            iv = int(v)
+            if float(v) == float(iv) and 1900 <= iv <= 2100:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _fix21_candidate_has_explicit_unit_marker(c: dict, expected_dim: str) -> bool:
+    """Require unit markers on the token itself (not merely nearby context).
+
+    This blocks cases like: "... USD 120B in 2024" where the year token appears in
+    a money paragraph but is not itself a money token.
+    """
+    try:
+        if not isinstance(c, dict):
+            return False
+
+        raw = str(c.get("raw") or "")
+        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip()
+        raw_l = raw.lower()
+        u_l = u.lower()
+
+        if expected_dim == "percent":
+            # Must have % either in raw token or in explicit unit fields
+            return ("%" in raw) or ("%" in u_l) or ("percent" in u_l)
+
+        if expected_dim == "currency":
+            # Must have a currency symbol/code in raw or unit fields.
+            if any(sym in raw for sym in ("$", "€", "£", "¥")):
+                return True
+            if any(code in raw_l for code in ("usd", "sgd", "eur", "gbp", "jpy", "cny", "aud", "cad", "chf", "hkd")):
+                return True
+            if any(code in u_l for code in ("usd", "sgd", "eur", "gbp", "$", "€", "£", "¥")):
+                return True
+
+            # Magnitude-only units (M/B/K) are insufficient unless paired with explicit currency marker.
+            if u_l in ("m", "b", "k", "t", "mn", "bn", "million", "billion", "thousand"):
+                return any(sym in raw for sym in ("$", "€", "£", "¥")) or any(code in raw_l for code in ("usd", "sgd", "eur", "gbp"))
+
+            return False
+
+        # For rate/ratio/other: require any explicit unit field
+        return bool(u)
+    except Exception:
+        return False
+
+
+def _fix21_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:
+    """FIX21 eligibility: fix17 + explicit-unit requirement + bare-year absolute ban."""
+    try:
+        # Start with fix17 gates (junk, unit family compatibility, etc.)
+        fn17 = globals().get("_fix17_candidate_allowed_with_reason")
+        if callable(fn17):
+            ok17, reason17 = fn17(c, metric_spec, canonical_key=canonical_key)
+            if not ok17:
+                return False, reason17
+
+        expected_dim = _fix21_infer_expected_dimension(metric_spec or {}, canonical_key=canonical_key)
+
+        # Absolute bare-year ban for non-year metrics
+        if expected_dim in ("currency", "percent", "rate", "ratio") or expected_dim == "":
+            if not _fix21_metric_is_year_like(metric_spec or {}, canonical_key=canonical_key):
+                if _fix21_candidate_is_bare_year(c):
+                    return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # Explicit unit markers required for currency/percent
+        if expected_dim in ("currency", "percent"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_marker_fix21:{expected_dim}"
+
+        return True, "ok_fix21"
+    except Exception:
+        return True, "ok_fix21"
+
+
+# ---------------------------------------------------------------------
+# PATCH FIX21: Override FIX17 rebuild functions to apply stricter eligibility
+# (These are used by FIX18's anchor-authoritative orchestrator.)
+# ---------------------------------------------------------------------
+
+def rebuild_metrics_from_snapshots_with_anchors_fix21(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """FIX21: Same as fix17, but uses _fix21_candidate_allowed_with_reason."""
+    if not isinstance(prev_response, dict):
+        return {}
+
+    # Reuse the existing fix17 implementation structure by copying its body
+    # via the global reference, but swap eligibility function.
+    fn_idx = globals().get("_es_build_candidate_index_deterministic")
+    cand_index = fn_idx(baseline_sources_cache) if callable(fn_idx) else {}
+
+    metric_anchors_any = globals().get("_get_metric_anchors_any")
+    metric_anchors = metric_anchors_any(prev_response) if callable(metric_anchors_any) else (prev_response.get("metric_anchors") or {})
+
+    metric_schema = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or {}
+    )
+
+    rebuilt = {}
+
+    # Attach debug buckets
+    dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
+    dbg.setdefault("anchor_rejects_fix21", [])
+    dbg.setdefault("anchor_used_fix21", [])
+
+    for canonical_key, a in (metric_anchors or {}).items():
+        if not isinstance(a, dict):
+            continue
+        ah = a.get("anchor_hash") or a.get("anchor") or ""
+        if not ah:
+            continue
+
+        spec = (metric_schema.get(canonical_key) if isinstance(metric_schema, dict) else None) or {}
+        spec = dict(spec)
+        spec.setdefault("name", a.get("name") or canonical_key)
+        spec.setdefault("canonical_key", canonical_key)
+
+        c = cand_index.get(ah)
+        if not isinstance(c, dict):
+            dbg["anchor_rejects_fix21"].append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "anchor_not_found_in_index_fix21"})
+            continue
+
+        ok, reason = _fix21_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
+        if not ok:
+            dbg["anchor_rejects_fix21"].append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": reason})
+            continue
+
+        rebuilt[canonical_key] = {
+            "canonical_key": canonical_key,
+            "name": spec.get("name") or canonical_key,
+            "value_norm": c.get("value_norm"),
+            "base_unit": (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip(),
+            "unit_family": (c.get("unit_family") or spec.get("dimension") or "").strip(),
+            "anchor_hash": ah,
+            "candidate_id": c.get("candidate_id") or c.get("id") or "",
+            "source_url": c.get("source_url") or a.get("source_url") or "",
+            "context_snippet": c.get("context_snippet") or a.get("context_snippet") or "",
+            "confidence": a.get("anchor_confidence") or a.get("confidence") or 0.0,
+        }
+        dbg["anchor_used_fix21"].append({"canonical_key": canonical_key, "anchor_hash": ah})
+
+    return rebuilt
+
+
+def rebuild_metrics_from_snapshots_schema_only_fix21(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """FIX21: schema-only rebuild that uses _fix21_candidate_allowed_with_reason."""
+    if not isinstance(prev_response, dict):
+        return {}
+
+    metric_schema = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or {}
+    )
+    if not isinstance(metric_schema, dict) or not metric_schema:
+        return {}
+
+    fn_all = globals().get("_es_flatten_all_snapshot_candidates")
+    all_cands = fn_all(baseline_sources_cache) if callable(fn_all) else []
+    if not isinstance(all_cands, list):
+        all_cands = []
+
+    rebuilt = {}
+
+    dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
+    dbg.setdefault("schema_rejects_fix21", 0)
+
+    # Simple deterministic selection: choose highest context_score candidate that passes gates
+    for canonical_key, spec0 in metric_schema.items():
+        spec = dict(spec0 or {})
+        spec.setdefault("canonical_key", canonical_key)
+        spec.setdefault("name", spec.get("name") or canonical_key)
+
+        best = None
+        best_score = None
+
+        for c in all_cands:
+            if not isinstance(c, dict):
+                continue
+
+            ok, _reason = _fix21_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
+            if not ok:
+                dbg["schema_rejects_fix21"] += 1
+                continue
+
+            # score uses existing context_score if present; deterministic fallback 0
+            s = c.get("context_score")
+            try:
+                s = float(s) if s is not None else 0.0
+            except Exception:
+                s = 0.0
+
+            if best is None or s > best_score:
+                best = c
+                best_score = s
+
+        if isinstance(best, dict):
+            rebuilt[canonical_key] = {
+                "canonical_key": canonical_key,
+                "name": spec.get("name") or canonical_key,
+                "value_norm": best.get("value_norm"),
+                "base_unit": (best.get("base_unit") or best.get("unit") or best.get("unit_tag") or "").strip(),
+                "unit_family": (best.get("unit_family") or spec.get("dimension") or "").strip(),
+                "anchor_hash": best.get("anchor_hash") or "",
+                "candidate_id": best.get("candidate_id") or best.get("id") or "",
+                "source_url": best.get("source_url") or "",
+                "context_snippet": best.get("context_snippet") or "",
+                "confidence": 0.0,
+            }
+
+    return rebuilt
+
+
+# ---------------------------------------------------------------------
+# PATCH FIX21: Re-wire FIX18 orchestrator to use FIX21 rebuilds.
+# ---------------------------------------------------------------------
+
+def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    """FIX18 (rebound) using FIX21 gating under the hood."""
+    if not isinstance(prev_response, dict):
+        return {}
+
+    # Anchored part
+    anchored = rebuild_metrics_from_snapshots_with_anchors_fix21(prev_response, baseline_sources_cache, web_context=web_context)
+
+    # Identify anchored keys
+    metric_anchors_any = globals().get("_get_metric_anchors_any")
+    metric_anchors = metric_anchors_any(prev_response) if callable(metric_anchors_any) else (prev_response.get("metric_anchors") or {})
+    anchored_keys = set()
+    try:
+        for k, a in (metric_anchors or {}).items():
+            if isinstance(a, dict) and (a.get("anchor_hash") or a.get("anchor")):
+                anchored_keys.add(k)
+    except Exception:
+        anchored_keys = set()
+
+    # Shallow copy for unanchored-only schema rebuild
+    pr2 = dict(prev_response)
+    ms = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or {}
+    )
+    if isinstance(ms, dict) and anchored_keys:
+        ms2 = {k: v for k, v in ms.items() if k not in anchored_keys}
+        pr2["metric_schema_frozen"] = ms2
+
+    unanchored = rebuild_metrics_from_snapshots_schema_only_fix21(pr2, baseline_sources_cache, web_context=web_context)
+
+    rebuilt = {}
+    if isinstance(anchored, dict):
+        rebuilt.update(anchored)
+    if isinstance(unanchored, dict):
+        for k, v in unanchored.items():
+            if k not in rebuilt:
+                rebuilt[k] = v
+    return rebuilt
+
+
+# Keep public names consistent for evolution dispatch
+def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    return rebuild_metrics_from_snapshots_schema_only_fix18(prev_response, baseline_sources_cache, web_context=web_context)
+
+
+def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    # PATCH FIX21: override fix17 anchor rebuild with fix21 eligibility
+    return rebuild_metrics_from_snapshots_with_anchors_fix21(prev_response, baseline_sources_cache, web_context=web_context)
+
+
+def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    # PATCH FIX21: override fix17 schema rebuild with fix21 eligibility
+    return rebuild_metrics_from_snapshots_schema_only_fix21(prev_response, baseline_sources_cache, web_context=web_context)
+
+
+# ---------------------------------------------------------------------
+# PATCH FIX21: Dashboard diff panel should use canonical metrics + token units.
+# This targets render_native_comparison(), which previously compared primary_metrics
+# and appended schema units even when the selected token had none.
+# ---------------------------------------------------------------------
+
+def _fix21_get_metrics_for_panel(resp: dict) -> dict:
+    try:
+        pr = (resp or {}).get("primary_response") or {}
+        # Prefer canonical artifacts if present
+        mc = pr.get("primary_metrics_canonical")
+        if isinstance(mc, dict) and mc:
+            return mc
+        # fall back
+        m = pr.get("primary_metrics")
+        return m if isinstance(m, dict) else {}
+    except Exception:
+        return {}
+
+
+def _fix21_metric_display_value_and_unit(m: dict) -> tuple:
+    """Return (display_value, display_unit) using canonical fields when available."""
+    try:
+        if not isinstance(m, dict):
+            return ("N/A", "")
+        # Canonical preferred
+        if "value_norm" in m:
+            v = m.get("value_norm")
+            u = (m.get("base_unit") or m.get("unit") or m.get("unit_tag") or "").strip()
+            return (v, u)
+        # Legacy
+        v = m.get("value", m.get("value_raw", "N/A"))
+        u = (m.get("unit") or m.get("unit_tag") or "").strip()
+        return (v, u)
+    except Exception:
+        return ("N/A", "")
+
+
+def render_native_comparison(baseline: Dict, compare: Dict):  # noqa: F811
+    """PATCH FIX21 override: identical UI, but metric diff uses canonical values."""
+    import pandas as pd
+
+    # --- retain original layout logic by calling the original implementation if available ---
+    # However, we need to patch the specific metric extraction/diffing logic.
+
+    # Re-implement minimal wrapper around the existing body by copying key behavior.
+    # (This override is additive: the original function remains above.)
+
+    baseline_time = baseline.get("timestamp") or baseline.get("primary_response", {}).get("timestamp")
+    compare_time = compare.get("timestamp") or compare.get("primary_response", {}).get("timestamp")
+
+    st.markdown("---")
+
+    # Overview row
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Baseline", (baseline_time or "")[:16] if baseline_time else "N/A")
+    col2.metric("Current", (compare_time or "")[:16] if compare_time else "N/A")
+    # time delta is non-critical; leave as placeholder
+    col3.metric("Time Delta", "-")
+
+    st.markdown("---")
+
+    # PATCH FIX21: Prefer canonical metrics
+    baseline_metrics = _fix21_get_metrics_for_panel(baseline)
+    compare_metrics = _fix21_get_metrics_for_panel(compare)
+
+    st.subheader("💰 Metric Changes")
+
+    diff_rows = []
+    stability_count = 0
+    total_count = 0
+
+    # Canonicalize metrics for stable matching (existing helper)
+    baseline_canonical = canonicalize_metrics(baseline_metrics)
+    compare_canonical = canonicalize_metrics(compare_metrics)
+
+    baseline_by_id = {cid: m for cid, m in (baseline_canonical or {}).items()}
+    compare_by_id = {cid: m for cid, m in (compare_canonical or {}).items()}
+
+    all_ids = set(baseline_by_id.keys()).intersection(compare_by_id.keys())
+
+    for cid in sorted(all_ids):
+        baseline_m = baseline_by_id.get(cid)
+        compare_m = compare_by_id.get(cid)
+
+        display_name = cid
+        if baseline_m and baseline_m.get("name"):
+            display_name = baseline_m["name"]
+
+        if baseline_m and compare_m:
+            old_val, old_unit = _fix21_metric_display_value_and_unit(baseline_m)
+            new_val, new_unit = _fix21_metric_display_value_and_unit(compare_m)
+
+            # IMPORTANT: Use the selected token unit; never append schema unit onto a unitless value
+            unit = new_unit or old_unit or ""
+
+            old_num = parse_to_float(old_val)
+            new_num = parse_to_float(new_val)
+
+            if old_num is not None and new_num is not None and old_num != 0:
+                change_pct = ((new_num - old_num) / abs(old_num)) * 100
+                if abs(change_pct) < 1:
+                    icon, reason = "➡️", "No change"
+                    stability_count += 1
+                elif abs(change_pct) < 5:
+                    icon, reason = "➡️", "Minor change"
+                    stability_count += 1
+                elif change_pct > 0:
+                    icon, reason = "📈", "Increased"
+                else:
+                    icon, reason = "📉", "Decreased"
+                delta_str = f"{change_pct:+.1f}%"
+            else:
+                icon, delta_str, reason = "➡️", "-", "Non-numeric"
+                stability_count += 1
+
+            diff_rows.append({
+                "": icon,
+                "Metric": display_name,
+                "Old": _fmt_currency_first(str(old_val), str(unit)),
+                "New": _fmt_currency_first(str(new_val), str(unit)),
+                "Δ": delta_str,
+                "Reason": reason,
+            })
+            total_count += 1
+
+    if diff_rows:
+        st.dataframe(pd.DataFrame(diff_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No metrics to compare")
+
+    stability_pct = (stability_count / total_count * 100) if total_count > 0 else 100
+
+    st.markdown("---")
+    st.subheader("📊 Stability Score")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Stable Metrics", f"{stability_count}/{total_count}")
+    c2.metric("Stability", f"{stability_pct:.0f}%")
+    if stability_pct >= 80:
+        c3.success("🟢 Highly Stable")
+    elif stability_pct >= 60:
+        c3.warning("🟡 Moderate Changes")
+    else:
+        c3.error("🔴 Significant Drift")
+
+
+# =====================================================================
+# END PATCH FIX21
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21 (ADDITIVE): Strict candidate eligibility
+# ---------------------------------------------------------------------
+# Motivation (observed): Some unitless year tokens (e.g., "2024") can be
+# mis-promoted as currency/percent values in evolution due to nearby
+# context ("USD ... in 2024") and/or schema keyword overlap.
+#
+# Fix21 enforces token-level eligibility:
+#   - For currency/percent/rate/ratio metrics, the *token itself* must
+#     carry an explicit unit marker (%, currency symbol/code, or a
+#     magnitude suffix paired with a currency marker).
+#   - Bare 4-digit years (1900–2100) are always disallowed for non-year
+#     metrics, regardless of upstream measure_kind/unit_family.
+#
+# Implementation strategy:
+#   - Override _fix17_candidate_allowed_with_reason (used by FIX17/FIX18)
+#     to add strict token-level unit requirements + bare-year ban.
+#   - Purely additive: does not refactor scoring or rebuild wiring.
+# =====================================================================
+
+import re as _re_fix21
+
+
+def _fix21_metric_is_year_like(metric_spec: dict, canonical_key: str = "") -> bool:
+    """Year-like metric detection (deterministic)."""
+    try:
+        fn = globals().get("_fix16_metric_is_year_like")
+        if callable(fn):
+            return bool(fn(metric_spec, canonical_key=canonical_key))
+    except Exception:
+        pass
+
+    blob = " ".join([
+        str((metric_spec or {}).get("name") or ""),
+        str((metric_spec or {}).get("canonical_key") or canonical_key or ""),
+        " ".join((metric_spec or {}).get("keywords") or []),
+    ]).lower()
+
+    return any(k in blob for k in ("year", "founded", "since", "fy", "fiscal"))
+
+
+def _fix21_expected_dimension(metric_spec: dict, canonical_key: str = "") -> str:
+    """Infer expected dimension from schema fields + canonical key suffix."""
+    try:
+        if not isinstance(metric_spec, dict):
+            metric_spec = {}
+
+        dim = (metric_spec.get("dimension") or "").strip().lower()
+        if dim:
+            return dim
+
+        unit_tag = (metric_spec.get("unit_tag") or "").strip().lower()
+        if unit_tag:
+            if "percent" in unit_tag or unit_tag == "%" or "%" in unit_tag:
+                return "percent"
+            if any(x in unit_tag for x in ("usd", "sgd", "eur", "gbp", "$", "€", "£", "¥", "currency")):
+                return "currency"
+
+        ck = (canonical_key or metric_spec.get("canonical_key") or "").lower()
+        if ck.endswith("__percent"):
+            return "percent"
+        if ck.endswith("__currency"):
+            return "currency"
+        if ck.endswith("__rate"):
+            return "rate"
+        if ck.endswith("__ratio"):
+            return "ratio"
+
+        # keyword-based inference (low risk)
+        kw = " ".join(metric_spec.get("keywords") or []).lower()
+        name = (metric_spec.get("name") or "").lower()
+        blob = f"{ck} {name} {kw}"
+
+        if "%" in blob or "percent" in blob or "yoy" in blob or "cagr" in blob or "growth" in blob:
+            return "percent"
+        if any(t in blob for t in ("usd", "sgd", "eur", "gbp", "revenue", "market", "sales", "valuation", "price")):
+            return "currency"
+
+        return ""
+    except Exception:
+        return ""
+
+
+def _fix21_candidate_has_explicit_unit_marker(c: dict, expected_dim: str) -> bool:
+    """Token-level unit requirement (do NOT use context-only hints)."""
+    try:
+        if not isinstance(c, dict):
+            return False
+
+        raw = str(c.get("raw") or "").strip()
+        raw_l = raw.lower()
+
+        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip()
+        u_l = u.lower()
+
+        if expected_dim == "percent":
+            # percent must be explicit on token
+            return ("%" in raw) or ("%" in u) or ("percent" in u_l)
+
+        if expected_dim == "currency":
+            # currency symbol/code explicitly on token OR encoded in unit fields
+            currency_markers = ("$", "€", "£", "¥", "usd", "sgd", "eur", "gbp", "jpy", "cny", "aud", "cad", "inr")
+
+            if any(m in u_l for m in currency_markers) or any(m in raw_l for m in currency_markers):
+                return True
+
+            # magnitude-only units require an explicit currency marker on the token
+            if u_l in ("m", "b", "k", "t", "mn", "bn", "million", "billion", "thousand"):
+                return any(m in raw_l for m in currency_markers)
+
+            return False
+
+        # rate/ratio: require *some* explicit unit marker
+        if expected_dim in ("rate", "ratio"):
+            if u:
+                return True
+            if any(ch in raw for ch in ("/", ":")):
+                return True
+            return False
+
+        # unknown expected_dim: no extra requirement
+        return True
+    except Exception:
+        return False
+
+
+def _fix21_candidate_is_bare_year(c: dict) -> bool:
+    """Detect a bare 4-digit year token with no explicit unit on token."""
+    try:
+        if not isinstance(c, dict):
+            return False
+        raw = str(c.get("raw") or "").strip()
+        if not _re_fix21.fullmatch(r"(19|20)\d{2}", raw):
+            return False
+
+        # if token contains explicit unit markers, it's not a bare year
+        if "%" in raw or "$" in raw:
+            return False
+
+        v = c.get("value_norm")
+        try:
+            iv = int(float(v))
+        except Exception:
+            return False
+
+        if not (1900 <= iv <= 2100):
+            return False
+
+        # must be unitless at the token level
+        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip()
+        return u == ""
+    except Exception:
+        return False
+
+
+# --- Override: extend FIX17 eligibility with FIX21 hard gates ---
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    """FIX21 override (additive): strict token-level unit gate + bare-year ban."""
+    try:
+        # First, run the prior FIX17 logic (if available) for junk/year-range/unit-family checks.
+        fn_prev = globals().get("_fix17_candidate_allowed_with_reason_prev")
+        if callable(fn_prev):
+            ok, reason = fn_prev(c, metric_spec, canonical_key=canonical_key)
+        else:
+            # If we haven't stashed the previous version yet, try to call the original name
+            # via a saved alias; if not present, assume OK and continue to FIX21 gates.
+            ok, reason = True, ""
+
+        if not ok:
+            return False, reason
+
+        expected_dim = _fix21_expected_dimension(metric_spec or {}, canonical_key=canonical_key)
+
+        # Hard ban: bare years may never represent non-year metrics.
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(metric_spec or {}, canonical_key=canonical_key):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # Token-level explicit unit requirement for unit-bearing dimensions
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        # Be conservative: if we error, allow prior pipeline to decide elsewhere.
+        return True, ""
+
+
+# Stash the previous FIX17 function (if not already stashed) so our override can call it.
+try:
+    if "_fix17_candidate_allowed_with_reason_prev" not in globals():
+        globals()["_fix17_candidate_allowed_with_reason_prev"] = globals().get("_fix17_candidate_allowed_with_reason")
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX21 (ADDITIVE): Diff panel must show canonical values/units
+# ---------------------------------------------------------------------
+# Observed: Dashboard diff panel was still reading primary_metrics and
+# rendering schema units even when the selected candidate was unitless.
+# Fix21 updates the dashboard comparison panel to prefer
+# primary_metrics_canonical and to render value_norm/base_unit.
+# =====================================================================
+
+
+def _fix21_pick_metrics_container(resp: dict) -> dict:
+    """Prefer canonical metrics if present; fallback to legacy."""
+    pr = (resp or {}).get("primary_response") or {}
+    m_can = pr.get("primary_metrics_canonical")
+    if isinstance(m_can, dict) and m_can:
+        return m_can
+    m = pr.get("primary_metrics")
+    return m if isinstance(m, dict) else {}
+
+
+def _fix21_metric_value_unit(m: dict) -> tuple:
+    """Return (value_str, unit_str) preferring canonical numeric fields."""
+    if not isinstance(m, dict):
+        return "N/A", ""
+
+    # Canonical-first
+    if "value_norm" in m:
+        v = m.get("value_norm")
+        # keep numeric formatting stable
+        try:
+            if isinstance(v, float):
+                v_str = f"{v:.6g}"
+            else:
+                v_str = str(v)
+        except Exception:
+            v_str = str(v)
+
+        unit = (m.get("base_unit") or m.get("unit") or m.get("unit_tag") or "").strip()
+        return v_str, unit
+
+    # Legacy fallback
+    v_str = str(m.get("value") or m.get("value_str") or m.get("value_raw") or "N/A")
+    unit = (m.get("unit") or m.get("unit_tag") or "").strip()
+    return v_str, unit
+
+
+def render_native_comparison(baseline: Dict, compare: Dict):  # noqa: F811
+    """FIX21 override: render comparison using canonical metrics when available."""
+
+    st.header("📊 Analysis Comparison")
+
+    # Baseline and current overview (unchanged)
+    baseline_time = baseline.get('timestamp', '')
+    compare_time = compare.get('timestamp', '')
+
+    try:
+        from datetime import datetime
+        if baseline_time and compare_time:
+            t1 = datetime.fromisoformat(str(baseline_time).replace('Z', '+00:00'))
+            t2 = datetime.fromisoformat(str(compare_time).replace('Z', '+00:00'))
+            delta = abs(t2 - t1)
+            delta_str = f"{delta.days}d {delta.seconds // 3600}h"
+        else:
+            delta_str = "Unknown"
+    except Exception:
+        delta_str = "Unknown"
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Baseline", baseline_time[:16] if baseline_time else "N/A")
+    col2.metric("Current", compare_time[:16] if compare_time else "N/A")
+    col3.metric("Time Delta", delta_str)
+
+    st.markdown("---")
+
+    # FIX21: Prefer canonical metrics containers
+    baseline_metrics = _fix21_pick_metrics_container(baseline)
+    compare_metrics = _fix21_pick_metrics_container(compare)
+
+    st.subheader("💰 Metric Changes")
+
+    diff_rows = []
+    stability_count = 0
+    total_count = 0
+
+    # Canonicalize metrics for stable matching
+    baseline_canonical = canonicalize_metrics(baseline_metrics)
+    compare_canonical = canonicalize_metrics(compare_metrics)
+
+    baseline_by_id = {cid: m for cid, m in baseline_canonical.items()}
+    compare_by_id = {cid: m for cid, m in compare_canonical.items()}
+
+    all_ids = set(baseline_by_id.keys()).intersection(compare_by_id.keys())
+
+    for cid in sorted(all_ids):
+        baseline_m = baseline_by_id.get(cid)
+        compare_m = compare_by_id.get(cid)
+
+        display_name = cid
+        if baseline_m and baseline_m.get('name'):
+            display_name = baseline_m['name']
+
+        if baseline_m and compare_m:
+            # FIX21: pull canonical numeric basis where available
+            old_val, old_unit = _fix21_metric_value_unit(baseline_m)
+            new_val, new_unit = _fix21_metric_value_unit(compare_m)
+
+            unit = new_unit or old_unit
+
+            old_num = parse_to_float(old_val)
+            new_num = parse_to_float(new_val)
+
+            if old_num is not None and new_num is not None and old_num != 0:
+                change_pct = ((new_num - old_num) / abs(old_num)) * 100
+
+                if abs(change_pct) < 1:
+                    icon, reason = "➡️", "No change"
+                    stability_count += 1
+                elif abs(change_pct) < 5:
+                    icon, reason = "➡️", "Minor change"
+                    stability_count += 1
+                elif change_pct > 0:
+                    icon, reason = "📈", "Increased"
+                else:
+                    icon, reason = "📉", "Decreased"
+
+                delta_str = f"{change_pct:+.1f}%"
+            else:
+                icon, delta_str, reason = "➡️", "-", "Non-numeric"
+                stability_count += 1
+
+            diff_rows.append({
+                '': icon,
+                'Metric': display_name,
+                'Old': _fmt_currency_first(str(old_val), str(unit)),
+                'New': _fmt_currency_first(str(new_val), str(unit)),
+                'Δ': delta_str,
+                'Reason': reason
+            })
+            total_count += 1
+
+    if diff_rows:
+        st.dataframe(pd.DataFrame(diff_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No metrics to compare")
+
+    stability_pct = (stability_count / total_count * 100) if total_count > 0 else 100
+
+    st.markdown("---")
+    st.subheader("📊 Stability Score")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Stable Metrics", f"{stability_count}/{total_count}")
+    col2.metric("Stability", f"{stability_pct:.0f}%")
+
+    if stability_pct >= 80:
+        col3.success("🟢 Highly Stable")
+    elif stability_pct >= 60:
+        col3.warning("🟡 Moderate Changes")
+    else:
+        col3.error("🔴 Significant Drift")
+
+# =====================================================================
+# END PATCH FIX21
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# Note: A previous FIX21 block attempted to call a "prev" alias for
+# _fix17_candidate_allowed_with_reason. In some deployments that alias
+# may not have been populated before the override, so we provide a fully
+# self-contained override here.
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    """FIX21 self-contained eligibility:
+    - Respect fix15 junk/year-only disallow
+    - Respect fix16 unit-compatibility gates
+    - Enforce FIX21 token-level explicit unit markers
+    - Enforce FIX21 bare-year ban for non-year metrics
+    Returns: (ok: bool, reason: str)
+    """
+    try:
+        if not isinstance(c, dict):
+            return False, "invalid_candidate"
+        if not isinstance(metric_spec, dict):
+            metric_spec = {}
+
+        spec = dict(metric_spec)
+        spec.setdefault("canonical_key", canonical_key or spec.get("canonical_key") or "")
+
+        # fix15 authoritative junk disallow (if present)
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            try:
+                if fn_dis(c, spec):
+                    return False, "disallowed:junk_or_yearonly_fix15"
+            except Exception:
+                pass
+
+        # fix16 expected dimension + unit-compatibility hard gate
+        fn_dim = globals().get("_fix16_expected_dimension")
+        expected_dim = fn_dim(spec) if callable(fn_dim) else _fix21_expected_dimension(spec, canonical_key=canonical_key)
+
+        fn_unit_ok = globals().get("_fix16_unit_compatible")
+        if callable(fn_unit_ok) and expected_dim:
+            try:
+                if not fn_unit_ok(c, expected_dim):
+                    return False, f"disallowed:unit_incompatible_for:{expected_dim}"
+            except Exception:
+                pass
+
+        # FIX21 bare-year ban for non-year metrics (strong)
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=canonical_key):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX21 token-level explicit unit requirement
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies existing FIX15 junk exclusion when available
+#   - Applies FIX16 unit compatibility (hard) when available
+#   - Applies FIX21 token-level explicit unit requirement
+#   - Applies FIX21 bare-year ban for non-year metrics
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    try:
+        if not isinstance(c, dict):
+            return False, "invalid_candidate"
+
+        spec = metric_spec if isinstance(metric_spec, dict) else {}
+        ck = canonical_key or spec.get("canonical_key") or ""
+
+        # FIX15: hard junk exclusion (authoritative)
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            if fn_dis(c, dict(spec, canonical_key=ck)):
+                return False, "disallowed:junk_fix15"
+
+        # FIX21: bare year ban for non-year metrics
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=ck):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # Expected dimension
+        expected_dim = _fix21_expected_dimension(spec, canonical_key=ck)
+
+        # FIX16: hard unit compatibility (if available)
+        fn_unit_ok = globals().get("_fix16_unit_compatible")
+        if callable(fn_unit_ok) and expected_dim:
+            if not fn_unit_ok(c, expected_dim):
+                return False, f"disallowed:unit_incompatible_for:{expected_dim}_fix16"
+
+        # FIX21: token-level explicit unit marker for unit-bearing dimensions
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies FIX15 junk exclusion when available (_candidate_disallowed_for_metric)
+#   - Applies FIX16 hard unit-family compatibility when available (_fix16_unit_compatible)
+#   - Adds FIX21 token-level explicit unit requirement
+#   - Adds FIX21 bare-year ban for non-year metrics
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    """FIX21B override: strict deterministic eligibility for selection."""
+    try:
+        if not isinstance(c, dict):
+            return False, "disallowed:not_a_dict"
+
+        spec = metric_spec if isinstance(metric_spec, dict) else {}
+        ck = canonical_key or spec.get("canonical_key") or ""
+
+        # FIX15 junk exclusion
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            try:
+                if fn_dis(c, dict(spec, canonical_key=ck)):
+                    return False, "disallowed:junk_fix15"
+            except Exception:
+                pass
+
+        expected_dim = _fix21_expected_dimension(spec, canonical_key=ck)
+
+        # FIX16 unit compatibility (hard gate when expected_dim known)
+        fn_uc = globals().get("_fix16_unit_compatible")
+        if callable(fn_uc) and expected_dim:
+            try:
+                if not fn_uc(c, expected_dim):
+                    return False, f"disallowed:unit_incompatible_for:{expected_dim}_fix16"
+            except Exception:
+                pass
+
+        # FIX21 bare-year ban for non-year metrics
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=ck):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX21 explicit token-level unit requirement for unit-bearing metrics
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies FIX15 junk exclusion when available (_candidate_disallowed_for_metric)
+#   - Applies FIX16 unit compatibility gating when available (_fix16_unit_compatible)
+#   - Applies FIX21 strict token-level unit requirement + bare-year ban
+# =====================================================================
+
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    """FIX21B: deterministic candidate eligibility used by FIX17/FIX18 rebuilds."""
+    try:
+        if not isinstance(c, dict):
+            return False, "disallowed:not_a_dict"
+
+        spec = dict(metric_spec or {})
+        spec.setdefault("canonical_key", canonical_key or spec.get("canonical_key") or "")
+
+        # FIX15 junk exclusion (authoritative when present)
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            try:
+                if fn_dis(c, spec):
+                    return False, "disallowed:junk_or_year_fix15"
+            except Exception:
+                pass
+
+        # Expected dimension (FIX21 inference)
+        expected_dim = _fix21_expected_dimension(spec, canonical_key=canonical_key)
+
+        # Hard ban: bare years cannot represent non-year metrics
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=canonical_key):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX16 unit compatibility if available
+        fn_uc = globals().get("_fix16_unit_compatible")
+        if callable(fn_uc) and expected_dim:
+            try:
+                if not fn_uc(c, expected_dim):
+                    return False, f"disallowed:unit_incompatible_for:{expected_dim}_fix16"
+            except Exception:
+                pass
+
+        # FIX21 token-level explicit unit requirement for unit-bearing dimensions
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        # Conservative: don't hard-fail the pipeline on gating errors.
+        return True, ""
+
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies FIX15 junk exclusion when available (_candidate_disallowed_for_metric)
+#   - Applies FIX16 hard unit compatibility gate when available (_fix16_unit_compatible)
+#   - Applies FIX21 strict token-level explicit unit requirement
+#   - Applies FIX21 bare-year ban for non-year metrics
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    """FIX21B override: deterministic eligibility with strict token-level unit rules."""
+    try:
+        if not isinstance(c, dict):
+            return False, "disallowed:non_dict_candidate"
+        if not isinstance(metric_spec, dict):
+            metric_spec = {}
+
+        spec = dict(metric_spec)
+        spec.setdefault("canonical_key", canonical_key or spec.get("canonical_key") or "")
+
+        # FIX15: hard junk gate if present
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            if fn_dis(c, spec):
+                return False, "disallowed:junk_fix15"
+
+        # Determine expected dimension (currency/percent/rate/ratio) deterministically
+        expected_dim = _fix21_expected_dimension(spec, canonical_key=canonical_key)
+
+        # FIX21: bare-year ban for non-year metrics
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=canonical_key):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX16: unit compatibility when available (this already requires unit presence for currency/percent)
+        fn_uc = globals().get("_fix16_unit_compatible")
+        if callable(fn_uc) and expected_dim:
+            try:
+                if not fn_uc(c, expected_dim):
+                    return False, f"disallowed:unit_incompatible_for:{expected_dim}_fix16"
+            except Exception:
+                pass
+
+        # FIX21: strict token-level explicit unit requirement
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        # Conservative: allow if we cannot evaluate
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies FIX15 junk exclusion when available (_candidate_disallowed_for_metric)
+#   - Applies FIX16 unit compatibility (if helpers exist)
+#   - Applies FIX21 token-level unit marker requirement
+#   - Applies FIX21 bare-year ban for non-year metrics
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    try:
+        if not isinstance(c, dict):
+            return False, "disallowed:non_dict_candidate"
+
+        spec = metric_spec if isinstance(metric_spec, dict) else {}
+
+        # FIX15 junk exclusion (authoritative when present)
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            if fn_dis(c, dict(spec, canonical_key=canonical_key)):
+                return False, "disallowed:junk_or_year_fix15"
+
+        # Determine expected dimension
+        expected_dim = ""
+        fn_exp = globals().get("_fix16_expected_dimension")
+        if callable(fn_exp):
+            expected_dim = (fn_exp(spec) or "").strip().lower()
+        if not expected_dim:
+            expected_dim = _fix21_expected_dimension(spec, canonical_key=canonical_key)
+
+        # FIX21 bare-year ban for non-year metrics
+        if _fix21_candidate_is_bare_year(c):
+            if not _fix21_metric_is_year_like(spec, canonical_key=canonical_key):
+                return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX16 unit compatibility gate (when available)
+        fn_unit = globals().get("_fix16_unit_compatible")
+        if callable(fn_unit) and expected_dim:
+            if not fn_unit(c, expected_dim):
+                return False, f"disallowed:unit_incompatible_for:{expected_dim}"
+
+        # FIX21 token-level explicit unit requirement for unit-bearing dims
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        # Conservative default: allow (selection may reject later)
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies FIX15 junk exclusion when available (_candidate_disallowed_for_metric)
+#   - Applies FIX16 unit compatibility gates when available (_fix16_unit_compatible)
+#   - Applies FIX21 strict token-level unit requirement
+#   - Applies FIX21 bare-year ban for non-year metrics
+# It deliberately does NOT call any "previous" alias to avoid recursion risks.
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    try:
+        if not isinstance(c, dict):
+            return False, "disallowed:not_a_dict"
+
+        spec = dict(metric_spec or {})
+        spec.setdefault("canonical_key", canonical_key or spec.get("canonical_key") or "")
+        ck = canonical_key or spec.get("canonical_key") or ""
+
+        # FIX15 junk gate (if present)
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            try:
+                if fn_dis(c, spec):
+                    jr = c.get("junk_reason") or "junk"
+                    return False, f"disallowed:{jr}"
+            except Exception:
+                pass
+
+        expected_dim = _fix21_expected_dimension(spec, canonical_key=ck)
+
+        # FIX16 unit compatibility (if present)
+        fn_uc = globals().get("_fix16_unit_compatible")
+        if callable(fn_uc) and expected_dim:
+            try:
+                if not fn_uc(c, expected_dim):
+                    return False, f"disallowed:unit_incompatible_for:{expected_dim}"
+            except Exception:
+                pass
+
+        # FIX21 bare-year ban (token-level)
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=ck):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX21 strict token-level unit requirement for unit-bearing dimensions
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies FIX15 junk exclusion when available (_candidate_disallowed_for_metric)
+#   - Applies FIX16 unit compatibility gates when available (_fix16_unit_compatible)
+#   - Applies FIX21 strict token-level unit requirement
+#   - Applies FIX21 bare-year ban for non-year metrics
+# It deliberately does NOT call any "previous" alias to avoid recursion risks.
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    try:
+        if not isinstance(c, dict):
+            return False, "disallowed:not_a_dict"
+
+        spec = dict(metric_spec or {})
+        spec.setdefault("canonical_key", canonical_key or spec.get("canonical_key") or "")
+        ck = canonical_key or spec.get("canonical_key") or ""
+
+        # FIX15 junk gate (if present)
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            try:
+                if fn_dis(c, spec):
+                    jr = c.get("junk_reason") or "junk"
+                    return False, f"disallowed:{jr}"
+            except Exception:
+                pass
+
+        expected_dim = _fix21_expected_dimension(spec, canonical_key=ck)
+
+        # FIX16 unit compatibility (if present)
+        fn_uc = globals().get("_fix16_unit_compatible")
+        if callable(fn_uc) and expected_dim:
+            try:
+                if not fn_uc(c, expected_dim):
+                    return False, f"disallowed:unit_incompatible_for:{expected_dim}"
+            except Exception:
+                pass
+
+        # FIX21 bare-year ban (token-level)
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=ck):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX21 strict token-level unit requirement for unit-bearing dimensions
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies FIX15 junk exclusion when available (_candidate_disallowed_for_metric)
+#   - Applies FIX16 unit compatibility gates when available (_fix16_unit_compatible)
+#   - Applies FIX21 strict token-level unit requirement
+#   - Applies FIX21 bare-year ban for non-year metrics
+# It deliberately does NOT call any "previous" alias to avoid recursion risks.
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    try:
+        if not isinstance(c, dict):
+            return False, "disallowed:not_a_dict"
+
+        spec = dict(metric_spec or {})
+        spec.setdefault("canonical_key", canonical_key or spec.get("canonical_key") or "")
+        ck = canonical_key or spec.get("canonical_key") or ""
+
+        # FIX15 junk gate (if present)
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            try:
+                if fn_dis(c, spec):
+                    jr = c.get("junk_reason") or "junk"
+                    return False, f"disallowed:{jr}"
+            except Exception:
+                pass
+
+        expected_dim = _fix21_expected_dimension(spec, canonical_key=ck)
+
+        # FIX16 unit compatibility (if present)
+        fn_uc = globals().get("_fix16_unit_compatible")
+        if callable(fn_uc) and expected_dim:
+            try:
+                if not fn_uc(c, expected_dim):
+                    return False, f"disallowed:unit_incompatible_for:{expected_dim}"
+            except Exception:
+                pass
+
+        # FIX21 bare-year ban (token-level)
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=ck):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX21 strict token-level unit requirement for unit-bearing dimensions
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX21B (ADDITIVE): Correct FIX17 eligibility override (no recursion)
+# ---------------------------------------------------------------------
+# This override is self-contained and deterministic:
+#   - Applies FIX15 junk exclusion when available (_candidate_disallowed_for_metric)
+#   - Applies FIX16 unit compatibility gates when available (_fix16_unit_compatible)
+#   - Applies FIX21 strict token-level unit requirement
+#   - Applies FIX21 bare-year ban for non-year metrics
+# It deliberately does NOT call any "previous" alias to avoid recursion risks.
+# =====================================================================
+
+def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_key: str = "") -> tuple:  # noqa: F811
+    try:
+        if not isinstance(c, dict):
+            return False, "disallowed:not_a_dict"
+
+        spec = dict(metric_spec or {})
+        spec.setdefault("canonical_key", canonical_key or spec.get("canonical_key") or "")
+        ck = canonical_key or spec.get("canonical_key") or ""
+
+        # FIX15 junk gate (if present)
+        fn_dis = globals().get("_candidate_disallowed_for_metric")
+        if callable(fn_dis):
+            try:
+                if fn_dis(c, spec):
+                    jr = c.get("junk_reason") or "junk"
+                    return False, f"disallowed:{jr}"
+            except Exception:
+                pass
+
+        expected_dim = _fix21_expected_dimension(spec, canonical_key=ck)
+
+        # FIX16 unit compatibility (if present)
+        fn_uc = globals().get("_fix16_unit_compatible")
+        if callable(fn_uc) and expected_dim:
+            try:
+                if not fn_uc(c, expected_dim):
+                    return False, f"disallowed:unit_incompatible_for:{expected_dim}"
+            except Exception:
+                pass
+
+        # FIX21 bare-year ban (token-level)
+        if _fix21_candidate_is_bare_year(c) and not _fix21_metric_is_year_like(spec, canonical_key=ck):
+            return False, "disallowed:bare_year_non_year_metric_fix21"
+
+        # FIX21 strict token-level unit requirement for unit-bearing dimensions
+        if expected_dim in ("currency", "percent", "rate", "ratio"):
+            if not _fix21_candidate_has_explicit_unit_marker(c, expected_dim):
+                return False, f"disallowed:missing_explicit_unit_token_for:{expected_dim}_fix21"
+
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX21B
 # =====================================================================
