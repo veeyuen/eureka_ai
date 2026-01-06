@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix32_unit_gate"
+CODE_VERSION = "fix33_evo_fallback_unit_gate"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -2903,6 +2903,63 @@ def rebuild_metrics_from_snapshots_schema_only(
     """
     import re
 
+# =====================================================================
+# PATCH FIX33 (ADDITIVE): enforce unit-required eligibility in schema-only rebuild
+# Why:
+#   - When anchors are not used (anchor_used:false), schema-only rebuild can
+#     still select unit-less year tokens (e.g., 2024/2025) for currency/percent metrics.
+#   - This patch hard-rejects candidates with no token-level unit evidence when
+#     the schema (or canonical_key suffix) implies a unit is required.
+#   - Also optionally emits compact debug metadata for top candidates/rejections.
+# Determinism:
+#   - Pure filtering + stable ordering; no refetch; no randomness.
+# =====================================================================
+def _fix33_schema_unit_required(spec_unit_family: str, spec_unit_tag: str, canonical_key: str) -> bool:
+    uf = str(spec_unit_family or "").strip().lower()
+    ut = str(spec_unit_tag or "").strip().lower()
+    ck = str(canonical_key or "").strip().lower()
+    if uf in {"currency", "percent", "rate", "ratio"}:
+        return True
+    if ut in {"%", "percent"}:
+        return True
+    # Canonical-key suffix conventions (backstop)
+    if ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio"):
+        return True
+    return False
+
+def _fix33_candidate_has_unit_evidence(c: dict) -> bool:
+    if not isinstance(c, dict):
+        return False
+    # Any explicit unit/currency/% evidence is enough to qualify as "has unit".
+    if str(c.get("unit_tag") or "").strip():
+        return True
+    if str(c.get("unit_family") or "").strip():
+        return True
+    if str(c.get("base_unit") or "").strip():
+        return True
+    if str(c.get("unit") or "").strip():
+        return True
+    if str(c.get("currency") or c.get("currency_symbol") or "").strip():
+        return True
+    if bool(c.get("is_percent") or c.get("has_percent")):
+        return True
+    if str(c.get("cur_unit_cmp") or "").strip():
+        return True
+    mk = str(c.get("measure_kind") or "").strip().lower()
+    if mk in {"money", "percent", "percentage", "rate", "ratio"}:
+        return True
+    toks = c.get("unit_tokens") or c.get("unit_evidence_tokens") or []
+    if isinstance(toks, (list, tuple)) and len(toks) > 0:
+        return True
+    return False
+
+_fix33_dbg = False
+try:
+    _fix33_dbg = bool((web_context or {}).get("debug_evolution") or (prev_response.get("debug") or {}).get("debug_evolution"))
+except Exception:
+    _fix33_dbg = False
+
+
     # -------------------------
     # Resolve frozen schema (supports multiple storage locations)
     # -------------------------
@@ -2983,8 +3040,14 @@ def rebuild_metrics_from_snapshots_schema_only(
         spec_unit_family = str(spec.get("unit_family") or "").strip()
 
         # Score candidates by schema keyword hits, then filter by unit constraints if present.
-        best = None
-        best_key = None
+best = None
+best_key = None
+
+# ============================================================
+# PATCH FIX33 (ADDITIVE): per-metric debug collectors
+# ============================================================
+_fix33_top = []
+_fix33_rej = {}
 
         for c in candidates:
             # PATCH F: strict candidate exclusion at scoring time
@@ -3131,7 +3194,42 @@ def rebuild_metrics_from_snapshots_schema_only(
             if spec_unit_tag:
                 # if a tag is specified, prefer exact tag matches
                 if str(c.get("unit_tag") or "").strip() != spec_unit_tag:
-                    # allow family match when tag differs
+
+# =====================================================================
+# PATCH FIX33 (ADDITIVE): hard-reject unit-less candidates when unit is required
+# =====================================================================
+try:
+    _req = _fix33_schema_unit_required(spec_unit_family, spec_unit_tag, canonical_key)
+    _has_unit_ev = _fix33_candidate_has_unit_evidence(c)
+    if _req and not _has_unit_ev:
+        # Track rejection (debug)
+        if _fix33_dbg:
+            try:
+                _fix33_rej["missing_unit_required"] = int(_fix33_rej.get("missing_unit_required", 0) or 0) + 1
+            except Exception:
+                pass
+        continue
+    # Track top candidates considered (debug, compact)
+    if _fix33_dbg:
+        try:
+            _fix33_top.append({
+                "raw": c.get("raw"),
+                "value_norm": c.get("value_norm"),
+                "unit_tag": c.get("unit_tag"),
+                "unit_family": c.get("unit_family"),
+                "base_unit": c.get("base_unit") or c.get("unit"),
+                "measure_kind": c.get("measure_kind"),
+                "hits": hits,
+                "has_unit_ev": bool(_has_unit_ev),
+                "source_url": c.get("source_url"),
+                "anchor_hash": c.get("anchor_hash"),
+            })
+        except Exception:
+            pass
+except Exception:
+    pass
+
+               # allow family match when tag differs
                     if not (spec_unit_family and str(c.get("unit_family") or "").strip() == spec_unit_family):
                         continue
 
@@ -3175,6 +3273,25 @@ def rebuild_metrics_from_snapshots_schema_only(
                 },
             },
         }
+
+# ============================================================
+# PATCH FIX33 (ADDITIVE): selection debug (top candidates + rejection counts)
+# ============================================================
+try:
+    if _fix33_dbg and isinstance(metric, dict):
+        try:
+            _fix33_top_sorted = sorted(
+                _fix33_top,
+                key=lambda d: (-(int(d.get("hits") or 0)), str(d.get("value_norm") or ""), str(d.get("raw") or "")),
+            )
+        except Exception:
+            _fix33_top_sorted = _fix33_top
+        metric.setdefault("provenance", {})
+        metric["provenance"]["fix33_top_candidates"] = list(_fix33_top_sorted[:10])
+        metric["provenance"]["fix33_rejected_reason_counts"] = dict(_fix33_rej or {})
+except Exception:
+    pass
+
 
         out[canonical_key] = metric
 
