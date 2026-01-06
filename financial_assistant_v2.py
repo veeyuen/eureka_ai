@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix36_debug_provenance.py"  # PATCH FIX36 (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix37_hash_align.py"  # PATCH FIX36 (ADD): set CODE_VERSION to filename
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
@@ -1554,6 +1554,17 @@ def add_to_history(analysis: dict) -> bool:
                         try:
                             if _ssh_v2:
                                 analysis["results"]["source_snapshot_hash_v2"] = analysis["results"].get("source_snapshot_hash_v2") or _ssh_v2
+                                # =========================
+                                # PATCH FIX37 (ADD): stable snapshot hash alias for fastpath alignment
+                                # - Prefer v2 (stable) when present; fall back to legacy v1.
+                                # =========================
+                                try:
+                                    _ssh_stable = _ssh_v2 or _ssh
+                                    if _ssh_stable:
+                                        analysis["source_snapshot_hash_stable"] = analysis.get("source_snapshot_hash_stable") or _ssh_stable
+                                        analysis["results"]["source_snapshot_hash_stable"] = analysis["results"].get("source_snapshot_hash_stable") or _ssh_stable
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
 
@@ -16364,12 +16375,50 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             payload = _fix31_stable_dumps(rows).encode("utf-8", errors="ignore")
             return _fix31_hashlib.sha256(payload).hexdigest()
 
-        _prev_hash = None
-        if isinstance(previous_data, dict):
-            _prev_hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
+        # =========================
+        # PATCH FIX37 (ADD): stable snapshot hash for fastpath alignment
+        # - Use the SAME hash function as analysis (compute_source_snapshot_hash_v2) whenever possible.
+        # - Falls back to legacy compute_source_snapshot_hash, then to the reduced fingerprint.
+        # =========================
+        def _fix37_snapshot_hash_stable(bsc):
+            try:
+                if isinstance(bsc, list) and bsc:
+                    try:
+                        _h2 = compute_source_snapshot_hash_v2(bsc)
+                        if _h2:
+                            return str(_h2)
+                    except Exception:
+                        pass
+                    try:
+                        _h1 = compute_source_snapshot_hash(bsc)
+                        if _h1:
+                            return str(_h1)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return _fix31_snapshot_fingerprint(bsc)
 
-        # ============================================================
-        # PATCH FIX36 (ADDITIVE): populate explicit fastpath ineligibility reasons
+        _prev_hash = None
+        _prev_hash_stable = None
+        if isinstance(previous_data, dict):
+            # =========================
+            # PATCH FIX37 (ADD): prefer stable hash keys when available
+            # =========================
+            _prev_hash_stable = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2")
+            try:
+                if not _prev_hash_stable and isinstance(previous_data.get("results"), dict):
+                    _prev_hash_stable = (previous_data.get("results") or {}).get("source_snapshot_hash_stable") or (previous_data.get("results") or {}).get("source_snapshot_hash_v2")
+            except Exception:
+                pass
+            _prev_hash = _prev_hash_stable or previous_data.get("source_snapshot_hash")
+            try:
+                if not _prev_hash and isinstance(previous_data.get("results"), dict):
+                    _prev_hash = (previous_data.get("results") or {}).get("source_snapshot_hash")
+            except Exception:
+                pass
+
+# PATCH FIX36 (ADDITIVE): populate explicit fastpath ineligibility reasons
         # - Record current/previous hashes even on mismatch
         # - Explain which prerequisite failed (no_prev_hash / no_prev_metrics / no_snapshots / hash_mismatch)
         # ============================================================
@@ -16381,7 +16430,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             elif not (isinstance(prev_metrics, dict) and prev_metrics):
                 _fix36_reason = "no_prev_metrics"
             else:
-                _fix36_cur_hash = _fix31_snapshot_fingerprint(baseline_sources_cache)
+                _fix36_cur_hash = _fix37_snapshot_hash_stable(baseline_sources_cache)
                 if not (isinstance(_prev_hash, str) and _prev_hash):
                     _fix36_reason = "no_prev_hash"
                 elif _fix36_cur_hash != _prev_hash:
@@ -16395,8 +16444,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 output["debug"]["fix35"]["fastpath_eligible"] = bool(_fix36_reason == "hash_match_and_prev_metrics_present")
                 if _fix36_cur_hash:
                     output["debug"]["fix35"]["source_snapshot_hash_current"] = _fix36_cur_hash
+                    output["debug"]["fix35"]["source_snapshot_hash_current_alg"] = "fix37_stable_v2_preferred"
                 if isinstance(_prev_hash, str) and _prev_hash:
                     output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+                # PATCH FIX37 (ADD): also expose stable-hash candidate if available
+                try:
+                    if isinstance(_prev_hash_stable, str) and _prev_hash_stable:
+                        output["debug"]["fix35"]["source_snapshot_hash_previous_stable"] = _prev_hash_stable
+                except Exception:
+                    pass
         except Exception:
             pass
         # ============================================================
