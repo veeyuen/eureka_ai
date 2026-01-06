@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix22_diffpanel_display_from_value_norm_not_year"
+CODE_VERSION = "v7_41_endstate_patches_fix23_unified_deterministic_metric_engine"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -8702,67 +8702,13 @@ def _fix20_canonical_to_metricdiff_shape(canon: Dict) -> Dict:
             or ''
         )
 
-
-        # =====================================================================
-        # PATCH FIX22 (additive): Prefer value_norm-based display for diff panels
-        # ---------------------------------------------------------------------
-        # Problem observed: evolution-side metric objects sometimes carry a
-        # `value_display` that accidentally reflects a year token (e.g. "2024 %"
-        # or "2025 $M") due to upstream display/fallback formatting, even when
-        # the canonical numeric `value_norm` is correct or should be treated as
-        # authoritative for panel display.
-        #
-        # Deterministic fix: build the diff-panel `raw` string from:
-        #   1) numeric `value_norm` (or `value`) + `base_unit` (or unit fields)
-        #   2) only fall back to provided `value_display` / `raw` if numeric is missing
-        #   3) explicitly blank out year-only displays (1900-2100) to prevent
-        #      accidental promotion in the UI.
-        # =====================================================================
-        def _fix22_is_year_only_display(s: str) -> bool:
-            s = (s or "").strip()
-            if not s:
-                return False
-            # Accept patterns like "2024", "2024.0", "2024 %", "2024 $M"
-            m2 = re.match(r"^((?:19|20)\d{2})(?:\.0)?(?:\s*[%$a-zA-Z]+)?$", s)
-            if not m2:
-                return False
-            try:
-                y = int(m2.group(1))
-                return 1900 <= y <= 2100
-            except Exception:
-                return False
-
-        def _fix22_fmt_from_value(val, unit_str: str) -> str:
-            if val is None or val == "":
-                return ""
-            # Avoid treating string years as numeric values
-            try:
-                f = float(val)
-            except Exception:
-                return str(val).strip()
-            # Basic deterministic formatting (avoid locale/commas to keep stable)
-            if abs(f - int(f)) < 1e-9:
-                num = str(int(f))
-            else:
-                # cap to 6 sig figs to stay stable but readable
-                num = ("%.6g" % f)
-            unit_str = (unit_str or "").strip()
-            return f"{num} {unit_str}".strip()
-
         # Raw/display: try to preserve analysis-side display if present
-        # Raw/display: prefer value-based formatting; fall back to provided display/raw
-        raw_from_value = _fix22_fmt_from_value(v, unit)
-        if raw_from_value:
-            raw = raw_from_value
-        else:
-            raw = (
-                m.get('value_display')
-                or m.get('raw')
-                or m.get('value')
-                or ''
-            )
-            if _fix22_is_year_only_display(str(raw)):
-                raw = ""
+        raw = (
+            m.get('value_display')
+            or m.get('raw')
+            or m.get('value')
+            or ''
+        )
 
         out[key] = {
             'name': m.get('name') or m.get('label') or key,
@@ -15748,7 +15694,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     # Rebuild fallback only if anchors didn't produce metrics
     if not isinstance(current_metrics, dict) or not current_metrics:
         try:
-            fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
+            fn_rebuild = globals().get("build_metrics_deterministic_unified") or globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
             if callable(fn_rebuild):
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
         except Exception:
@@ -18414,6 +18360,32 @@ def main():
                 output = attach_source_snapshots_to_analysis(output, web_context)
             except Exception:
                 pass
+            # =====================================================================
+            # PATCH FIX23 (ADDITIVE): Unified deterministic metric engine (analysis + evolution)
+            # Goal: drift=0 when sources + schema + canonical universe unchanged by forcing BOTH
+            # analysis and evolution to produce canonical metrics via the same snapshot-driven engine.
+            #
+            # Behavior:
+            # - Preserve the LLM-derived canonical metrics under primary_metrics_canonical_llm (audit).
+            # - Rebuild primary_metrics_canonical from baseline_sources_cache using the same engine that
+            #   evolution uses (rebuild_metrics_from_snapshots_schema_only / fix18+fix21 wiring).
+            # - No refetch, no heuristics, no LLM.
+            # =====================================================================
+            try:
+                fn_unified = globals().get("build_metrics_deterministic_unified")
+                if callable(fn_unified):
+                    pr = output.get("primary_response") if isinstance(output.get("primary_response"), dict) else {}
+                    # Keep the LLM-derived canonical as an audit trail (do not overwrite)
+                    if isinstance(pr.get("primary_metrics_canonical"), dict) and "primary_metrics_canonical_llm" not in pr:
+                        pr["primary_metrics_canonical_llm"] = pr.get("primary_metrics_canonical")
+                    bsc = output.get("baseline_sources_cache") or pr.get("baseline_sources_cache") or (output.get("results", {}) or {}).get("baseline_sources_cache")
+                    rebuilt = fn_unified(prev_response=pr, baseline_sources_cache=bsc, web_context=web_context, mode="analysis")
+                    if isinstance(rebuilt, dict) and rebuilt:
+                        pr["primary_metrics_canonical"] = rebuilt
+                        output["primary_response"] = pr
+            except Exception:
+                pass
+            # =====================================================================
 
             with st.spinner("💾 Saving to history..."):
                 if add_to_history(output):
@@ -21240,4 +21212,77 @@ def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_k
 
 # =====================================================================
 # END PATCH FIX21B
+# =====================================================================
+
+
+
+# =====================================================================
+# PATCH FIX23 (ADDITIVE): Unified deterministic metric engine entrypoint
+# ---------------------------------------------------------------------
+# This function is the SINGLE deterministic "metric engine" entry used by:
+#   (1) New Analysis (after snapshots are attached)
+#   (2) Evolution rebuild (snapshot replay)
+#
+# It intentionally reuses the existing, battle-tested rebuild wiring:
+#   - rebuild_metrics_from_snapshots_schema_only (public) is already wired
+#     through FIX18/FIX21 to enforce:
+#       * anchor-authoritative behavior (no schema fallback for anchored metrics)
+#       * strict candidate eligibility (year/unit gates)
+#       * deterministic snapshot-only rebuild
+#
+# NOTE: This is an additive wrapper. It does not refactor or delete any
+# existing rebuild functions. Call sites can gradually adopt it.
+# =====================================================================
+def build_metrics_deterministic_unified(prev_response: dict,
+                                        baseline_sources_cache,
+                                        web_context: dict = None,
+                                        mode: str = "evolution") -> dict:
+    """Return primary_metrics_canonical rebuilt deterministically from snapshots.
+
+    Args:
+      prev_response: dict that MUST contain (when available):
+        - metric_schema_frozen
+        - metric_anchors (optional but preferred)
+        - primary_metrics_canonical (used as fallback only)
+      baseline_sources_cache: list of snapshot source records (with extracted_numbers)
+      web_context: optional (only used for debug/compat; no refetch)
+      mode: "analysis" or "evolution" (diagnostic only; behavior is identical)
+
+    Returns:
+      Dict[str, Dict] shaped like primary_metrics_canonical.
+    """
+    pr = prev_response if isinstance(prev_response, dict) else {}
+    bsc = baseline_sources_cache
+
+    # Robustly locate cache if caller passed None
+    if bsc is None:
+        try:
+            bsc = (
+                pr.get("baseline_sources_cache")
+                or (pr.get("results", {}) or {}).get("baseline_sources_cache")
+            )
+        except Exception:
+            bsc = None
+
+    # Prefer the public schema_only rebuild entrypoint because in your codebase
+    # it is wired through FIX18/FIX21 to split anchored/unanchored correctly.
+    fn = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
+    if not callable(fn):
+        return pr.get("primary_metrics_canonical") or {}
+
+    try:
+        rebuilt = fn(pr, bsc, web_context=web_context)
+        if isinstance(rebuilt, dict) and rebuilt:
+            # Stash a tiny diagnostic marker (safe; additive)
+            try:
+                pr.setdefault("_deterministic_engine_fix23", {})
+                pr["_deterministic_engine_fix23"]["mode"] = str(mode or "")
+                pr["_deterministic_engine_fix23"]["rebuilt_metric_count"] = int(len(rebuilt))
+            except Exception:
+                pass
+            return rebuilt
+    except Exception:
+        pass
+
+    return pr.get("primary_metrics_canonical") or {}
 # =====================================================================
