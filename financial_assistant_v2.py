@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41z_inj_trace_reason_codes_expanded"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41z_evo_inj_rejection_reason_codes_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -4963,72 +4963,65 @@ def _inj_trace_v1_build(
             "rebuild_pool_minus_selected": _delta(rebuild_pool_norm, rebuild_selected_norm) if rebuild_selected is not None else [],
         }
 
+        # -----------------------------------------------------------------
+        # PATCH INJ_TRACE_V1_REJECTION_REASONS_V1 (ADDITIVE)
+        # Purpose:
+        # - When a URL shows up in delta sets (e.g., intake_minus_admitted),
+        #   provide stable, machine-readable reason codes explaining the drop.
+        # - Pure diagnostics only; does NOT change behavior.
+        # -----------------------------------------------------------------
+        admission_decisions = d.get("admission_decisions") if isinstance(d.get("admission_decisions"), dict) else {}
 
-        # === PATCH EVO_INJ_ADMISSION_REASON_CODES_V1 START ===
-        # Purpose: make evolution/analysis admission & selection drops explain themselves with stable reason codes.
-        # Purely additive: diagnostics only (does not alter fastpath, hashing, scrape, or rebuild behavior).
-        admission_rejection_reasons = {}
-        attempted_rejection_reasons = {}
-        try:
-            # Prefer explicit per-URL decisions if present (from other EVO admission tracing patches)
-            _decisions = d.get("inj_admission_decisions") or d.get("admission_decisions") or {}
-            if isinstance(_decisions, dict):
-                for _u, _v in _decisions.items():
-                    if not _u:
-                        continue
-                    if isinstance(_v, dict):
-                        _decision = str(_v.get("decision") or "")
-                        _reason = str(_v.get("reason_code") or _v.get("reason") or "")
-                    else:
-                        _decision = str(_v or "")
-                        _reason = ""
-                    if _decision.lower().startswith("reject"):
-                        admission_rejection_reasons[str(_u)] = _reason or "rejected_by_merge"
-        except Exception:
-            pass
-
-        # Heuristic reason coding for intake→admitted drops
-        for _u in (deltas.get("intake_minus_admitted") or []):
-            if not _u:
-                continue
-            if _u in admission_rejection_reasons:
-                continue
-            _rsn = ""
+        def _infer_reason_intake_to_admitted(u: str) -> str:
             try:
-                if not str(_u).startswith(("http://", "https://")):
-                    _rsn = "invalid_scheme"
-                elif str(stage) == "evolution" and str(path).startswith(("fastpath", "fastpath_replay")):
-                    # In fastpath/replay, extra URLs may be visible but not admitted into the scrape/hash universe by policy.
-                    _rsn = "fastpath_replay_no_admission"
-                else:
-                    _rsn = "unknown_rejected_pre_admission"
+                if not u:
+                    return "empty_url"
+                if not (u.startswith("http://") or u.startswith("https://")):
+                    return "invalid_scheme"
+                # Prefer explicit admission_decisions populated by evolution trace
+                if u in admission_decisions and isinstance(admission_decisions.get(u), dict):
+                    rc = str(admission_decisions.get(u, {}).get("reason_code") or "").strip()
+                    if rc:
+                        return rc
+                # If we are on fastpath/replay, injected URLs are typically not admitted downstream
+                if str(path or "").lower().startswith("fastpath"):
+                    return "fastpath_no_admission"
+                return "unknown_rejected_pre_admission"
             except Exception:
-                _rsn = "unknown_rejected_pre_admission"
-            admission_rejection_reasons[str(_u)] = _rsn
+                return "unknown_rejected_pre_admission"
 
-        # Heuristic reason coding for admitted→attempted drops
-        _attempted_urls = [x.get("url") for x in attempted_min if isinstance(x, dict) and x.get("url")]
-        for _u in (deltas.get("admitted_minus_attempted") or []):
-            if not _u:
-                continue
-            if str(stage) == "evolution" and str(path).startswith(("fastpath", "fastpath_replay")):
-                attempted_rejection_reasons[str(_u)] = "fastpath_replay_no_fetch"
-            else:
-                attempted_rejection_reasons[str(_u)] = "not_fetched_or_filtered_before_fetch"
+        def _infer_reason_admitted_to_attempted(u: str) -> str:
+            try:
+                if not u:
+                    return "empty_url"
+                if str(path or "").lower().startswith("fastpath"):
+                    return "fastpath_no_attempt"
+                return "not_attempted_in_scrape_loop"
+            except Exception:
+                return "not_attempted_in_scrape_loop"
 
-        # Policy/context snapshot (small + stable)
-        try:
-            import os as _os
-            policy = {
-                "exclude_injected_from_hash_env": str(_os.getenv("YUREEKA_EXCLUDE_INJECTED_URLS_FROM_SNAPSHOT_HASH") or ""),
-                "force_include_injected_in_hash_env": str(_os.getenv("YUREEKA_INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH") or ""),
-                "evolution_calls_fetch_web_context": d.get("evolution_calls_fetch_web_context"),
-                "evolution_fastpath_allows_injection": False,
-            }
-        except Exception:
-            policy = {}
-        # === PATCH EVO_INJ_ADMISSION_REASON_CODES_V1 END ===
-return {
+        def _infer_reason_attempted_to_persisted(u: str) -> str:
+            try:
+                if not u:
+                    return "empty_url"
+                # Find attempted row for this URL if present
+                for a in attempted_min:
+                    if isinstance(a, dict) and str(a.get("url") or "").strip() == u:
+                        st = str(a.get("status") or "").strip().lower()
+                        if st and st not in ("success", "ok", "fetched"):
+                            return "scrape_failed"
+                        break
+                return "not_persisted_unknown"
+            except Exception:
+                return "not_persisted_unknown"
+
+        rejection_reasons = {
+            "intake_to_admitted": {u: _infer_reason_intake_to_admitted(u) for u in (deltas.get("intake_minus_admitted") or [])},
+            "admitted_to_attempted": {u: _infer_reason_admitted_to_attempted(u) for u in (deltas.get("admitted_minus_attempted") or [])},
+            "attempted_to_persisted": {u: _infer_reason_attempted_to_persisted(u) for u in (deltas.get("attempted_minus_persisted") or [])},
+        }
+
+        return {
             "run_id": str(d.get("run_id") or ""),
             "stage": str(stage or ""),
             "path": str(path or ""),
@@ -5060,12 +5053,8 @@ return {
                 "rebuild_pool_norm": _inj_diag_set_hash(rebuild_pool_norm) if rebuild_pool is not None else "",
                 "rebuild_selected_norm": _inj_diag_set_hash(rebuild_selected_norm) if rebuild_selected is not None else "",
             },
+                        "rejection_reasons": rejection_reasons,
             "deltas": deltas,
-            "rejection_reasons": {
-                "intake_minus_admitted": admission_rejection_reasons,
-                "admitted_minus_attempted": attempted_rejection_reasons,
-            },
-            "policy": policy,
         }
     except Exception:
         return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
