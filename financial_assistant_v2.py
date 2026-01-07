@@ -77,7 +77,13 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41s_policy_align_inj_hash_default_on_persisted"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# =====================================================================
+# PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
+# - Purely a version label for debugging/traceability.
+# - Does NOT alter runtime logic.
+# =====================================================================
+CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
+# =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -21810,6 +21816,39 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 })
         except Exception:
             pass
+
+        # =====================================================================
+        # PATCH EVO_INJ_TRACE_REPLAY1 (ADDITIVE): emit inj_trace_v1 even on replay fastpath
+        # Why:
+        # - The FIX24 replay path returns early (skipping compute_source_anchored_diff),
+        #   which previously meant results.debug.inj_trace_v1 might be missing.
+        # - We need injected-URL lifecycle visibility even when hashes match (fastpath/replay)
+        #   to validate UI wiring and to explain why a mismatch did/did not occur.
+        # Safety:
+        # - Pure debug emission only; does NOT affect hash logic, scraping, or fastpath decisions.
+        # =====================================================================
+        try:
+            _wc = web_context if isinstance(web_context, dict) else {}
+            _diag = _wc.get("diag_injected_urls") if isinstance(_wc.get("diag_injected_urls"), dict) else {}
+            _hash_inputs_replay = _inj_diag_hash_inputs_from_bsc(cur_bsc)
+            _trace_replay = _inj_trace_v1_build(
+                diag_injected_urls=_diag,
+                hash_inputs=_hash_inputs_replay,
+                stage="evolution",
+                path="fastpath_replay",
+                rebuild_pool=None,
+                rebuild_selected=None,
+            )
+            out_replay.setdefault("results", {})
+            if isinstance(out_replay.get("results"), dict):
+                out_replay["results"].setdefault("debug", {})
+                if isinstance(out_replay["results"].get("debug"), dict):
+                    out_replay["results"]["debug"]["inj_trace_v1"] = _trace_replay
+        except Exception:
+            pass
+        # =====================================================================
+        # END PATCH EVO_INJ_TRACE_REPLAY1
+        # =====================================================================
         return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
