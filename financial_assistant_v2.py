@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41k_streamlit_extra_sources_ui"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41o_streamlit_extra_sources_ui_trace"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -5156,6 +5156,88 @@ def fetch_web_context(
         pass
 
     # status summarization
+
+    # =====================================================================
+    # PATCH FWC_EXTRA_URLS_TRACE2 (ADDITIVE): trace how injected URLs were handled
+    # Why:
+    # - When scenario B "extra URLs" are provided, it can be unclear whether they:
+    #     (a) were normalized/deduped
+    #     (b) were admitted into the scrape list
+    #     (c) were successfully scraped
+    #     (d) actually entered the snapshot-hash pool used by analysis/evolution
+    # - This patch records a deterministic, non-invasive trace in web_context only.
+    # =====================================================================
+    try:
+        if not isinstance(out.get("debug_counts"), dict):
+            out["debug_counts"] = {}
+        _dbg_counts = out["debug_counts"]
+
+        _extra_trace = {
+            "extra_urls_requested": list(extra_urls or []) if isinstance(extra_urls, list) else [],
+            "extra_urls_normalized": list(_extras or []) if "_extras" in locals() and isinstance(_extras, list) else [],
+            "extra_urls_admitted": [],
+            "extra_urls_scraped": [],
+            "extra_urls_in_hash_pool": [],
+            "notes": [],
+        }
+
+        # Which extras actually made it into the final admitted URL list?
+        try:
+            _admitted_urls = []
+            if "admitted" in locals() and isinstance(admitted, list):
+                _admitted_urls = [u for u in admitted if isinstance(u, str) and u.strip()]
+            _extra_set = set(_extra_trace["extra_urls_normalized"])
+            _extra_trace["extra_urls_admitted"] = [u for u in _admitted_urls if u in _extra_set]
+        except Exception:
+            pass
+
+        # How did each extra URL scrape?
+        try:
+            sm = out.get("scraped_meta") or {}
+            if isinstance(sm, dict):
+                for u in _extra_trace["extra_urls_normalized"]:
+                    meta = sm.get(u) or {}
+                    if isinstance(meta, dict) and meta:
+                        content = meta.get("clean_text") or meta.get("content") or ""
+                        fp = meta.get("fingerprint")
+                        _extra_trace["extra_urls_scraped"].append({
+                            "url": u,
+                            "status": meta.get("status"),
+                            "status_detail": meta.get("status_detail"),
+                            "fingerprint": (fp[:16] if isinstance(fp, str) else fp),
+                            "numbers_found": meta.get("numbers_found"),
+                            "content_len": (len(content) if isinstance(content, str) else 0),
+                            "content_type": meta.get("content_type") or "",
+                        })
+        except Exception:
+            pass
+
+        # Approximate "hash pool" membership (non-invasive):
+        # we mark extras whose scrape produced a non-empty fingerprint + some text.
+        try:
+            sm = out.get("scraped_meta") or {}
+            if isinstance(sm, dict):
+                for row in (_extra_trace.get("extra_urls_scraped") or []):
+                    u = row.get("url")
+                    meta = sm.get(u) or {}
+                    content = meta.get("clean_text") or meta.get("content") or ""
+                    fp = meta.get("fingerprint")
+                    if isinstance(fp, str) and fp and isinstance(content, str) and len(content) >= 200:
+                        _extra_trace["extra_urls_in_hash_pool"].append(u)
+        except Exception:
+            pass
+
+        out["extra_urls_debug"] = _extra_trace
+        _dbg_counts["extra_urls_trace"] = {
+            "requested": len(_extra_trace.get("extra_urls_requested") or []),
+            "normalized": len(_extra_trace.get("extra_urls_normalized") or []),
+            "admitted": len(_extra_trace.get("extra_urls_admitted") or []),
+            "scraped": len(_extra_trace.get("extra_urls_scraped") or []),
+            "in_hash_pool": len(_extra_trace.get("extra_urls_in_hash_pool") or []),
+        }
+    except Exception:
+        pass
+    # =====================================================================
     if scraped_ok_text == 0:
         out["status"] = "failed"
         out["status_detail"] = "no_usable_text"
@@ -18653,6 +18735,23 @@ def render_dashboard(
             with st.expander("Collector debug counts"):
                 st.json(dbg)
 
+    # =====================================================================
+    # PATCH UI_EXTRA_URLS_TRACE2 (ADDITIVE): show injected extra-URL trace (if any)
+    # =====================================================================
+    try:
+        exdbg = {}
+        if isinstance(web_context, dict):
+            exdbg = web_context.get("extra_urls_debug") or {}
+            # Back-compat: allow nested placement under debug_counts
+            if (not exdbg) and isinstance(web_context.get("debug_counts"), dict):
+                exdbg = (web_context.get("debug_counts") or {}).get("extra_urls_debug") or {}
+        if isinstance(exdbg, dict) and exdbg:
+            with st.expander("Extra URLs trace (injected sources)"):
+                st.json(exdbg)
+    except Exception:
+        pass
+    # =====================================================================
+
     # Source reliability badges (if provided)
     if isinstance(source_reliability, list) and source_reliability:
         with st.expander("Source reliability"):
@@ -19127,7 +19226,7 @@ def main():
                     except Exception:
                         extra_urls = []
 
-                    web_context = fetch_web_context(
+web_context = fetch_web_context(
                         query,
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
