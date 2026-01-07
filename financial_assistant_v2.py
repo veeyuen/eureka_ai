@@ -77,12 +77,17 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
+#CODE_VERSION = "fix41o_streamlit_extra_sources_ui_trace"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
+#CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
+# =====================================================================
+# PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
+# =====================================================================
+CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
@@ -16646,6 +16651,86 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 return v
         return default
     # ============================================================
+
+    # =====================================================================
+    # PATCH FIX41U (ADDITIVE): Evolution-side injected-URL diag prewire + replay visibility
+    # Objective:
+    # - Ensure compute_source_anchored_diff can ALWAYS populate web_context.diag_injected_urls
+    #   even when the caller only supplies:
+    #     * web_context["extra_urls"]
+    #     * web_context["diag_extra_urls_ui_raw"]
+    #     * web_context["diag_run_id"]
+    # - Additionally, if the evolution UI did NOT supply extra_urls, record what the baseline
+    #   analysis run had (if any) as "replayed_from_analysis_norm" for diagnostics only.
+    # Safety:
+    # - Purely additive diagnostics. Does NOT alter fastpath logic or hashing inputs.
+    # =====================================================================
+    def _fix41u_extract_injected_from_prev(prev: dict) -> dict:
+        try:
+            if not isinstance(prev, dict):
+                return {}
+            cand_paths = [
+                ["results","debug","inj_trace_v1"],
+                ["primary_response","results","debug","inj_trace_v1"],
+                ["results","primary_response","results","debug","inj_trace_v1"],
+                ["debug","inj_trace_v1"],
+            ]
+            for p in cand_paths:
+                v = _get_nested(prev, p, None)
+                if isinstance(v, dict) and v:
+                    return v
+        except Exception:
+            pass
+        return {}
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        # Pull what the caller provided (Evolution UI should pass these)
+        _fix41u_ui_raw = ""
+        try:
+            _fix41u_ui_raw = str(web_context.get("diag_extra_urls_ui_raw") or web_context.get("extra_urls_ui_raw") or "")
+        except Exception:
+            _fix41u_ui_raw = ""
+
+        _fix41u_extra_urls = []
+        try:
+            _fix41u_extra_urls = _inj_diag_norm_url_list(web_context.get("extra_urls") or [])
+        except Exception:
+            _fix41u_extra_urls = []
+
+        # If Evolution UI did not supply extras, capture what baseline analysis had (diagnostic only)
+        _fix41u_prev_trace = _fix41u_extract_injected_from_prev(previous_data)
+        _fix41u_replayed = []
+        try:
+            if not _fix41u_extra_urls and isinstance(_fix41u_prev_trace, dict):
+                _fix41u_replayed = _inj_diag_norm_url_list(_fix41u_prev_trace.get("ui_norm") or [])
+        except Exception:
+            _fix41u_replayed = []
+
+        # Ensure diag container exists
+        web_context.setdefault("diag_injected_urls", {})
+        if isinstance(web_context.get("diag_injected_urls"), dict):
+            _d = web_context["diag_injected_urls"]
+            # run_id continuity
+            try:
+                _d.setdefault("run_id", str(web_context.get("diag_run_id") or ""))
+            except Exception:
+                pass
+            # UI-provided inputs (preferred truth)
+            _d.setdefault("ui_raw", _fix41u_ui_raw)
+            _d.setdefault("ui_norm", list(_fix41u_extra_urls))
+            _d.setdefault("intake_norm", list(_fix41u_extra_urls))
+            # Replay visibility (diagnostic only; NOT used for hashing unless caller also provided extras)
+            if _fix41u_replayed:
+                _d.setdefault("replayed_from_analysis_norm", list(_fix41u_replayed))
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX41U
+    # =====================================================================
+
 
     # =====================================================================
     # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
