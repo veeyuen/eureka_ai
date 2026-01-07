@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41o_streamlit_extra_sources_ui_trace"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41p_extra_urls_persist_and_hash_stage_trace"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -12669,6 +12669,38 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         if isinstance(analysis["results"], dict):
             analysis["results"]["baseline_sources_cache"] = baseline_sources_cache
 
+        # =====================================================================
+        # PATCH EXTRA_URLS_TRACE_PERSIST (ADDITIVE): persist extra-URL injection trace
+        # =====================================================================
+        try:
+            _fwc_dbg = None
+            if isinstance(web_context, dict):
+                _dbg = web_context.get("debug")
+                if isinstance(_dbg, dict):
+                    _fwc_dbg = _dbg.get("fwc_extra_urls")
+            if isinstance(_fwc_dbg, dict) and _fwc_dbg:
+                if not isinstance(analysis.get("debug"), dict):
+                    analysis["debug"] = {}
+                analysis["debug"]["extra_urls_trace"] = dict(_fwc_dbg)
+
+                _bsc_urls = set()
+                for _sr in (baseline_sources_cache or []):
+                    if isinstance(_sr, dict):
+                        _u = _sr.get("url") or _sr.get("source_url")
+                        if isinstance(_u, str) and _u:
+                            _bsc_urls.add(_u.strip())
+
+                _extra_in = []
+                for _u in (_fwc_dbg.get("normalized") or []):
+                    if isinstance(_u, str) and _u.strip() in _bsc_urls:
+                        _extra_in.append(_u.strip())
+
+                analysis["debug"]["extra_urls_trace"]["in_baseline_sources_cache_count"] = int(len(_extra_in))
+                analysis["debug"]["extra_urls_trace"]["in_baseline_sources_cache_urls"] = _extra_in[:25]
+        except Exception:
+            pass
+        # =====================================================================
+
 
     # -----------------------------
     # RANGE capture for canonical metrics
@@ -19226,7 +19258,7 @@ def main():
                     except Exception:
                         extra_urls = []
 
-                    web_context = fetch_web_context(
+web_context = fetch_web_context(
                         query,
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
