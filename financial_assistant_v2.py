@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41p_extra_urls_persist_and_hash_stage_trace"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41p_injected_url_diag_min_signals"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -4695,6 +4695,79 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
         return []
 
 
+
+# =====================================================================
+# PATCH INJ_DIAG_HELPERS (ADDITIVE): Injected-URL diagnostics helpers
+# - Pure helpers (no control-flow changes)
+# - Used to trace injected extra URLs across: UI -> intake -> scrape -> snapshots -> hashing -> rebuild
+# =====================================================================
+def _inj_diag_make_run_id(prefix: str = "run") -> str:
+    """Short correlation id for a single analysis/evolution run."""
+    try:
+        import os, time, hashlib
+        seed = f"{prefix}|{time.time()}|{os.getpid()}|{os.urandom(8).hex()}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        try:
+            import random
+            return f"{prefix}_{random.randint(100000,999999)}"
+        except Exception:
+            return f"{prefix}_unknown"
+
+def _inj_diag_norm_url_list(extra_urls: Any) -> list:
+    """Normalize/dedupe URL list (conservative: only http/https)."""
+    out = []
+    try:
+        if extra_urls is None:
+            return []
+        items = extra_urls
+        if isinstance(items, str):
+            items = [u.strip() for u in items.splitlines()]
+        if not isinstance(items, (list, tuple, set)):
+            items = [str(items)]
+        seen = set()
+        for u in items:
+            uu = str(u or "").strip()
+            if not uu:
+                continue
+            if not (uu.startswith("http://") or uu.startswith("https://")):
+                continue
+            if uu in seen:
+                continue
+            seen.add(uu)
+            out.append(uu)
+    except Exception:
+        return []
+    return out
+
+def _inj_diag_set_hash(urls: list) -> str:
+    """Stable sha256 of sorted URL list (for compact logging)."""
+    try:
+        import hashlib
+        lst = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
+        lst = sorted(set(lst))
+        payload = "|".join(lst)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+def _inj_diag_hash_inputs_from_bsc(baseline_sources_cache: Any) -> list:
+    """Extract deterministic URL inputs used by snapshot hashing (v1/v2 both include URL)."""
+    urls = []
+    try:
+        if not isinstance(baseline_sources_cache, list):
+            return []
+        for sr in baseline_sources_cache:
+            if not isinstance(sr, dict):
+                continue
+            u = (sr.get("source_url") or sr.get("url") or "").strip()
+            if u:
+                urls.append(u)
+    except Exception:
+        return []
+    return sorted(set(urls))
+# =====================================================================
+
 def scrape_url(url: str) -> Optional[str]:
     """
     Scrape webpage content.
@@ -4788,6 +4861,11 @@ def fetch_web_context(
     # PATCH FWC_EXTRA_URLS1 (ADDITIVE)
     # ============================================================
     extra_urls: Any = None,
+    # ============================================================
+    # PATCH INJ_DIAG_FWC_ARGS (ADDITIVE): correlation + UI raw
+    # ============================================================
+    diag_run_id: str = "",
+    diag_extra_urls_ui_raw: Any = None,
 ) -> dict:
 
     """
@@ -4971,6 +5049,44 @@ def fetch_web_context(
     except Exception:
         pass
 
+
+    # =====================================================================
+    # PATCH INJ_DIAG_FWC_STAGE (ADDITIVE): injected-URL stage checkpoints (A1-A3)
+    # Records: UI->intake->admitted, and later enriches with scrape outcomes.
+    # =====================================================================
+    try:
+        _diag_run = str(diag_run_id or "") or _inj_diag_make_run_id("analysis")
+        out["diag_run_id"] = out.get("diag_run_id") or _diag_run
+
+        _ui_raw = diag_extra_urls_ui_raw if diag_extra_urls_ui_raw is not None else extra_urls
+        _ui_norm = _inj_diag_norm_url_list(_ui_raw)
+        _intake_norm = list(_extras or []) if "_extras" in locals() and isinstance(_extras, list) else _inj_diag_norm_url_list(extra_urls)
+
+        out["diag_injected_urls"] = {
+            "run_id": _diag_run,
+            "ui_raw": _ui_raw if isinstance(_ui_raw, (str, list, tuple)) else str(_ui_raw or ""),
+            "ui_norm": _ui_norm,
+            "intake_norm": _intake_norm,
+            "admitted": list(admitted or []),
+            "attempted": [],
+            "persisted": [],
+            "hash_inputs": [],
+            "rebuild_pool": [],
+            "rebuild_selected": [],
+            "set_hashes": {
+                "ui_norm": _inj_diag_set_hash(_ui_norm),
+                "intake_norm": _inj_diag_set_hash(_intake_norm),
+                "admitted": _inj_diag_set_hash(list(admitted or [])),
+            },
+            "deltas": {
+                "ui_minus_intake": sorted(list(set(_ui_norm) - set(_intake_norm))),
+                "intake_minus_admitted": sorted(list(set(_intake_norm) - set(list(admitted or [])))),
+            },
+        }
+    except Exception:
+        pass
+    # =====================================================================
+
     out["sources"] = admitted
     out["web_sources"] = admitted
 
@@ -5137,6 +5253,42 @@ def fetch_web_context(
                 progress.progress((i + 1) / max(1, len(admitted)))
             except Exception:
                 pass
+
+
+    # =====================================================================
+    # PATCH INJ_DIAG_FWC_POSTSCRAPE (ADDITIVE): finalize scrape outcomes (A3)
+    # =====================================================================
+    try:
+        d = out.get("diag_injected_urls")
+        if isinstance(d, dict):
+            _inj = set(d.get("intake_norm") or [])
+            sm = out.get("scraped_meta") or {}
+            attempted = []
+            persisted = []
+            if isinstance(sm, dict):
+                for u in sorted(_inj):
+                    meta = sm.get(u) or {}
+                    status = (meta.get("status") or "")
+                    status_detail = (meta.get("status_detail") or "")
+                    content = meta.get("clean_text") or meta.get("content") or ""
+                    attempted.append({
+                        "url": u,
+                        "attempted": bool(u in (admitted or [])),
+                        "fetch_status": "success" if (str(status_detail).startswith("success") or status == "fetched") else ("failed" if meta else "skipped"),
+                        "fail_reason": (str(status_detail) or str(status) or "")[:80],
+                        "content_len": int(len(content) if isinstance(content, str) else 0),
+                        "numbers_found": int(meta.get("numbers_found") or 0),
+                    })
+                    if str(status_detail).startswith("success") or status == "fetched":
+                        persisted.append(u)
+            d["attempted"] = attempted
+            d["persisted"] = persisted
+            d.setdefault("set_hashes", {})
+            if isinstance(d["set_hashes"], dict):
+                d["set_hashes"]["persisted"] = _inj_diag_set_hash(persisted)
+    except Exception:
+        pass
+    # =====================================================================
 
     out["debug_counts"].update({
         "scraped_attempted": int(scraped_attempted),
@@ -12667,39 +12819,62 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         analysis["baseline_sources_cache"] = baseline_sources_cache
         analysis.setdefault("results", {})
         if isinstance(analysis["results"], dict):
-            analysis["results"]["baseline_sources_cache"] = baseline_sources_cache
 
-        # =====================================================================
-        # PATCH EXTRA_URLS_TRACE_PERSIST (ADDITIVE): persist extra-URL injection trace
-        # =====================================================================
-        try:
-            _fwc_dbg = None
-            if isinstance(web_context, dict):
-                _dbg = web_context.get("debug")
-                if isinstance(_dbg, dict):
-                    _fwc_dbg = _dbg.get("fwc_extra_urls")
-            if isinstance(_fwc_dbg, dict) and _fwc_dbg:
-                if not isinstance(analysis.get("debug"), dict):
-                    analysis["debug"] = {}
-                analysis["debug"]["extra_urls_trace"] = dict(_fwc_dbg)
+            # =====================================================================
+            # PATCH INJ_DIAG_ATTACH_SNAPSHOTS (ADDITIVE): propagate injected-URL trace into analysis
+            # - Captures persisted snapshot URLs + exact hash input URL set (A4-A5)
+            # - Does NOT alter any gating/selection logic.
+            # =====================================================================
+            try:
+                _diag = {}
+                if isinstance(web_context, dict):
+                    _diag = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
 
-                _bsc_urls = set()
-                for _sr in (baseline_sources_cache or []):
-                    if isinstance(_sr, dict):
-                        _u = _sr.get("url") or _sr.get("source_url")
-                        if isinstance(_u, str) and _u:
-                            _bsc_urls.add(_u.strip())
+                _inj_urls = []
+                if isinstance(_diag, dict):
+                    _inj_urls = _inj_diag_norm_url_list(
+                        _diag.get("intake_norm")
+                        or _diag.get("extra_urls_normalized")
+                        or _diag.get("extra_urls")
+                        or []
+                    )
 
-                _extra_in = []
-                for _u in (_fwc_dbg.get("normalized") or []):
-                    if isinstance(_u, str) and _u.strip() in _bsc_urls:
-                        _extra_in.append(_u.strip())
+                _snap_urls = _inj_diag_hash_inputs_from_bsc(baseline_sources_cache)
+                _hash_inputs = _snap_urls
 
-                analysis["debug"]["extra_urls_trace"]["in_baseline_sources_cache_count"] = int(len(_extra_in))
-                analysis["debug"]["extra_urls_trace"]["in_baseline_sources_cache_urls"] = _extra_in[:25]
-        except Exception:
-            pass
-        # =====================================================================
+                _h_v1 = ""
+                _h_v2 = ""
+                try:
+                    _h_v1 = compute_source_snapshot_hash(baseline_sources_cache)
+                except Exception:
+                    _h_v1 = ""
+                try:
+                    _h_v2 = compute_source_snapshot_hash_v2(baseline_sources_cache)
+                except Exception:
+                    _h_v2 = ""
+
+                analysis.setdefault("results", {})
+                if isinstance(analysis.get("results"), dict):
+                    analysis["results"].setdefault("debug", {})
+                    if isinstance(analysis["results"].get("debug"), dict):
+                        analysis["results"]["debug"].setdefault("inj_diag", {})
+                        analysis["results"]["debug"]["inj_diag"].update({
+                            "run_id": str((web_context or {}).get("diag_run_id") or _diag.get("run_id") or ""),
+                            "injected_urls": _inj_urls[:50],
+                            "snapshot_pool_urls_count": int(len(_snap_urls)),
+                            "snapshot_pool_urls_hash": _inj_diag_set_hash(_snap_urls),
+                            "hash_input_urls_count": int(len(_hash_inputs)),
+                            "hash_input_urls_hash": _inj_diag_set_hash(_hash_inputs),
+                            "injected_in_snapshot_pool": sorted(list(set(_inj_urls) & set(_snap_urls)))[:50],
+                            "injected_in_hash_inputs": sorted(list(set(_inj_urls) & set(_hash_inputs)))[:50],
+                            "computed_hash_v1": _h_v1,
+                            "computed_hash_v2": _h_v2,
+                        })
+            except Exception:
+                pass
+            # =====================================================================
+
+        analysis["results"]["baseline_sources_cache"] = baseline_sources_cache
 
 
     # -----------------------------
@@ -19203,6 +19378,35 @@ def main():
                 disabled=not SERPAPI_KEY
             )
 
+
+            # ============================================================
+
+            # PATCH UI_EXTRA_SOURCES_TAB1 (ADDITIVE)
+
+            # - Add extra URL injection UI directly to TAB 1 (New Analysis)
+
+            # - Does NOT alter behavior unless user supplies URLs
+
+            # ============================================================
+
+            extra_sources_text_tab1 = st.text_area(
+
+                "Extra source URLs (optional, one per line)",
+
+                placeholder="https://example.com/report\nhttps://another-source.com/page",
+
+                help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
+
+                height=90,
+
+                key="ui_extra_sources_tab1",
+
+            )
+
+            # ============================================================
+
+
+
         if st.button("🔍 Analyze", type="primary") and query:
             if len(query.strip()) < 5:
                 st.error("❌ Please enter a question with at least 5 characters")
@@ -19249,7 +19453,7 @@ def main():
                     # ============================================================
                     extra_urls = []
                     try:
-                        for _l in str(extra_sources_text or "").splitlines():
+                        for _l in str(extra_sources_text_tab1 or "").splitlines():
                             _u = _l.strip()
                             if not _u:
                                 continue
@@ -19258,11 +19462,20 @@ def main():
                     except Exception:
                         extra_urls = []
 
+
+                    # ============================================================
+                    # PATCH INJ_DIAG_TAB1_CALL (ADDITIVE): correlate UI extra-URL input into fetch_web_context diagnostics
+                    # ============================================================
+                    _analysis_run_id = _inj_diag_make_run_id("analysis")
+                    # ============================================================
+
                     web_context = fetch_web_context(
                         query,
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
                         extra_urls=extra_urls,
+                        diag_run_id=_analysis_run_id,
+                        diag_extra_urls_ui_raw=(extra_sources_text_tab1 or ""),
                     )
                     # ----------------------------------------------------------------------
 
@@ -19517,11 +19730,66 @@ def main():
                     return
 
                 with st.spinner("🧬 Running source-anchored evolution..."):
+
                     try:
-                        results = run_source_anchored_evolution(baseline_data, web_context={"force_rebuild": bool(force_rebuild)})  # PATCH FIX41 (ADD): pass force_rebuild flag explicitly  # PATCH FIX40 (ADD): pass force_rebuild flag
+
+
+                        # ============================================================
+
+                        # PATCH INJ_DIAG_EVO_UI (ADDITIVE): pass extra injected URLs + run_id into evolution
+
+                        # ============================================================
+
+                        _evo_run_id = _inj_diag_make_run_id("evo")
+
+                        _extra_urls_evo = []
+
+                        try:
+
+                            for _l in str(extra_sources_text or "").splitlines():
+
+                                _u = _l.strip()
+
+                                if not _u:
+
+                                    continue
+
+                                if _u.startswith("http://") or _u.startswith("https://"):
+
+                                    _extra_urls_evo.append(_u)
+
+                        except Exception:
+
+                            _extra_urls_evo = []
+
+
+                        results = run_source_anchored_evolution(
+
+                            baseline_data,
+
+                            web_context={
+
+                                "force_rebuild": bool(force_rebuild),
+
+                                "extra_urls": _extra_urls_evo,
+
+                                "diag_run_id": _evo_run_id,
+
+                                "diag_extra_urls_ui_raw": (extra_sources_text or ""),
+
+                            },
+
+                        )
+
+                        # ============================================================
+
+
                     except Exception as e:
+
                         st.error(f"❌ Evolution failed: {e}")
+
                         return
+
 
                 interpretation = ""
                 try:
@@ -21064,11 +21332,67 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     # Step 2: Build current scraped_meta by fetching the same URLs used previously
     urls = _fix24_extract_source_urls(prev_full)
+
+    # =====================================================================
+
+    # PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
+    # - Only active if caller provides web_context['extra_urls']
+    # - Does NOT affect default fastpath behavior.
+    # =====================================================================
+    _inj_diag_run_id = ""
+    _inj_extra_urls = []
+    try:
+        _inj_diag_run_id = str((web_context or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo")
+        _inj_extra_urls = _inj_diag_norm_url_list((web_context or {}).get("extra_urls") or [])
+    except Exception:
+        _inj_diag_run_id = _inj_diag_make_run_id("evo")
+        _inj_extra_urls = []
+
+    try:
+        if _inj_extra_urls:
+            _u_seen = set([str(u or "").strip() for u in (urls or []) if str(u or "").strip()])
+            for _u in _inj_extra_urls:
+                if _u not in _u_seen:
+                    _u_seen.add(_u)
+                    urls.append(_u)
+    except Exception:
+        pass
+    # =====================================================================
+
+
     scraped_meta = _fix24_build_scraped_meta(urls)
 
     # Step 3: Normalize into baseline_sources_cache and hash
     cur_bsc = _fix24_baseline_sources_cache_from_scraped_meta(scraped_meta)
     cur_hashes = _fix24_compute_current_hashes(cur_bsc)
+
+    # =====================================================================
+
+    # PATCH INJ_DIAG_EVO_DEBUG (ADDITIVE): record injected URL lifecycle (B1)
+    # =====================================================================
+    try:
+        _hash_inputs = _inj_diag_hash_inputs_from_bsc(cur_bsc)
+        if isinstance(web_context, dict):
+            web_context.setdefault("diag_injected_urls", {})
+            if isinstance(web_context.get("diag_injected_urls"), dict):
+                web_context["diag_injected_urls"].update({
+                    "run_id": _inj_diag_run_id,
+                    "ui_raw": (web_context or {}).get("diag_extra_urls_ui_raw") or "",
+                    "ui_norm": _inj_extra_urls,
+                    "intake_norm": _inj_extra_urls,
+                    "admitted": list(urls or []),
+                    "hash_inputs": _hash_inputs,
+                    "injected_in_hash_inputs": sorted(list(set(_inj_extra_urls) & set(_hash_inputs))),
+                    "set_hashes": {
+                        "hash_inputs": _inj_diag_set_hash(_hash_inputs),
+                        "admitted": _inj_diag_set_hash(list(urls or [])),
+                    }
+                })
+    except Exception:
+        pass
+    # =====================================================================
+
+
 
     # Step 4: Compare (v2 preferred)
     equal_v2 = bool(prev_hashes.get("v2") and cur_hashes.get("v2") and prev_hashes["v2"] == cur_hashes["v2"])
