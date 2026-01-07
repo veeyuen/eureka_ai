@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41n_extra_urls_trace_returnfix"  # PATCH FIX41M (ADDITIVE): version bump
+CODE_VERSION = "fix41k_streamlit_extra_sources_ui"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -4784,6 +4784,10 @@ def fetch_web_context(
     fallback_mode: bool = False,
     fallback_urls: list = None,
     existing_snapshots: Any = None,   # <-- ADDITIVE
+    # ============================================================
+    # PATCH FWC_EXTRA_URLS1 (ADDITIVE)
+    # ============================================================
+    extra_urls: Any = None,
 ) -> dict:
 
     """
@@ -4855,66 +4859,7 @@ def fetch_web_context(
     if not q:
         out["status"] = "no_query"
         out["status_detail"] = "empty_query"
-    # =====================================================================
-    # PATCH FIX41M (ADDITIVE): trace how UI "extra URLs" were handled
-    # Why:
-    # - Scenario B relies on additional URLs changing the snapshot pool + hash
-    # - This makes it obvious whether extra URLs were admitted/blocked/dropped, and whether they were scraped
-    # - Diagnostics-only: does NOT alter fetch ordering, eligibility, or scraping behavior
-    # =====================================================================
-    try:
-        if not isinstance(out.get("debug"), dict):
-            out["debug"] = {}
-        req_extra = list(extra_urls or []) if isinstance(extra_urls, list) else []
-        req_extra_norm = [str(u).strip() for u in req_extra if str(u).strip()]
-        req_extra_set = set(req_extra_norm)
-
-        admitted_set = set([str(u).strip() for u in (admitted or []) if str(u).strip()])
-        blocked_set = set([str(u).strip() for u in (blocked or []) if str(u).strip()])
-        dropped_set = set([str(u).strip() for u in (dropped or []) if str(u).strip()])
-
-        extra_admitted = [u for u in req_extra_norm if u in admitted_set]
-        extra_blocked = [u for u in req_extra_norm if u in blocked_set]
-        extra_dropped = [u for u in req_extra_norm if u in dropped_set]
-        extra_unknown = [u for u in req_extra_norm if (u not in admitted_set and u not in blocked_set and u not in dropped_set)]
-
-        # Attach minimal per-extra scrape outcome (if available in scraped_meta)
-        per_extra = {}
-        try:
-            sm = (out.get("scraped_meta") or {}) if isinstance(out.get("scraped_meta"), dict) else {}
-            for u in req_extra_norm:
-                meta = sm.get(u)
-                if isinstance(meta, dict):
-                    per_extra[u] = {
-                        "status": meta.get("status"),
-                        "status_detail": meta.get("status_detail"),
-                        "content_len": len((meta.get("clean_text") or meta.get("content") or "") or ""),
-                        "numbers_found": meta.get("numbers_found"),
-                        "fingerprint": meta.get("fingerprint"),
-                    }
-        except Exception:
-            per_extra = {}
-
-        out["debug"]["extra_urls_trace"] = {
-            "requested_count": int(len(req_extra_set)),
-            "requested": req_extra_norm[:100],
-            "admitted_count": int(len(extra_admitted)),
-            "blocked_count": int(len(extra_blocked)),
-            "dropped_count": int(len(extra_dropped)),
-            "unknown_count": int(len(extra_unknown)),
-            "admitted": extra_admitted[:100],
-            "blocked": extra_blocked[:100],
-            "dropped": extra_dropped[:100],
-            "unknown": extra_unknown[:100],
-            "per_url": per_extra,
-        }
-    except Exception:
-        pass
-    # =====================================================================
-    # PATCH FIX41N (ADDITIVE BUGFIX): prevent accidental early return
-    # Why: An extra-indented `return out` here short-circuited the entire
-    #      SerpAPI search + scraping + snapshot saving pipeline.
-    # =====================================================================
+        return out
 
     # -----------------------------
     # 1) Search (SerpAPI) OR fallback_urls
@@ -4992,6 +4937,39 @@ def fetch_web_context(
         n = 3
     n = max(1, min(12, n))
     admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
+
+    # ============================================================
+    # PATCH FWC_EXTRA_URLS2 (ADDITIVE)
+    # ============================================================
+    try:
+        _extras_in = extra_urls or []
+        _extras = []
+        if isinstance(_extras_in, str):
+            _extras_in = [u.strip() for u in _extras_in.splitlines()]
+        if isinstance(_extras_in, (list, tuple)):
+            for u in _extras_in:
+                u = str(u or "").strip()
+                if not u:
+                    continue
+                if not (u.startswith("http://") or u.startswith("https://")):
+                    continue
+                _extras.append(u)
+        _seen = set()
+        merged = []
+        for u in _extras + (admitted or []):
+            if u in _seen:
+                continue
+            _seen.add(u)
+            merged.append(u)
+        admitted = merged
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"].setdefault("fwc_extra_urls", {})
+            out["debug"]["fwc_extra_urls"]["extra_urls_count"] = int(len(_extras))
+            out["debug"]["fwc_extra_urls"]["admitted_count_after_merge"] = int(len(admitted or []))
+            out["debug"]["fwc_extra_urls"]["extra_urls"] = _extras[:20]
+    except Exception:
+        pass
 
     out["sources"] = admitted
     out["web_sources"] = admitted
@@ -19135,10 +19113,25 @@ def main():
                     except Exception:
                         pass
 
+                                        # ============================================================
+                    # PATCH UI_EXTRA_SOURCES2 (ADDITIVE): parse extra source URLs
+                    # ============================================================
+                    extra_urls = []
+                    try:
+                        for _l in str(extra_sources_text or "").splitlines():
+                            _u = _l.strip()
+                            if not _u:
+                                continue
+                            if _u.startswith("http://") or _u.startswith("https://"):
+                                extra_urls.append(_u)
+                    except Exception:
+                        extra_urls = []
+
                     web_context = fetch_web_context(
                         query,
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
+                        extra_urls=extra_urls,
                     )
                     # ----------------------------------------------------------------------
 
@@ -19357,6 +19350,16 @@ def main():
                 "another saved analysis (deterministic)",
                 "fresh analysis (volatile)"
             ]
+        )
+
+        # ============================================================
+        # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
+        # ============================================================
+        extra_sources_text = st.text_area(
+            "Extra source URLs (optional, one per line)",
+            placeholder="https://example.com/report\nhttps://another-source.com/page",
+            help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
+            height=110,
         )
 
         compare_data = None
