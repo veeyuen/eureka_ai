@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41r_inj_hash_optional_include_flag"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41s_policy_align_inj_hash_default_on_persisted"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -4798,6 +4798,54 @@ def _inj_hash_should_include() -> bool:
     except Exception:
         pass
     return bool(globals().get("INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH", False))
+
+# =====================================================================
+# PATCH INJ_HASH_POLICY_ALIGN_V1 (Additive, policy-aligned)
+# Goal:
+#   - Align injected URL "new data" identity semantics with baseline sources:
+#       If an injected URL is PERSISTED as a successful snapshot, it should
+#       participate in snapshot hash inputs by default (unless explicitly disabled).
+#   - Preserve existing safety switch INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH
+#     and its env override for emergency forcing.
+#
+# Controls:
+#   - Default behavior (policy-aligned): ON when persisted injected URLs exist.
+#   - Explicit disable: env YUREEKA_EXCLUDE_INJECTED_URLS_FROM_SNAPSHOT_HASH=1
+#   - Explicit force include: env YUREEKA_INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH=1
+#
+# Notes:
+#   - Fastpath logic is NOT modified.
+#   - This only affects hash identity input construction; metric selection remains unchanged.
+# =====================================================================
+INJECTED_URL_HASH_POLICY_ALIGN_WITH_BASELINE = True  # ✅ default ON (policy-aligned)
+
+def _inj_hash_policy_explicit_disable() -> bool:
+    try:
+        import os
+        v = os.getenv("YUREEKA_EXCLUDE_INJECTED_URLS_FROM_SNAPSHOT_HASH", "").strip().lower()
+        return v in ("1", "true", "yes", "y", "on")
+    except Exception:
+        return False
+
+def _inj_hash_policy_should_include(persisted_injected_urls) -> bool:
+    """Policy-aligned include decision for injected URLs in hash identity.
+
+    - If explicitly disabled via env, returns False.
+    - If explicitly forced via existing switch/env, returns True.
+    - Otherwise, when policy-align is enabled and persisted injected URLs exist, returns True.
+    - Else, falls back to legacy _inj_hash_should_include().
+    """
+    try:
+        if _inj_hash_policy_explicit_disable():
+            return False
+        # Respect existing forcing mechanism first
+        if _inj_hash_should_include():
+            return True
+        if bool(globals().get("INJECTED_URL_HASH_POLICY_ALIGN_WITH_BASELINE", True)) and (persisted_injected_urls or []):
+            return True
+    except Exception:
+        pass
+    return _inj_hash_should_include()
 
 def _inj_hash_add_synthetic_sources(
     baseline_sources_cache: Any,
@@ -13010,7 +13058,8 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 _persisted_for_hash = _inj_diag_norm_url_list(
                     _diag_local.get("persisted_norm") or _diag_local.get("persisted") or []
                 )
-            if _inj_hash_should_include() and _persisted_for_hash:
+            _incl_inj_hash = _inj_hash_policy_should_include(_persisted_for_hash)
+            if _incl_inj_hash and _persisted_for_hash:
                 _bsc_aug, _inj_hash_added, _inj_hash_reasons = _inj_hash_add_synthetic_sources(
                     baseline_sources_cache,
                     _persisted_for_hash,
@@ -17623,12 +17672,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             )
             _evo_targets = _evo_persisted or _evo_inj
             _hashset = set(_inj_diag_norm_url_list(_hash_inputs or []))
-            _incl = _inj_hash_should_include()
+            _incl = _inj_hash_policy_should_include(_evo_targets)
             for u in _evo_targets:
                 if u in _hashset:
                     _evo_hash_reasons[u] = "present_in_hash_inputs"
                 else:
-                    _evo_hash_reasons[u] = ("excluded_by_flag_default_off" if not _incl else "missing_from_hash_inputs")
+                    _evo_hash_reasons[u] = ("excluded_by_policy_disable" if _inj_hash_policy_explicit_disable() else ("excluded_by_legacy_switch_default_off" if not _incl else "missing_from_hash_inputs"))
         except Exception:
             _evo_hash_reasons = {}
         # =====================================================================
