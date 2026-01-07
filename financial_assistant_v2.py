@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41x_evo_admission_reason_codes"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41y_evo_admission_align_rebuild_selected_fallback"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -17884,6 +17884,56 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _evo_hash_reasons[u] = ("excluded_by_policy_disable" if _inj_hash_policy_explicit_disable() else ("excluded_by_legacy_switch_default_off" if not _incl else "missing_from_hash_inputs"))
         except Exception:
             _evo_hash_reasons = {}
+        # =====================================================================
+
+        # =====================================================================
+        # PATCH INJ_TRACE_V1_EVO_ADMISSION_ALIGN_V1 (ADDITIVE)
+        # Goal:
+        # - Evolution often bypasses fetch_web_context(), so "admitted" may be unset even
+        #   when URLs are actually in the current scrape/hash universe.
+        # - This patch makes inj_trace_v1 "admitted_norm" reflect the same practical
+        #   universe used for scraping/hashing (without changing any control flow).
+        #
+        # Policy (diagnostics only):
+        # - If diag.admitted is empty but hash_inputs are present, treat hash_inputs as
+        #   admitted for trace purposes.
+        # - Prefer any explicit FIX24 evo merge set if present (urls_after_merge_norm).
+        # =====================================================================
+        try:
+            if isinstance(_wc_diag, dict):
+                _ad = _inj_diag_norm_url_list(_wc_diag.get("admitted") or _wc_diag.get("extra_urls_admitted") or [])
+                if not _ad:
+                    _pref = []
+                    try:
+                        _pref = _inj_diag_norm_url_list(_wc_diag.get("urls_after_merge_norm") or [])
+                    except Exception:
+                        _pref = []
+                    if not _pref:
+                        _pref = _inj_diag_norm_url_list(_hash_inputs or [])
+                    if _pref:
+                        _wc_diag["admitted"] = list(_pref)
+                        _wc_diag.setdefault("admission_reason", "trace_fallback_to_hash_inputs_or_urls_after_merge")
+        except Exception:
+            pass
+        # =====================================================================
+
+        # =====================================================================
+        # PATCH INJ_TRACE_V1_EVO_REBUILD_SELECTED_FALLBACK_V1 (ADDITIVE)
+        # Goal:
+        # - In fastpath/replay or when current_metrics lacks source_url fields,
+        #   rebuild_selected_norm can be empty, creating misleading pool_minus_selected.
+        #
+        # Diagnostics-only fallback:
+        # - If rebuild_selected is empty but rebuild_pool/hash_inputs exists, treat
+        #   selected as the full pool for trace purposes.
+        # =====================================================================
+        try:
+            if (not _selected) and _hash_inputs:
+                _selected = list(_inj_diag_norm_url_list(_hash_inputs))
+                if isinstance(_wc_diag, dict):
+                    _wc_diag.setdefault("rebuild_selected_reason", "trace_fallback_to_hash_inputs_no_current_metric_sources")
+        except Exception:
+            pass
         # =====================================================================
 
         _trace = _inj_trace_v1_build(
