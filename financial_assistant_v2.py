@@ -77,8 +77,8 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
+CODE_VERSION = "fix41k_streamlit_extra_sources_ui"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
-CODE_VERSION = "fix41j_current_pool_override_safe.py"
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
@@ -4784,6 +4784,10 @@ def fetch_web_context(
     fallback_mode: bool = False,
     fallback_urls: list = None,
     existing_snapshots: Any = None,   # <-- ADDITIVE
+    # ============================================================
+    # PATCH FWC_EXTRA_URLS1 (ADDITIVE)
+    # ============================================================
+    extra_urls: Any = None,
 ) -> dict:
 
     """
@@ -4933,6 +4937,39 @@ def fetch_web_context(
         n = 3
     n = max(1, min(12, n))
     admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
+
+    # ============================================================
+    # PATCH FWC_EXTRA_URLS2 (ADDITIVE)
+    # ============================================================
+    try:
+        _extras_in = extra_urls or []
+        _extras = []
+        if isinstance(_extras_in, str):
+            _extras_in = [u.strip() for u in _extras_in.splitlines()]
+        if isinstance(_extras_in, (list, tuple)):
+            for u in _extras_in:
+                u = str(u or "").strip()
+                if not u:
+                    continue
+                if not (u.startswith("http://") or u.startswith("https://")):
+                    continue
+                _extras.append(u)
+        _seen = set()
+        merged = []
+        for u in _extras + (admitted or []):
+            if u in _seen:
+                continue
+            _seen.add(u)
+            merged.append(u)
+        admitted = merged
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"].setdefault("fwc_extra_urls", {})
+            out["debug"]["fwc_extra_urls"]["extra_urls_count"] = int(len(_extras))
+            out["debug"]["fwc_extra_urls"]["admitted_count_after_merge"] = int(len(admitted or []))
+            out["debug"]["fwc_extra_urls"]["extra_urls"] = _extras[:20]
+    except Exception:
+        pass
 
     out["sources"] = admitted
     out["web_sources"] = admitted
@@ -19076,10 +19113,25 @@ def main():
                     except Exception:
                         pass
 
-                    web_context = fetch_web_context(
+                                        # ============================================================
+                    # PATCH UI_EXTRA_SOURCES2 (ADDITIVE): parse extra source URLs
+                    # ============================================================
+                    extra_urls = []
+                    try:
+                        for _l in str(extra_sources_text or "").splitlines():
+                            _u = _l.strip()
+                            if not _u:
+                                continue
+                            if _u.startswith("http://") or _u.startswith("https://"):
+                                extra_urls.append(_u)
+                    except Exception:
+                        extra_urls = []
+
+web_context = fetch_web_context(
                         query,
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
+                        extra_urls=extra_urls,
                     )
                     # ----------------------------------------------------------------------
 
@@ -19298,6 +19350,16 @@ def main():
                 "another saved analysis (deterministic)",
                 "fresh analysis (volatile)"
             ]
+        )
+
+        # ============================================================
+        # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
+        # ============================================================
+        extra_sources_text = st.text_area(
+            "Extra source URLs (optional, one per line)",
+            placeholder="https://example.com/report\nhttps://another-source.com/page",
+            help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
+            height=110,
         )
 
         compare_data = None
