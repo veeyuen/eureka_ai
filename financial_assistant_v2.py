@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41w_inj_trace_reason_and_artifact_enrich"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41x_evo_admission_reason_codes"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -21931,6 +21931,68 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 if _u not in _u_seen:
                     _u_seen.add(_u)
                     urls.append(_u)
+    except Exception:
+        pass
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH EVO_INJ_ADMISSION_TRACE_V1 (ADDITIVE): pinpoint where injected URLs are dropped
+    #
+    # Why:
+    # - When a URL appears in ui_norm/intake_norm but not in admitted_norm, we need
+    #   an explicit reason before we change any behavior.
+    #
+    # What this records (debug only):
+    # - Whether evolution is using fetch_web_context (it is not in FIX24 path)
+    # - The pre- and post-injection URL universe
+    # - Per-injected-URL admission decision + reason codes
+    #
+    # Safety:
+    # - Does NOT alter control flow, fastpath eligibility, scraping, hashing, or selection.
+    # =====================================================================
+    try:
+        _urls_prev_full = _fix24_extract_source_urls(prev_full)
+        _urls_prev_full_norm = _inj_diag_norm_url_list(_urls_prev_full or [])
+        _urls_after_merge_norm = _inj_diag_norm_url_list(urls or [])
+
+        _admission_decisions = {}
+        for _u in (_inj_extra_urls or []):
+            if _u in set(_urls_after_merge_norm):
+                _admission_decisions[_u] = {
+                    "decision": "admitted",
+                    "reason_code": "merged_into_urls_for_scrape",
+                }
+            else:
+                _admission_decisions[_u] = {
+                    "decision": "rejected",
+                    "reason_code": "not_present_in_urls_after_merge",
+                }
+
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].setdefault("evo_injection_trace", {})
+                if isinstance(web_context["debug"].get("evo_injection_trace"), dict):
+                    web_context["debug"]["evo_injection_trace"].update({
+                        "uses_fetch_web_context": False,
+                        "urls_prev_full_count": int(len(_urls_prev_full_norm)),
+                        "urls_prev_full_set_hash": _inj_diag_set_hash(_urls_prev_full_norm),
+                        "urls_after_merge_count": int(len(_urls_after_merge_norm)),
+                        "urls_after_merge_set_hash": _inj_diag_set_hash(_urls_after_merge_norm),
+                        "inj_extra_urls_norm": list(_inj_extra_urls or []),
+                        "inj_merge_applied": bool(_inj_extra_urls),
+                        "inj_admission_decisions": _admission_decisions,
+                    })
+
+            # Also attach to diag_injected_urls for unified downstream reporting
+            web_context.setdefault("diag_injected_urls", {})
+            if isinstance(web_context.get("diag_injected_urls"), dict):
+                web_context["diag_injected_urls"].setdefault("admission_decisions", {})
+                if isinstance(web_context["diag_injected_urls"].get("admission_decisions"), dict):
+                    web_context["diag_injected_urls"]["admission_decisions"].update(_admission_decisions)
+                web_context["diag_injected_urls"].setdefault("urls_prev_full_norm", _urls_prev_full_norm)
+                web_context["diag_injected_urls"].setdefault("urls_after_merge_norm", _urls_after_merge_norm)
     except Exception:
         pass
     # =====================================================================
