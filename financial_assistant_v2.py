@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-#CODE_VERSION = "fix41o_streamlit_extra_sources_ui_trace"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41v_evo_injected_urls_current_sources_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -87,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
+#CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
@@ -21827,6 +21827,82 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     # Step 3: Normalize into baseline_sources_cache and hash
     cur_bsc = _fix24_baseline_sources_cache_from_scraped_meta(scraped_meta)
+
+    # =====================================================================
+    # PATCH EVO_INJECTED_URLS_AS_CURRENT_SOURCES_V1 (ADDITIVE):
+    # Policy + wiring alignment for Evolution UI injected URLs
+    #
+    # Goal:
+    # - Treat Evolution-tab injected URLs as part of the *current source universe*
+    #   for hash identity *when they fetch successfully*, consistent with baseline
+    #   sources (successful snapshots contribute to identity).
+    #
+    # Behavior (safe):
+    # - If an injected URL was provided (web_context['extra_urls']) and its scrape
+    #   status is success, it must appear in cur_bsc so that hash inputs can include it.
+    # - If success-but-missing occurs (unexpected), we add a synthetic url-only entry
+    #   tagged for hash identity (debug only; no numbers).
+    # - If fetch failed, we do NOT force hash mismatch (consistent with policy),
+    #   but we record explicit attempted status + reason into diagnostics.
+    #
+    # Safety:
+    # - Does NOT alter fastpath eligibility logic directly; it only ensures that
+    #   the identity inputs reflect the actual successfully fetched current sources.
+    # - Purely additive; never removes or refactors existing logic.
+    # =====================================================================
+    try:
+        _inj_sm = scraped_meta if isinstance(scraped_meta, dict) else {}
+        _inj_attempted_rows = []
+        _inj_success_urls = set()
+        for _u in (_inj_extra_urls or []):
+            _m = _inj_sm.get(_u) if isinstance(_inj_sm.get(_u), dict) else {}
+            _st = str(_m.get('status') or _m.get('fetch_status') or '')
+            _reason = str(_m.get('status_detail') or _m.get('fail_reason') or '')
+            _clen = _m.get('clean_text_len') or _m.get('content_len') or 0
+            _inj_attempted_rows.append({
+                'url': _u,
+                'status': _st or 'unknown',
+                'reason': _reason,
+                'content_len': int(_clen) if str(_clen).isdigit() else 0,
+            })
+            if (_st or '').lower() in ('success','ok','fetched'):
+                _inj_success_urls.add(_u)
+
+        # Ensure success injected urls are represented in cur_bsc (hash identity)
+        if _inj_success_urls and isinstance(cur_bsc, list):
+            _bsc_urls = set()
+            for _row in cur_bsc:
+                if isinstance(_row, dict):
+                    _bu = str(_row.get('url') or _row.get('source_url') or '').strip()
+                    if _bu:
+                        _bsc_urls.add(_bu)
+            _missing_success = sorted(list(_inj_success_urls - _bsc_urls))
+            for _u in _missing_success:
+                cur_bsc.append({
+                    'url': _u,
+                    'status': 'success',
+                    'status_detail': 'synthetic_success_missing_in_bsc',
+                    'clean_text': '',
+                    'clean_text_len': 0,
+                    'extracted_numbers': [],
+                    'numbers_found': 0,
+                    'fingerprint': 'synthetic_url_only_for_hash',
+                    'is_synthetic_for_hash': True,
+                })
+
+        # Write attempted status into web_context diagnostics for transparency
+        if isinstance(web_context, dict):
+            web_context.setdefault('diag_injected_urls', {})
+            if isinstance(web_context.get('diag_injected_urls'), dict):
+                web_context['diag_injected_urls'].setdefault('attempted', [])
+                # Only overwrite if empty to avoid clobbering richer traces
+                if not web_context['diag_injected_urls'].get('attempted'):
+                    web_context['diag_injected_urls']['attempted'] = _inj_attempted_rows
+                web_context['diag_injected_urls']['success_urls'] = sorted(list(_inj_success_urls))
+    except Exception:
+        pass
+    # =====================================================================
+
     cur_hashes = _fix24_compute_current_hashes(cur_bsc)
 
     # =====================================================================
