@@ -77,7 +77,8 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41i_restore_fastpath_and_fix39_safe"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
+CODE_VERSION = "fix41j_current_pool_override_safe.py"
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
@@ -16630,6 +16631,76 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
             # Prefer stable/v2 previous hash if present
             _prev_hash_pref = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
+
+            # =====================================================================
+            # PATCH FIX42 (ADDITIVE): prefer "current" snapshot pool when provided
+            #
+            # Goal:
+            #   When hashes are unequal, rebuild should run on the SAME snapshot pool
+            #   that "new analysis" just produced, not on the stale baseline cache
+            #   embedded in the previous analysis payload.
+            #
+            # Where it comes from:
+            #   - web_context["current_baseline_sources_cache"]  (preferred)
+            #   - web_context["baseline_sources_cache_current"]
+            #   - web_context["current_source_results"]         (fallback alias)
+            #
+            # Policy (additive, fastpath-safe):
+            #   - If force_rebuild is asserted by UI/web_context, always use current pool.
+            #   - Else, only switch to current pool if its stable hash != previous hash.
+            #   - If hashes match, we keep existing behavior (but either pool is equivalent).
+            # =====================================================================
+            _fix42_used_current_pool = False
+            _fix42_reason = ""
+            _fix42_cur_pool_hash = None
+            try:
+                if isinstance(web_context, dict):
+                    _cur_pool = (
+                        web_context.get("current_baseline_sources_cache")
+                        or web_context.get("baseline_sources_cache_current")
+                        or web_context.get("current_source_results")
+                        or web_context.get("current_source_results_cache")
+                        or None
+                    )
+                    if isinstance(_cur_pool, list) and _cur_pool:
+                        _force = bool(
+                            web_context.get("force_rebuild")
+                            or web_context.get("forced_rebuild")
+                            or web_context.get("force_full_rebuild")
+                            or web_context.get("force_metric_rebuild")
+                        )
+                        try:
+                            _fix42_cur_pool_hash = _fix37_snapshot_hash_stable(_cur_pool)
+                        except Exception:
+                            _fix42_cur_pool_hash = None
+
+                        _prev_hash_for_compare = _prev_hash_pref if (isinstance(_prev_hash_pref, str) and _prev_hash_pref) else _prev_hash
+                        _hash_mismatch = bool(
+                            (isinstance(_prev_hash_for_compare, str) and _prev_hash_for_compare and isinstance(_fix42_cur_pool_hash, str) and _fix42_cur_pool_hash)
+                            and (_fix42_cur_pool_hash != _prev_hash_for_compare)
+                        )
+
+                        if _force or _hash_mismatch:
+                            baseline_sources_cache = _cur_pool
+                            snapshot_origin = (snapshot_origin or "analysis_cache") + "|fix42_current_pool"
+                            _fix42_used_current_pool = True
+                            _fix42_reason = "forced_rebuild" if _force else "hash_mismatch_use_current_pool"
+            except Exception:
+                pass
+
+            # Attach FIX42 diagnostics (non-breaking)
+            try:
+                if _fix42_used_current_pool:
+                    output["snapshot_origin"] = snapshot_origin
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix42", {})
+                    output["debug"]["fix42"]["used_current_pool"] = bool(_fix42_used_current_pool)
+                    output["debug"]["fix42"]["reason"] = _fix42_reason
+                    if isinstance(_fix42_cur_pool_hash, str) and _fix42_cur_pool_hash:
+                        output["debug"]["fix42"]["current_pool_hash_stable"] = _fix42_cur_pool_hash
+            except Exception:
+                pass
+            # =====================================================================
 
             if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
                 _fix31_authoritative_reuse = True
