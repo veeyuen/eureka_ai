@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41g_force_rebuild_honored_nameerrorfix.py"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41i_restore_fastpath_and_fix39_safe"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
@@ -15594,6 +15594,32 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             _ref = previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref")
             _hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
 
+            # ============================================================
+            # PATCH FIX41I_SS6_STABLE (ADDITIVE): prefer v2/stable snapshot refs & hashes
+            # Why:
+            # - Analysis now emits stable/v2 snapshot hashes (source_snapshot_hash_v2 / _stable) and
+            #   snapshot_store_ref_v2 pointing at the same Snapshots row key.
+            # - Evolution must prefer these fields to keep fastpath alignment intact.
+            # ============================================================
+            try:
+                _ref_v2 = previous_data.get("snapshot_store_ref_v2") or previous_data.get("snapshot_store_ref_stable")
+                if (not _ref_v2) and isinstance(previous_data.get("results"), dict):
+                    _ref_v2 = (previous_data.get("results") or {}).get("snapshot_store_ref_v2") or (previous_data.get("results") or {}).get("snapshot_store_ref_stable")
+                if isinstance(_ref_v2, str) and _ref_v2:
+                    _ref = _ref_v2  # prefer stable ref
+            except Exception:
+                pass
+
+            try:
+                _hash_stable = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2")
+                if (not _hash_stable) and isinstance(previous_data.get("results"), dict):
+                    _hash_stable = (previous_data.get("results") or {}).get("source_snapshot_hash_stable") or (previous_data.get("results") or {}).get("source_snapshot_hash_v2")
+                if isinstance(_hash_stable, str) and _hash_stable:
+                    _hash = _hash_stable  # prefer stable hash
+            except Exception:
+                pass
+            # ============================================================
+
             if isinstance(_ref, str) and _ref.startswith("gsheet:"):
                 parts = _ref.split(":")
                 _ws_title = parts[1] if len(parts) > 1 and parts[1] else "Snapshots"
@@ -16322,6 +16348,32 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _ref = previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref")
             _hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
 
+            # ============================================================
+            # PATCH FIX41I_SS6_STABLE (ADDITIVE): prefer v2/stable snapshot refs & hashes
+            # Why:
+            # - Analysis now emits stable/v2 snapshot hashes (source_snapshot_hash_v2 / _stable) and
+            #   snapshot_store_ref_v2 pointing at the same Snapshots row key.
+            # - Evolution must prefer these fields to keep fastpath alignment intact.
+            # ============================================================
+            try:
+                _ref_v2 = previous_data.get("snapshot_store_ref_v2") or previous_data.get("snapshot_store_ref_stable")
+                if (not _ref_v2) and isinstance(previous_data.get("results"), dict):
+                    _ref_v2 = (previous_data.get("results") or {}).get("snapshot_store_ref_v2") or (previous_data.get("results") or {}).get("snapshot_store_ref_stable")
+                if isinstance(_ref_v2, str) and _ref_v2:
+                    _ref = _ref_v2  # prefer stable ref
+            except Exception:
+                pass
+
+            try:
+                _hash_stable = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2")
+                if (not _hash_stable) and isinstance(previous_data.get("results"), dict):
+                    _hash_stable = (previous_data.get("results") or {}).get("source_snapshot_hash_stable") or (previous_data.get("results") or {}).get("source_snapshot_hash_v2")
+                if isinstance(_hash_stable, str) and _hash_stable:
+                    _hash = _hash_stable  # prefer stable hash
+            except Exception:
+                pass
+            # ============================================================
+
             if isinstance(_ref, str) and _ref.startswith("gsheet:"):
                 parts = _ref.split(":")
                 _ws_title = parts[1] if len(parts) > 1 and parts[1] else "Snapshots"
@@ -16514,6 +16566,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             except Exception:
                 pass
             _prev_hash = _prev_hash_stable or previous_data.get("source_snapshot_hash")
+            # PATCH FIX41I_FASTPATH_PREF (ADDITIVE): explicit preferred hash (stable/v2 first)
+            _prev_hash_pref = _prev_hash_stable or previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
+
             try:
                 if not _prev_hash and isinstance(previous_data.get("results"), dict):
                     _prev_hash = (previous_data.get("results") or {}).get("source_snapshot_hash")
@@ -16548,7 +16603,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["debug"]["fix35"]["source_snapshot_hash_current"] = _fix36_cur_hash
                     output["debug"]["fix35"]["source_snapshot_hash_current_alg"] = "fix37_stable_v2_preferred"
                 if isinstance(_prev_hash, str) and _prev_hash:
-                    output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+                    output["debug"]["fix35"]["source_snapshot_hash_previous"] = (_prev_hash_pref if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref") else _prev_hash)
                 # PATCH FIX37 (ADD): also expose stable-hash candidate if available
                 try:
                     if isinstance(_prev_hash_stable, str) and _prev_hash_stable:
@@ -16582,13 +16637,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["rebuild_skipped"] = True
                     output["rebuild_skipped_reason"] = "fix31_sources_unchanged_reuse_prev_metrics"
                     output["source_snapshot_hash_current"] = _cur_hash
-                    output["source_snapshot_hash_previous"] = _prev_hash
+                    output["source_snapshot_hash_previous"] = (_prev_hash_cmp if " _prev_hash_cmp" in locals() else _prev_hash)
                     try:
                         if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
                             output["debug"]["fix35"]["fastpath_eligible"] = True
                             output["debug"]["fix35"]["fastpath_reason"] = "hash_match_and_prev_metrics_present"
                             output["debug"]["fix35"]["source_snapshot_hash_current"] = _cur_hash
-                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = (_prev_hash_pref if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref") else _prev_hash)
                             output["debug"]["fix35"]["current_metrics_origin"] = "reuse_processed_metrics_fastpath"
                     except Exception:
                         pass
