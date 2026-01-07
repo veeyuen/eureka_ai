@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41m_extra_urls_handling_trace_safe"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41m_extra_urls_debug_trace"  # PATCH FIX41M (ADDITIVE): version bump
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -4855,55 +4855,62 @@ def fetch_web_context(
     if not q:
         out["status"] = "no_query"
         out["status_detail"] = "empty_query"
-        # =====================================================================
-        # PATCH FWC_EXTRA_URLS_TRACE1 (ADDITIVE): explicit per-extra-url handling trace
-        # Why:
-        # - Make it unambiguous whether extra URLs were admitted, fetched, and whether
-        #   they produced any numeric candidates (i.e., actually affect hash drift).
-        # - Purely diagnostic: does NOT change scraping, ranking, or fastpath logic.
-        # =====================================================================
+    # =====================================================================
+    # PATCH FIX41M (ADDITIVE): trace how UI "extra URLs" were handled
+    # Why:
+    # - Scenario B relies on additional URLs changing the snapshot pool + hash
+    # - This makes it obvious whether extra URLs were admitted/blocked/dropped, and whether they were scraped
+    # - Diagnostics-only: does NOT alter fetch ordering, eligibility, or scraping behavior
+    # =====================================================================
+    try:
+        if not isinstance(out.get("debug"), dict):
+            out["debug"] = {}
+        req_extra = list(extra_urls or []) if isinstance(extra_urls, list) else []
+        req_extra_norm = [str(u).strip() for u in req_extra if str(u).strip()]
+        req_extra_set = set(req_extra_norm)
+
+        admitted_set = set([str(u).strip() for u in (admitted or []) if str(u).strip()])
+        blocked_set = set([str(u).strip() for u in (blocked or []) if str(u).strip()])
+        dropped_set = set([str(u).strip() for u in (dropped or []) if str(u).strip()])
+
+        extra_admitted = [u for u in req_extra_norm if u in admitted_set]
+        extra_blocked = [u for u in req_extra_norm if u in blocked_set]
+        extra_dropped = [u for u in req_extra_norm if u in dropped_set]
+        extra_unknown = [u for u in req_extra_norm if (u not in admitted_set and u not in blocked_set and u not in dropped_set)]
+
+        # Attach minimal per-extra scrape outcome (if available in scraped_meta)
+        per_extra = {}
         try:
-            if not isinstance(out.get("debug"), dict):
-                out["debug"] = {}
-            dbg = out["debug"].setdefault("extra_urls_trace", {})
-
-            extras = []
-            if isinstance(extra_urls, list):
-                extras = [str(u).strip() for u in extra_urls if str(u).strip()]
-            extras = list(dict.fromkeys(extras))  # stable de-dupe, preserve order
-
-            dbg["extra_urls_requested"] = extras
-            dbg["extra_urls_requested_count"] = int(len(extras))
-
-            scraped_meta = out.get("scraped_meta") or {}
-            rows = []
-            for u in extras:
-                meta = scraped_meta.get(u) if isinstance(scraped_meta, dict) else None
-                if not isinstance(meta, dict):
-                    rows.append({
-                        "url": u,
-                        "present_in_scraped_meta": False,
-                        "status": "missing",
-                        "numbers_found": 0,
-                        "fingerprint": "",
-                    })
-                    continue
-                rows.append({
-                    "url": u,
-                    "present_in_scraped_meta": True,
-                    "status": meta.get("status") or "",
-                    "status_detail": meta.get("status_detail") or "",
-                    "numbers_found": int(meta.get("numbers_found") or 0),
-                    "fingerprint": meta.get("fingerprint") or "",
-                    "content_len": int(len(meta.get("clean_text") or meta.get("content") or "")),
-                })
-
-            dbg["extra_urls_results"] = rows
-            dbg["extra_urls_with_numbers"] = [r["url"] for r in rows if int(r.get("numbers_found") or 0) > 0]
-            dbg["extra_urls_with_numbers_count"] = int(len(dbg["extra_urls_with_numbers"]))
+            sm = (out.get("scraped_meta") or {}) if isinstance(out.get("scraped_meta"), dict) else {}
+            for u in req_extra_norm:
+                meta = sm.get(u)
+                if isinstance(meta, dict):
+                    per_extra[u] = {
+                        "status": meta.get("status"),
+                        "status_detail": meta.get("status_detail"),
+                        "content_len": len((meta.get("clean_text") or meta.get("content") or "") or ""),
+                        "numbers_found": meta.get("numbers_found"),
+                        "fingerprint": meta.get("fingerprint"),
+                    }
         except Exception:
-            pass
-        # =====================================================================
+            per_extra = {}
+
+        out["debug"]["extra_urls_trace"] = {
+            "requested_count": int(len(req_extra_set)),
+            "requested": req_extra_norm[:100],
+            "admitted_count": int(len(extra_admitted)),
+            "blocked_count": int(len(extra_blocked)),
+            "dropped_count": int(len(extra_dropped)),
+            "unknown_count": int(len(extra_unknown)),
+            "admitted": extra_admitted[:100],
+            "blocked": extra_blocked[:100],
+            "dropped": extra_dropped[:100],
+            "unknown": extra_unknown[:100],
+            "per_url": per_extra,
+        }
+    except Exception:
+        pass
+    # =====================================================================
         return out
 
     # -----------------------------
