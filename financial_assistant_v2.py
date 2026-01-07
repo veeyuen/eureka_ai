@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41p_injected_url_diag_min_signals"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41r_inj_hash_optional_include_flag"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -88,6 +88,7 @@ CODE_VERSION = "fix41p_injected_url_diag_min_signals"  # PATCH FIX41G (ADD): set
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
 ENDSTATE_FINAL_VERSION = "v7_41_endstate_final_1"
+INJ_TRACE_PATCH_VERSION = "fix41q_inj_trace_v1_always_emit"
 # =====================================================================
 
 # =====================================================================
@@ -4766,6 +4767,181 @@ def _inj_diag_hash_inputs_from_bsc(baseline_sources_cache: Any) -> list:
     except Exception:
         return []
     return sorted(set(urls))
+
+# =====================================================================
+# PATCH INJ_HASH_V1 (ADDITIVE): optional inclusion of injected URLs in snapshot hash inputs
+# Default behavior is OFF to avoid disrupting locked fastpath.
+#
+# When enabled, injected URLs that were persisted (per diag_injected_urls.persisted*)
+# but are missing from baseline_sources_cache will be added as *synthetic* source
+# records (url-only) so that:
+#   - source_snapshot_hash (v1/v2) reflects injected sources deterministically
+#   - evolution rebuild sees the same snapshot pool and hash identity via persistence
+#
+# Safety:
+#   - Does NOT modify fastpath logic.
+#   - Does NOT change metric selection (synthetic records have no extracted_numbers).
+#   - Only activates when INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH is True.
+# =====================================================================
+INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH = False  # ✅ default OFF (locked fastpath safe)
+CODE_VERSION_INJ_HASH_V1 = "fix41r_inj_hash_optional_include"  # additive version marker
+
+def _inj_hash_should_include() -> bool:
+    """Single switch for inclusion; additive-only. Supports env override."""
+    try:
+        import os
+        v = os.getenv("YUREEKA_INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH", "").strip().lower()
+        if v in ("1", "true", "yes", "y", "on"):
+            return True
+        if v in ("0", "false", "no", "n", "off"):
+            return False
+    except Exception:
+        pass
+    return bool(globals().get("INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH", False))
+
+def _inj_hash_add_synthetic_sources(
+    baseline_sources_cache: Any,
+    injected_persisted_urls: list,
+    now_iso: str = ""
+) -> tuple:
+    """
+    Return (bsc_augmented, added_urls, reasons_by_url) without mutating the original list.
+    Synthetic records are url-only, deterministic, and safe for selection logic.
+    """
+    reasons = {}
+    added = []
+    try:
+        bsc = list(baseline_sources_cache) if isinstance(baseline_sources_cache, list) else []
+        inj = _inj_diag_norm_url_list(injected_persisted_urls or [])
+        if not inj:
+            return (bsc, added, reasons)
+
+        existing = set(_inj_diag_hash_inputs_from_bsc(bsc))
+        for u in inj:
+            if u in existing:
+                reasons[u] = "present_in_bsc"
+                continue
+            # Add synthetic source record (no numbers) so hash includes the URL deterministically
+            added.append(u)
+            reasons[u] = "added_synthetic_for_hash"
+            bsc.append({
+                "url": u,
+                "source_url": u,
+                "status": "fetched",
+                "status_detail": "synthetic_injected_for_hash",
+                "numbers_found": 0,
+                "fetched_at": now_iso or "",
+                "fingerprint": "",
+                "extracted_numbers": [],
+                "__inj_synthetic": True,
+            })
+
+        # Keep deterministic ordering identical to existing conventions
+        bsc = sorted(bsc, key=lambda x: str((x or {}).get("url") or ""))
+        return (bsc, added, reasons)
+    except Exception:
+        try:
+            return (list(baseline_sources_cache) if isinstance(baseline_sources_cache, list) else [], [], {})
+        except Exception:
+            return ([], [], {})
+
+# =====================================================================
+# PATCH INJ_TRACE_V1_HELPERS (ADDITIVE): canonical injected-URL lifecycle trace builder
+# Objective:
+# - Emit ONE canonical diagnostic payload in a fixed location for every run:
+#     results.debug.inj_trace_v1  (analysis outputs)
+#     results.debug.inj_trace_v1  (evolution outputs; mirrored from output.debug)
+# - Purely additive; does NOT alter fastpath logic or selection control flow.
+# =====================================================================
+def _inj_trace_v1_build(
+    diag_injected_urls: dict,
+    hash_inputs: list,
+    stage: str = "analysis",
+    path: str = "",
+    rebuild_pool: list = None,
+    rebuild_selected: list = None,
+    hash_exclusion_reasons: dict = None,
+) -> dict:
+    try:
+        d = diag_injected_urls if isinstance(diag_injected_urls, dict) else {}
+        ui_raw = d.get("ui_raw") if isinstance(d.get("ui_raw"), (str, list)) else (d.get("extra_urls_ui_raw") or "")
+        ui_norm = _inj_diag_norm_url_list(d.get("ui_norm") or d.get("extra_urls_ui_norm") or d.get("extra_urls_normalized") or [])
+        intake_norm = _inj_diag_norm_url_list(d.get("intake_norm") or d.get("extra_urls_intake_norm") or d.get("extra_urls") or [])
+        admitted_norm = _inj_diag_norm_url_list(d.get("admitted") or d.get("extra_urls_admitted") or [])
+        persisted_norm = _inj_diag_norm_url_list(d.get("persisted") or d.get("persisted_norm") or [])
+
+        attempted = d.get("attempted") if isinstance(d.get("attempted"), list) else []
+        # Keep attempted minimal and stable
+        attempted_min = []
+        for a in attempted:
+            if not isinstance(a, dict):
+                continue
+            attempted_min.append({
+                "url": str(a.get("url") or ""),
+                "status": str(a.get("status") or a.get("fetch_status") or ""),
+                "reason": str(a.get("reason") or a.get("fail_reason") or ""),
+                "content_len": a.get("content_len"),
+            })
+
+        hash_inputs_norm = _inj_diag_norm_url_list(hash_inputs or [])
+        rebuild_pool_norm = _inj_diag_norm_url_list(rebuild_pool or [])
+        rebuild_selected_norm = _inj_diag_norm_url_list(rebuild_selected or [])
+
+        # Deterministic deltas (set-based; small lists)
+        def _delta(a, b):
+            try:
+                return sorted(list(set(a or []) - set(b or [])))[:100]
+            except Exception:
+                return []
+
+        deltas = {
+            "ui_minus_intake": _delta(ui_norm, intake_norm),
+            "intake_minus_admitted": _delta(intake_norm, admitted_norm),
+            "admitted_minus_attempted": _delta(admitted_norm, [x.get("url") for x in attempted_min if isinstance(x, dict)]),
+            "attempted_minus_persisted": _delta([x.get("url") for x in attempted_min if isinstance(x, dict)], persisted_norm),
+            "persisted_minus_hash_inputs": _delta(persisted_norm, hash_inputs_norm),
+            "hash_inputs_minus_rebuild_pool": _delta(hash_inputs_norm, rebuild_pool_norm) if rebuild_pool is not None else [],
+            "rebuild_pool_minus_selected": _delta(rebuild_pool_norm, rebuild_selected_norm) if rebuild_selected is not None else [],
+        }
+
+        return {
+            "run_id": str(d.get("run_id") or ""),
+            "stage": str(stage or ""),
+            "path": str(path or ""),
+            "ui_raw": ui_raw,
+            "ui_norm": ui_norm,
+            "intake_norm": intake_norm,
+            "admitted_norm": admitted_norm,
+            "attempted": attempted_min,
+            "persisted_norm": persisted_norm,
+            "hash_inputs_norm": hash_inputs_norm,
+            "rebuild_pool_norm": rebuild_pool_norm if rebuild_pool is not None else None,
+            "rebuild_selected_norm": rebuild_selected_norm if rebuild_selected is not None else None,
+            "counts": {
+                "ui_norm": int(len(ui_norm)),
+                "intake_norm": int(len(intake_norm)),
+                "admitted_norm": int(len(admitted_norm)),
+                "attempted": int(len(attempted_min)),
+                "persisted_norm": int(len(persisted_norm)),
+                "hash_inputs_norm": int(len(hash_inputs_norm)),
+                "rebuild_pool_norm": int(len(rebuild_pool_norm)) if rebuild_pool is not None else None,
+                "rebuild_selected_norm": int(len(rebuild_selected_norm)) if rebuild_selected is not None else None,
+            },
+            "set_hashes": {
+                "ui_norm": _inj_diag_set_hash(ui_norm),
+                "intake_norm": _inj_diag_set_hash(intake_norm),
+                "admitted_norm": _inj_diag_set_hash(admitted_norm),
+                "persisted_norm": _inj_diag_set_hash(persisted_norm),
+                "hash_inputs_norm": _inj_diag_set_hash(hash_inputs_norm),
+                "rebuild_pool_norm": _inj_diag_set_hash(rebuild_pool_norm) if rebuild_pool is not None else "",
+                "rebuild_selected_norm": _inj_diag_set_hash(rebuild_selected_norm) if rebuild_selected is not None else "",
+            },
+            "deltas": deltas,
+        }
+    except Exception:
+        return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
+# =====================================================================
+
 # =====================================================================
 
 def scrape_url(url: str) -> Optional[str]:
@@ -12816,6 +12992,36 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         )
         # -----------------------------------------------------------
 
+        # =====================================================================
+        # PATCH INJ_HASH_V1_APPLY (ADDITIVE): optionally include injected URLs in snapshot hash identity
+        # - Adds *synthetic* url-only source records for injected URLs that were
+        #   persisted (per diag) but are missing from baseline_sources_cache.
+        # - Default OFF; only activates when INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH is enabled.
+        # - Does NOT alter fastpath logic or metric selection (synthetic has no numbers).
+        # =====================================================================
+        _inj_hash_added = []
+        _inj_hash_reasons = {}
+        try:
+            _diag_local = {}
+            if isinstance(web_context, dict):
+                _diag_local = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
+            _persisted_for_hash = []
+            if isinstance(_diag_local, dict):
+                _persisted_for_hash = _inj_diag_norm_url_list(
+                    _diag_local.get("persisted_norm") or _diag_local.get("persisted") or []
+                )
+            if _inj_hash_should_include() and _persisted_for_hash:
+                _bsc_aug, _inj_hash_added, _inj_hash_reasons = _inj_hash_add_synthetic_sources(
+                    baseline_sources_cache,
+                    _persisted_for_hash,
+                    now_iso=_now_iso(),
+                )
+                baseline_sources_cache = _bsc_aug
+        except Exception:
+            _inj_hash_added = []
+            _inj_hash_reasons = {}
+        # =====================================================================
+
         analysis["baseline_sources_cache"] = baseline_sources_cache
         analysis.setdefault("results", {})
         if isinstance(analysis["results"], dict):
@@ -12870,6 +13076,30 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                             "computed_hash_v1": _h_v1,
                             "computed_hash_v2": _h_v2,
                         })
+
+
+                        # =====================================================================
+                        # PATCH INJ_TRACE_V1_EMIT_ANALYSIS (ADDITIVE): always emit canonical trace
+                        # Location: analysis.results.debug.inj_trace_v1
+                        # =====================================================================
+                        try:
+                            _trace = _inj_trace_v1_build(
+                                diag_injected_urls=_diag if isinstance(_diag, dict) else {},
+                                hash_inputs=_hash_inputs,
+                                stage="analysis",
+                                path="analysis",
+                                rebuild_pool=None,
+                                rebuild_selected=None,
+                                hash_exclusion_reasons=(_inj_hash_reasons if isinstance(locals().get('_inj_hash_reasons'), dict) else {}),
+                            )
+                            analysis["results"]["debug"].setdefault("inj_trace_v1", {})
+                            # Do not overwrite if already present; only fill/merge
+                            if isinstance(analysis["results"]["debug"].get("inj_trace_v1"), dict):
+                                analysis["results"]["debug"]["inj_trace_v1"].update(_trace)
+                        except Exception:
+                            pass
+                        # =====================================================================
+
             except Exception:
                 pass
             # =====================================================================
@@ -17333,6 +17563,99 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 output["debug"]["fix35"]["bad_current_trace_count"] = len(bad_traces)
     except Exception:
         pass
+
+    # =====================================================================
+    # PATCH INJ_TRACE_V1_EMIT_EVOLUTION (ADDITIVE): always emit canonical trace
+    # - Mirrors to output.results.debug.inj_trace_v1 for a fixed location across modes
+    # - Does NOT affect fastpath decisioning
+    # =====================================================================
+    try:
+        _wc_diag = {}
+        if isinstance(web_context, dict):
+            _wc_diag = web_context.get("diag_injected_urls") or {}
+        _hash_inputs = _inj_diag_hash_inputs_from_bsc(baseline_sources_cache)
+
+        # Determine path from existing fix35 origin stamp
+        _path = ""
+        try:
+            origin = ""
+            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                origin = str(output["debug"]["fix35"].get("current_metrics_origin") or "")
+            if "fastpath" in origin:
+                _path = "fastpath"
+            elif "rebuild" in origin:
+                _path = "rebuild"
+            else:
+                _path = "unknown"
+        except Exception:
+            _path = "unknown"
+
+        # Rebuild "selected" URLs: unique source_url from current metrics (if present)
+        _selected = []
+        try:
+            cm = output.get("current_metrics")
+            if isinstance(cm, dict):
+                for v in cm.values():
+                    if isinstance(v, dict):
+                        u = (v.get("source_url") or "").strip()
+                        if u:
+                            _selected.append(u)
+            _selected = sorted(set(_selected))
+        except Exception:
+            _selected = []
+
+        # For evolution, rebuild_pool is effectively the hash input URL universe available via snapshots
+        # =====================================================================
+        # PATCH INJ_HASH_V1_EVO (ADDITIVE): compute per-URL hash exclusion reasons in evolution
+        # - If injected URLs exist but are not in hash_inputs, we record the most likely reason:
+        #     * excluded_by_flag_default_off  (when inclusion switch is OFF)
+        #     * missing_from_hash_inputs      (when switch ON but still absent)
+        # =====================================================================
+        _evo_hash_reasons = {}
+        try:
+            _evo_persisted = []
+            if isinstance(_wc_diag, dict):
+                _evo_persisted = _inj_diag_norm_url_list(_wc_diag.get("persisted_norm") or _wc_diag.get("persisted") or [])
+            _evo_inj = _inj_diag_norm_url_list(
+                (_wc_diag.get("intake_norm") if isinstance(_wc_diag, dict) else []) or
+                (_wc_diag.get("ui_norm") if isinstance(_wc_diag, dict) else []) or
+                []
+            )
+            _evo_targets = _evo_persisted or _evo_inj
+            _hashset = set(_inj_diag_norm_url_list(_hash_inputs or []))
+            _incl = _inj_hash_should_include()
+            for u in _evo_targets:
+                if u in _hashset:
+                    _evo_hash_reasons[u] = "present_in_hash_inputs"
+                else:
+                    _evo_hash_reasons[u] = ("excluded_by_flag_default_off" if not _incl else "missing_from_hash_inputs")
+        except Exception:
+            _evo_hash_reasons = {}
+        # =====================================================================
+
+        _trace = _inj_trace_v1_build(
+            diag_injected_urls=_wc_diag if isinstance(_wc_diag, dict) else {},
+            hash_inputs=_hash_inputs,
+            stage="evolution",
+            path=_path,
+            rebuild_pool=_hash_inputs,
+            rebuild_selected=_selected,
+            hash_exclusion_reasons=_evo_hash_reasons,
+        )
+
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["inj_trace_v1"] = _trace
+
+        # Fixed location mirror: results.debug.inj_trace_v1
+        output.setdefault("results", {})
+        if isinstance(output.get("results"), dict):
+            output["results"].setdefault("debug", {})
+            if isinstance(output["results"].get("debug"), dict):
+                output["results"]["debug"]["inj_trace_v1"] = _trace
+    except Exception:
+        pass
+    # =====================================================================
 
     return output
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
