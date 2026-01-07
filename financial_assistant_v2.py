@@ -77,17 +77,17 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41aa_admission_decisions_per_url"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41ab_evo_route_injected_urls_through_fwc_identity_only"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
+CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
+CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
@@ -5060,8 +5060,6 @@ def _inj_trace_v1_build(
                 "rebuild_pool_norm": _inj_diag_set_hash(rebuild_pool_norm) if rebuild_pool is not None else "",
                 "rebuild_selected_norm": _inj_diag_set_hash(rebuild_selected_norm) if rebuild_selected is not None else "",
             },
-            "admission_decisions": d.get("admission_decisions") if isinstance(d.get("admission_decisions"), dict) else (d.get("inj_admission_decisions") if isinstance(d.get("inj_admission_decisions"), dict) else {}),
-            "admission_reason_counts": d.get("admission_reason_counts") if isinstance(d.get("admission_reason_counts"), dict) else {},
             "deltas": deltas,
             "rejection_reasons": {
                 "intake_minus_admitted": admission_rejection_reasons,
@@ -5272,6 +5270,10 @@ def fetch_web_context(
     # ============================================================
     diag_run_id: str = "",
     diag_extra_urls_ui_raw: Any = None,
+    # ============================================================
+    # PATCH FWC_IDENTITY_ONLY1 (ADDITIVE): admission-only mode (no scraping)
+    # ============================================================
+    identity_only: bool = False,
 ) -> dict:
 
     """
@@ -5468,42 +5470,12 @@ def fetch_web_context(
         _ui_norm = _inj_diag_norm_url_list(_ui_raw)
         _intake_norm = list(_extras or []) if "_extras" in locals() and isinstance(_extras, list) else _inj_diag_norm_url_list(extra_urls)
 
-        # ============================================================
-        # PATCH INJ_DIAG_ADMISSION_DECISIONS_V1 (ADDITIVE)
-        # Purpose: emit per-URL admission decisions + reason codes at the true admission gate (fetch_web_context).
-        # Safety: diagnostics only; does not change admitted URLs, scraping, hashing, or fastpath.
-        # ============================================================
-        _stage = "evolution" if bool(fallback_mode) else "analysis"
-        _admitted_set = set(_inj_diag_norm_url_list(list(admitted or [])))
-        _admission_decisions = {}
-        _reason_counts = {}
-        for _nu in list(_ui_norm or []):
-            _nu = str(_nu or "").strip()
-            if not _nu:
-                continue
-            _ad = bool(_nu in _admitted_set)
-            if not _nu.startswith(("http://", "https://")):
-                _rc = "invalid_scheme"
-                _ad = False
-            else:
-                _rc = "admitted" if _ad else "rejected_pre_admission"
-            _admission_decisions[_nu] = {
-                "stage": _stage,
-                "admitted": bool(_ad),
-                "reason_code": str(_rc),
-                "reason_detail": "",
-                "normalized_url": _nu,
-            }
-            _reason_counts[_rc] = int(_reason_counts.get(_rc, 0) + 1)
-
         out["diag_injected_urls"] = {
             "run_id": _diag_run,
             "ui_raw": _ui_raw if isinstance(_ui_raw, (str, list, tuple)) else str(_ui_raw or ""),
             "ui_norm": _ui_norm,
             "intake_norm": _intake_norm,
             "admitted": list(admitted or []),
-            "admission_decisions": _admission_decisions,
-            "admission_reason_counts": _reason_counts,
             "attempted": [],
             "persisted": [],
             "hash_inputs": [],
@@ -5553,6 +5525,20 @@ def fetch_web_context(
         out["status"] = "no_sources"
         out["status_detail"] = "empty_sources_after_filter"
         return out
+
+    # ============================================================
+    # PATCH FWC_IDENTITY_ONLY2 (ADDITIVE): identity-only early return
+    # ============================================================
+    try:
+        if bool(identity_only):
+            out["status"] = out.get("status") or "ok"
+            out["status_detail"] = out.get("status_detail") or "identity_only"
+            return out
+    except Exception:
+        pass
+
+
+
 
     # -----------------------------
     # 4) Scrape + extract numbers (snapshot-friendly scraped_meta)
@@ -22061,6 +22047,71 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # Step 2: Build current scraped_meta by fetching the same URLs used previously
     urls = _fix24_extract_source_urls(prev_full)
 
+
+    # =====================================================================
+    # PATCH EVO_ROUTE_INJECTED_URLS_THROUGH_FWC_V1 (ADDITIVE)
+    #
+    # Goal:
+    # - When Evolution UI provides injected URLs, route them through the SAME
+    #   admission/normalization/dedupe logic used by analysis (fetch_web_context),
+    #   but in IDENTITY-ONLY mode (no scraping).
+    #
+    # Why:
+    # - Previously, injected URLs could appear in ui_norm/intake_norm but never
+    #   reach the admission gate, yielding empty admission_decisions.
+    #
+    # Behavior:
+    # - Only active when web_context['extra_urls'] is non-empty.
+    # - Does NOT change fastpath logic directly; it only defines the "current URL
+    #   universe" inputs (urls) used for hashing/scrape_meta building.
+    #
+    # Safety:
+    # - identity_only=True prevents any network scrape inside fetch_web_context.
+    # - Purely additive; if anything fails, it falls back to existing urls list.
+    # =====================================================================
+    try:
+        _evo_extra_urls_raw = (web_context or {}).get("extra_urls") or []
+        _evo_extra_urls_norm = _inj_diag_norm_url_list(_evo_extra_urls_raw)
+        if _evo_extra_urls_norm:
+            _baseline_urls_for_fwc = _fix24_extract_source_urls(prev_full) or []
+            _baseline_urls_for_fwc_norm = _inj_diag_norm_url_list(_baseline_urls_for_fwc)
+            _q_for_fwc = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+            _fwc = fetch_web_context(
+                _q_for_fwc or "evolution_identity_only",
+                num_sources=int(min(12, max(1, len(_baseline_urls_for_fwc_norm) + len(_evo_extra_urls_norm)))),
+                fallback_mode=True,
+                fallback_urls=_baseline_urls_for_fwc_norm,
+                existing_snapshots=(prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None,
+                extra_urls=_evo_extra_urls_norm,
+                diag_run_id=str((web_context or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                diag_extra_urls_ui_raw=(web_context or {}).get("diag_extra_urls_ui_raw"),
+                identity_only=True,
+            ) or {}
+            _fwc_admitted = _fwc.get("web_sources") or _fwc.get("sources") or []
+            if isinstance(_fwc_admitted, list) and _fwc_admitted:
+                urls = list(_fwc_admitted)
+            # Attach the admission decisions to web_context for unified inj_trace reporting
+            if isinstance(web_context, dict):
+                if isinstance(_fwc.get("diag_injected_urls"), dict):
+                    web_context.setdefault("diag_injected_urls", {})
+                    if isinstance(web_context.get("diag_injected_urls"), dict):
+                        # do not clobber if already present
+                        for _k, _v in _fwc.get("diag_injected_urls").items():
+                            web_context["diag_injected_urls"].setdefault(_k, _v)
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("evo_fwc_identity_only", {})
+                    if isinstance(web_context["debug"].get("evo_fwc_identity_only"), dict):
+                        web_context["debug"]["evo_fwc_identity_only"].update({
+                            "called": True,
+                            "baseline_urls_count": int(len(_baseline_urls_for_fwc_norm)),
+                            "extra_urls_count": int(len(_evo_extra_urls_norm)),
+                            "admitted_count": int(len(urls or [])),
+                            "admitted_set_hash": _inj_diag_set_hash(_inj_diag_norm_url_list(urls or [])),
+                        })
+    except Exception:
+        pass
+    # =====================================================================
     # =====================================================================
 
     # PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
@@ -22112,21 +22163,13 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         for _u in (_inj_extra_urls or []):
             if _u in set(_urls_after_merge_norm):
                 _admission_decisions[_u] = {
-                    "stage": "evolution",
-                    "admitted": True,
                     "decision": "admitted",
                     "reason_code": "merged_into_urls_for_scrape",
-                    "reason_detail": "",
-                    "normalized_url": _u,
                 }
             else:
                 _admission_decisions[_u] = {
-                    "stage": "evolution",
-                    "admitted": False,
                     "decision": "rejected",
                     "reason_code": "not_present_in_urls_after_merge",
-                    "reason_detail": "",
-                    "normalized_url": _u,
                 }
 
         if isinstance(web_context, dict):
