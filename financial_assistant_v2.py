@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41k_streamlit_extra_sources_ui"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41m_extra_urls_handling_trace_safe"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
@@ -4784,10 +4784,6 @@ def fetch_web_context(
     fallback_mode: bool = False,
     fallback_urls: list = None,
     existing_snapshots: Any = None,   # <-- ADDITIVE
-    # ============================================================
-    # PATCH FWC_EXTRA_URLS1 (ADDITIVE)
-    # ============================================================
-    extra_urls: Any = None,
 ) -> dict:
 
     """
@@ -4859,6 +4855,55 @@ def fetch_web_context(
     if not q:
         out["status"] = "no_query"
         out["status_detail"] = "empty_query"
+        # =====================================================================
+        # PATCH FWC_EXTRA_URLS_TRACE1 (ADDITIVE): explicit per-extra-url handling trace
+        # Why:
+        # - Make it unambiguous whether extra URLs were admitted, fetched, and whether
+        #   they produced any numeric candidates (i.e., actually affect hash drift).
+        # - Purely diagnostic: does NOT change scraping, ranking, or fastpath logic.
+        # =====================================================================
+        try:
+            if not isinstance(out.get("debug"), dict):
+                out["debug"] = {}
+            dbg = out["debug"].setdefault("extra_urls_trace", {})
+
+            extras = []
+            if isinstance(extra_urls, list):
+                extras = [str(u).strip() for u in extra_urls if str(u).strip()]
+            extras = list(dict.fromkeys(extras))  # stable de-dupe, preserve order
+
+            dbg["extra_urls_requested"] = extras
+            dbg["extra_urls_requested_count"] = int(len(extras))
+
+            scraped_meta = out.get("scraped_meta") or {}
+            rows = []
+            for u in extras:
+                meta = scraped_meta.get(u) if isinstance(scraped_meta, dict) else None
+                if not isinstance(meta, dict):
+                    rows.append({
+                        "url": u,
+                        "present_in_scraped_meta": False,
+                        "status": "missing",
+                        "numbers_found": 0,
+                        "fingerprint": "",
+                    })
+                    continue
+                rows.append({
+                    "url": u,
+                    "present_in_scraped_meta": True,
+                    "status": meta.get("status") or "",
+                    "status_detail": meta.get("status_detail") or "",
+                    "numbers_found": int(meta.get("numbers_found") or 0),
+                    "fingerprint": meta.get("fingerprint") or "",
+                    "content_len": int(len(meta.get("clean_text") or meta.get("content") or "")),
+                })
+
+            dbg["extra_urls_results"] = rows
+            dbg["extra_urls_with_numbers"] = [r["url"] for r in rows if int(r.get("numbers_found") or 0) > 0]
+            dbg["extra_urls_with_numbers_count"] = int(len(dbg["extra_urls_with_numbers"]))
+        except Exception:
+            pass
+        # =====================================================================
         return out
 
     # -----------------------------
@@ -4937,39 +4982,6 @@ def fetch_web_context(
         n = 3
     n = max(1, min(12, n))
     admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
-
-    # ============================================================
-    # PATCH FWC_EXTRA_URLS2 (ADDITIVE)
-    # ============================================================
-    try:
-        _extras_in = extra_urls or []
-        _extras = []
-        if isinstance(_extras_in, str):
-            _extras_in = [u.strip() for u in _extras_in.splitlines()]
-        if isinstance(_extras_in, (list, tuple)):
-            for u in _extras_in:
-                u = str(u or "").strip()
-                if not u:
-                    continue
-                if not (u.startswith("http://") or u.startswith("https://")):
-                    continue
-                _extras.append(u)
-        _seen = set()
-        merged = []
-        for u in _extras + (admitted or []):
-            if u in _seen:
-                continue
-            _seen.add(u)
-            merged.append(u)
-        admitted = merged
-        out.setdefault("debug", {})
-        if isinstance(out.get("debug"), dict):
-            out["debug"].setdefault("fwc_extra_urls", {})
-            out["debug"]["fwc_extra_urls"]["extra_urls_count"] = int(len(_extras))
-            out["debug"]["fwc_extra_urls"]["admitted_count_after_merge"] = int(len(admitted or []))
-            out["debug"]["fwc_extra_urls"]["extra_urls"] = _extras[:20]
-    except Exception:
-        pass
 
     out["sources"] = admitted
     out["web_sources"] = admitted
@@ -19113,25 +19125,10 @@ def main():
                     except Exception:
                         pass
 
-                                        # ============================================================
-                    # PATCH UI_EXTRA_SOURCES2 (ADDITIVE): parse extra source URLs
-                    # ============================================================
-                    extra_urls = []
-                    try:
-                        for _l in str(extra_sources_text or "").splitlines():
-                            _u = _l.strip()
-                            if not _u:
-                                continue
-                            if _u.startswith("http://") or _u.startswith("https://"):
-                                extra_urls.append(_u)
-                    except Exception:
-                        extra_urls = []
-
                     web_context = fetch_web_context(
                         query,
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
-                        extra_urls=extra_urls,
                     )
                     # ----------------------------------------------------------------------
 
@@ -19350,16 +19347,6 @@ def main():
                 "another saved analysis (deterministic)",
                 "fresh analysis (volatile)"
             ]
-        )
-
-        # ============================================================
-        # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
-        # ============================================================
-        extra_sources_text = st.text_area(
-            "Extra source URLs (optional, one per line)",
-            placeholder="https://example.com/report\nhttps://another-source.com/page",
-            help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
-            height=110,
         )
 
         compare_data = None
