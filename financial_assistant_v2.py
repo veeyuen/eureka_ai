@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41zc_inj_trace_reason_codes_expanded_structural_fix2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41aa_admission_decisions_per_url"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -5060,6 +5060,8 @@ def _inj_trace_v1_build(
                 "rebuild_pool_norm": _inj_diag_set_hash(rebuild_pool_norm) if rebuild_pool is not None else "",
                 "rebuild_selected_norm": _inj_diag_set_hash(rebuild_selected_norm) if rebuild_selected is not None else "",
             },
+            "admission_decisions": d.get("admission_decisions") if isinstance(d.get("admission_decisions"), dict) else (d.get("inj_admission_decisions") if isinstance(d.get("inj_admission_decisions"), dict) else {}),
+            "admission_reason_counts": d.get("admission_reason_counts") if isinstance(d.get("admission_reason_counts"), dict) else {},
             "deltas": deltas,
             "rejection_reasons": {
                 "intake_minus_admitted": admission_rejection_reasons,
@@ -5466,12 +5468,42 @@ def fetch_web_context(
         _ui_norm = _inj_diag_norm_url_list(_ui_raw)
         _intake_norm = list(_extras or []) if "_extras" in locals() and isinstance(_extras, list) else _inj_diag_norm_url_list(extra_urls)
 
+        # ============================================================
+        # PATCH INJ_DIAG_ADMISSION_DECISIONS_V1 (ADDITIVE)
+        # Purpose: emit per-URL admission decisions + reason codes at the true admission gate (fetch_web_context).
+        # Safety: diagnostics only; does not change admitted URLs, scraping, hashing, or fastpath.
+        # ============================================================
+        _stage = "evolution" if bool(fallback_mode) else "analysis"
+        _admitted_set = set(_inj_diag_norm_url_list(list(admitted or [])))
+        _admission_decisions = {}
+        _reason_counts = {}
+        for _nu in list(_ui_norm or []):
+            _nu = str(_nu or "").strip()
+            if not _nu:
+                continue
+            _ad = bool(_nu in _admitted_set)
+            if not _nu.startswith(("http://", "https://")):
+                _rc = "invalid_scheme"
+                _ad = False
+            else:
+                _rc = "admitted" if _ad else "rejected_pre_admission"
+            _admission_decisions[_nu] = {
+                "stage": _stage,
+                "admitted": bool(_ad),
+                "reason_code": str(_rc),
+                "reason_detail": "",
+                "normalized_url": _nu,
+            }
+            _reason_counts[_rc] = int(_reason_counts.get(_rc, 0) + 1)
+
         out["diag_injected_urls"] = {
             "run_id": _diag_run,
             "ui_raw": _ui_raw if isinstance(_ui_raw, (str, list, tuple)) else str(_ui_raw or ""),
             "ui_norm": _ui_norm,
             "intake_norm": _intake_norm,
             "admitted": list(admitted or []),
+            "admission_decisions": _admission_decisions,
+            "admission_reason_counts": _reason_counts,
             "attempted": [],
             "persisted": [],
             "hash_inputs": [],
@@ -22080,13 +22112,21 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         for _u in (_inj_extra_urls or []):
             if _u in set(_urls_after_merge_norm):
                 _admission_decisions[_u] = {
+                    "stage": "evolution",
+                    "admitted": True,
                     "decision": "admitted",
                     "reason_code": "merged_into_urls_for_scrape",
+                    "reason_detail": "",
+                    "normalized_url": _u,
                 }
             else:
                 _admission_decisions[_u] = {
+                    "stage": "evolution",
+                    "admitted": False,
                     "decision": "rejected",
                     "reason_code": "not_present_in_urls_after_merge",
+                    "reason_detail": "",
+                    "normalized_url": _u,
                 }
 
         if isinstance(web_context, dict):
