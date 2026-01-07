@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41y_evo_admission_align_rebuild_selected_fallback"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41z_evo_inj_rejection_reason_codes_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -4963,6 +4963,64 @@ def _inj_trace_v1_build(
             "rebuild_pool_minus_selected": _delta(rebuild_pool_norm, rebuild_selected_norm) if rebuild_selected is not None else [],
         }
 
+        # -----------------------------------------------------------------
+        # PATCH INJ_TRACE_V1_REJECTION_REASONS_V1 (ADDITIVE)
+        # Purpose:
+        # - When a URL shows up in delta sets (e.g., intake_minus_admitted),
+        #   provide stable, machine-readable reason codes explaining the drop.
+        # - Pure diagnostics only; does NOT change behavior.
+        # -----------------------------------------------------------------
+        admission_decisions = d.get("admission_decisions") if isinstance(d.get("admission_decisions"), dict) else {}
+
+        def _infer_reason_intake_to_admitted(u: str) -> str:
+            try:
+                if not u:
+                    return "empty_url"
+                if not (u.startswith("http://") or u.startswith("https://")):
+                    return "invalid_scheme"
+                # Prefer explicit admission_decisions populated by evolution trace
+                if u in admission_decisions and isinstance(admission_decisions.get(u), dict):
+                    rc = str(admission_decisions.get(u, {}).get("reason_code") or "").strip()
+                    if rc:
+                        return rc
+                # If we are on fastpath/replay, injected URLs are typically not admitted downstream
+                if str(path or "").lower().startswith("fastpath"):
+                    return "fastpath_no_admission"
+                return "unknown_rejected_pre_admission"
+            except Exception:
+                return "unknown_rejected_pre_admission"
+
+        def _infer_reason_admitted_to_attempted(u: str) -> str:
+            try:
+                if not u:
+                    return "empty_url"
+                if str(path or "").lower().startswith("fastpath"):
+                    return "fastpath_no_attempt"
+                return "not_attempted_in_scrape_loop"
+            except Exception:
+                return "not_attempted_in_scrape_loop"
+
+        def _infer_reason_attempted_to_persisted(u: str) -> str:
+            try:
+                if not u:
+                    return "empty_url"
+                # Find attempted row for this URL if present
+                for a in attempted_min:
+                    if isinstance(a, dict) and str(a.get("url") or "").strip() == u:
+                        st = str(a.get("status") or "").strip().lower()
+                        if st and st not in ("success", "ok", "fetched"):
+                            return "scrape_failed"
+                        break
+                return "not_persisted_unknown"
+            except Exception:
+                return "not_persisted_unknown"
+
+        rejection_reasons = {
+            "intake_to_admitted": {u: _infer_reason_intake_to_admitted(u) for u in (deltas.get("intake_minus_admitted") or [])},
+            "admitted_to_attempted": {u: _infer_reason_admitted_to_attempted(u) for u in (deltas.get("admitted_minus_attempted") or [])},
+            "attempted_to_persisted": {u: _infer_reason_attempted_to_persisted(u) for u in (deltas.get("attempted_minus_persisted") or [])},
+        }
+
         return {
             "run_id": str(d.get("run_id") or ""),
             "stage": str(stage or ""),
@@ -4995,6 +5053,7 @@ def _inj_trace_v1_build(
                 "rebuild_pool_norm": _inj_diag_set_hash(rebuild_pool_norm) if rebuild_pool is not None else "",
                 "rebuild_selected_norm": _inj_diag_set_hash(rebuild_selected_norm) if rebuild_selected is not None else "",
             },
+                        "rejection_reasons": rejection_reasons,
             "deltas": deltas,
         }
     except Exception:
