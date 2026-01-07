@@ -19127,7 +19127,7 @@ def main():
                     except Exception:
                         extra_urls = []
 
-web_context = fetch_web_context(
+                    web_context = fetch_web_context(
                         query,
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
