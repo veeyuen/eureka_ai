@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41v_evo_injected_urls_current_sources_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41w_inj_trace_reason_and_artifact_enrich"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -4999,6 +4999,105 @@ def _inj_trace_v1_build(
         }
     except Exception:
         return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
+# =====================================================================
+# PATCH INJ_TRACE_V1_ENRICH_FROM_ARTIFACTS (ADDITIVE)
+# Purpose:
+# - Populate inj_trace_v1 attempted/persisted fields from *real* artifacts when
+#   the upstream diag_injected_urls payload is partial (common in baseline/no-injection
+#   or fastpath replay scenarios).
+# - Pure diagnostics only: does NOT alter control flow, hashing, scraping, or selection.
+#
+# Artifacts supported:
+#   - baseline_sources_cache (BSC): list of per-url snapshot dicts
+#   - scraped_meta: dict keyed by url with status/status_detail/clean_text_len
+# =====================================================================
+
+def _inj_trace_v1_enrich_diag_from_bsc(diag: dict, baseline_sources_cache: list) -> dict:
+    """Add attempted/persisted evidence into diag_injected_urls from baseline_sources_cache."""
+    try:
+        d = diag if isinstance(diag, dict) else {}
+        bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
+        # If attempted already present, do not overwrite (avoid clobbering richer traces).
+        if not isinstance(d.get("attempted"), list) or not d.get("attempted"):
+            attempted = []
+            for row in bsc:
+                if not isinstance(row, dict):
+                    continue
+                u = str(row.get("url") or row.get("source_url") or "").strip()
+                if not u:
+                    continue
+                st = str(row.get("status") or row.get("fetch_status") or "").strip() or "unknown"
+                rs = str(row.get("status_detail") or row.get("fail_reason") or "").strip()
+                clen = row.get("clean_text_len") or row.get("content_len") or 0
+                try:
+                    clen_i = int(clen)
+                except Exception:
+                    clen_i = 0
+                attempted.append({"url": u, "status": st, "reason": rs, "content_len": clen_i})
+            if attempted:
+                d["attempted"] = attempted
+
+        # Persisted: if missing, derive from successful snapshot rows in BSC.
+        if not isinstance(d.get("persisted"), (list, str)) or not d.get("persisted"):
+            persisted = []
+            for row in bsc:
+                if not isinstance(row, dict):
+                    continue
+                u = str(row.get("url") or row.get("source_url") or "").strip()
+                if not u:
+                    continue
+                st = str(row.get("status") or row.get("fetch_status") or "").lower().strip()
+                if st in ("success", "ok", "fetched"):
+                    persisted.append(u)
+            if persisted:
+                d["persisted"] = _inj_diag_norm_url_list(persisted)
+
+        return d
+    except Exception:
+        return diag if isinstance(diag, dict) else {}
+
+def _inj_trace_v1_enrich_diag_from_scraped_meta(diag: dict, scraped_meta: dict, extra_urls: list) -> dict:
+    """Add attempted/persisted evidence into diag_injected_urls from scraped_meta (evolution-side)."""
+    try:
+        d = diag if isinstance(diag, dict) else {}
+        sm = scraped_meta if isinstance(scraped_meta, dict) else {}
+        xs = _inj_diag_norm_url_list(extra_urls or [])
+        if not xs:
+            return d
+
+        # attempted rows for injected urls
+        if not isinstance(d.get("attempted"), list) or not d.get("attempted"):
+            attempted = []
+            for u in xs:
+                m = sm.get(u) if isinstance(sm.get(u), dict) else {}
+                st = str(m.get("status") or m.get("fetch_status") or "").strip() or "unknown"
+                rs = str(m.get("status_detail") or m.get("fail_reason") or "").strip()
+                clen = m.get("clean_text_len") or m.get("content_len") or 0
+                try:
+                    clen_i = int(clen)
+                except Exception:
+                    clen_i = 0
+                attempted.append({"url": u, "status": st, "reason": rs, "content_len": clen_i})
+            d["attempted"] = attempted
+
+        # persisted success urls (only for injected)
+        if not isinstance(d.get("persisted"), (list, str)) or not d.get("persisted"):
+            persisted = []
+            for a in (d.get("attempted") or []):
+                if not isinstance(a, dict):
+                    continue
+                st = str(a.get("status") or "").lower().strip()
+                if st in ("success", "ok", "fetched"):
+                    u = str(a.get("url") or "").strip()
+                    if u:
+                        persisted.append(u)
+            d["persisted"] = _inj_diag_norm_url_list(persisted)
+
+        return d
+    except Exception:
+        return diag if isinstance(diag, dict) else {}
+# =====================================================================
+
 # =====================================================================
 
 # =====================================================================
@@ -13143,6 +13242,20 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         # Location: analysis.results.debug.inj_trace_v1
                         # =====================================================================
                         try:
+
+                            # =====================================================================
+                            # PATCH INJ_TRACE_V1_ENRICH_ANALYSIS_ARTIFACTS (ADDITIVE)
+                            # Ensure inj_trace_v1 shows attempted/persisted evidence even when
+                            # upstream diag_injected_urls is partial (e.g., baseline/no-injection).
+                            # Diagnostics only.
+                            # =====================================================================
+                            try:
+                                if isinstance(_diag, dict):
+                                    _diag = _inj_trace_v1_enrich_diag_from_bsc(_diag, baseline_sources_cache)
+                            except Exception:
+                                pass
+                            # =====================================================================
+
                             _trace = _inj_trace_v1_build(
                                 diag_injected_urls=_diag if isinstance(_diag, dict) else {},
                                 hash_inputs=_hash_inputs,
@@ -21991,6 +22104,28 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         try:
             _wc = web_context if isinstance(web_context, dict) else {}
             _diag = _wc.get("diag_injected_urls") if isinstance(_wc.get("diag_injected_urls"), dict) else {}
+
+            # =====================================================================
+            # PATCH INJ_TRACE_V1_ENRICH_EVOLUTION_REPLAY_ARTIFACTS (ADDITIVE)
+            # Populate attempted/persisted for injected URLs from scraped_meta/cur_bsc
+            # even when replay fastpath returns early.
+            # Also attach an explicit reason when injected URLs are present but not
+            # admitted/hashed due to replay semantics.
+            # =====================================================================
+            try:
+                if isinstance(_diag, dict):
+                    # Enrich from scraped_meta (injected only) and from BSC (all)
+                    _diag = _inj_trace_v1_enrich_diag_from_scraped_meta(_diag, scraped_meta, (_inj_extra_urls or []))
+                    _diag = _inj_trace_v1_enrich_diag_from_bsc(_diag, cur_bsc if isinstance(cur_bsc, list) else [])
+                    # Explain replay semantics when UI extras exist
+                    _ui_norm = _inj_diag_norm_url_list(_diag.get("ui_norm") or [])
+                    if _ui_norm:
+                        _diag.setdefault("admission_reason", "fastpath_replay_no_rebuild_no_admission")
+                        _diag.setdefault("injection_effective", False)
+            except Exception:
+                pass
+            # =====================================================================
+
             _hash_inputs_replay = _inj_diag_hash_inputs_from_bsc(cur_bsc)
             _trace_replay = _inj_trace_v1_build(
                 diag_injected_urls=_diag,
