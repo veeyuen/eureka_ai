@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41h_force_rebuild_honor_forced_rebuild.py"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41g_force_rebuild_honored_nameerrorfix.py"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
@@ -15299,32 +15299,6 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             if v is not None:
                 return v
         return default
-
-    # =====================================================================
-    # PATCH FIX39_FORCE_REBUILD (ADDITIVE): explicit knob to disable fast-path reuse
-    # Why:
-    # - During validation/debugging you may want evolution to *actually rebuild* metrics
-    #   from snapshots (anchors -> schema rebuild), even when sources are unchanged.
-    # - Previously FIX31 could short-circuit by reusing prior metrics whenever snapshot
-    #   hashes match, which looks like "rebuild didn't happen".
-    #
-    # How to trigger:
-    # - Pass any of the following as truthy:
-    #     previous_data['force_rebuild'] OR previous_data['evolution_force_rebuild']
-    #     web_context['force_rebuild']   OR web_context['evolution_force_rebuild']
-    #
-    # Notes:
-    # - We still compute and emit fastpath eligibility diagnostics, but we won't take it.
-    # =====================================================================
-    _force_rebuild = False
-    try:
-        if isinstance(previous_data, dict):
-            _force_rebuild = bool(previous_data.get("evolution_force_rebuild") or previous_data.get("force_rebuild"))
-        if (not _force_rebuild) and isinstance(web_context, dict):
-            _force_rebuild = bool(web_context.get("evolution_force_rebuild") or web_context.get("force_rebuild"))
-    except Exception:
-        _force_rebuild = False
-
     # ============================================================
 
     # =====================================================================
@@ -15617,22 +15591,8 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     # =====================================================================
     try:
         if not baseline_sources_cache and isinstance(previous_data, dict):
-            _ref = (
-                previous_data.get("snapshot_store_ref_v2")
-                or previous_data.get("snapshot_store_ref_stable")
-                or previous_data.get("snapshot_store_ref")
-                or (previous_data.get("results") or {}).get("snapshot_store_ref_v2")
-                or (previous_data.get("results") or {}).get("snapshot_store_ref_stable")
-                or (previous_data.get("results") or {}).get("snapshot_store_ref")
-            )
-            _hash = (
-                previous_data.get("source_snapshot_hash_stable")
-                or previous_data.get("source_snapshot_hash_v2")
-                or previous_data.get("source_snapshot_hash")
-                or (previous_data.get("results") or {}).get("source_snapshot_hash_stable")
-                or (previous_data.get("results") or {}).get("source_snapshot_hash_v2")
-                or (previous_data.get("results") or {}).get("source_snapshot_hash")
-            )
+            _ref = previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref")
+            _hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
 
             if isinstance(_ref, str) and _ref.startswith("gsheet:"):
                 parts = _ref.split(":")
@@ -16338,7 +16298,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["debug"]["fix35"]["current_metrics_origin"] = "unknown"
         output["debug"]["fix35"]["fastpath_eligible"] = False
         output["debug"]["fix35"]["fastpath_reason"] = ""
-        output["debug"]["fix35"]["force_rebuild_requested"] = bool(_force_rebuild)
     except Exception:
         pass
 
@@ -16568,16 +16527,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         _fix36_cur_hash = None
         _fix36_reason = ""
         try:
-            # Force-rebuild mode: compute hashes for diagnostics, but do not allow fastpath reuse
-            if _force_rebuild:
-                _fix36_reason = "force_rebuild_requested"
-                try:
-                    if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
-                        _fix36_cur_hash = _fix37_snapshot_hash_stable(baseline_sources_cache)
-                except Exception:
-                    _fix36_cur_hash = None
-
-            elif not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
+            if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
                 _fix36_reason = "no_snapshots"
             elif not (isinstance(prev_metrics, dict) and prev_metrics):
                 _fix36_reason = "no_prev_metrics"
@@ -16589,7 +16539,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _fix36_reason = "hash_mismatch"
                 else:
                     _fix36_reason = "hash_match_and_prev_metrics_present"
-
             if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
                 # Preserve any earlier reason, but fill if empty
                 if not output["debug"]["fix35"].get("fastpath_reason"):
@@ -16627,7 +16576,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             # Prefer stable/v2 previous hash if present
             _prev_hash_pref = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
 
-            if (not _force_rebuild) and isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
+            if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
                 _fix31_authoritative_reuse = True
                 try:
                     output["rebuild_skipped"] = True
