@@ -77,10 +77,10 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc24_evo_post_selection_normalization_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
-#CODE_VERSION = "fix41afc24_evo_post_selection_normalization_parity_v1"
+#CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
 # PATCH FIX41AFC24_VERSION END
 
 # =====================================================================
@@ -23706,32 +23706,32 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
             if k not in rebuilt:
                 rebuilt[k] = v
     # PATCH FIX41AFC24B START
-# Post-selection normalization parity: normalize emitted metric values to match Analysis presentation rules.
-try:
-    schema_map = {}
-    if isinstance(prev_response, dict):
-        schema_map = prev_response.get("metric_schema_frozen") or {}
-    if isinstance(rebuilt, dict) and rebuilt:
-        for _ck, _mv in list(rebuilt.items()):
-            _schema = {}
-            if isinstance(schema_map, dict) and _ck in schema_map and isinstance(schema_map.get(_ck), dict):
-                _schema = schema_map.get(_ck) or {}
-            # Fallback to prev canonical schema when frozen map missing
-            if not _schema and isinstance(prev_response, dict):
-                pmc = prev_response.get("primary_metrics_canonical") or {}
-                if isinstance(pmc, dict) and _ck in pmc and isinstance(pmc.get(_ck), dict):
-                    _schema = pmc.get(_ck) or {}
-            if isinstance(_mv, dict):
-                rebuilt[_ck] = _canonical_value_normalize_v1(_schema, _mv)
-        # Attach lightweight debug marker
+    # Post-selection normalization parity: normalize emitted metric values to match Analysis presentation rules.
+    try:
+        schema_map = {}
         if isinstance(prev_response, dict):
-            dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
-            if isinstance(dbg, dict):
-                dbg["post_norm_fix41afc24b_applied"] = True
-except Exception:
-    pass
+            schema_map = prev_response.get("metric_schema_frozen") or {}
+        if isinstance(rebuilt, dict) and rebuilt:
+            for _ck, _mv in list(rebuilt.items()):
+                _schema = {}
+                if isinstance(schema_map, dict) and _ck in schema_map and isinstance(schema_map.get(_ck), dict):
+                    _schema = schema_map.get(_ck) or {}
+                # Fallback to prev canonical schema when frozen map missing
+                if not _schema and isinstance(prev_response, dict):
+                    pmc = prev_response.get("primary_metrics_canonical") or {}
+                    if isinstance(pmc, dict) and _ck in pmc and isinstance(pmc.get(_ck), dict):
+                        _schema = pmc.get(_ck) or {}
+                if isinstance(_mv, dict):
+                    rebuilt[_ck] = _canonical_value_normalize_v1(_schema, _mv)
+            # Attach lightweight debug marker
+            if isinstance(prev_response, dict):
+                dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
+                if isinstance(dbg, dict):
+                    dbg["post_norm_fix41afc24b_applied"] = True
+    except Exception:
+        pass
 # PATCH FIX41AFC24B END
-return rebuilt
+    return rebuilt
 
 
 # Re-wire schema-only entrypoint to FIX18 (keep names identical for evolution dispatch)
