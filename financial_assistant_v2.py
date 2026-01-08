@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -18898,7 +18898,83 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
 
-    # Diff using existing diff helper if present
+
+    # =====================================================================
+    # PATCH FIX41AFC19 (ADDITIVE): Anchor-first FIX16 rebuild override (schema parity)
+    #
+    # Why:
+    # - Latest evo JSON shows current metrics can be selected from non-matching units
+    #   (e.g., unit_sales metric receiving a unitless/negative number; percent metric
+    #   receiving a magnitude unit like 'B'). This leads the dashboard "Current" column
+    #   to display the wrong metric values even though injection plumbing is progressing.
+    # - The new analysis pipeline already relies on FIX16-style hard eligibility gates +
+    #   anchor_hash deterministic rebuild. Evolution must use the same selection rules
+    #   when fastpath is NOT taken (hash mismatch or injection-triggered rebuild).
+    #
+    # What:
+    # - Right before diffing, attempt an anchor-first rebuild using:
+    #     rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, pool, web_context)
+    #   when available.
+    # - If it returns a non-empty dict, it *overrides* the previously computed
+    #   current_metrics (additive override only when rebuild succeeded).
+    # - Emits explicit debug fields for traceability.
+    #
+    # Non-negotiables:
+    # - Does NOT alter fastpath logic.
+    # - Only activates when fastpath is not taken (i.e., not authoritative reuse).
+    # =====================================================================
+    try:
+        _fix41afc19_applied = False
+        _fix41afc19_reason = ""
+        _fix41afc19_fn_name = ""
+        _fix41afc19_rebuilt_count = 0
+
+        # Only consider override when fastpath is not active
+        if not bool(locals().get("_fix31_authoritative_reuse")):
+            # Attempt to locate the "current" snapshot pool (post-injection merge/attach)
+            _fix41afc19_pool = (
+                locals().get("baseline_sources_cache_current")
+                or (output.get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+                or (output.get("results", {}).get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+                or locals().get("baseline_sources_cache")
+                or locals().get("baseline_sources_cache_prefetched")
+                or None
+            )
+
+            # Prefer FIX16 schema-only rebuild if present
+            _fix41afc19_fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+            if callable(_fix41afc19_fn):
+                _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+            else:
+                _fix41afc19_fn = None
+
+            if callable(_fix41afc19_fn) and _fix41afc19_pool is not None:
+                try:
+                    _fix41afc19_rebuilt = _fix41afc19_fn(prev_response, _fix41afc19_pool, web_context=web_context)
+                except TypeError:
+                    # Backward-compat: older signature without web_context
+                    _fix41afc19_rebuilt = _fix41afc19_fn(prev_response, _fix41afc19_pool)
+
+                if isinstance(_fix41afc19_rebuilt, dict) and _fix41afc19_rebuilt:
+                    current_metrics = dict(_fix41afc19_rebuilt)
+                    _fix41afc19_applied = True
+                    _fix41afc19_rebuilt_count = len(current_metrics)
+                    _fix41afc19_reason = "override_current_metrics_with_fix16_anchor_rebuild"
+    except Exception:
+        pass
+
+    # Emit debug for FIX41AFC19 (non-breaking)
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"].setdefault("fix41afc19", {})
+            output["debug"]["fix41afc19"]["applied"] = bool(locals().get("_fix41afc19_applied"))
+            output["debug"]["fix41afc19"]["reason"] = locals().get("_fix41afc19_reason") or ""
+            output["debug"]["fix41afc19"]["fn"] = locals().get("_fix41afc19_fn_name") or ""
+            output["debug"]["fix41afc19"]["rebuilt_count"] = int(locals().get("_fix41afc19_rebuilt_count") or 0)
+    except Exception:
+        pass
+    # =====================================================================
+# Diff using existing diff helper if present
     metric_changes = []
     try:
         fn_diff = globals().get("diff_metrics_by_name")
