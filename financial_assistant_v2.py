@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc15_evo_prehash_placeholder_injected_delta_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc16_evo_fetch_and_extract_injected_placeholders_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -18076,6 +18076,160 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 })
                     except Exception:
                         pass
+        except Exception:
+            pass
+
+        # =====================================================================
+        # PATCH FIX41AFC16 (ADDITIVE): If injected URL placeholders exist, actually fetch+extract them
+        #
+        # Observed gap (from evolution JSON):
+        #   - Injected URLs were present in ui/intake/hash_inputs, but remained:
+        #       status = "injected_pending" / status_detail = "injected_url_placeholder_pre_hash"
+        #   - So they never produced snapshot_text / extracted_numbers, and thus could not
+        #     influence metric rebuild beyond a "hash universe" delta.
+        #
+        # Goal:
+        #   - When injection is present, attempt to fetch+extract the injected URLs (delta-only),
+        #     and update their baseline_sources_cache rows in-place so downstream rebuild sees them
+        #     like normal fetched sources (or explicit failed reasons).
+        #
+        # Safety:
+        #   - Purely additive.
+        #   - No effect when no injected URLs are present.
+        #   - Only touches rows that are injected placeholders (status == injected_pending) OR
+        #     URLs that are injected_delta (not already in baseline).
+        # =====================================================================
+        try:
+            _fx16_wc = web_context if isinstance(web_context, dict) else {}
+            _fx16_extra = []
+            if isinstance(_fx16_wc.get("extra_urls"), (list, tuple)) and _fx16_wc.get("extra_urls"):
+                _fx16_extra = list(_fx16_wc.get("extra_urls") or [])
+            elif isinstance(_fx16_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fx16_wc.get("diag_extra_urls_ui"):
+                _fx16_extra = list(_fx16_wc.get("diag_extra_urls_ui") or [])
+            elif isinstance(_fx16_wc.get("diag_extra_urls_ui_raw"), str) and (_fx16_wc.get("diag_extra_urls_ui_raw") or "").strip():
+                _raw = str(_fx16_wc.get("diag_extra_urls_ui_raw") or "")
+                _parts = []
+                for _line in _raw.splitlines():
+                    _line = (_line or "").strip()
+                    if not _line:
+                        continue
+                    for _p in _line.split(","):
+                        _p = (_p or "").strip()
+                        if _p:
+                            _parts.append(_p)
+                _fx16_extra = _parts
+
+            _fx16_inj_norm = _inj_diag_norm_url_list(_fx16_extra) if _fx16_extra else []
+            _fx16_base_urls = []
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                for _r in (baseline_sources_cache or []):
+                    if not isinstance(_r, dict):
+                        continue
+                    _u = _r.get("source_url") or _r.get("url") or ""
+                    if isinstance(_u, str) and _u:
+                        _fx16_base_urls.append(_u)
+            _fx16_base_set = set(_inj_diag_norm_url_list(_fx16_base_urls)) if _fx16_base_urls else set()
+            _fx16_delta = [u for u in _fx16_inj_norm if u and u not in _fx16_base_set]
+
+            # Identify placeholder rows that should be fetched
+            _fx16_targets = []
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                for _r in (baseline_sources_cache or []):
+                    if not isinstance(_r, dict):
+                        continue
+                    _u = _r.get("source_url") or _r.get("url") or ""
+                    _u_norm = _inj_diag_norm_url_list([_u])[0] if isinstance(_u, str) and _u else ""
+                    if not _u_norm:
+                        continue
+                    if _r.get("status") == "injected_pending":
+                        _fx16_targets.append((_u_norm, _r, "placeholder_row"))
+                    elif _u_norm in _fx16_delta:
+                        _fx16_targets.append((_u_norm, _r, "delta_row"))
+
+            # Also cover the case where placeholders were not appended (defensive)
+            for _u in (_fx16_delta or []):
+                if not isinstance(baseline_sources_cache, list):
+                    continue
+                if any((_inj_diag_norm_url_list([(_r.get("source_url") or _r.get("url") or "")])[0] if isinstance(_r, dict) else "") == _u for _r in (baseline_sources_cache or [])):
+                    continue
+                baseline_sources_cache.append({
+                    "source_url": _u,
+                    "url": _u,
+                    "status": "injected_pending",
+                    "status_detail": "injected_url_placeholder_pre_hash",
+                    "snapshot_text": "",
+                    "extracted_numbers": [],
+                    "numbers_found": 0,
+                    "injected": True,
+                    "injected_reason": "fx16_defensive_placeholder",
+                })
+                _fx16_targets.append((_u, baseline_sources_cache[-1], "defensive_placeholder"))
+
+            # Fetch+extract for targets (best-effort)
+            _fx16_fetched = []
+            _fx16_failed = []
+            if _fx16_targets:
+                for (_u_norm, _row, _why) in _fx16_targets:
+                    # Skip if row already has text/numbers (idempotent)
+                    try:
+                        if isinstance(_row.get("snapshot_text"), str) and _row.get("snapshot_text").strip():
+                            continue
+                        if isinstance(_row.get("extracted_numbers"), list) and len(_row.get("extracted_numbers") or []) > 0:
+                            continue
+                    except Exception:
+                        pass
+
+                    _txt = None
+                    _detail = ""
+                    try:
+                        _txt, _detail = fetch_url_content_with_status(_u_norm, timeout=25)
+                    except Exception as _e:
+                        _txt, _detail = None, f"exception:{type(_e).__name__}"
+
+                    if _txt and isinstance(_txt, str) and len(_txt.strip()) >= 200:
+                        try:
+                            _nums = extract_numbers_with_context(_txt, source_url=_u_norm) or []
+                        except Exception:
+                            _nums = []
+                        _row.update({
+                            "status": "fetched",
+                            "status_detail": (_detail or "success"),
+                            "snapshot_text": _txt[:7000],
+                            "extracted_numbers": _nums,
+                            "numbers_found": int(len(_nums or [])),
+                            "injected": True,
+                            "injected_reason": _row.get("injected_reason") or "fx16_fetch_and_extract",
+                        })
+                        _fx16_fetched.append({"url": _u_norm, "why": _why, "numbers_found": int(len(_nums or [])), "status_detail": (_detail or "success")})
+                    else:
+                        _row.update({
+                            "status": "failed",
+                            "status_detail": (_detail or "failed:no_text"),
+                            "snapshot_text": "",
+                            "extracted_numbers": [],
+                            "numbers_found": 0,
+                            "injected": True,
+                            "injected_reason": _row.get("injected_reason") or "fx16_fetch_failed",
+                        })
+                        _fx16_failed.append({"url": _u_norm, "why": _why, "status_detail": (_detail or "failed:no_text")})
+
+            # Emit debug
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix41afc16", {})
+                    if isinstance(output["debug"].get("fix41afc16"), dict):
+                        output["debug"]["fix41afc16"].update({
+                            "inj_norm_count": int(len(_fx16_inj_norm or [])),
+                            "inj_delta_count": int(len(_fx16_delta or [])),
+                            "fetch_target_count": int(len(_fx16_targets or [])),
+                            "fetched_count": int(len(_fx16_fetched or [])),
+                            "failed_count": int(len(_fx16_failed or [])),
+                            "fetched": list(_fx16_fetched or []),
+                            "failed": list(_fx16_failed or []),
+                        })
+            except Exception:
+                pass
         except Exception:
             pass
 
