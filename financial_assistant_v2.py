@@ -77,9 +77,9 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc11_evo_force_admit_and_force_fetch_injected_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc12_evo_admission_override_and_postfetch_trace_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -18517,6 +18517,60 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
         # =====================================================================
 
+
+        # =====================================================================
+        # PATCH FIX41AFC12 (ADDITIVE): Admission-gate override for injected URLs + post-fetch trace
+        #
+        # Why:
+        # - inj_trace_v1 shows injected URLs at intake but missing from admitted (unknown_rejected_pre_admission).
+        # - We must "pin" injection at the admission boundary for evolution (delta-only), and emit a post-fetch trace
+        #   because inj_trace_v1 may be emitted before the fetch/persist stage completes.
+        #
+        # What:
+        # - If injected URLs are present (from web_context.extra_urls OR diag ui fields) we force-add them into
+        #   _wc_diag["admitted"] so the trace reflects admission override deterministically (delta-only).
+        # - Additionally, emit inj_trace_v2_postfetch using best-effort enrichment from scraped_meta / cur_bsc if available.
+        #
+        # Safety:
+        # - Purely additive; never raises; does not modify fastpath rules or hashing.
+        # =====================================================================
+        try:
+            _fx12_wc = web_context if isinstance(web_context, dict) else {}
+            _fx12_diag = _wc_diag if isinstance(locals().get("_wc_diag"), dict) else (_fx12_wc.get("diag_injected_urls") if isinstance(_fx12_wc.get("diag_injected_urls"), dict) else {})
+            _fx12_inj_raw = []
+            try:
+                _fx12_inj_raw = list(_fx12_wc.get("extra_urls") or [])
+            except Exception:
+                _fx12_inj_raw = []
+            if not _fx12_inj_raw and isinstance(_fx12_diag, dict):
+                try:
+                    _fx12_inj_raw = list(_fx12_diag.get("ui_norm") or _fx12_diag.get("intake_norm") or [])
+                except Exception:
+                    _fx12_inj_raw = []
+            _fx12_inj = _inj_diag_norm_url_list(_fx12_inj_raw or [])
+            if _fx12_inj and isinstance(_wc_diag, dict):
+                _fx12_prev_ad = _inj_diag_norm_url_list(_wc_diag.get("admitted") or [])
+                _fx12_forced = sorted(list(set(_fx12_inj) - set(_fx12_prev_ad)))
+                if _fx12_forced:
+                    _wc_diag["admitted"] = list(_inj_diag_stable_dedupe_order((_fx12_prev_ad or []) + _fx12_forced))
+                    _wc_diag.setdefault("forced_admit_reasons", {})
+                    if isinstance(_wc_diag.get("forced_admit_reasons"), dict):
+                        for _u in _fx12_forced:
+                            _wc_diag["forced_admit_reasons"][_u] = "forced_admit_injected_url_override"
+                    try:
+                        output.setdefault("debug", {})
+                        if isinstance(output.get("debug"), dict):
+                            output["debug"].setdefault("fix41afc12", {})
+                            if isinstance(output["debug"].get("fix41afc12"), dict):
+                                output["debug"]["fix41afc12"].update({
+                                    "forced_admit_injected_count": int(len(_fx12_forced)),
+                                    "forced_admit_injected_urls": list(_fx12_forced),
+                                })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # =====================================================================
         _trace = _inj_trace_v1_build(
             diag_injected_urls=_wc_diag if isinstance(_wc_diag, dict) else {},
             hash_inputs=_hash_inputs,
@@ -18537,6 +18591,42 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["results"].setdefault("debug", {})
             if isinstance(output["results"].get("debug"), dict):
                 output["results"]["debug"]["inj_trace_v1"] = _trace
+
+                # =====================================================================
+                # PATCH FIX41AFC12_POSTFETCH (ADDITIVE): inj_trace_v2_postfetch
+                #
+                # Emit a second trace after best-effort enrichment from scraped_meta / baseline cache so that
+                # attempted/persisted deltas reflect the true post-fetch state (inj_trace_v1 may be earlier).
+                # =====================================================================
+                try:
+                    _fx12_diag2 = dict(_wc_diag) if isinstance(_wc_diag, dict) else {}
+                    try:
+                        _sm = locals().get("scraped_meta")
+                        if isinstance(_sm, dict):
+                            _fx12_diag2 = _inj_trace_v1_enrich_diag_from_scraped_meta(_fx12_diag2, _sm, (_inj_extra_urls or []))
+                    except Exception:
+                        pass
+                    try:
+                        _cb = locals().get("cur_bsc") or locals().get("baseline_sources_cache") or locals().get("baseline_sources_cache_current")
+                        if isinstance(_cb, list):
+                            _fx12_diag2 = _inj_trace_v1_enrich_diag_from_bsc(_fx12_diag2, _cb)
+                    except Exception:
+                        pass
+                    _trace2 = _inj_trace_v1_build(
+                        diag_injected_urls=_fx12_diag2 if isinstance(_fx12_diag2, dict) else {},
+                        hash_inputs=_hash_inputs,
+                        stage="evolution",
+                        path=str(_path or "evolution") + "_postfetch",
+                        rebuild_pool=_hash_inputs,
+                        rebuild_selected=_selected,
+                        hash_exclusion_reasons=_evo_hash_reasons,
+                    )
+                    output["debug"]["inj_trace_v2_postfetch"] = _trace2
+                    if isinstance(output.get("results"), dict) and isinstance(output["results"].get("debug"), dict):
+                        output["results"]["debug"]["inj_trace_v2_postfetch"] = _trace2
+                except Exception:
+                    pass
+                # =====================================================================
     except Exception:
         pass
     # =====================================================================
