@@ -77,9 +77,9 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc7_evo_recover_and_latch_extra_urls_pre_core_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -22562,6 +22562,72 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     except Exception:
         pass
     # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX41AFC7 (ADDITIVE): Early recovery + latching of injected URLs into web_context["extra_urls"]
+    #
+    # Problem observed in evolution JSON:
+    # - ui_norm/intake_norm contains the injected URL (from Streamlit textarea),
+    #   but web_context["extra_urls"] can still be empty at evolution core, which
+    #   causes downstream "fetch injected delta" and "forced admit" patches to see
+    #   an empty injected set and skip.
+    #
+    # Goal:
+    # - If web_context["extra_urls"] is empty, recover injected URLs from the same
+    #   Streamlit diagnostic fields used at intake:
+    #     1) web_context["diag_extra_urls_ui"] (list)
+    #     2) web_context["diag_extra_urls_ui_raw"] (string, newline/comma separated)
+    # - Normalize/canonicalize deterministically via _inj_diag_norm_url_list().
+    # - Latch the recovered list back into web_context["extra_urls"] so ALL later
+    #   injected URL logic (fetch + forced admit + hash identity) sees the same set.
+    #
+    # Safety:
+    # - Purely additive. No effect when extra_urls already present.
+    # - Never raises; falls back silently.
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            _fix41afc7_norm = []
+            _existing = web_context.get("extra_urls")
+            _need = (not isinstance(_existing, (list, tuple)) or not list(_existing))
+            if _need:
+                _raw = []
+                _v_list = web_context.get("diag_extra_urls_ui")
+                if isinstance(_v_list, (list, tuple)) and _v_list:
+                    _raw = list(_v_list)
+                if not _raw:
+                    _v_raw = web_context.get("diag_extra_urls_ui_raw")
+                    if isinstance(_v_raw, str) and _v_raw.strip():
+                        _parts = []
+                        for _line in _v_raw.splitlines():
+                            _line = (_line or "").strip()
+                            if not _line:
+                                continue
+                            for _p in _line.split(","):
+                                _p = (_p or "").strip()
+                                if _p:
+                                    _parts.append(_p)
+                        if _parts:
+                            _raw = _parts
+
+                _fix41afc7_norm = _inj_diag_norm_url_list(_raw)
+                if _fix41afc7_norm:
+                    web_context["extra_urls"] = list(_fix41afc7_norm)
+
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].setdefault("fix41afc7", {})
+                if isinstance(web_context["debug"].get("fix41afc7"), dict):
+                    web_context["debug"]["fix41afc7"].update({
+                        "recovery_needed": bool(_need),
+                        "recovered_extra_urls_count": int(len(_fix41afc7_norm or [])),
+                        "recovered_extra_urls": list(_fix41afc7_norm or [])[:20],
+                        "extra_urls_present_after_recovery": bool(isinstance(web_context.get("extra_urls"), (list, tuple)) and list(web_context.get("extra_urls") or [])),
+                    })
+    except Exception:
+        pass
+    # =====================================================================
+
 # PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
     # - Only active if caller provides web_context['extra_urls']
     # - Does NOT affect default fastpath behavior.
