@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -103,6 +103,14 @@ CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1"  # PATCH FIX41G
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
 CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
+# =====================================================================
+# PATCH FIX41AFC20 (ADDITIVE): bump CODE_VERSION to this file version
+# - Purely a version label for debugging/traceability.
+# - Does NOT alter runtime logic.
+# =====================================================================
+CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
+# =====================================================================
+
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -15912,10 +15920,25 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             except Exception:
                 match_conf = 92.0
 
+            # =====================================================================
+            # PATCH FIX41AFC20A (ADDITIVE): HARD unit-family mismatch eligibility gate
+            # =====================================================================
+            cur_value_blocked_reason = ""
+            try:
+                if bool(unit_mismatch):
+                    cur_raw = ""
+                    cur_value_norm = None
+                    cur_unit_cmp = ""
+                    cur_unit_family = ""
+                    cur_value_blocked_reason = "unit_mismatch_hard_block"
+            except Exception:
+                pass
+            # =====================================================================
             metric_changes.append({
                 "name": display_name,
                 "previous_value": prev_raw,
                 "current_value": cur_raw,
+                "cur_value_blocked_reason": (cur_value_blocked_reason or ""),
                 "change_pct": change_pct,
                 "change_type": change_type,
                 "match_confidence": float(match_conf),
@@ -17426,6 +17449,61 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     # ============================================================
 
     output["metric_changes"] = metric_changes or []
+
+    # =====================================================================
+    # PATCH FIX41AFC20C (ADDITIVE): Injection lifecycle diagnostics derived from actual state
+    # =====================================================================
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"].setdefault("inj_trace_v2_state", {})
+            _inj_urls = []
+            try:
+                _inj = (output.get("debug", {}).get("inj_trace_v1") or {})
+                if isinstance(_inj, dict):
+                    _inj_urls = list(_inj.get("ui_norm") or []) or list(_inj.get("intake_norm") or [])
+            except Exception:
+                _inj_urls = []
+
+            _pool = None
+            try:
+                _pool = locals().get("baseline_sources_cache_current") or output.get("baseline_sources_cache_current")
+            except Exception:
+                _pool = None
+            if _pool is None:
+                _pool = locals().get("baseline_sources_cache") or output.get("baseline_sources_cache") or output.get("source_results")
+
+            attempted = set()
+            persisted = set()
+            failed = set()
+
+            for sr in (_pool or []):
+                if not isinstance(sr, dict):
+                    continue
+                u = str(sr.get("url") or sr.get("source_url") or "")
+                if not u:
+                    continue
+                attempted.add(u)
+                if isinstance(sr.get("extracted_numbers"), list) and len(sr.get("extracted_numbers") or []) > 0:
+                    persisted.add(u)
+                st = str(sr.get("status") or "")
+                if st and st.lower() not in ("fetched", "success", "ok"):
+                    failed.add(u)
+
+            inj_set = set(_inj_urls or [])
+            attempted_scoped = sorted([u for u in attempted if (not inj_set or u in inj_set)])
+            persisted_scoped = sorted([u for u in persisted if (not inj_set or u in inj_set)])
+            failed_scoped = sorted([u for u in failed if (not inj_set or u in inj_set)])
+
+            output["debug"]["inj_trace_v2_state"]["ui_norm"] = _inj_urls
+            output["debug"]["inj_trace_v2_state"]["attempted_norm"] = attempted_scoped
+            output["debug"]["inj_trace_v2_state"]["persisted_norm"] = persisted_scoped
+            output["debug"]["inj_trace_v2_state"]["failed_norm"] = failed_scoped
+            output["debug"]["inj_trace_v2_state"]["method"] = "artifact_state_pool_scan"
+    except Exception:
+        pass
+    # =====================================================================
+
+
     output["summary"]["total_metrics"] = len(output["metric_changes"])
     output["summary"]["metrics_found"] = int(found or 0)
     output["summary"]["metrics_increased"] = int(increased or 0)
@@ -22414,6 +22492,88 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
     return rebuilt
 
 
+
+# =====================================================================
+# PATCH FIX41AFC20B (ADDITIVE): schema-driven candidate eligibility parity v2
+# Why:
+# - Some percent/currency metrics can still accept magnitude-tagged candidates
+#   (e.g., "2.0 B") when a weaker unit compatibility check passes.
+# - New analysis uses schema-driven hard gates; evolution rebuild must match.
+# What:
+# - Add a lightweight eligibility wrapper that enforces:
+#     * percent metrics must have explicit percent evidence
+#     * currency metrics must have explicit currency evidence
+#   and rejects magnitude-only tags (K/M/B/T) when dimension expects PCT/CUR.
+# =====================================================================
+def _metric_candidate_is_eligible_v2(metric_schema: dict, cand: dict) -> bool:
+    try:
+        spec = metric_schema or {}
+        c = cand or {}
+        raw = str(c.get("raw") or "")
+        unit = str(c.get("unit") or "")
+        unit_tag = str(c.get("unit_tag") or "")
+        unit_family = str(c.get("unit_family") or "")
+        measure_kind = str(c.get("measure_kind") or "")
+        ctx = str(c.get("context_snippet") or c.get("context") or "")
+
+        # Determine expected dimension using existing FIX16 helper when present
+        exp_dim = ""
+        try:
+            fn = globals().get("_fix16_expected_dimension")
+            if callable(fn):
+                exp_dim = str(fn(spec) or "")
+        except Exception:
+            exp_dim = ""
+
+        exp_dim_l = exp_dim.lower().strip()
+        raw_u = (raw + " " + unit + " " + ctx).upper()
+
+        # quick helpers
+        def _has_pct():
+            if "%" in raw_u:
+                return True
+            if "PERCENT" in raw_u or "PERCENTAGE" in raw_u:
+                return True
+            if unit_family.lower().strip() in ("percent", "pct"):
+                return True
+            if unit.strip() in ("%", "percent", "pct"):
+                return True
+            if measure_kind.lower().startswith("percent"):
+                return True
+            return False
+
+        def _has_cur():
+            # common currency signals (keep conservative; analysis has deeper parsing)
+            if "$" in raw or "$" in ctx:
+                return True
+            for tok in ("USD", "EUR", "GBP", "SGD", "AUD", "CAD", "JPY", "CNY", "RMB", "HKD", "INR", "KRW", "CHF"):
+                if tok in raw_u:
+                    return True
+            if unit_family.lower().strip() in ("currency", "cur"):
+                return True
+            if measure_kind.lower().startswith("currency"):
+                return True
+            return False
+
+        # magnitude tag blacklist when expecting pct/cur
+        mag_tag = (unit_tag or unit or "").strip().upper()
+        is_mag = mag_tag in ("K", "M", "B", "T")
+
+        if exp_dim_l == "percent":
+            if not _has_pct():
+                return False
+            if is_mag and not _has_pct():
+                return False
+        if exp_dim_l == "currency":
+            if not _has_cur():
+                return False
+            if is_mag and not _has_cur():
+                return False
+
+        return True
+    except Exception:
+        return True
+# =====================================================================
 def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     FIX16 schema-only rebuild:
@@ -22504,6 +22664,16 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             # FIX16 hard eligibility gates
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
+
+            # =================================================================
+            # PATCH FIX41AFC20B (ADDITIVE): eligibility parity wrapper (v2)
+            # =================================================================
+            try:
+                if not _metric_candidate_is_eligible_v2(spec, c):
+                    continue
+            except Exception:
+                pass
+            # =================================================================
 
             # keyword relevance
             ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
