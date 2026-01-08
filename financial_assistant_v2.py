@@ -77,17 +77,17 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41ab_evo_route_injected_urls_through_fwc_identity_only_2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41ad_injected_url_canonicalize_tracking_params"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
+#CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
+#CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
@@ -4726,8 +4726,72 @@ def _inj_diag_make_run_id(prefix: str = "run") -> str:
         except Exception:
             return f"{prefix}_unknown"
 
+
+# =====================================================================
+# PATCH INJ_URL_CANON_V1 (ADDITIVE): Canonicalize injected URLs
+# - Strips common tracking/query parameters from injected URLs ONLY
+# - Keeps scheme/host/path; preserves non-tracking query params (sorted)
+# - Adds deterministic canonical form for stable admission/dedupe/hashing
+# =====================================================================
+def _canonicalize_injected_url(url: str) -> str:
+    """Canonicalize injected URLs by stripping known tracking params.
+
+    This is intentionally conservative and applied only to user-injected URLs
+    (extra URLs), not to SERP-derived URLs.
+    """
+    try:
+        from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+        u = str(url or "").strip()
+        if not u:
+            return ""
+        if not (u.startswith("http://") or u.startswith("https://")):
+            return u
+
+        parts = urlsplit(u)
+        # Normalize scheme/host case
+        scheme = (parts.scheme or "").lower()
+        netloc = (parts.netloc or "").lower()
+        path = parts.path or ""
+        fragment = ""  # drop fragments for stability
+
+        # Tracking params to drop (exact match)
+        drop_exact = {
+            "guccounter", "guce_referrer", "guce_referrer_sig",
+            "gclid", "fbclid", "msclkid", "mc_cid", "mc_eid",
+            "ref", "ref_src",
+        }
+        # Drop prefixes (utm_*, etc.)
+        drop_prefixes = ("utm_",)
+
+        qs = []
+        for k, v in parse_qsl(parts.query or "", keep_blank_values=True):
+            kk = (k or "").strip()
+            if not kk:
+                continue
+            k_lower = kk.lower()
+            if k_lower in drop_exact:
+                continue
+            if any(k_lower.startswith(p) for p in drop_prefixes):
+                continue
+            qs.append((kk, v))
+
+        # Sort query params for determinism
+        qs_sorted = sorted(qs, key=lambda kv: (kv[0].lower(), str(kv[1])))
+
+        query = urlencode(qs_sorted, doseq=True) if qs_sorted else ""
+        return urlunsplit((scheme, netloc, path, query, fragment))
+    except Exception:
+        try:
+            return str(url or "").strip()
+        except Exception:
+            return ""
+
 def _inj_diag_norm_url_list(extra_urls: Any) -> list:
-    """Normalize/dedupe URL list (conservative: only http/https)."""
+    """Normalize/dedupe injected URL list (http/https only) with canonicalization.
+
+    NOTE: This is used for injected/extra URL diagnostics and admission wiring only.
+    It canonicalizes by stripping known tracking params for stability.
+    """
     out = []
     try:
         if extra_urls is None:
@@ -4744,13 +4808,15 @@ def _inj_diag_norm_url_list(extra_urls: Any) -> list:
                 continue
             if not (uu.startswith("http://") or uu.startswith("https://")):
                 continue
-            if uu in seen:
+            cu = _canonicalize_injected_url(uu) or uu
+            if cu in seen:
                 continue
-            seen.add(uu)
-            out.append(uu)
+            seen.add(cu)
+            out.append(cu)
     except Exception:
         return []
     return out
+
 
 def _inj_diag_set_hash(urls: list) -> str:
     """Stable sha256 of sorted URL list (for compact logging)."""
@@ -5430,6 +5496,7 @@ def fetch_web_context(
     try:
         _extras_in = extra_urls or []
         _extras = []
+        _canon_map = {}
         if isinstance(_extras_in, str):
             _extras_in = [u.strip() for u in _extras_in.splitlines()]
         if isinstance(_extras_in, (list, tuple)):
@@ -5439,7 +5506,12 @@ def fetch_web_context(
                     continue
                 if not (u.startswith("http://") or u.startswith("https://")):
                     continue
-                _extras.append(u)
+                _canon = _canonicalize_injected_url(u) or u
+                _extras.append(_canon)
+                try:
+                    _canon_map[u] = _canon
+                except Exception:
+                    pass
         _seen = set()
         merged = []
         for u in _extras + (admitted or []):
@@ -5486,6 +5558,7 @@ def fetch_web_context(
                 "intake_norm": _inj_diag_set_hash(_intake_norm),
                 "admitted": _inj_diag_set_hash(list(admitted or [])),
             },
+            "canon_map": dict(_canon_map) if "_canon_map" in locals() else {},
             "deltas": {
                 "ui_minus_intake": sorted(list(set(_ui_norm) - set(_intake_norm))),
                 "intake_minus_admitted": sorted(list(set(_intake_norm) - set(list(admitted or [])))),
