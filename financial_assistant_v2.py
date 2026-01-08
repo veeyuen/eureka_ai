@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc34_evo_schema_authority_propagation_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc35_diff_bare_year_hard_block_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -16104,6 +16104,35 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     cur_value_blocked_reason = "unit_mismatch_hard_block"
             except Exception:
                 pass
+
+            # PATCH FIX41AFC35 START
+            # Hard-block bare 4-digit year tokens being emitted as "current" for non-year metrics.
+            # This is dashboard-safety and parity with analysis-side year suppression.
+            try:
+                if not cur_value_blocked_reason:
+                    _uf_exp = ""
+                    try:
+                        _uf_exp = str((metric_def or {}).get("unit_family") or "")
+                    except Exception:
+                        _uf_exp = ""
+                    if _uf_exp.lower() != "year":
+                        _raw_tok = str(cur_raw).strip()
+                        _is_year_like = False
+                        try:
+                            _vnum = float(cur_val_norm) if cur_val_norm is not None else None
+                            if _vnum is not None and 1900.0 <= _vnum <= 2100.0 and re.fullmatch(r"\d{4}", _raw_tok or ""):
+                                _is_year_like = True
+                        except Exception:
+                            _is_year_like = False
+                        # Only block when there's no explicit unit evidence carried through
+                        if _is_year_like and (not str(cur_unit_cmp or "").strip()):
+                            cur_raw = ""
+                            cur_val_norm = None
+                            cur_unit_cmp = ""
+                            cur_value_blocked_reason = "bare_year_hard_block"
+            except Exception:
+                pass
+            # PATCH FIX41AFC35 END
             # =====================================================================
             metric_changes.append({
                 "name": display_name,
@@ -26647,3 +26676,8 @@ except Exception:
 # PATCH FIX41AFC34_VERSION START
 CODE_VERSION = "fix41afc34_evo_schema_authority_propagation_v1"
 # PATCH FIX41AFC34_VERSION END
+
+
+# PATCH FIX41AFC35_VERSION START
+CODE_VERSION = "fix41afc35_diff_bare_year_hard_block_v1"
+# PATCH FIX41AFC35_VERSION END
