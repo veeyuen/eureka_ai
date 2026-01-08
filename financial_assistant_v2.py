@@ -77,9 +77,9 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc13_evo_pre_admission_override_injected_delta_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc14_evo_injected_delta_pre_rebuild_fetch_and_merge_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -17021,6 +17021,121 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     # Rebuild fallback only if anchors didn't produce metrics
     if not isinstance(current_metrics, dict) or not current_metrics:
         try:
+            # =====================================================================
+            # PATCH FIX41AFC14 (ADDITIVE): Augment baseline_sources_cache with injected URL delta BEFORE schema-only rebuild
+            #
+            # Problem:
+            # - With fastpath bypassed, evolution may fall back to schema-only rebuild *without* running any
+            #   fetch cycle. In that case, injected URLs never enter baseline_sources_cache, so rebuild cannot
+            #   see them and injection remains inert (attempted=0, persisted=0).
+            #
+            # Goal:
+            # - If injected URLs are present AND introduce a delta vs the current snapshot universe,
+            #   run fetch_web_context() once (normal mode) with force_admit/force_scrape enabled,
+            #   then merge any successful injected snapshots into baseline_sources_cache, and only then
+            #   call the rebuild function.
+            #
+            # Safety:
+            # - No effect when no injection or no delta.
+            # - Does NOT alter hashing logic; it only ensures the snapshot pool reflects successfully fetched injected sources.
+            # - Never raises; on any failure, proceeds with the original baseline_sources_cache.
+            # =====================================================================
+            try:
+                _fx14_wc = web_context if isinstance(web_context, dict) else {}
+                _fx14_extra_raw = []
+                if isinstance(_fx14_wc.get("extra_urls"), (list, tuple)) and _fx14_wc.get("extra_urls"):
+                    _fx14_extra_raw = list(_fx14_wc.get("extra_urls") or [])
+                elif isinstance(_fx14_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fx14_wc.get("diag_extra_urls_ui"):
+                    _fx14_extra_raw = list(_fx14_wc.get("diag_extra_urls_ui") or [])
+                elif isinstance(_fx14_wc.get("diag_extra_urls_ui_raw"), str) and (_fx14_wc.get("diag_extra_urls_ui_raw") or "").strip():
+                    _raw = str(_fx14_wc.get("diag_extra_urls_ui_raw") or "")
+                    _parts = []
+                    for _line in _raw.splitlines():
+                        _line = (_line or "").strip()
+                        if not _line:
+                            continue
+                        for _p in _line.split(","):
+                            _p = (_p or "").strip()
+                            if _p:
+                                _parts.append(_p)
+                    _fx14_extra_raw = _parts
+
+                _fx14_inj = _inj_diag_norm_url_list(_fx14_extra_raw) if _fx14_extra_raw else []
+                _fx14_base_urls = []
+                if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                    for _r in baseline_sources_cache:
+                        if isinstance(_r, dict) and isinstance(_r.get("source_url"), str) and _r.get("source_url"):
+                            _fx14_base_urls.append(_r.get("source_url"))
+                _fx14_base_set = set(_inj_diag_norm_url_list(_fx14_base_urls)) if _fx14_base_urls else set()
+                _fx14_delta = sorted(list(set(_fx14_inj) - _fx14_base_set)) if _fx14_inj else []
+
+                if _fx14_delta:
+                    _fx14_q = str((prev_response or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+                    _fx14_prev_snap = baseline_sources_cache
+                    _fx14_fwc = fetch_web_context(
+                        _fx14_q or "evolution_injection_fetch_pre_rebuild",
+                        num_sources=int(min(12, max(1, len(_fx14_base_set) + len(_fx14_inj)))),
+                        fallback_mode=True,
+                        fallback_urls=list(_inj_diag_norm_url_list(_fx14_base_urls)),
+                        existing_snapshots=_fx14_prev_snap,
+                        extra_urls=list(_fx14_inj),
+                        diag_run_id=str((_fx14_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                        diag_extra_urls_ui_raw=(_fx14_wc or {}).get("diag_extra_urls_ui_raw"),
+                        identity_only=False,
+                        force_scrape_extra_urls=True,
+                        force_admit_extra_urls=True,
+                    ) or {}
+
+                    try:
+                        if isinstance(_fx14_wc, dict):
+                            _fx14_wc["evolution_calls_fetch_web_context"] = True
+                    except Exception:
+                        pass
+
+                    _fx14_sm = _fx14_fwc.get("scraped_meta")
+                    _fx14_bsc_new = None
+                    try:
+                        _fn_bsc = globals().get("_fix24_baseline_sources_cache_from_scraped_meta")
+                        if callable(_fn_bsc) and isinstance(_fx14_sm, dict):
+                            _fx14_bsc_new = _fn_bsc(_fx14_sm)
+                    except Exception:
+                        _fx14_bsc_new = None
+
+                    if isinstance(_fx14_bsc_new, list) and _fx14_bsc_new:
+                        # Merge: keep original order for existing snapshots, append new unique ones
+                        _merged = list(baseline_sources_cache or [])
+                        _seen = set(_inj_diag_norm_url_list(_fx14_base_urls))
+                        _added = []
+                        for _row in _fx14_bsc_new:
+                            if not isinstance(_row, dict):
+                                continue
+                            _u = _row.get("source_url") or ""
+                            _nu = (_inj_diag_norm_url(_u) if isinstance(_u, str) else "")
+                            if _nu and _nu not in _seen:
+                                _merged.append(_row)
+                                _seen.add(_nu)
+                                _added.append(_nu)
+                        if _added:
+                            baseline_sources_cache = _merged
+
+                        # Debug
+                        try:
+                            output.setdefault("debug", {})
+                            if isinstance(output.get("debug"), dict):
+                                output["debug"].setdefault("fix41afc14", {})
+                                if isinstance(output["debug"].get("fix41afc14"), dict):
+                                    output["debug"]["fix41afc14"].update({
+                                        "inj_delta_count": int(len(_fx14_delta)),
+                                        "inj_delta": list(_fx14_delta),
+                                        "merged_added_count": int(len(_added)),
+                                        "merged_added": list(_added),
+                                        "baseline_sources_cache_count_after_merge": int(len(baseline_sources_cache or [])),
+                                    })
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # =====================================================================
             fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
             if callable(fn_rebuild):
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
