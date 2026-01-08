@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc_evo_fastpath_bypass_injected_delta_v2_structural_fix"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc2_evo_fastpath_bypass_injected_delta_v3_enforce_latch_and_wire_extra_urls"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -17632,6 +17632,23 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 _evo_extra_urls = _parts
                 except Exception:
                     pass
+
+                # =====================================================================
+                # PATCH FIX41AFC2 (ADDITIVE): Ensure rebuild/fetch path receives injected URLs
+                #   If we recovered injected URLs from Streamlit diagnostic fields (e.g.,
+                #   diag_extra_urls_ui_raw) and web_context["extra_urls"] is empty, wire the
+                #   recovered list into web_context["extra_urls"] so downstream admission/
+                #   fetch/persist logic can see the same universe deterministically.
+                #   No effect on no-injection runs.
+                # =====================================================================
+                try:
+                    if isinstance(_evo_wc, dict):
+                        _wc_extra = _evo_wc.get("extra_urls")
+                        if (not isinstance(_wc_extra, (list, tuple)) or not _wc_extra) and isinstance(_evo_extra_urls, list) and _evo_extra_urls:
+                            _evo_wc["extra_urls"] = list(_evo_extra_urls)
+                except Exception:
+                    pass
+
                 _evo_inj_set = set(_inj_diag_norm_url_list(_evo_extra_urls)) if _evo_extra_urls else set()
 
                 # Baseline universe = urls present in baseline_sources_cache (the same object used for hashing)
@@ -17643,6 +17660,14 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _evo_base_set = set(_inj_diag_norm_url_list(_evo_base_urls)) if _evo_base_urls else set()
 
                 _evo_inj_delta = sorted(list(_evo_inj_set - _evo_base_set)) if _evo_inj_set else []
+                # =====================================================================
+                # PATCH FIX41AFC2 (ADDITIVE): Latch bypass decision for later fastpath checks
+                #   We persist a simple boolean flag in locals so the downstream FIX31
+                #   authoritative reuse check can be disabled without refactoring.
+                # =====================================================================
+                _fix41af_inj_delta_present = bool(_evo_inj_delta)
+
+
 
                 # Only bypass when hashes match and we would otherwise take fastpath
                 if _evo_inj_delta and _fix36_reason == "hash_match_and_prev_metrics_present":
@@ -17763,8 +17788,39 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
             # =====================================================================
 
+
+            # =====================================================================
+            # PATCH FIX41AFC2 (ADDITIVE): Enforce fastpath bypass on injected URL delta
+            #   If an injected URL delta exists, we MUST NOT take FIX31 authoritative
+            #   reuse (fastpath replay), even if hashes match. We do this additively by
+            #   temporarily blanking _prev_hash_pref so the existing hash-match check
+            #   remains unchanged for normal runs.
+            # =====================================================================
+            _fix41af_prev_hash_pref_saved = None
+            try:
+                if bool(locals().get("_fix41af_inj_delta_present")):
+                    _fix41af_prev_hash_pref_saved = _prev_hash_pref
+                    _prev_hash_pref = ""
+                    try:
+                        if isinstance(output.get("debug"), dict) and isinstance(output.get("debug", {}).get("fix35"), dict):
+                            output["debug"]["fix35"]["fastpath_reason"] = "hash_match_but_injected_urls_present_bypass_fastpath"
+                            output["debug"]["fix35"]["fastpath_eligible"] = False
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
                 _fix31_authoritative_reuse = True
+                # =====================================================================
+                # PATCH FIX41AFC2 (ADDITIVE): Restore _prev_hash_pref after bypass guard
+                # =====================================================================
+                try:
+                    if _fix41af_prev_hash_pref_saved is not None:
+                        _prev_hash_pref = _fix41af_prev_hash_pref_saved
+                except Exception:
+                    pass
+
                 try:
                     output["rebuild_skipped"] = True
                     output["rebuild_skipped_reason"] = "fix31_sources_unchanged_reuse_prev_metrics"
@@ -17797,6 +17853,18 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # PATCH FIX31 (ADDITIVE): assign authoritative reused metrics now
     # ============================================================
     try:
+
+        # =====================================================================
+        # PATCH FIX41AFC2 (ADDITIVE): Ensure _prev_hash_pref restored if bypass guard blanked it
+        #   (covers the case where hash-match condition was false and the inline restore
+        #   inside the if-body did not execute).
+        # =====================================================================
+        try:
+            if locals().get("_fix41af_prev_hash_pref_saved") is not None and not _prev_hash_pref:
+                _prev_hash_pref = locals().get("_fix41af_prev_hash_pref_saved")
+        except Exception:
+            pass
+
         if _fix31_authoritative_reuse and isinstance(prev_metrics, dict) and prev_metrics:
             current_metrics = dict(prev_metrics)
             try:
