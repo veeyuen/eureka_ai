@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc28_evo_junk_hard_block_unit_required_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc29b_evo_anchor_cohort_lock_v2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -24179,6 +24179,255 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
     except Exception:
         pass
     # PATCH FIX41AFC27 END
+
+    # PATCH FIX41AFC29 START
+    # Anchor-Cohort Lock (presentation-only): when anchor exists/used, scope value_range/source_span
+    try:
+        import re as _re
+
+        def _fix41afc29_is_truthy(v):
+            return v is not None and str(v).strip().lower() not in ("", "none", "null", "nan")
+
+        def _fix41afc29_get_schema(schema_map, ck):
+            if isinstance(schema_map, dict) and ck in schema_map and isinstance(schema_map.get(ck), dict):
+                return schema_map.get(ck)
+            return {}
+
+        def _fix41afc29_target_year(schema: dict, metric_obj: dict):
+            # Prefer schema keywords / canonical_key hints; fallback to name.
+            year = None
+            try:
+                kws = schema.get("keywords") if isinstance(schema, dict) else None
+                if isinstance(kws, list):
+                    for k in kws:
+                        m = _re.search(r"\b(19\d{2}|20\d{2})\b", str(k))
+                        if m:
+                            year = int(m.group(1)); break
+                if year is None:
+                    ck = (schema.get("canonical_key") if isinstance(schema, dict) else "") or (metric_obj.get("canonical_key") if isinstance(metric_obj, dict) else "")
+                    m = _re.search(r"\b(19\d{2}|20\d{2})\b", str(ck))
+                    if m:
+                        year = int(m.group(1))
+                if year is None:
+                    nm = (schema.get("name") if isinstance(schema, dict) else "") or (metric_obj.get("name") if isinstance(metric_obj, dict) else "")
+                    m = _re.search(r"\b(19\d{2}|20\d{2})\b", str(nm))
+                    if m:
+                        year = int(m.group(1))
+            except Exception:
+                year = None
+            return year
+
+        def _fix41afc29_is_projected(schema: dict, metric_obj: dict):
+            s = " ".join([
+                str((schema or {}).get("name") or ""),
+                str((metric_obj or {}).get("name") or ""),
+                str((metric_obj or {}).get("original_name") or "")
+            ]).lower()
+            return any(t in s for t in ["project", "forecast", "outlook", "by ", "expected", "estimate", "projec", "cagr"])
+
+        def _fix41afc29_extract_any_years(text: str):
+            yrs = []
+            try:
+                for m in _re.finditer(r"\b(19\d{2}|20\d{2})\b", text or ""):
+                    yrs.append(int(m.group(1)))
+            except Exception:
+                pass
+            return yrs
+
+        def _fix41afc29_pick_anchor_hash(metric_obj: dict):
+            # Prefer explicit anchor_hash. Else infer from the evidence item closest to selected value_norm.
+            ah = metric_obj.get("anchor_hash") if isinstance(metric_obj, dict) else None
+            if _fix41afc29_is_truthy(ah):
+                return ah
+            ev = metric_obj.get("evidence") if isinstance(metric_obj, dict) else None
+            if not isinstance(ev, list) or not ev:
+                return None
+            sel = metric_obj.get("value_norm")
+            try:
+                sel = float(sel) if sel is not None else None
+            except Exception:
+                sel = None
+            best = None
+            best_d = None
+            for e in ev:
+                if not isinstance(e, dict):
+                    continue
+                eah = e.get("anchor_hash")
+                if not _fix41afc29_is_truthy(eah):
+                    continue
+                vn = e.get("value_norm")
+                try:
+                    vn = float(vn) if vn is not None else None
+                except Exception:
+                    vn = None
+                if sel is None or vn is None:
+                    continue
+                d = abs(vn - sel)
+                if best is None or d < best_d:
+                    best = eah
+                    best_d = d
+            return best
+
+        def _fix41afc29_in_year_cohort(e: dict, target_year: int, projected: bool):
+            txt = (e.get("context_snippet") or "") + " " + (e.get("raw") or "")
+            txt_l = txt.lower()
+            yrs = _fix41afc29_extract_any_years(txt)
+            if target_year is None:
+                return True
+            # If explicit other years are present, reject unless the target year appears.
+            if yrs and (target_year not in yrs):
+                return False
+            # For non-projected metrics, reject future-horizon phrases like "by 2040" when target_year is earlier.
+            if not projected:
+                m = _re.search(r"\bby\s+(19\d{2}|20\d{2})\b", txt_l)
+                if m:
+                    y = int(m.group(1))
+                    if target_year is not None and y > target_year:
+                        return False
+            return True
+
+        def _fix41afc29_scope_value_range(metric_obj: dict, ck: str, schema_map: dict):
+            if not isinstance(metric_obj, dict):
+                return False
+
+            schema = _fix41afc29_get_schema(schema_map, ck)
+            target_year = _fix41afc29_target_year(schema, metric_obj)
+            projected = _fix41afc29_is_projected(schema, metric_obj)
+
+            anchor_used = bool(metric_obj.get("anchor_used"))
+            anchor_hash = _fix41afc29_pick_anchor_hash(metric_obj)
+
+            # Only lock when anchored/anchor_used (avoid changing unanchored behavior)
+            if not (anchor_used or _fix41afc29_is_truthy(anchor_hash)):
+                return False
+
+            ev = metric_obj.get("evidence") or []
+            if not isinstance(ev, list) or not ev:
+                return False
+
+            # Step 1: strict anchor_hash cohort
+            cohort = []
+            if _fix41afc29_is_truthy(anchor_hash):
+                cohort = [e for e in ev if isinstance(e, dict) and str(e.get("anchor_hash") or "") == str(anchor_hash)]
+
+            # Step 2: year cohort (semantic)
+            if not cohort and target_year is not None:
+                cohort = [e for e in ev if isinstance(e, dict) and _fix41afc29_in_year_cohort(e, target_year, projected)]
+
+            # Step 3: neighborhood cohort (±30% around selected value_norm)
+            if not cohort:
+                sel = metric_obj.get("value_norm")
+                try:
+                    sel = float(sel) if sel is not None else None
+                except Exception:
+                    sel = None
+                if sel is not None and sel != 0:
+                    for e in ev:
+                        if not isinstance(e, dict):
+                            continue
+                        vn = e.get("value_norm")
+                        try:
+                            vn = float(vn) if vn is not None else None
+                        except Exception:
+                            vn = None
+                        if vn is None:
+                            continue
+                        if abs(vn - sel) / abs(sel) <= 0.30:
+                            cohort.append(e)
+
+            if not cohort:
+                return False
+
+            # Recompute value_range using cohort only (presentation-only)
+            vals = []
+            for e in cohort:
+                vn = e.get("value_norm")
+                try:
+                    vn = float(vn) if vn is not None else None
+                except Exception:
+                    vn = None
+                if vn is None:
+                    continue
+                vals.append(vn)
+
+            if not vals:
+                return False
+
+            vmin, vmax = min(vals), max(vals)
+            unit_tag = metric_obj.get("unit_tag") or metric_obj.get("unit") or ""
+            # display formatting consistent with existing style: 4 sig figs for small, 1 dp for larger
+            def _fmt(x):
+                try:
+                    x = float(x)
+                except Exception:
+                    return str(x)
+                ax = abs(x)
+                if ax >= 100:
+                    return str(int(round(x)))
+                if ax >= 10:
+                    return f"{x:.1f}".rstrip("0").rstrip(".")
+                if ax >= 1:
+                    return f"{x:.2f}".rstrip("0").rstrip(".")
+                return f"{x:.4f}".rstrip("0").rstrip(".")
+
+            metric_obj["value_range"] = {
+                "min": vmin,
+                "max": vmax,
+                "n": len(vals),
+                "examples": [
+                    {"raw": (e.get("raw") or ""), "source_url": (e.get("url") or e.get("source_url") or ""), "context_snippet": (e.get("context_snippet") or "")}
+                    for e in cohort[:4]
+                    if isinstance(e, dict)
+                ],
+                "method": "anchor_cohort_lock_fix41afc29",
+            }
+            metric_obj["value_range_display"] = f"{_fmt(vmin)}–{_fmt(vmax)} {unit_tag}".strip()
+
+            # Also tighten source_span if present (min/mid/max)
+            try:
+                metric_obj["source_span"] = {
+                    "min": vmin,
+                    "mid": (vmin + vmax) / 2.0,
+                    "max": vmax,
+                    "unit": unit_tag,
+                }
+            except Exception:
+                pass
+
+            metric_obj["_value_range_scope_fix41afc29"] = "anchor_cohort_lock"
+            return True
+
+        # Apply across rebuilt
+        _schema_map_fix41afc29 = None
+        try:
+            _schema_map_fix41afc29 = (
+                prev_response.get("metric_schema_frozen")
+                or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+                or prev_response.get("primary_metrics_canonical")
+                or {}
+            )
+        except Exception:
+            _schema_map_fix41afc29 = {}
+
+        _cohort_locked_keys_fix41afc29 = []
+        if isinstance(rebuilt, dict):
+            for _ck, _m in list(rebuilt.items()):
+                try:
+                    if _fix41afc29_scope_value_range(_m, _ck, _schema_map_fix41afc29):
+                        _cohort_locked_keys_fix41afc29.append(_ck)
+                except Exception:
+                    pass
+
+        try:
+            prev_response.setdefault("_evolution_rebuild_debug", {})
+            prev_response["_evolution_rebuild_debug"]["value_range_cohort_locked_fix41afc29_count"] = len(_cohort_locked_keys_fix41afc29)
+            prev_response["_evolution_rebuild_debug"]["value_range_cohort_locked_fix41afc29_keys"] = _cohort_locked_keys_fix41afc29[:50]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # PATCH FIX41AFC29 END
+
     return rebuilt
 
 
@@ -25539,3 +25788,14 @@ CODE_VERSION = "fix41afc26_evo_schema_authoritative_rebuild_v1"
 # PATCH FIX41AFC27_VERSION START
 CODE_VERSION = "fix41afc27_evo_anchor_scoped_value_range_parity_v1"
 # PATCH FIX41AFC27_VERSION END
+
+
+# PATCH FIX41AFC29_VERSION START
+CODE_VERSION = "fix41afc29_evo_anchor_cohort_lock_v1"
+# PATCH FIX41AFC29_VERSION END
+
+
+# PATCH FIX41AFC29_INDENT START
+# (surgical) Ensure return rebuilt remains within function scope.
+CODE_VERSION = "fix41afc29b_evo_anchor_cohort_lock_v2"
+# PATCH FIX41AFC29_INDENT END
