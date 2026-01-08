@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41ad_injected_url_canonicalize_tracking_params"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41ae_evo_fastpath_bypass_injected_delta"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -17565,6 +17565,61 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _fix36_reason = "hash_mismatch"
                 else:
                     _fix36_reason = "hash_match_and_prev_metrics_present"
+
+            # =====================================================================
+            # PATCH EVO_FASTPATH_BYPASS_ON_INJECTED_URL_DELTA_V1 (ADDITIVE)
+            # Intent:
+            #   If the Evolution UI supplies injected URLs that are NOT already part of the
+            #   baseline source universe, bypass fastpath eligibility even when hashes match.
+            #   This does NOT weaken fastpath for the locked/no-injection case; it only prevents
+            #   "observed but inert" injections from being ignored when they materially change
+            #   the intended source universe.
+            #
+            #   Key rule:
+            #     - If injected_delta (normalized_injected_urls - normalized_baseline_urls) is non-empty
+            #       and fastpath would otherwise be eligible, force _fix36_reason to a bypass reason so
+            #       fastpath_eligible becomes False and rebuild path can run.
+            # =====================================================================
+            try:
+                _evo_wc = web_context if isinstance(web_context, dict) else {}
+                _evo_diag = _evo_wc.get("diag_injected_urls") if isinstance(_evo_wc.get("diag_injected_urls"), dict) else {}
+                _evo_extra_urls = []
+                # Prefer already-normalized intake/ui lists if present
+                for _k in ("intake", "ui_norm", "ui", "extra_urls"):
+                    _v = _evo_diag.get(_k)
+                    if isinstance(_v, (list, tuple)) and _v:
+                        _evo_extra_urls = list(_v)
+                        break
+                # Fall back to raw web_context extras if diag not populated
+                if not _evo_extra_urls:
+                    _v2 = _evo_wc.get("extra_urls")
+                    if isinstance(_v2, (list, tuple)) and _v2:
+                        _evo_extra_urls = list(_v2)
+
+                _evo_inj_set = set(_inj_diag_norm_url_list(_evo_extra_urls)) if _evo_extra_urls else set()
+
+                # Baseline universe = urls present in baseline_sources_cache (the same object used for hashing)
+                _evo_base_urls = []
+                if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                    for _row in baseline_sources_cache:
+                        if isinstance(_row, dict) and isinstance(_row.get("source_url"), str) and _row.get("source_url"):
+                            _evo_base_urls.append(_row.get("source_url"))
+                _evo_base_set = set(_inj_diag_norm_url_list(_evo_base_urls)) if _evo_base_urls else set()
+
+                _evo_inj_delta = sorted(list(_evo_inj_set - _evo_base_set)) if _evo_inj_set else []
+
+                # Only bypass when hashes match and we would otherwise take fastpath
+                if _evo_inj_delta and _fix36_reason == "hash_match_and_prev_metrics_present":
+                    _fix36_reason = "hash_match_but_injected_urls_present_bypass_fastpath"
+                    try:
+                        if isinstance(output.get("debug"), dict) and isinstance(output.get("debug", {}).get("fix35"), dict):
+                            output["debug"]["fix35"]["fastpath_bypass_injected_delta"] = _evo_inj_delta
+                            output["debug"]["fix35"]["fastpath_bypass_injected_delta_count"] = len(_evo_inj_delta)
+                    except Exception:
+                        pass
+            except Exception:
+                # Never break evolution on diagnostics / bypass checks
+                pass
             if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
                 # Preserve any earlier reason, but fill if empty
                 if not output["debug"]["fix35"].get("fastpath_reason"):
