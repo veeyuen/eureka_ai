@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc3_evo_recover_extra_urls_from_ui_raw_v1_structural_fix3"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc3_evo_recover_extra_urls_from_ui_raw_v1_clean"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -22278,20 +22278,19 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     # Step 2: Build current scraped_meta by fetching the same URLs used previously
     urls = _fix24_extract_source_urls(prev_full)
-
-
     # =====================================================================
-    # PATCH FIX41AFC3 (ADDITIVE): Recover Evolution injected URLs into web_context["extra_urls"]
+    # PATCH FIX41AFC3 (ADDITIVE): Recover Evolution injected URLs into web_context['extra_urls']
     #
-    # Problem observed:
-    # - Streamlit often passes injected URLs via diagnostic fields (e.g. diag_extra_urls_ui_raw),
-    #   while web_context["extra_urls"] may be empty. Downstream evolution wiring (including the
-    #   FIX24 wrapper and identity_only fetch_web_context) keys off web_context["extra_urls"].
+    # Purpose:
+    # - Streamlit may provide injected URLs only via diagnostic fields
+    #   (diag_extra_urls_ui / diag_extra_urls_ui_raw).
+    # - Downstream evolution admission & fetch logic keys off web_context['extra_urls'].
     #
-    # Goal:
-    # - If web_context["extra_urls"] is empty, recover from:
-    #     1) web_context["diag_extra_urls_ui"]       (list)
-    #     2) web_context["diag_extra_urls_ui_raw"]   (str; newline/comma separated)
+    # Behavior:
+    # - If web_context['extra_urls'] is empty/missing, recover from (in order):
+    #     1) web_context['diag_extra_urls_ui']     (list)
+    #     2) web_context['diag_extra_urls_ui_raw'] (str; newline/comma separated)
+    # - Normalize/canonicalize via _inj_diag_norm_url_list (tracking params stripped).
     #
     # Safety:
     # - Purely additive wiring; no effect when no injection is present.
@@ -22299,619 +22298,616 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # =====================================================================
     try:
         if isinstance(web_context, dict):
-            _wc_extra0 = web_context.get("extra_urls")
+            _wc_extra0 = web_context.get('extra_urls')
             _needs = (not isinstance(_wc_extra0, (list, tuple)) or not _wc_extra0)
             if _needs:
                 _recovered = []
-                _v_list = web_context.get("diag_extra_urls_ui")
+                _v_list = web_context.get('diag_extra_urls_ui')
                 if isinstance(_v_list, (list, tuple)) and _v_list:
                     _recovered = list(_v_list)
                 if not _recovered:
-                    _raw = web_context.get("diag_extra_urls_ui_raw")
+                    _raw = web_context.get('diag_extra_urls_ui_raw')
                     if isinstance(_raw, str) and _raw.strip():
                         _parts = []
                         for _line in _raw.splitlines():
-                            _line = (_line or "").strip()
+                            _line = (_line or '').strip()
                             if not _line:
                                 continue
-                            for _p in _line.split(","):
-                                _p = (_p or "").strip()
+                            for _p in _line.split(','):
+                                _p = (_p or '').strip()
                                 if _p:
                                     _parts.append(_p)
                         if _parts:
                             _recovered = _parts
                 if _recovered:
-                    # Normalize/canonicalize consistently
                     _recovered_norm = _inj_diag_norm_url_list(_recovered)
                     if _recovered_norm:
-                        web_context["extra_urls"] = list(_recovered_norm)
-                        # small debug breadcrumb
-                        web_context.setdefault("debug", {})
-                        if isinstance(web_context.get("debug"), dict):
-                            web_context["debug"].setdefault("fix41afc3", {})
-                            if isinstance(web_context["debug"].get("fix41afc3"), dict):
-                                web_context["debug"]["fix41afc3"].update({
-                                    "extra_urls_recovered": True,
-                                    "extra_urls_recovered_count": int(len(_recovered_norm)),
+                        web_context['extra_urls'] = list(_recovered_norm)
+                        web_context.setdefault('debug', {})
+                        if isinstance(web_context.get('debug'), dict):
+                            web_context['debug'].setdefault('fix41afc3', {})
+                            if isinstance(web_context['debug'].get('fix41afc3'), dict):
+                                web_context['debug']['fix41afc3'].update({
+                                    'extra_urls_recovered': True,
+                                    'extra_urls_recovered_count': int(len(_recovered_norm)),
                                 })
     except Exception:
         pass
     # =====================================================================
 
 
-
-            # =====================================================================
-            # PATCH EVO_ROUTE_INJECTED_URLS_THROUGH_FWC_V1 (ADDITIVE)
-            #
-            # Goal:
-            # - When Evolution UI provides injected URLs, route them through the SAME
-            #   admission/normalization/dedupe logic used by analysis (fetch_web_context),
-            #   but in IDENTITY-ONLY mode (no scraping).
-            #
-            # Why:
-            # - Previously, injected URLs could appear in ui_norm/intake_norm but never
-            #   reach the admission gate, yielding empty admission_decisions.
-            #
-            # Behavior:
-            # - Only active when web_context['extra_urls'] is non-empty.
-            # - Does NOT change fastpath logic directly; it only defines the "current URL
-            #   universe" inputs (urls) used for hashing/scrape_meta building.
-            #
-            # Safety:
-            # - identity_only=True prevents any network scrape inside fetch_web_context.
-            # - Purely additive; if anything fails, it falls back to existing urls list.
-            # =====================================================================
-            try:
-                _evo_extra_urls_raw = (web_context or {}).get("extra_urls") or []
-                _evo_extra_urls_norm = _inj_diag_norm_url_list(_evo_extra_urls_raw)
-                if _evo_extra_urls_norm:
-                    _baseline_urls_for_fwc = _fix24_extract_source_urls(prev_full) or []
-                    _baseline_urls_for_fwc_norm = _inj_diag_norm_url_list(_baseline_urls_for_fwc)
-                    _q_for_fwc = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
-                    _fwc = fetch_web_context(
-                        _q_for_fwc or "evolution_identity_only",
-                        num_sources=int(min(12, max(1, len(_baseline_urls_for_fwc_norm) + len(_evo_extra_urls_norm)))),
-                        fallback_mode=True,
-                        fallback_urls=_baseline_urls_for_fwc_norm,
-                        existing_snapshots=(prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None,
-                        extra_urls=_evo_extra_urls_norm,
-                        diag_run_id=str((web_context or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
-                        diag_extra_urls_ui_raw=(web_context or {}).get("diag_extra_urls_ui_raw"),
-                        identity_only=True,
-                    ) or {}
-                    _fwc_admitted = _fwc.get("web_sources") or _fwc.get("sources") or []
-                    if isinstance(_fwc_admitted, list) and _fwc_admitted:
-                        urls = list(_fwc_admitted)
-                    # Attach the admission decisions to web_context for unified inj_trace reporting
-                    if isinstance(web_context, dict):
-                        if isinstance(_fwc.get("diag_injected_urls"), dict):
-                            web_context.setdefault("diag_injected_urls", {})
-                            if isinstance(web_context.get("diag_injected_urls"), dict):
-                                # do not clobber if already present
-                                for _k, _v in _fwc.get("diag_injected_urls").items():
-                                    web_context["diag_injected_urls"].setdefault(_k, _v)
-                        web_context.setdefault("debug", {})
-                        if isinstance(web_context.get("debug"), dict):
-                            web_context["debug"].setdefault("evo_fwc_identity_only", {})
-                            if isinstance(web_context["debug"].get("evo_fwc_identity_only"), dict):
-                                web_context["debug"]["evo_fwc_identity_only"].update({
-                                    "called": True,
-                                    "baseline_urls_count": int(len(_baseline_urls_for_fwc_norm)),
-                                    "extra_urls_count": int(len(_evo_extra_urls_norm)),
-                                    "admitted_count": int(len(urls or [])),
-                                    "admitted_set_hash": _inj_diag_set_hash(_inj_diag_norm_url_list(urls or [])),
-                                })
-            except Exception:
-                pass
-            # =====================================================================
-            # =====================================================================
-
-            # PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
-            # - Only active if caller provides web_context['extra_urls']
-            # - Does NOT affect default fastpath behavior.
-            # =====================================================================
-            _inj_diag_run_id = ""
-            _inj_extra_urls = []
-            try:
-                _inj_diag_run_id = str((web_context or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo")
-                _inj_extra_urls = _inj_diag_norm_url_list((web_context or {}).get("extra_urls") or [])
-            except Exception:
-                _inj_diag_run_id = _inj_diag_make_run_id("evo")
-                _inj_extra_urls = []
-
-            try:
-                if _inj_extra_urls:
-                    _u_seen = set([str(u or "").strip() for u in (urls or []) if str(u or "").strip()])
-                    for _u in _inj_extra_urls:
-                        if _u not in _u_seen:
-                            _u_seen.add(_u)
-                            urls.append(_u)
-            except Exception:
-                pass
-            # =====================================================================
-
-
-            # =====================================================================
-            # PATCH EVO_INJ_ADMISSION_TRACE_V1 (ADDITIVE): pinpoint where injected URLs are dropped
-            #
-            # Why:
-            # - When a URL appears in ui_norm/intake_norm but not in admitted_norm, we need
-            #   an explicit reason before we change any behavior.
-            #
-            # What this records (debug only):
-            # - Whether evolution is using fetch_web_context (it is not in FIX24 path)
-            # - The pre- and post-injection URL universe
-            # - Per-injected-URL admission decision + reason codes
-            #
-            # Safety:
-            # - Does NOT alter control flow, fastpath eligibility, scraping, hashing, or selection.
-            # =====================================================================
-            try:
-                _urls_prev_full = _fix24_extract_source_urls(prev_full)
-                _urls_prev_full_norm = _inj_diag_norm_url_list(_urls_prev_full or [])
-                _urls_after_merge_norm = _inj_diag_norm_url_list(urls or [])
-
-                _admission_decisions = {}
-                for _u in (_inj_extra_urls or []):
-                    if _u in set(_urls_after_merge_norm):
-                        _admission_decisions[_u] = {
-                            "decision": "admitted",
-                            "reason_code": "merged_into_urls_for_scrape",
-                        }
-                    else:
-                        _admission_decisions[_u] = {
-                            "decision": "rejected",
-                            "reason_code": "not_present_in_urls_after_merge",
-                        }
-
-                if isinstance(web_context, dict):
-                    web_context.setdefault("debug", {})
-                    if isinstance(web_context.get("debug"), dict):
-                        web_context["debug"].setdefault("evo_injection_trace", {})
-                        if isinstance(web_context["debug"].get("evo_injection_trace"), dict):
-                            web_context["debug"]["evo_injection_trace"].update({
-                                "uses_fetch_web_context": False,
-                                "urls_prev_full_count": int(len(_urls_prev_full_norm)),
-                                "urls_prev_full_set_hash": _inj_diag_set_hash(_urls_prev_full_norm),
-                                "urls_after_merge_count": int(len(_urls_after_merge_norm)),
-                                "urls_after_merge_set_hash": _inj_diag_set_hash(_urls_after_merge_norm),
-                                "inj_extra_urls_norm": list(_inj_extra_urls or []),
-                                "inj_merge_applied": bool(_inj_extra_urls),
-                                "inj_admission_decisions": _admission_decisions,
-                            })
-
-                    # Also attach to diag_injected_urls for unified downstream reporting
+    # =====================================================================
+    # PATCH EVO_ROUTE_INJECTED_URLS_THROUGH_FWC_V1 (ADDITIVE)
+    #
+    # Goal:
+    # - When Evolution UI provides injected URLs, route them through the SAME
+    #   admission/normalization/dedupe logic used by analysis (fetch_web_context),
+    #   but in IDENTITY-ONLY mode (no scraping).
+    #
+    # Why:
+    # - Previously, injected URLs could appear in ui_norm/intake_norm but never
+    #   reach the admission gate, yielding empty admission_decisions.
+    #
+    # Behavior:
+    # - Only active when web_context['extra_urls'] is non-empty.
+    # - Does NOT change fastpath logic directly; it only defines the "current URL
+    #   universe" inputs (urls) used for hashing/scrape_meta building.
+    #
+    # Safety:
+    # - identity_only=True prevents any network scrape inside fetch_web_context.
+    # - Purely additive; if anything fails, it falls back to existing urls list.
+    # =====================================================================
+    try:
+        _evo_extra_urls_raw = (web_context or {}).get("extra_urls") or []
+        _evo_extra_urls_norm = _inj_diag_norm_url_list(_evo_extra_urls_raw)
+        if _evo_extra_urls_norm:
+            _baseline_urls_for_fwc = _fix24_extract_source_urls(prev_full) or []
+            _baseline_urls_for_fwc_norm = _inj_diag_norm_url_list(_baseline_urls_for_fwc)
+            _q_for_fwc = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+            _fwc = fetch_web_context(
+                _q_for_fwc or "evolution_identity_only",
+                num_sources=int(min(12, max(1, len(_baseline_urls_for_fwc_norm) + len(_evo_extra_urls_norm)))),
+                fallback_mode=True,
+                fallback_urls=_baseline_urls_for_fwc_norm,
+                existing_snapshots=(prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None,
+                extra_urls=_evo_extra_urls_norm,
+                diag_run_id=str((web_context or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                diag_extra_urls_ui_raw=(web_context or {}).get("diag_extra_urls_ui_raw"),
+                identity_only=True,
+            ) or {}
+            _fwc_admitted = _fwc.get("web_sources") or _fwc.get("sources") or []
+            if isinstance(_fwc_admitted, list) and _fwc_admitted:
+                urls = list(_fwc_admitted)
+            # Attach the admission decisions to web_context for unified inj_trace reporting
+            if isinstance(web_context, dict):
+                if isinstance(_fwc.get("diag_injected_urls"), dict):
                     web_context.setdefault("diag_injected_urls", {})
                     if isinstance(web_context.get("diag_injected_urls"), dict):
-                        web_context["diag_injected_urls"].setdefault("admission_decisions", {})
-                        if isinstance(web_context["diag_injected_urls"].get("admission_decisions"), dict):
-                            web_context["diag_injected_urls"]["admission_decisions"].update(_admission_decisions)
-                        web_context["diag_injected_urls"].setdefault("urls_prev_full_norm", _urls_prev_full_norm)
-                        web_context["diag_injected_urls"].setdefault("urls_after_merge_norm", _urls_after_merge_norm)
-            except Exception:
-                pass
-            # =====================================================================
-
-
-            scraped_meta = _fix24_build_scraped_meta(urls)
-
-            # Step 3: Normalize into baseline_sources_cache and hash
-            cur_bsc = _fix24_baseline_sources_cache_from_scraped_meta(scraped_meta)
-
-            # =====================================================================
-            # PATCH EVO_INJECTED_URLS_AS_CURRENT_SOURCES_V1 (ADDITIVE):
-            # Policy + wiring alignment for Evolution UI injected URLs
-            #
-            # Goal:
-            # - Treat Evolution-tab injected URLs as part of the *current source universe*
-            #   for hash identity *when they fetch successfully*, consistent with baseline
-            #   sources (successful snapshots contribute to identity).
-            #
-            # Behavior (safe):
-            # - If an injected URL was provided (web_context['extra_urls']) and its scrape
-            #   status is success, it must appear in cur_bsc so that hash inputs can include it.
-            # - If success-but-missing occurs (unexpected), we add a synthetic url-only entry
-            #   tagged for hash identity (debug only; no numbers).
-            # - If fetch failed, we do NOT force hash mismatch (consistent with policy),
-            #   but we record explicit attempted status + reason into diagnostics.
-            #
-            # Safety:
-            # - Does NOT alter fastpath eligibility logic directly; it only ensures that
-            #   the identity inputs reflect the actual successfully fetched current sources.
-            # - Purely additive; never removes or refactors existing logic.
-            # =====================================================================
-            try:
-                _inj_sm = scraped_meta if isinstance(scraped_meta, dict) else {}
-                _inj_attempted_rows = []
-                _inj_success_urls = set()
-                for _u in (_inj_extra_urls or []):
-                    _m = _inj_sm.get(_u) if isinstance(_inj_sm.get(_u), dict) else {}
-                    _st = str(_m.get('status') or _m.get('fetch_status') or '')
-                    _reason = str(_m.get('status_detail') or _m.get('fail_reason') or '')
-                    _clen = _m.get('clean_text_len') or _m.get('content_len') or 0
-                    _inj_attempted_rows.append({
-                        'url': _u,
-                        'status': _st or 'unknown',
-                        'reason': _reason,
-                        'content_len': int(_clen) if str(_clen).isdigit() else 0,
-                    })
-                    if (_st or '').lower() in ('success','ok','fetched'):
-                        _inj_success_urls.add(_u)
-
-                # Ensure success injected urls are represented in cur_bsc (hash identity)
-                if _inj_success_urls and isinstance(cur_bsc, list):
-                    _bsc_urls = set()
-                    for _row in cur_bsc:
-                        if isinstance(_row, dict):
-                            _bu = str(_row.get('url') or _row.get('source_url') or '').strip()
-                            if _bu:
-                                _bsc_urls.add(_bu)
-                    _missing_success = sorted(list(_inj_success_urls - _bsc_urls))
-                    for _u in _missing_success:
-                        cur_bsc.append({
-                            'url': _u,
-                            'status': 'success',
-                            'status_detail': 'synthetic_success_missing_in_bsc',
-                            'clean_text': '',
-                            'clean_text_len': 0,
-                            'extracted_numbers': [],
-                            'numbers_found': 0,
-                            'fingerprint': 'synthetic_url_only_for_hash',
-                            'is_synthetic_for_hash': True,
+                        # do not clobber if already present
+                        for _k, _v in _fwc.get("diag_injected_urls").items():
+                            web_context["diag_injected_urls"].setdefault(_k, _v)
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("evo_fwc_identity_only", {})
+                    if isinstance(web_context["debug"].get("evo_fwc_identity_only"), dict):
+                        web_context["debug"]["evo_fwc_identity_only"].update({
+                            "called": True,
+                            "baseline_urls_count": int(len(_baseline_urls_for_fwc_norm)),
+                            "extra_urls_count": int(len(_evo_extra_urls_norm)),
+                            "admitted_count": int(len(urls or [])),
+                            "admitted_set_hash": _inj_diag_set_hash(_inj_diag_norm_url_list(urls or [])),
                         })
+    except Exception:
+        pass
+    # =====================================================================
+    # =====================================================================
 
-                # Write attempted status into web_context diagnostics for transparency
-                if isinstance(web_context, dict):
-                    web_context.setdefault('diag_injected_urls', {})
-                    if isinstance(web_context.get('diag_injected_urls'), dict):
-                        web_context['diag_injected_urls'].setdefault('attempted', [])
-                        # Only overwrite if empty to avoid clobbering richer traces
-                        if not web_context['diag_injected_urls'].get('attempted'):
-                            web_context['diag_injected_urls']['attempted'] = _inj_attempted_rows
-                        web_context['diag_injected_urls']['success_urls'] = sorted(list(_inj_success_urls))
-            except Exception:
-                pass
-            # =====================================================================
+    # PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
+    # - Only active if caller provides web_context['extra_urls']
+    # - Does NOT affect default fastpath behavior.
+    # =====================================================================
+    _inj_diag_run_id = ""
+    _inj_extra_urls = []
+    try:
+        _inj_diag_run_id = str((web_context or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo")
+        _inj_extra_urls = _inj_diag_norm_url_list((web_context or {}).get("extra_urls") or [])
+    except Exception:
+        _inj_diag_run_id = _inj_diag_make_run_id("evo")
+        _inj_extra_urls = []
 
-            cur_hashes = _fix24_compute_current_hashes(cur_bsc)
-
-            # =====================================================================
-
-            # PATCH INJ_DIAG_EVO_DEBUG (ADDITIVE): record injected URL lifecycle (B1)
-            # =====================================================================
-            try:
-                _hash_inputs = _inj_diag_hash_inputs_from_bsc(cur_bsc)
-                if isinstance(web_context, dict):
-                    web_context.setdefault("diag_injected_urls", {})
-                    if isinstance(web_context.get("diag_injected_urls"), dict):
-                        web_context["diag_injected_urls"].update({
-                            "run_id": _inj_diag_run_id,
-                            "ui_raw": (web_context or {}).get("diag_extra_urls_ui_raw") or "",
-                            "ui_norm": _inj_extra_urls,
-                            "intake_norm": _inj_extra_urls,
-                            "admitted": list(urls or []),
-                            "hash_inputs": _hash_inputs,
-                            "injected_in_hash_inputs": sorted(list(set(_inj_extra_urls) & set(_hash_inputs))),
-                            "set_hashes": {
-                                "hash_inputs": _inj_diag_set_hash(_hash_inputs),
-                                "admitted": _inj_diag_set_hash(list(urls or [])),
-                            }
-                        })
-            except Exception:
-                pass
-            # =====================================================================
+    try:
+        if _inj_extra_urls:
+            _u_seen = set([str(u or "").strip() for u in (urls or []) if str(u or "").strip()])
+            for _u in _inj_extra_urls:
+                if _u not in _u_seen:
+                    _u_seen.add(_u)
+                    urls.append(_u)
+    except Exception:
+        pass
+    # =====================================================================
 
 
+    # =====================================================================
+    # PATCH EVO_INJ_ADMISSION_TRACE_V1 (ADDITIVE): pinpoint where injected URLs are dropped
+    #
+    # Why:
+    # - When a URL appears in ui_norm/intake_norm but not in admitted_norm, we need
+    #   an explicit reason before we change any behavior.
+    #
+    # What this records (debug only):
+    # - Whether evolution is using fetch_web_context (it is not in FIX24 path)
+    # - The pre- and post-injection URL universe
+    # - Per-injected-URL admission decision + reason codes
+    #
+    # Safety:
+    # - Does NOT alter control flow, fastpath eligibility, scraping, hashing, or selection.
+    # =====================================================================
+    try:
+        _urls_prev_full = _fix24_extract_source_urls(prev_full)
+        _urls_prev_full_norm = _inj_diag_norm_url_list(_urls_prev_full or [])
+        _urls_after_merge_norm = _inj_diag_norm_url_list(urls or [])
 
-            # Step 4: Compare (v2 preferred)
-            equal_v2 = bool(prev_hashes.get("v2") and cur_hashes.get("v2") and prev_hashes["v2"] == cur_hashes["v2"])
-            equal_v1 = bool(prev_hashes.get("v1") and cur_hashes.get("v1") and prev_hashes["v1"] == cur_hashes["v1"])
-            unchanged = equal_v2 or (not prev_hashes.get("v2") and equal_v1)
-
-            # =====================================================================
-            # PATCH FIX40 (ADDITIVE): Force rebuild override (Scenario B)
-            # If the UI (or caller) requests force_rebuild, we intentionally bypass
-            # the unchanged fastpath even if hashes match, to exercise rebuild logic.
-            # =====================================================================
-            _force_rebuild = False
-            try:
-                _force_rebuild = bool((web_context or {}).get("force_rebuild"))
-            except Exception:
-                _force_rebuild = False
-            if _force_rebuild:
-                unchanged = False
-                _fix41_force_rebuild_honored = True
-            else:
-                _fix41_force_rebuild_honored = False
-            # =====================================================================
-
-            if unchanged:
-                hashes = {
-                    "prev_v2": prev_hashes.get("v2",""),
-                    "cur_v2": cur_hashes.get("v2",""),
-                    "prev_v1": prev_hashes.get("v1",""),
-                    "cur_v1": cur_hashes.get("v1",""),
+        _admission_decisions = {}
+        for _u in (_inj_extra_urls or []):
+            if _u in set(_urls_after_merge_norm):
+                _admission_decisions[_u] = {
+                    "decision": "admitted",
+                    "reason_code": "merged_into_urls_for_scrape",
                 }
-                out_replay = _fix24_make_replay_output(prev_full, hashes)
-                # =====================================================================
-                # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to replay output
-                # =====================================================================
-                try:
-                    if isinstance(out_replay, dict):
-                        out_replay.setdefault("code_version", CODE_VERSION)
-                        out_replay.setdefault("debug", {}).setdefault("fix41", {})
-                        out_replay["debug"]["fix41"].update({
-                            "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
-                            "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)),
-                            "path": "replay_unchanged",
-                        })
-                except Exception:
-                    pass
+            else:
+                _admission_decisions[_u] = {
+                    "decision": "rejected",
+                    "reason_code": "not_present_in_urls_after_merge",
+                }
 
-                # =====================================================================
-                # PATCH EVO_INJ_TRACE_REPLAY1 (ADDITIVE): emit inj_trace_v1 even on replay fastpath
-                # Why:
-                # - The FIX24 replay path returns early (skipping compute_source_anchored_diff),
-                #   which previously meant results.debug.inj_trace_v1 might be missing.
-                # - We need injected-URL lifecycle visibility even when hashes match (fastpath/replay)
-                #   to validate UI wiring and to explain why a mismatch did/did not occur.
-                # Safety:
-                # - Pure debug emission only; does NOT affect hash logic, scraping, or fastpath decisions.
-                # =====================================================================
-                try:
-                    _wc = web_context if isinstance(web_context, dict) else {}
-                    _diag = _wc.get("diag_injected_urls") if isinstance(_wc.get("diag_injected_urls"), dict) else {}
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].setdefault("evo_injection_trace", {})
+                if isinstance(web_context["debug"].get("evo_injection_trace"), dict):
+                    web_context["debug"]["evo_injection_trace"].update({
+                        "uses_fetch_web_context": False,
+                        "urls_prev_full_count": int(len(_urls_prev_full_norm)),
+                        "urls_prev_full_set_hash": _inj_diag_set_hash(_urls_prev_full_norm),
+                        "urls_after_merge_count": int(len(_urls_after_merge_norm)),
+                        "urls_after_merge_set_hash": _inj_diag_set_hash(_urls_after_merge_norm),
+                        "inj_extra_urls_norm": list(_inj_extra_urls or []),
+                        "inj_merge_applied": bool(_inj_extra_urls),
+                        "inj_admission_decisions": _admission_decisions,
+                    })
 
-                    # =====================================================================
-                    # PATCH INJ_TRACE_V1_ENRICH_EVOLUTION_REPLAY_ARTIFACTS (ADDITIVE)
-                    # Populate attempted/persisted for injected URLs from scraped_meta/cur_bsc
-                    # even when replay fastpath returns early.
-                    # Also attach an explicit reason when injected URLs are present but not
-                    # admitted/hashed due to replay semantics.
-                    # =====================================================================
-                    try:
-                        if isinstance(_diag, dict):
-                            # Enrich from scraped_meta (injected only) and from BSC (all)
-                            _diag = _inj_trace_v1_enrich_diag_from_scraped_meta(_diag, scraped_meta, (_inj_extra_urls or []))
-                            _diag = _inj_trace_v1_enrich_diag_from_bsc(_diag, cur_bsc if isinstance(cur_bsc, list) else [])
-                            # Explain replay semantics when UI extras exist
-                            _ui_norm = _inj_diag_norm_url_list(_diag.get("ui_norm") or [])
-                            if _ui_norm:
-                                _diag.setdefault("admission_reason", "fastpath_replay_no_rebuild_no_admission")
-                                _diag.setdefault("injection_effective", False)
-                    except Exception:
-                        pass
-                    # =====================================================================
-
-                    _hash_inputs_replay = _inj_diag_hash_inputs_from_bsc(cur_bsc)
-                    _trace_replay = _inj_trace_v1_build(
-                        diag_injected_urls=_diag,
-                        hash_inputs=_hash_inputs_replay,
-                        stage="evolution",
-                        path="fastpath_replay",
-                        rebuild_pool=None,
-                        rebuild_selected=None,
-                    )
-                    out_replay.setdefault("results", {})
-                    if isinstance(out_replay.get("results"), dict):
-                        out_replay["results"].setdefault("debug", {})
-                        if isinstance(out_replay["results"].get("debug"), dict):
-                            out_replay["results"]["debug"]["inj_trace_v1"] = _trace_replay
-                except Exception:
-                    pass
-                # =====================================================================
-                # END PATCH EVO_INJ_TRACE_REPLAY1
-                # =====================================================================
-                return out_replay
-
-            # Step 5: Changed -> run deterministic evolution diff using existing machinery.
-            # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
-            wc = {"scraped_meta": scraped_meta}
-            # =====================================================================
-            # PATCH FIX40 (ADDITIVE): Preserve caller flags (e.g., force_rebuild) into web_context
-            # so downstream diff/rebuild logic can record provenance if needed.
-            # =====================================================================
-            try:
-                if isinstance(web_context, dict):
-                    wc.update({k: v for k, v in web_context.items() if k != "scraped_meta"})
-            except Exception:
-                pass
-            # =====================================================================
+            # Also attach to diag_injected_urls for unified downstream reporting
+            web_context.setdefault("diag_injected_urls", {})
+            if isinstance(web_context.get("diag_injected_urls"), dict):
+                web_context["diag_injected_urls"].setdefault("admission_decisions", {})
+                if isinstance(web_context["diag_injected_urls"].get("admission_decisions"), dict):
+                    web_context["diag_injected_urls"]["admission_decisions"].update(_admission_decisions)
+                web_context["diag_injected_urls"].setdefault("urls_prev_full_norm", _urls_prev_full_norm)
+                web_context["diag_injected_urls"].setdefault("urls_after_merge_norm", _urls_after_merge_norm)
+    except Exception:
+        pass
+    # =====================================================================
 
 
+    scraped_meta = _fix24_build_scraped_meta(urls)
 
-            if callable(run_source_anchored_evolution_BASE):
-                try:
-                    out = run_source_anchored_evolution_BASE(prev_full, web_context=wc)
-                    if isinstance(out, dict):
-                        out.setdefault("debug", {})
-                        if isinstance(out["debug"], dict):
-                            out["debug"]["fix24"] = True
-                            out["debug"]["fix24_mode"] = "recompute_changed"
-                            # =====================================================================
-                            # PATCH FIX40 (ADDITIVE): record Scenario B override
-                            # =====================================================================
-                            out["debug"]["fix40_force_rebuild"] = bool(_force_rebuild)
-                            # =====================================================================
+    # Step 3: Normalize into baseline_sources_cache and hash
+    cur_bsc = _fix24_baseline_sources_cache_from_scraped_meta(scraped_meta)
+
+    # =====================================================================
+    # PATCH EVO_INJECTED_URLS_AS_CURRENT_SOURCES_V1 (ADDITIVE):
+    # Policy + wiring alignment for Evolution UI injected URLs
+    #
+    # Goal:
+    # - Treat Evolution-tab injected URLs as part of the *current source universe*
+    #   for hash identity *when they fetch successfully*, consistent with baseline
+    #   sources (successful snapshots contribute to identity).
+    #
+    # Behavior (safe):
+    # - If an injected URL was provided (web_context['extra_urls']) and its scrape
+    #   status is success, it must appear in cur_bsc so that hash inputs can include it.
+    # - If success-but-missing occurs (unexpected), we add a synthetic url-only entry
+    #   tagged for hash identity (debug only; no numbers).
+    # - If fetch failed, we do NOT force hash mismatch (consistent with policy),
+    #   but we record explicit attempted status + reason into diagnostics.
+    #
+    # Safety:
+    # - Does NOT alter fastpath eligibility logic directly; it only ensures that
+    #   the identity inputs reflect the actual successfully fetched current sources.
+    # - Purely additive; never removes or refactors existing logic.
+    # =====================================================================
+    try:
+        _inj_sm = scraped_meta if isinstance(scraped_meta, dict) else {}
+        _inj_attempted_rows = []
+        _inj_success_urls = set()
+        for _u in (_inj_extra_urls or []):
+            _m = _inj_sm.get(_u) if isinstance(_inj_sm.get(_u), dict) else {}
+            _st = str(_m.get('status') or _m.get('fetch_status') or '')
+            _reason = str(_m.get('status_detail') or _m.get('fail_reason') or '')
+            _clen = _m.get('clean_text_len') or _m.get('content_len') or 0
+            _inj_attempted_rows.append({
+                'url': _u,
+                'status': _st or 'unknown',
+                'reason': _reason,
+                'content_len': int(_clen) if str(_clen).isdigit() else 0,
+            })
+            if (_st or '').lower() in ('success','ok','fetched'):
+                _inj_success_urls.add(_u)
+
+        # Ensure success injected urls are represented in cur_bsc (hash identity)
+        if _inj_success_urls and isinstance(cur_bsc, list):
+            _bsc_urls = set()
+            for _row in cur_bsc:
+                if isinstance(_row, dict):
+                    _bu = str(_row.get('url') or _row.get('source_url') or '').strip()
+                    if _bu:
+                        _bsc_urls.add(_bu)
+            _missing_success = sorted(list(_inj_success_urls - _bsc_urls))
+            for _u in _missing_success:
+                cur_bsc.append({
+                    'url': _u,
+                    'status': 'success',
+                    'status_detail': 'synthetic_success_missing_in_bsc',
+                    'clean_text': '',
+                    'clean_text_len': 0,
+                    'extracted_numbers': [],
+                    'numbers_found': 0,
+                    'fingerprint': 'synthetic_url_only_for_hash',
+                    'is_synthetic_for_hash': True,
+                })
+
+        # Write attempted status into web_context diagnostics for transparency
+        if isinstance(web_context, dict):
+            web_context.setdefault('diag_injected_urls', {})
+            if isinstance(web_context.get('diag_injected_urls'), dict):
+                web_context['diag_injected_urls'].setdefault('attempted', [])
+                # Only overwrite if empty to avoid clobbering richer traces
+                if not web_context['diag_injected_urls'].get('attempted'):
+                    web_context['diag_injected_urls']['attempted'] = _inj_attempted_rows
+                web_context['diag_injected_urls']['success_urls'] = sorted(list(_inj_success_urls))
+    except Exception:
+        pass
+    # =====================================================================
+
+    cur_hashes = _fix24_compute_current_hashes(cur_bsc)
+
+    # =====================================================================
+
+    # PATCH INJ_DIAG_EVO_DEBUG (ADDITIVE): record injected URL lifecycle (B1)
+    # =====================================================================
+    try:
+        _hash_inputs = _inj_diag_hash_inputs_from_bsc(cur_bsc)
+        if isinstance(web_context, dict):
+            web_context.setdefault("diag_injected_urls", {})
+            if isinstance(web_context.get("diag_injected_urls"), dict):
+                web_context["diag_injected_urls"].update({
+                    "run_id": _inj_diag_run_id,
+                    "ui_raw": (web_context or {}).get("diag_extra_urls_ui_raw") or "",
+                    "ui_norm": _inj_extra_urls,
+                    "intake_norm": _inj_extra_urls,
+                    "admitted": list(urls or []),
+                    "hash_inputs": _hash_inputs,
+                    "injected_in_hash_inputs": sorted(list(set(_inj_extra_urls) & set(_hash_inputs))),
+                    "set_hashes": {
+                        "hash_inputs": _inj_diag_set_hash(_hash_inputs),
+                        "admitted": _inj_diag_set_hash(list(urls or [])),
+                    }
+                })
+    except Exception:
+        pass
+    # =====================================================================
+
+
+
+    # Step 4: Compare (v2 preferred)
+    equal_v2 = bool(prev_hashes.get("v2") and cur_hashes.get("v2") and prev_hashes["v2"] == cur_hashes["v2"])
+    equal_v1 = bool(prev_hashes.get("v1") and cur_hashes.get("v1") and prev_hashes["v1"] == cur_hashes["v1"])
+    unchanged = equal_v2 or (not prev_hashes.get("v2") and equal_v1)
+
+    # =====================================================================
+    # PATCH FIX40 (ADDITIVE): Force rebuild override (Scenario B)
+    # If the UI (or caller) requests force_rebuild, we intentionally bypass
+    # the unchanged fastpath even if hashes match, to exercise rebuild logic.
+    # =====================================================================
+    _force_rebuild = False
+    try:
+        _force_rebuild = bool((web_context or {}).get("force_rebuild"))
+    except Exception:
+        _force_rebuild = False
+    if _force_rebuild:
+        unchanged = False
+        _fix41_force_rebuild_honored = True
+    else:
+        _fix41_force_rebuild_honored = False
+    # =====================================================================
+
+    if unchanged:
+        hashes = {
+            "prev_v2": prev_hashes.get("v2",""),
+            "cur_v2": cur_hashes.get("v2",""),
+            "prev_v1": prev_hashes.get("v1",""),
+            "cur_v1": cur_hashes.get("v1",""),
+        }
+        out_replay = _fix24_make_replay_output(prev_full, hashes)
         # =====================================================================
+        # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to replay output
         # =====================================================================
-        # =====================================================================
-        # =====================================================================
-                            out["debug"]["prev_source_snapshot_hash_v2"] = prev_hashes.get("v2","")
-                            out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
-                            out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
-                            out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
-                    return out
-                except Exception as e:
-                    # Fall through to original behavior if anything unexpected
-                    pass
-
-            # Ultimate fallback: call compute_source_anchored_diff directly if base runner not available
-            fn = globals().get("compute_source_anchored_diff")
-            if callable(fn):
-                try:
-                    out_changed = fn(prev_full, web_context=wc)
-                    # =====================================================================
-                    # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to changed output
-                    # =====================================================================
-                    try:
-                        if isinstance(out_changed, dict):
-                            out_changed.setdefault("code_version", CODE_VERSION)
-                            out_changed.setdefault("debug", {}).setdefault("fix41", {})
-                            out_changed["debug"]["fix41"].update({
-                                "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
-                                "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)) or bool(_fix41_force_rebuild_seen),
-                                "path": "changed_compute_source_anchored_diff",
-                            })
-                    except Exception:
-                        pass
-                    return out_changed
-                except Exception:
-                    pass
-
-            return {
-                "status": "failed",
-                "message": "FIX24: Evolution recompute failed (no callable base evolution runner).",
-                "sources_checked": len(urls),
-                "sources_fetched": len(urls),
-                "metric_changes": [],
-                "debug": {"fix24": True, "fix24_mode": "recompute_failed"},
-            }
-
-
-        # ==============================================================================
-        # FIX32 (ADDITIVE): Unit-required hard gate in evolution diff rendering
-        #
-        # Problem:
-        # - Evolution diff table can show unit-less / year-like integers (e.g. 2024, 2033, 1500)
-        #   in the "Current" column for metrics whose schema requires currency/percent/rate/ratio.
-        # - This happens when upstream selection or LLM delta yields a numeric candidate that lacks
-        #   token-level unit evidence (unit_tag/unit_family/base_unit empty), and the diff layer
-        #   currently treats it as a valid numeric current value.
-        #
-        # Target invariant:
-        # - For any metric with unit_family in {currency, percent, rate, ratio} (or with a non-empty
-        #   unit_tag/unit), a unit-less candidate must be treated as ineligible and must not be
-        #   rendered as a valid "Current" value in the evolution table/output.
-        #
-        # Approach (purely additive):
-        # - Preserve existing diff implementation as diff_metrics_by_name_FIX31_BASE.
-        # - Override diff_metrics_by_name with a wrapper that post-processes each row:
-        #     * if schema says unit is required AND current unit evidence is missing,
-        #       then mark unit_mismatch=True and render current_value="N/A" (and cur_value_norm=None).
-        # - No refactors; does not change upstream extraction/building logic, only prevents
-        #   unit-less values from appearing as "valid" in evolution output.
-        # ==============================================================================
         try:
-            diff_metrics_by_name_FIX31_BASE = diff_metrics_by_name  # type: ignore
+            if isinstance(out_replay, dict):
+                out_replay.setdefault("code_version", CODE_VERSION)
+                out_replay.setdefault("debug", {}).setdefault("fix41", {})
+                out_replay["debug"]["fix41"].update({
+                    "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
+                    "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)),
+                    "path": "replay_unchanged",
+                })
         except Exception:
-            diff_metrics_by_name_FIX31_BASE = None  # type: ignore
+            pass
 
-        def _fix32_metric_requires_unit(metric_def: dict) -> bool:
-            """Return True if schema implies this metric requires unit evidence."""
+        # =====================================================================
+        # PATCH EVO_INJ_TRACE_REPLAY1 (ADDITIVE): emit inj_trace_v1 even on replay fastpath
+        # Why:
+        # - The FIX24 replay path returns early (skipping compute_source_anchored_diff),
+        #   which previously meant results.debug.inj_trace_v1 might be missing.
+        # - We need injected-URL lifecycle visibility even when hashes match (fastpath/replay)
+        #   to validate UI wiring and to explain why a mismatch did/did not occur.
+        # Safety:
+        # - Pure debug emission only; does NOT affect hash logic, scraping, or fastpath decisions.
+        # =====================================================================
+        try:
+            _wc = web_context if isinstance(web_context, dict) else {}
+            _diag = _wc.get("diag_injected_urls") if isinstance(_wc.get("diag_injected_urls"), dict) else {}
+
+            # =====================================================================
+            # PATCH INJ_TRACE_V1_ENRICH_EVOLUTION_REPLAY_ARTIFACTS (ADDITIVE)
+            # Populate attempted/persisted for injected URLs from scraped_meta/cur_bsc
+            # even when replay fastpath returns early.
+            # Also attach an explicit reason when injected URLs are present but not
+            # admitted/hashed due to replay semantics.
+            # =====================================================================
             try:
-                spec = metric_def if isinstance(metric_def, dict) else {}
-                uf = str(spec.get("unit_family") or "").strip().lower()
-                ut = str(spec.get("unit_tag") or spec.get("unit") or "").strip()
-                # Core families we treat as unit-required
-                if uf in ("currency", "percent", "rate", "ratio"):
-                    return True
-                # If schema explicitly declares a unit tag/unit, treat as required (except year/time-ish)
-                if ut:
-                    # Avoid requiring "year" units
-                    blob = (uf + " " + ut + " " + str(spec.get("name") or "")).lower()
-                    if "year" in blob or "time" in blob:
-                        return False
-                    return True
+                if isinstance(_diag, dict):
+                    # Enrich from scraped_meta (injected only) and from BSC (all)
+                    _diag = _inj_trace_v1_enrich_diag_from_scraped_meta(_diag, scraped_meta, (_inj_extra_urls or []))
+                    _diag = _inj_trace_v1_enrich_diag_from_bsc(_diag, cur_bsc if isinstance(cur_bsc, list) else [])
+                    # Explain replay semantics when UI extras exist
+                    _ui_norm = _inj_diag_norm_url_list(_diag.get("ui_norm") or [])
+                    if _ui_norm:
+                        _diag.setdefault("admission_reason", "fastpath_replay_no_rebuild_no_admission")
+                        _diag.setdefault("injection_effective", False)
             except Exception:
                 pass
-            return False
+            # =====================================================================
 
-        def _fix32_has_token_unit_evidence(metric_row: dict) -> bool:
-            """
-            Token-level unit evidence heuristic:
-            - Prefer structured fields: base_unit/unit/unit_tag/unit_family
-            - Fall back to raw token containing '$' or '%' or currency code immediately adjacent.
-            Deterministic; does NOT attempt any NLP.
-            """
+            _hash_inputs_replay = _inj_diag_hash_inputs_from_bsc(cur_bsc)
+            _trace_replay = _inj_trace_v1_build(
+                diag_injected_urls=_diag,
+                hash_inputs=_hash_inputs_replay,
+                stage="evolution",
+                path="fastpath_replay",
+                rebuild_pool=None,
+                rebuild_selected=None,
+            )
+            out_replay.setdefault("results", {})
+            if isinstance(out_replay.get("results"), dict):
+                out_replay["results"].setdefault("debug", {})
+                if isinstance(out_replay["results"].get("debug"), dict):
+                    out_replay["results"]["debug"]["inj_trace_v1"] = _trace_replay
+        except Exception:
+            pass
+        # =====================================================================
+        # END PATCH EVO_INJ_TRACE_REPLAY1
+        # =====================================================================
+        return out_replay
+
+    # Step 5: Changed -> run deterministic evolution diff using existing machinery.
+    # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
+    wc = {"scraped_meta": scraped_meta}
+    # =====================================================================
+    # PATCH FIX40 (ADDITIVE): Preserve caller flags (e.g., force_rebuild) into web_context
+    # so downstream diff/rebuild logic can record provenance if needed.
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            wc.update({k: v for k, v in web_context.items() if k != "scraped_meta"})
+    except Exception:
+        pass
+    # =====================================================================
+
+
+
+    if callable(run_source_anchored_evolution_BASE):
+        try:
+            out = run_source_anchored_evolution_BASE(prev_full, web_context=wc)
+            if isinstance(out, dict):
+                out.setdefault("debug", {})
+                if isinstance(out["debug"], dict):
+                    out["debug"]["fix24"] = True
+                    out["debug"]["fix24_mode"] = "recompute_changed"
+                    # =====================================================================
+                    # PATCH FIX40 (ADDITIVE): record Scenario B override
+                    # =====================================================================
+                    out["debug"]["fix40_force_rebuild"] = bool(_force_rebuild)
+                    # =====================================================================
+# =====================================================================
+# =====================================================================
+# =====================================================================
+# =====================================================================
+                    out["debug"]["prev_source_snapshot_hash_v2"] = prev_hashes.get("v2","")
+                    out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
+                    out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
+                    out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
+            return out
+        except Exception as e:
+            # Fall through to original behavior if anything unexpected
+            pass
+
+    # Ultimate fallback: call compute_source_anchored_diff directly if base runner not available
+    fn = globals().get("compute_source_anchored_diff")
+    if callable(fn):
+        try:
+            out_changed = fn(prev_full, web_context=wc)
+            # =====================================================================
+            # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to changed output
+            # =====================================================================
             try:
-                m = metric_row if isinstance(metric_row, dict) else {}
-                for k in ("base_unit", "unit", "unit_tag", "unit_family"):
-                    if str(m.get(k) or "").strip():
-                        return True
-
-                raw = str(m.get("raw") or m.get("value") or "")
-                if not raw:
-                    return False
-                r = raw.strip()
-                rl = r.lower()
-
-                # direct symbol evidence on the token
-                if any(sym in r for sym in ("$", "€", "£", "¥", "%")):
-                    return True
-
-                # compact currency codes adjacent to the token
-                # NOTE: keep conservative (requires code in same token string)
-                if any(code in rl for code in ("usd", "sgd", "eur", "gbp", "aud", "cad", "jpy", "cny")):
-                    return True
-
+                if isinstance(out_changed, dict):
+                    out_changed.setdefault("code_version", CODE_VERSION)
+                    out_changed.setdefault("debug", {}).setdefault("fix41", {})
+                    out_changed["debug"]["fix41"].update({
+                        "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
+                        "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)) or bool(_fix41_force_rebuild_seen),
+                        "path": "changed_compute_source_anchored_diff",
+                    })
             except Exception:
+                pass
+            return out_changed
+        except Exception:
+            pass
+
+    return {
+        "status": "failed",
+        "message": "FIX24: Evolution recompute failed (no callable base evolution runner).",
+        "sources_checked": len(urls),
+        "sources_fetched": len(urls),
+        "metric_changes": [],
+        "debug": {"fix24": True, "fix24_mode": "recompute_failed"},
+    }
+
+
+# ==============================================================================
+# FIX32 (ADDITIVE): Unit-required hard gate in evolution diff rendering
+#
+# Problem:
+# - Evolution diff table can show unit-less / year-like integers (e.g. 2024, 2033, 1500)
+#   in the "Current" column for metrics whose schema requires currency/percent/rate/ratio.
+# - This happens when upstream selection or LLM delta yields a numeric candidate that lacks
+#   token-level unit evidence (unit_tag/unit_family/base_unit empty), and the diff layer
+#   currently treats it as a valid numeric current value.
+#
+# Target invariant:
+# - For any metric with unit_family in {currency, percent, rate, ratio} (or with a non-empty
+#   unit_tag/unit), a unit-less candidate must be treated as ineligible and must not be
+#   rendered as a valid "Current" value in the evolution table/output.
+#
+# Approach (purely additive):
+# - Preserve existing diff implementation as diff_metrics_by_name_FIX31_BASE.
+# - Override diff_metrics_by_name with a wrapper that post-processes each row:
+#     * if schema says unit is required AND current unit evidence is missing,
+#       then mark unit_mismatch=True and render current_value="N/A" (and cur_value_norm=None).
+# - No refactors; does not change upstream extraction/building logic, only prevents
+#   unit-less values from appearing as "valid" in evolution output.
+# ==============================================================================
+try:
+    diff_metrics_by_name_FIX31_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_FIX31_BASE = None  # type: ignore
+
+def _fix32_metric_requires_unit(metric_def: dict) -> bool:
+    """Return True if schema implies this metric requires unit evidence."""
+    try:
+        spec = metric_def if isinstance(metric_def, dict) else {}
+        uf = str(spec.get("unit_family") or "").strip().lower()
+        ut = str(spec.get("unit_tag") or spec.get("unit") or "").strip()
+        # Core families we treat as unit-required
+        if uf in ("currency", "percent", "rate", "ratio"):
+            return True
+        # If schema explicitly declares a unit tag/unit, treat as required (except year/time-ish)
+        if ut:
+            # Avoid requiring "year" units
+            blob = (uf + " " + ut + " " + str(spec.get("name") or "")).lower()
+            if "year" in blob or "time" in blob:
                 return False
+            return True
+    except Exception:
+        pass
+    return False
+
+def _fix32_has_token_unit_evidence(metric_row: dict) -> bool:
+    """
+    Token-level unit evidence heuristic:
+    - Prefer structured fields: base_unit/unit/unit_tag/unit_family
+    - Fall back to raw token containing '$' or '%' or currency code immediately adjacent.
+    Deterministic; does NOT attempt any NLP.
+    """
+    try:
+        m = metric_row if isinstance(metric_row, dict) else {}
+        for k in ("base_unit", "unit", "unit_tag", "unit_family"):
+            if str(m.get(k) or "").strip():
+                return True
+
+        raw = str(m.get("raw") or m.get("value") or "")
+        if not raw:
             return False
+        r = raw.strip()
+        rl = r.lower()
 
-        def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
-            """
-            FIX32 wrapper: calls existing diff, then enforces the unit-required hard gate at render time.
-            """
-            if not callable(diff_metrics_by_name_FIX31_BASE):
-                # Fallback: nothing we can do
-                return ([], 0, 0, 0, 0)
+        # direct symbol evidence on the token
+        if any(sym in r for sym in ("$", "€", "£", "¥", "%")):
+            return True
 
-            metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_FIX31_BASE(prev_response, cur_response)
+        # compact currency codes adjacent to the token
+        # NOTE: keep conservative (requires code in same token string)
+        if any(code in rl for code in ("usd", "sgd", "eur", "gbp", "aud", "cad", "jpy", "cny")):
+            return True
 
-            try:
-                if not isinstance(metric_changes, list):
-                    return metric_changes, unchanged, increased, decreased, found
+    except Exception:
+        return False
+    return False
 
-                for row in metric_changes:
-                    if not isinstance(row, dict):
-                        continue
+def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
+    """
+    FIX32 wrapper: calls existing diff, then enforces the unit-required hard gate at render time.
+    """
+    if not callable(diff_metrics_by_name_FIX31_BASE):
+        # Fallback: nothing we can do
+        return ([], 0, 0, 0, 0)
 
-                    md = row.get("metric_definition") or {}
-                    if not _fix32_metric_requires_unit(md):
-                        continue
+    metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_FIX31_BASE(prev_response, cur_response)
 
-                    cur_unit_cmp = str(row.get("cur_unit_cmp") or "").strip()
-                    # If diff already says mismatch, keep it; we only add the missing-unit mismatch
-                    if cur_unit_cmp:
-                        continue
-
-                    # Determine whether the current-side metric row shows any unit evidence at all
-                    # We use the current canonical row when present; else fall back to row fields.
-                    cur_metrics = (cur_response or {}).get("primary_metrics_canonical") or {}
-                    ck = row.get("canonical_key") or ""
-                    cm = cur_metrics.get(ck) if isinstance(cur_metrics, dict) else None
-
-                    has_ev = _fix32_has_token_unit_evidence(cm or {})
-                    if not has_ev:
-                        # Enforce: missing unit where required => mismatch + no current value rendered
-                        row["unit_mismatch"] = True
-                        row["cur_unit_cmp"] = ""
-                        row["current_value"] = "N/A"
-                        row["cur_value_norm"] = None
-
-                        # Make the reason machine-detectable (non-breaking extra field)
-                        row.setdefault("guardrail_reason", "unit_required_missing_current_unit")
-
-                        # Re-classify change as unit_mismatch (keeps deterministic reporting)
-                        row["change_type"] = "unit_mismatch"
-                        row["change_pct"] = None
-
-            except Exception:
-                pass
-
+    try:
+        if not isinstance(metric_changes, list):
             return metric_changes, unchanged, increased, decreased, found
 
-        # ==============================================================================
-        # END FIX32
-        # ==============================================================================
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+
+            md = row.get("metric_definition") or {}
+            if not _fix32_metric_requires_unit(md):
+                continue
+
+            cur_unit_cmp = str(row.get("cur_unit_cmp") or "").strip()
+            # If diff already says mismatch, keep it; we only add the missing-unit mismatch
+            if cur_unit_cmp:
+                continue
+
+            # Determine whether the current-side metric row shows any unit evidence at all
+            # We use the current canonical row when present; else fall back to row fields.
+            cur_metrics = (cur_response or {}).get("primary_metrics_canonical") or {}
+            ck = row.get("canonical_key") or ""
+            cm = cur_metrics.get(ck) if isinstance(cur_metrics, dict) else None
+
+            has_ev = _fix32_has_token_unit_evidence(cm or {})
+            if not has_ev:
+                # Enforce: missing unit where required => mismatch + no current value rendered
+                row["unit_mismatch"] = True
+                row["cur_unit_cmp"] = ""
+                row["current_value"] = "N/A"
+                row["cur_value_norm"] = None
+
+                # Make the reason machine-detectable (non-breaking extra field)
+                row.setdefault("guardrail_reason", "unit_required_missing_current_unit")
+
+                # Re-classify change as unit_mismatch (keeps deterministic reporting)
+                row["change_type"] = "unit_mismatch"
+                row["change_pct"] = None
+
+    except Exception:
+        pass
+
+    return metric_changes, unchanged, increased, decreased, found
+
+# ==============================================================================
+# END FIX32
+# ==============================================================================
