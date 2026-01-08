@@ -1,4 +1,4 @@
-## ===============================================================================
+# ===============================================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.41
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc32_evo_value_range_mandatory_rescale_scorecard_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc33_unit_family_schema_unit_required_reason_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -115,13 +115,13 @@ CODE_VERSION = "fix41afc32_evo_value_range_mandatory_rescale_scorecard_v1"  # PA
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "fix41afc32_evo_value_range_mandatory_rescale_scorecard_v1"
+CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
 # =====================================================================
 # PATCH FIX41AFC20 (ADDITIVE): bump CODE_VERSION to this file version
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
+CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
 # =====================================================================
 
 # =====================================================================
@@ -26390,3 +26390,214 @@ try:
 except Exception:
     pass
 # PATCH FIX41AFC32_VERSION END
+
+
+
+
+# =====================================================================
+# PATCH FIX41AFC33 START (ADDITIVE): unit_family fill + schema unit-required hard block + blocked_reason fill
+# =====================================================================
+try:
+    _fix41afc33__orig_diff_metrics_by_name = diff_metrics_by_name
+except Exception:
+    _fix41afc33__orig_diff_metrics_by_name = None
+
+def _fix41afc33_infer_unit_family(cand: dict) -> str:
+    """Best-effort deterministic unit_family inference from existing fields (ADDITIVE)."""
+    try:
+        uf = (cand or {}).get("unit_family")
+        if isinstance(uf, str) and uf.strip():
+            return uf.strip()
+
+        unit = " ".join([
+            str((cand or {}).get("unit") or ""),
+            str((cand or {}).get("unit_tag") or ""),
+            str((cand or {}).get("base_unit") or "")
+        ]).strip().lower()
+
+        ctx = " ".join([
+            str((cand or {}).get("raw") or ""),
+            str((cand or {}).get("raw_disp") or ""),
+            str((cand or {}).get("context") or ""),
+            str((cand or {}).get("measure_assoc") or "")
+        ]).strip().lower()
+
+        # Percent
+        if "%" in unit or "percent" in unit or "%" in ctx or "percent" in ctx:
+            return "percent"
+
+        # Currency (symbols or ISO-ish codes)
+        currency_codes = ["usd","sgd","eur","gbp","jpy","cny","rmb","aud","cad","chf","inr","hkd","nzd","sek","nok","dkk","krw","twd"]
+        if any(code in unit.split() for code in currency_codes) or any(sym in ctx for sym in ["$", "€", "£", "¥"]):
+            return "currency"
+
+        # Energy-ish
+        if any(tok in unit for tok in ["kwh","mwh","gwh","twh"]) or any(tok in ctx for tok in ["kwh","mwh","gwh","twh"]):
+            return "energy"
+
+        # Magnitude / scale tags
+        # (keep conservative: only label magnitude when explicit scale tokens appear)
+        if any(tok in unit for tok in ["million","billion","trillion","thousand"]) or any(tok in ctx for tok in ["million","billion","trillion","thousand"]):
+            return "magnitude"
+        # short tags K/M/B/T
+        short = (str((cand or {}).get("unit_tag") or "") or str((cand or {}).get("base_unit") or "")).strip().lower()
+        if short in ("k","m","b","t"):
+            return "magnitude"
+
+        return ""
+    except Exception:
+        return ""
+
+def _fix41afc33_fill_unit_family_in_obj(obj):
+    """Walk common snapshot/source structures and fill unit_family on extracted_numbers candidates (ADDITIVE)."""
+    try:
+        if obj is None:
+            return
+
+        if isinstance(obj, dict):
+            # Direct extracted_numbers list
+            if isinstance(obj.get("extracted_numbers"), list):
+                for cand in obj["extracted_numbers"]:
+                    if isinstance(cand, dict):
+                        uf = _fix41afc33_infer_unit_family(cand)
+                        if uf and not str(cand.get("unit_family") or "").strip():
+                            cand["unit_family"] = uf
+                            cand["_unit_family_inferred_fix41afc33"] = True
+
+            # Recurse into likely containers
+            for k, v in list(obj.items()):
+                if isinstance(v, (dict, list)):
+                    _fix41afc33_fill_unit_family_in_obj(v)
+
+        elif isinstance(obj, list):
+            for it in obj:
+                if isinstance(it, (dict, list)):
+                    _fix41afc33_fill_unit_family_in_obj(it)
+    except Exception:
+        pass
+
+def _fix41afc33_schema_implies_unit_required(schema: dict) -> bool:
+    """Schema-driven unit-required: if schema expects percent/currency/magnitude (or has unit_tag), require explicit unit evidence."""
+    try:
+        if not isinstance(schema, dict):
+            return False
+        dim = str(schema.get("dimension") or "").strip().lower()
+        uf  = str(schema.get("unit_family") or "").strip().lower()
+        ut  = str(schema.get("unit_tag") or "").strip()
+        u   = str(schema.get("unit") or "").strip()
+
+        if ut or u:
+            return True
+        if uf in ("percent","currency","magnitude","energy"):
+            return True
+        if dim in ("percent","currency","unit_sales","energy","price","rate","ratio"):
+            return True
+        return False
+    except Exception:
+        return False
+
+def _fix41afc33_has_any_unit_evidence(row: dict) -> bool:
+    try:
+        return any([
+            str(row.get("cur_unit_cmp") or "").strip(),
+            str(row.get("cur_unit_family") or "").strip(),
+            str(row.get("cur_unit_tag") or "").strip(),
+            str(row.get("cur_base_unit") or "").strip(),
+        ])
+    except Exception:
+        return False
+
+def diff_metrics_by_name(prev_response: dict, cur_response: dict):
+    """Wrapper (ADDITIVE) to enforce schema-unit-required + blocked_reason fill; preserves prior behavior."""
+    if _fix41afc33__orig_diff_metrics_by_name is None:
+        return ([], [], [], [], [])
+
+    out = _fix41afc33__orig_diff_metrics_by_name(prev_response, cur_response)
+
+    try:
+        metric_changes = out[0] if isinstance(out, (list, tuple)) and len(out) > 0 else []
+        if isinstance(metric_changes, list):
+            for row in metric_changes:
+                if not isinstance(row, dict):
+                    continue
+
+                # Ensure unit_family inference is available for display/debug
+                if not str(row.get("cur_unit_family") or "").strip():
+                    # Try infer from current row-level unit fields
+                    pseudo = {
+                        "unit": row.get("cur_unit_cmp") or "",
+                        "unit_tag": row.get("cur_unit_tag") or "",
+                        "base_unit": row.get("cur_base_unit") or "",
+                        "raw_disp": row.get("cur_raw") or "",
+                        "context": row.get("cur_context") or "",
+                    }
+                    uf = _fix41afc33_infer_unit_family(pseudo)
+                    if uf:
+                        row["cur_unit_family"] = uf
+                        row["_cur_unit_family_inferred_fix41afc33"] = True
+
+                schema = row.get("metric_definition") if isinstance(row.get("metric_definition"), dict) else {}
+                cur_value_norm = row.get("cur_value_norm")
+                cur_blocked_reason = str(row.get("cur_value_blocked_reason") or "").strip()
+
+                # Schema-unit-required hard block (dashboard safety) — applies even when dimension is unknown
+                if cur_value_norm is not None and str(row.get("current_value") or "").strip() != "":
+                    if _fix41afc33_schema_implies_unit_required(schema) and (not _fix41afc33_has_any_unit_evidence(row)):
+                        row["current_value"] = ""
+                        row["cur_value_norm"] = None
+                        row["cur_unit_cmp"] = ""
+                        if not cur_blocked_reason:
+                            row["cur_value_blocked_reason"] = "unit_required_missing_fix41afc33"
+                        continue
+
+                # Always populate blocked reason if blanked (debuggability)
+                if str(row.get("current_value") or "") == "" and (row.get("cur_value_norm") is None):
+                    if not cur_blocked_reason:
+                        if bool(row.get("unit_mismatch")):
+                            row["cur_value_blocked_reason"] = "unit_mismatch_hard_block"
+                        else:
+                            row["cur_value_blocked_reason"] = "blanked_unspecified_fix41afc33"
+    except Exception:
+        pass
+
+    return out
+
+# =====================================================================
+# PATCH FIX41AFC33 END
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX41AFC33B START (ADDITIVE): Fill unit_family in artifacts prior to rebuild (non-behavioral enrichment)
+# =====================================================================
+try:
+    _fix41afc33__orig_rebuild_fix18 = rebuild_metrics_from_snapshots_schema_only_fix18
+except Exception:
+    _fix41afc33__orig_rebuild_fix18 = None
+
+def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """Wrapper (ADDITIVE): enrich candidates with inferred unit_family before calling FIX18 rebuild."""
+    try:
+        # Fill in baseline artifacts + cur/prev source_results structures if present
+        _fix41afc33_fill_unit_family_in_obj(baseline_sources_cache)
+        if isinstance(prev_response, dict):
+            _fix41afc33_fill_unit_family_in_obj(prev_response.get("results", {}).get("source_results"))
+            _fix41afc33_fill_unit_family_in_obj(prev_response.get("baseline_sources_cache"))
+    except Exception:
+        pass
+
+    if _fix41afc33__orig_rebuild_fix18 is None:
+        return {}
+    return _fix41afc33__orig_rebuild_fix18(prev_response, baseline_sources_cache, web_context=web_context)
+
+# =====================================================================
+# PATCH FIX41AFC33B END
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX41AFC33_VERSION (ADDITIVE): Version bump for auditability
+# =====================================================================
+try:
+    CODE_VERSION = "fix41afc33_unit_family_schema_unit_required_reason_v1"
+except Exception:
+    pass
+# =====================================================================
