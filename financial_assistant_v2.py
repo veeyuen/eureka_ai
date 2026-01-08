@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc26_evo_schema_authoritative_rebuild_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc27_evo_anchor_scoped_value_range_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -23918,6 +23918,134 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
     except Exception:
         pass
 # PATCH FIX41AFC26 END
+    # PATCH FIX41AFC27 START
+    # Anchor-scoped value_range parity:
+    # When an anchor exists/was used, restrict value_range construction to the
+    # anchor neighborhood to avoid misleading ultra-wide ranges from unrelated
+    # snapshot candidates (presentation-only; does NOT change selection).
+    try:
+        _vr_scoped_keys_fix41afc27 = []
+        _metric_anchors_fix41afc27 = None
+        try:
+            _metric_anchors_fix41afc27 = (prev_response or {}).get("metric_anchors") or {}
+        except Exception:
+            _metric_anchors_fix41afc27 = {}
+
+        def _fix41afc27_is_truthy_anchor(v):
+            return bool(v) and str(v).lower() not in ("none", "null", "nan", "false", "0")
+
+        def _fix41afc27_fmt_range(_mn, _mx, _unit):
+            if _mn is None or _mx is None:
+                return ""
+            def _g(x):
+                try:
+                    if isinstance(x, (int, float)) and abs(x) >= 1000:
+                        return f"{x:.0f}"
+                    if isinstance(x, (int, float)) and abs(x) >= 100:
+                        return f"{x:.1f}".rstrip("0").rstrip(".")
+                    if isinstance(x, (int, float)) and abs(x) >= 10:
+                        return f"{x:.2f}".rstrip("0").rstrip(".")
+                    return f"{x:.4g}"
+                except Exception:
+                    return str(x)
+            if _mn == _mx:
+                return f"{_g(_mn)} {_unit}".strip()
+            return f"{_g(_mn)}–{_g(_mx)} {_unit}".strip()
+
+        def _fix41afc27_scope_value_range(metric_obj: dict, canonical_key: str):
+            if not isinstance(metric_obj, dict):
+                return
+            _a = (_metric_anchors_fix41afc27 or {}).get(canonical_key) or {}
+            _anchor_hash = _a.get("anchor_hash") if isinstance(_a, dict) else None
+            _anchor_used = bool(metric_obj.get("anchor_used"))
+            if not (_fix41afc27_is_truthy_anchor(_anchor_hash) or _anchor_used):
+                return
+
+            ev = metric_obj.get("evidence") or []
+            if not isinstance(ev, list) or not ev:
+                return
+
+            sel_vn = metric_obj.get("value_norm")
+            try:
+                sel_vn = float(sel_vn) if sel_vn is not None else None
+            except Exception:
+                sel_vn = None
+
+            ev_anchor = []
+            if _fix41afc27_is_truthy_anchor(_anchor_hash):
+                for e in ev:
+                    if isinstance(e, dict) and e.get("anchor_hash") == _anchor_hash:
+                        ev_anchor.append(e)
+
+            scoped = ev_anchor
+
+            if not scoped and sel_vn is not None and sel_vn != 0:
+                tol = 0.30  # +/-30% neighborhood (presentation only)
+                for e in ev:
+                    if not isinstance(e, dict):
+                        continue
+                    vn = e.get("value_norm")
+                    try:
+                        vn = float(vn) if vn is not None else None
+                    except Exception:
+                        vn = None
+                    if vn is None:
+                        continue
+                    if abs(vn - sel_vn) / abs(sel_vn) <= tol:
+                        scoped.append(e)
+
+            if not scoped:
+                return
+
+            vns = []
+            examples = []
+            for e in scoped:
+                if not isinstance(e, dict):
+                    continue
+                vn = e.get("value_norm")
+                try:
+                    vn = float(vn) if vn is not None else None
+                except Exception:
+                    vn = None
+                if vn is None:
+                    continue
+                vns.append(vn)
+                if len(examples) < 5:
+                    examples.append({
+                        "raw": e.get("raw", ""),
+                        "source_url": e.get("url") or e.get("source_url") or metric_obj.get("source_url", ""),
+                        "context_snippet": (e.get("context_snippet", "") or "")[:220]
+                    })
+
+            if not vns:
+                return
+
+            _mn, _mx = min(vns), max(vns)
+            metric_obj["value_range"] = {
+                "min": _mn,
+                "max": _mx,
+                "n": len(vns),
+                "examples": examples,
+                "method": "anchor_scoped_fix41afc27"
+            }
+            _unit_disp = metric_obj.get("unit") or metric_obj.get("unit_tag") or ""
+            metric_obj["value_range_display"] = _fix41afc27_fmt_range(_mn, _mx, _unit_disp)
+            metric_obj["_value_range_scope_fix41afc27"] = "anchor_scoped"
+            _vr_scoped_keys_fix41afc27.append(canonical_key)
+
+        if isinstance(rebuilt, dict):
+            for _ck, _m in list(rebuilt.items()):
+                _fix41afc27_scope_value_range(_m, _ck)
+
+        try:
+            prev_response.setdefault("_evolution_rebuild_debug", {})
+            prev_response["_evolution_rebuild_debug"]["value_range_scoped_fix41afc27_count"] = len(_vr_scoped_keys_fix41afc27)
+            prev_response["_evolution_rebuild_debug"]["value_range_scoped_fix41afc27_keys"] = _vr_scoped_keys_fix41afc27[:50]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # PATCH FIX41AFC27 END
     return rebuilt
 
 
@@ -25273,3 +25401,8 @@ except Exception:
 # PATCH FIX41AFC26_VERSION START
 CODE_VERSION = "fix41afc26_evo_schema_authoritative_rebuild_v1"
 # PATCH FIX41AFC26_VERSION END
+
+
+# PATCH FIX41AFC27_VERSION START
+CODE_VERSION = "fix41afc27_evo_anchor_scoped_value_range_parity_v1"
+# PATCH FIX41AFC27_VERSION END
