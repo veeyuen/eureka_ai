@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc7_evo_recover_and_latch_extra_urls_pre_core_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc8_evo_force_fetch_injected_even_if_not_admitted_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -5425,6 +5425,12 @@ def fetch_web_context(
     # PATCH FWC_IDENTITY_ONLY1 (ADDITIVE): admission-only mode (no scraping)
     # ============================================================
     identity_only: bool = False,
+    # ============================================================
+    # PATCH FIX41AFC8 (ADDITIVE): force scrape extra_urls even if not admitted
+    # - Default False: no behavior change.
+    # - When True: normalized extra URLs will be appended to admitted list for scraping.
+    # ============================================================
+    force_scrape_extra_urls: bool = False,
 ) -> dict:
 
     """
@@ -5574,6 +5580,49 @@ def fetch_web_context(
         n = 3
     n = max(1, min(12, n))
     admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
+
+    # =====================================================================
+    # PATCH FIX41AFC8 (ADDITIVE): Force-scrape normalized extra URLs even if admission filters drop them
+    #
+    # Why:
+    # - In evolution injection scenarios, extra URLs may be deliberately outside the normal
+    #   admitted universe (domain allowlists, heuristics, etc.), but the user's intent is
+    #   to attempt a fetch so the run can either persist a snapshot or fail with a concrete reason.
+    #
+    # Behavior:
+    # - When force_scrape_extra_urls=True and normalized extras exist, append them into the
+    #   admitted list (deduped, stable order) so downstream scraping attempts occur.
+    #
+    # Safety:
+    # - Default is False (no change for normal runs).
+    # - Never raises.
+    # =====================================================================
+    try:
+        if bool(force_scrape_extra_urls):
+            _fx8_extras = []
+            if "_extras" in locals() and isinstance(_extras, list):
+                _fx8_extras = [u for u in _extras if isinstance(u, str) and u.strip()]
+            if _fx8_extras and isinstance(admitted, list):
+                _seen = set([u for u in admitted if isinstance(u, str)])
+                for _u in _fx8_extras:
+                    if _u not in _seen:
+                        admitted.append(_u)
+                        _seen.add(_u)
+                # breadcrumb for diagnostics
+                try:
+                    out.setdefault("debug_counts", {})
+                    if isinstance(out.get("debug_counts"), dict):
+                        out["debug_counts"].setdefault("fix41afc8", {})
+                        if isinstance(out["debug_counts"].get("fix41afc8"), dict):
+                            out["debug_counts"]["fix41afc8"].update({
+                                "force_scrape_extra_urls": True,
+                                "force_scrape_extra_urls_count": int(len(_fx8_extras)),
+                            })
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
     # ============================================================
     # PATCH FWC_EXTRA_URLS2 (ADDITIVE)
@@ -22538,6 +22587,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 extra_urls=_fix41afc6_inj,
                 diag_run_id=str((_fix41afc6_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
                 diag_extra_urls_ui_raw=(_fix41afc6_wc or {}).get("diag_extra_urls_ui_raw"),
+                # PATCH FIX41AFC8 (ADDITIVE): force scrape injected extras even if not admitted
+                force_scrape_extra_urls=True,
                 identity_only=False,
             ) or {}
 
@@ -22559,6 +22610,39 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                             "injected_delta": list(_fix41afc6_delta),
                             "admitted_count": int(len(_fix41afc6_admitted or [])) if isinstance(_fix41afc6_admitted, list) else 0,
                         })
+
+                    # =====================================================================
+                    # PATCH FIX41AFC8 (ADDITIVE): Emit forced-fetch diagnostics for injected delta
+                    # =====================================================================
+                    try:
+                        web_context.setdefault("debug", {})
+                        if isinstance(web_context.get("debug"), dict):
+                            web_context["debug"].setdefault("fix41afc8", {})
+                            if isinstance(web_context["debug"].get("fix41afc8"), dict):
+                                # delta URLs are what we intend to force-attempt
+                                _fx8_delta_urls = list(_fix41afc6_delta or [])
+                                # attempted/persist outcomes can be inferred from fetch_web_context scraped_meta
+                                _fx8_results = {}
+                                try:
+                                    _fx8_sm = _fix41afc6_fwc.get("scraped_meta") or {}
+                                    if isinstance(_fx8_sm, dict):
+                                        for _u in _fx8_delta_urls:
+                                            meta = _fx8_sm.get(_u) or {}
+                                            if isinstance(meta, dict) and meta:
+                                                _fx8_results[_u] = meta.get("status") or meta.get("fetch_status") or meta.get("reason") or "attempted"
+                                            else:
+                                                _fx8_results[_u] = "not_in_scraped_meta"
+                                except Exception:
+                                    pass
+                                web_context["debug"]["fix41afc8"].update({
+                                    "forced_fetch_reason": "injected_delta_present_force_fetch_even_if_not_admitted",
+                                    "forced_fetch_urls": _fx8_delta_urls,
+                                    "forced_fetch_count": int(len(_fx8_delta_urls)),
+                                    "forced_fetch_results": _fx8_results,
+                                })
+                    except Exception:
+                        pass
+
     except Exception:
         pass
     # =====================================================================
