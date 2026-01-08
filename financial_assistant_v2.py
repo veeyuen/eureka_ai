@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41af_evo_fastpath_bypass_injected_delta_v2_robust_ui_raw"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc_evo_fastpath_bypass_injected_delta_v2_structural_fix"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -17632,7 +17632,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 _evo_extra_urls = _parts
                 except Exception:
                     pass
-_evo_inj_set = set(_inj_diag_norm_url_list(_evo_extra_urls)) if _evo_extra_urls else set()
+                _evo_inj_set = set(_inj_diag_norm_url_list(_evo_extra_urls)) if _evo_extra_urls else set()
 
                 # Baseline universe = urls present in baseline_sources_cache (the same object used for hashing)
                 _evo_base_urls = []
