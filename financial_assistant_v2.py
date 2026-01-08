@@ -77,7 +77,10 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc5_evo_rebuild_metric_eligibility_hardening_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -22496,7 +22499,70 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # =====================================================================
     # =====================================================================
 
-    # PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
+
+    # =====================================================================
+    # PATCH FIX41AFC6 (ADDITIVE): When injected URL delta exists, actually FETCH it
+    #
+    # Observation (from inj_trace_v1 in evolution JSON):
+    # - Injected URL appears in ui_norm/intake_norm, but attempted/persisted remain empty,
+    #   and the injected URL never reaches hash_inputs because evolution never performs a
+    #   fetch cycle for the injected delta (it only replays cached snapshots).
+    #
+    # Goal:
+    # - ONLY when injected URLs introduce a true delta vs the baseline source universe,
+    #   run fetch_web_context() in normal mode (identity_only=False) so the injected URL
+    #   is actually attempted/persisted and can become a first-class current source
+    #   (and thus can affect downstream identity/hash inputs).
+    #
+    # Safety:
+    # - No effect on no-injection runs.
+    # - No effect when injection is empty or introduces no delta.
+    # - Uses existing_snapshots to avoid re-fetching baseline sources.
+    # - Never raises; falls back to existing behavior.
+    # =====================================================================
+    try:
+        _fix41afc6_wc = web_context if isinstance(web_context, dict) else {}
+        _fix41afc6_inj = _inj_diag_norm_url_list((_fix41afc6_wc or {}).get("extra_urls") or [])
+        _fix41afc6_base = _inj_diag_norm_url_list(_fix24_extract_source_urls(prev_full) or [])
+        _fix41afc6_delta = sorted(list(set(_fix41afc6_inj) - set(_fix41afc6_base))) if _fix41afc6_inj else []
+        if _fix41afc6_delta:
+            _fix41afc6_q = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+            _fix41afc6_prev_snap = (prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None
+
+            _fix41afc6_fwc = fetch_web_context(
+                _fix41afc6_q or "evolution_injection_fetch",
+                num_sources=int(min(12, max(1, len(_fix41afc6_base) + len(_fix41afc6_inj)))),
+                fallback_mode=True,
+                fallback_urls=_fix41afc6_base,
+                existing_snapshots=_fix41afc6_prev_snap,
+                extra_urls=_fix41afc6_inj,
+                diag_run_id=str((_fix41afc6_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                diag_extra_urls_ui_raw=(_fix41afc6_wc or {}).get("diag_extra_urls_ui_raw"),
+                identity_only=False,
+            ) or {}
+
+            # Prefer the admitted list from fetch_web_context (it includes injected URLs that pass admission)
+            _fix41afc6_admitted = _fix41afc6_fwc.get("web_sources") or _fix41afc6_fwc.get("sources") or []
+            if isinstance(_fix41afc6_admitted, list) and _fix41afc6_admitted:
+                urls = list(_fix41afc6_admitted)
+
+            # Bubble up a small marker so inj_trace_v1 can report whether evolution actually called FWC
+            if isinstance(web_context, dict):
+                web_context["evolution_calls_fetch_web_context"] = True
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("fix41afc6", {})
+                    if isinstance(web_context["debug"].get("fix41afc6"), dict):
+                        web_context["debug"]["fix41afc6"].update({
+                            "called_fetch_web_context": True,
+                            "injected_delta_count": int(len(_fix41afc6_delta)),
+                            "injected_delta": list(_fix41afc6_delta),
+                            "admitted_count": int(len(_fix41afc6_admitted or [])) if isinstance(_fix41afc6_admitted, list) else 0,
+                        })
+    except Exception:
+        pass
+    # =====================================================================
+# PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
     # - Only active if caller provides web_context['extra_urls']
     # - Does NOT affect default fastpath behavior.
     # =====================================================================
