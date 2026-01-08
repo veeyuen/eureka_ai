@@ -77,9 +77,9 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc9_evo_merge_injected_into_urls_universe_v1_clean"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc10_evo_fetch_and_attach_injected_snapshots_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -16687,6 +16687,121 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         return output
+
+
+    # =====================================================================
+    # PATCH FIX41AFC10 (ADDITIVE): Fetch + attach injected URL snapshots when injection delta exists
+    #
+    # Goal:
+    # - We already bypass fastpath when injected URL delta exists.
+    # - However, evolution can still be snapshot-gated and never actually fetch the injected URL.
+    # - This patch performs a **targeted fetch** for injected URLs that are not already present in
+    #   the baseline snapshot universe, then appends them to `baseline_sources_cache` so they can
+    #   participate in downstream admission / hashing / metric rebuild deterministically.
+    #
+    # Non-negotiables:
+    # - No change to normal (no-injection) behavior
+    # - Additive only; no refactors
+    # =====================================================================
+    try:
+        _fix41afc10_injected_norm = []
+        try:
+            # Robust extraction order (same intent as FIX41AFC9 lineage)
+            _fix41afc10_injected_norm = _inj_diag_norm_url_list(
+                (web_context or {}).get("extra_urls")
+                or (web_context or {}).get("diag_extra_urls_ui")
+                or []
+            )
+        except Exception:
+            _fix41afc10_injected_norm = []
+
+        # If UI raw textarea is present, merge its parsed URLs (newline/comma separated)
+        try:
+            _fix41afc10_ui_raw = str((web_context or {}).get("diag_extra_urls_ui_raw") or (web_context or {}).get("extra_urls_ui_raw") or "")
+            if _fix41afc10_ui_raw.strip():
+                _fix41afc10_from_raw = _inj_diag_norm_url_list(_fix41afc10_ui_raw)
+                if _fix41afc10_from_raw:
+                    _fix41afc10_injected_norm = _inj_diag_norm_url_list((_fix41afc10_injected_norm or []) + _fix41afc10_from_raw)
+        except Exception:
+            pass
+
+        # Only run when there is any injected URL present at all (do not affect normal runs)
+        if _fix41afc10_injected_norm:
+            # Build baseline URL set from existing snapshots
+            _fix41afc10_base_set = set()
+            try:
+                for _s in (baseline_sources_cache or []):
+                    if isinstance(_s, dict) and _s.get("url"):
+                        _fix41afc10_base_set.add(_normalize_url(_s.get("url")) or str(_s.get("url")))
+            except Exception:
+                pass
+
+            _fix41afc10_missing = [u for u in _fix41afc10_injected_norm if (u and (u not in _fix41afc10_base_set))]
+            if _fix41afc10_missing:
+                _fix41afc10_attempted = []
+                _fix41afc10_persisted = []
+                for _u in _fix41afc10_missing:
+                    try:
+                        _fix41afc10_attempted.append(_u)
+
+                        _txt = None
+                        try:
+                            _txt = fetch_url_content(_u)
+                        except Exception:
+                            _txt = None
+
+                        _status = "failed"
+                        _detail = "no_text"
+                        _nums = []
+                        if isinstance(_txt, str) and _txt.strip():
+                            _status = "success"
+                            _detail = "fetched"
+                            try:
+                                _nums = extract_numbers_with_context(_txt, source_url=_u) or []
+                            except Exception:
+                                _nums = []
+                        # fingerprint (best-effort; used only for determinism / debugging)
+                        _fp = ""
+                        try:
+                            if isinstance(_txt, str) and _txt:
+                                _fp = hashlib.sha256(_txt.encode("utf-8", errors="ignore")).hexdigest()
+                        except Exception:
+                            _fp = ""
+
+                        _snap = {
+                            "url": _u,
+                            "status": _status,
+                            "status_detail": _detail,
+                            "numbers_found": len(_nums or []),
+                            "fetched_at": _now(),
+                            "fingerprint": _fp,
+                            "extracted_numbers": _nums or [],
+                        }
+
+                        # Append snapshot (even if failed) so lifecycle is visible + deterministic
+                        try:
+                            if isinstance(baseline_sources_cache, list):
+                                baseline_sources_cache.append(_snap)
+                                _fix41afc10_persisted.append(_u)
+                        except Exception:
+                            pass
+                    except Exception:
+                        # never break evolution on injected fetch attempts
+                        pass
+
+                # Emit explicit debug for closure visibility
+                try:
+                    if isinstance(output.get("debug"), dict):
+                        output.setdefault("debug", {})
+                        output["debug"].setdefault("fix35", {})
+                        output["debug"]["fix35"]["injected_fetch_attempted_count"] = len(_fix41afc10_attempted)
+                        output["debug"]["fix35"]["injected_fetch_attempted"] = _fix41afc10_attempted
+                        output["debug"]["fix35"]["injected_fetch_snapshot_appended_count"] = len(_fix41afc10_persisted)
+                        output["debug"]["fix35"]["injected_fetch_snapshot_appended"] = _fix41afc10_persisted
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     # ---------- Use your existing deterministic metric diff helper ----------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
