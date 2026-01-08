@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41ae_evo_fastpath_bypass_injected_delta"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41af_evo_fastpath_bypass_injected_delta_v2_robust_ui_raw"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -17596,7 +17596,43 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     if isinstance(_v2, (list, tuple)) and _v2:
                         _evo_extra_urls = list(_v2)
 
-                _evo_inj_set = set(_inj_diag_norm_url_list(_evo_extra_urls)) if _evo_extra_urls else set()
+
+                # =====================================================================
+                # PATCH EVO_FASTPATH_BYPASS_INJ_DELTA_V2 (ADDITIVE):
+                #   Robustly recover injected/extra URLs for bypass detection even when
+                #   diag_injected_urls is not populated yet (common on replay/fastpath).
+                #   Sources (in order):
+                #     - web_context["extra_urls"] if list
+                #     - web_context["diag_extra_urls_ui"] if list
+                #     - web_context["diag_extra_urls_ui_raw"] if str (newline/space separated)
+                #   This is diagnostic-only: we ONLY use this to decide whether to bypass
+                #   fastpath when hashes otherwise match, so injected URLs can be admitted
+                #   via the rebuild path and become first-class inputs.
+                # =====================================================================
+                try:
+                    if not _evo_extra_urls:
+                        _v3 = _evo_wc.get("diag_extra_urls_ui")
+                        if isinstance(_v3, (list, tuple)) and _v3:
+                            _evo_extra_urls = list(_v3)
+                    if not _evo_extra_urls:
+                        _raw = _evo_wc.get("diag_extra_urls_ui_raw")
+                        if isinstance(_raw, str) and _raw.strip():
+                            # Split on newlines first; also allow commas/spaces as separators
+                            _parts = []
+                            for _line in _raw.splitlines():
+                                _line = (_line or "").strip()
+                                if not _line:
+                                    continue
+                                # allow comma-separated within a line
+                                for _p in _line.split(","):
+                                    _p = (_p or "").strip()
+                                    if _p:
+                                        _parts.append(_p)
+                            if _parts:
+                                _evo_extra_urls = _parts
+                except Exception:
+                    pass
+_evo_inj_set = set(_inj_diag_norm_url_list(_evo_extra_urls)) if _evo_extra_urls else set()
 
                 # Baseline universe = urls present in baseline_sources_cache (the same object used for hashing)
                 _evo_base_urls = []
