@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc17_evo_attach_injected_snapshots_to_output_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -99,6 +99,11 @@ CODE_VERSION = "fix41afc17_evo_attach_injected_snapshots_to_output_v1"  # PATCH 
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
+# =====================================================================
+# PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
+# =====================================================================
+CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
+# =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
 ENDSTATE_FINAL_VERSION = "v7_41_endstate_final_1"
@@ -17146,6 +17151,169 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                             output["debug"]["fix35"]["current_metrics_origin"] = "schema_only_rebuild"
                 except Exception:
                     pass
+                # =====================================================================
+                # PATCH FIX41AFC18 (ADDITIVE): schema-preserve guard on rebuild when injected URLs are present
+                # Intent:
+                #   - Keep drift-0 for existing metrics even when an injected URL forces rebuild
+                #   - Only allow a rebuilt metric to replace the previous metric if it carries
+                #     evidence anchors and passes basic schema/unit sanity checks
+                #   - Never changes fastpath logic; only post-rebuild metric selection safety
+                # =====================================================================
+                try:
+                    _fix41afc18_prev = prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else None
+                    _fix41afc18_schema = prev_response.get("metric_schema_frozen") if isinstance(prev_response, dict) else None
+
+                    # Recover injected-delta set (normalized) from earlier patches, if available
+                    _fix41afc18_inj_delta = []
+                    try:
+                        if isinstance(output.get("debug"), dict):
+                            _d15 = output["debug"].get("fix41afc15") or output["debug"].get("fix41afc16") or output["debug"].get("fix41afc14") or {}
+                            if isinstance(_d15, dict):
+                                _fix41afc18_inj_delta = list(_d15.get("inj_delta") or [])
+                    except Exception:
+                        _fix41afc18_inj_delta = []
+                    _fix41afc18_inj_set = set()
+                    try:
+                        _norm_fn = globals().get("_inj_diag_norm_url_list")
+                        if callable(_norm_fn) and _fix41afc18_inj_delta:
+                            _fix41afc18_inj_set = set(_norm_fn(_fix41afc18_inj_delta))
+                        else:
+                            _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
+                    except Exception:
+                        _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
+
+                    def _fix41afc18_has_evidence(m: dict) -> bool:
+                        if not isinstance(m, dict):
+                            return False
+                        ev = m.get("evidence")
+                        if isinstance(ev, list) and len(ev) > 0:
+                            return True
+                        # fallback: anchor_hash present
+                        ah = m.get("anchor_hash") or m.get("anchorHash") or m.get("anchor")
+                        return bool(ah and str(ah) not in ("None", "none", ""))
+
+                    def _fix41afc18_unit_ok(prev_m: dict, cur_m: dict) -> bool:
+                        try:
+                            # Prefer schema unit_family/unit_tag if available
+                            ck = str(cur_m.get("canonical_key") or "")
+                            schema_row = _fix41afc18_schema.get(ck) if isinstance(_fix41afc18_schema, dict) else None
+                            if isinstance(schema_row, dict):
+                                exp_fam = str(schema_row.get("unit_family") or "")
+                                exp_tag = str(schema_row.get("unit_tag") or schema_row.get("unit") or "")
+                                cur_fam = str(cur_m.get("unit_family") or "")
+                                cur_tag = str(cur_m.get("unit_tag") or cur_m.get("unit") or "")
+                                # If schema expects a family/tag, require match when present
+                                if exp_fam and cur_fam and exp_fam != cur_fam:
+                                    return False
+                                if exp_tag and cur_tag and exp_tag != cur_tag:
+                                    return False
+                            # Fallback: if both prev and cur have unit_family, require equality
+                            pf = str(prev_m.get("unit_family") or "")
+                            cf = str(cur_m.get("unit_family") or "")
+                            if pf and cf and pf != cf:
+                                return False
+                            return True
+                        except Exception:
+                            return True
+
+                    def _fix41afc18_from_injected_source(cur_m: dict) -> bool:
+                        try:
+                            su = str(cur_m.get("source_url") or cur_m.get("source") or "")
+                            if not su:
+                                return False
+                            # normalize by simple strip only (avoid heavy deps)
+                            su = su.strip()
+                            # if we have inj set, treat any exact/startswith match as injected
+                            for iu in _fix41afc18_inj_set:
+                                if not iu:
+                                    continue
+                                if su == iu or su.startswith(iu) or iu.startswith(su):
+                                    return True
+                            return False
+                        except Exception:
+                            return False
+
+                    def _fix41afc18_value(prev_m: dict):
+                        for k in ("value_norm", "value"):
+                            v = prev_m.get(k) if isinstance(prev_m, dict) else None
+                            if isinstance(v, (int, float)):
+                                return float(v)
+                        return None
+
+                    _fix41afc18_replaced = 0
+                    _fix41afc18_preserved = 0
+                    _fix41afc18_added = 0
+                    _fix41afc18_notes = []
+
+                    # Only apply guard when injected delta is present (no-change case remains locked)
+                    if _fix41afc18_inj_set and isinstance(_fix41afc18_prev, dict) and isinstance(current_metrics, dict):
+                        for _ck, _prev_m in _fix41afc18_prev.items():
+                            if not isinstance(_ck, str) or not _ck:
+                                continue
+                            _cur_m = current_metrics.get(_ck)
+                            if not isinstance(_cur_m, dict):
+                                # If rebuild dropped a metric, preserve previous
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_metric_missing_in_rebuild"})
+                                continue
+
+                            # If rebuild metric lacks evidence, preserve previous (schema-driven drift lock)
+                            if not _fix41afc18_has_evidence(_cur_m):
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_no_evidence"})
+                                continue
+
+                            # If unit sanity fails, preserve previous
+                            if not _fix41afc18_unit_ok(_prev_m, _cur_m):
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_unit_mismatch"})
+                                continue
+
+                            # If the replacement comes only from injected source and is wildly different, preserve prev
+                            try:
+                                pv = _fix41afc18_value(_prev_m)
+                                cv = _fix41afc18_value(_cur_m)
+                                if pv is not None and cv is not None and pv != 0:
+                                    rel = abs(cv - pv) / max(abs(pv), 1e-9)
+                                    if _fix41afc18_from_injected_source(_cur_m) and rel >= 0.50:
+                                        current_metrics[_ck] = _prev_m
+                                        _fix41afc18_preserved += 1
+                                        _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_suspicious_injected_delta", "prev": pv, "cur": cv, "rel": rel})
+                                        continue
+                            except Exception:
+                                pass
+
+                            # Otherwise accept rebuilt metric (explicit replace)
+                            _fix41afc18_replaced += 1
+
+                        # If rebuild produced new metrics not in schema, keep them but track (non-breaking)
+                        for _ck2, _cur_m2 in list(current_metrics.items()):
+                            if not isinstance(_ck2, str) or not _ck2:
+                                continue
+                            if _ck2 not in _fix41afc18_prev:
+                                _fix41afc18_added += 1
+
+                    # Emit debug for traceability
+                    try:
+                        if isinstance(output.get("debug"), dict):
+                            output["debug"].setdefault("fix41afc18", {})
+                            if isinstance(output["debug"].get("fix41afc18"), dict):
+                                output["debug"]["fix41afc18"].update({
+                                    "inj_delta_present": bool(_fix41afc18_inj_set),
+                                    "inj_delta_count": int(len(_fix41afc18_inj_set)),
+                                    "rebuild_metrics_replaced_count": int(_fix41afc18_replaced),
+                                    "rebuild_metrics_preserved_count": int(_fix41afc18_preserved),
+                                    "rebuild_metrics_added_count": int(_fix41afc18_added),
+                                    "notes_sample": _fix41afc18_notes[:10],
+                                })
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                # =====================================================================
         except Exception:
             current_metrics = {}
 
