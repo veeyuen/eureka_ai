@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc21_evo_anchor_first_selection_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -22596,6 +22596,29 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     if not isinstance(metric_schema, dict) or not metric_schema:
         return {}
 
+    # =====================================================================
+    # PATCH FIX41AFC21D (ADDITIVE): Anchor-first selection parity in schema-only FIX17
+    # Goal:
+    #   - If an anchor exists for a canonical metric, prefer the anchored candidate
+    #     before any keyword/context scoring (parity with analysis intent).
+    # Notes:
+    #   - Additive only; does not refactor existing scoring.
+    #   - Safe if metric_anchors/candidate_index are missing.
+    # =====================================================================
+    metric_anchors_fix41afc21d = (
+        prev_response.get("metric_anchors")
+        or (prev_response.get("primary_response") or {}).get("metric_anchors")
+        or (prev_response.get("results") or {}).get("metric_anchors")
+        or {}
+    )
+    fn_idx_fix41afc21d = globals().get("_es_build_candidate_index_deterministic")
+    cand_index_fix41afc21d = fn_idx_fix41afc21d(baseline_sources_cache) if callable(fn_idx_fix41afc21d) else {}
+    dbg_fix41afc21d = prev_response.setdefault("_evolution_rebuild_debug", {})
+    dbg_fix41afc21d.setdefault("schema_only_anchor_overrides_fix41afc21d", [])
+    # =====================================================================
+    # END PATCH FIX41AFC21D
+    # =====================================================================
+
     # Flatten snapshot candidates (no re-fetch)
     if isinstance(baseline_sources_cache, dict) and isinstance(baseline_sources_cache.get("snapshots"), list):
         sources = baseline_sources_cache.get("snapshots", [])
@@ -23017,6 +23040,29 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
     if not isinstance(metric_schema, dict) or not metric_schema:
         return {}
 
+    # =====================================================================
+    # PATCH FIX41AFC21D (ADDITIVE): Anchor-first selection parity in schema-only FIX17
+    # Goal:
+    #   - If an anchor exists for a canonical metric, prefer the anchored candidate
+    #     before any keyword/context scoring (parity with analysis intent).
+    # Notes:
+    #   - Additive only; does not refactor existing scoring.
+    #   - Safe if metric_anchors/candidate_index are missing.
+    # =====================================================================
+    metric_anchors_fix41afc21d = (
+        prev_response.get("metric_anchors")
+        or (prev_response.get("primary_response") or {}).get("metric_anchors")
+        or (prev_response.get("results") or {}).get("metric_anchors")
+        or {}
+    )
+    fn_idx_fix41afc21d = globals().get("_es_build_candidate_index_deterministic")
+    cand_index_fix41afc21d = fn_idx_fix41afc21d(baseline_sources_cache) if callable(fn_idx_fix41afc21d) else {}
+    dbg_fix41afc21d = prev_response.setdefault("_evolution_rebuild_debug", {})
+    dbg_fix41afc21d.setdefault("schema_only_anchor_overrides_fix41afc21d", [])
+    # =====================================================================
+    # END PATCH FIX41AFC21D
+    # =====================================================================
+
     # Flatten snapshot candidates (no re-fetch)
     if isinstance(baseline_sources_cache, dict) and isinstance(baseline_sources_cache.get("snapshots"), list):
         sources = baseline_sources_cache.get("snapshots", [])
@@ -23070,6 +23116,75 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
         spec = dict(sch)
         spec.setdefault("canonical_key", canonical_key)
         spec.setdefault("name", sch.get("name") or canonical_key)
+
+        # =====================================================================
+        # PATCH FIX41AFC21D (ADDITIVE): Anchor-first override for this metric (schema-only path)
+        # =====================================================================
+        try:
+            _a = metric_anchors_fix41afc21d.get(canonical_key) if isinstance(metric_anchors_fix41afc21d, dict) else None
+            _ah = None
+            if isinstance(_a, dict):
+                _ah = _a.get("anchor_hash") or _a.get("anchor") or _a.get("candidate_id")
+            if _ah:
+                _ah_s = str(_ah)
+                _cand = None
+                try:
+                    _cand = cand_index_fix41afc21d.get(_ah_s) or cand_index_fix41afc21d.get(_ah)
+                except Exception:
+                    _cand = None
+
+                # If no index hit, fall back to a deterministic scan (keeps behavior additive)
+                if _cand is None and isinstance(candidates, list):
+                    for _c0 in candidates:
+                        if not isinstance(_c0, dict):
+                            continue
+                        if str(_c0.get("anchor_hash") or "") == _ah_s:
+                            _cand = _c0
+                            break
+
+                if isinstance(_cand, dict):
+                    _ok, _reason = _fix17_candidate_allowed_with_reason(_cand, spec, canonical_key=canonical_key)
+                    fn_v2 = globals().get("_metric_candidate_is_eligible_v2")
+                    _ok2 = True
+                    try:
+                        if callable(fn_v2):
+                            _ok2 = bool(fn_v2(spec, _cand))
+                    except Exception:
+                        _ok2 = True
+
+                    if _ok and _ok2:
+                        rebuilt[canonical_key] = {
+                            "canonical_key": canonical_key,
+                            "name": spec.get("name") or canonical_key,
+                            "value": _cand.get("value"),
+                            "unit": _cand.get("unit") or "",
+                            "value_norm": _cand.get("value_norm"),
+                            "source_url": _cand.get("source_url") or "",
+                            "anchor_hash": _cand.get("anchor_hash") or _ah_s,
+                            "evidence": [{
+                                "source_url": _cand.get("source_url") or "",
+                                "raw": _cand.get("raw") or "",
+                                "context_snippet": (_cand.get("context_snippet") or _cand.get("context") or _cand.get("context_window") or "")[:400],
+                                "anchor_hash": _cand.get("anchor_hash") or _ah_s,
+                                "method": "schema_only_anchor_match_override_fix41afc21d",
+                            }],
+                            "anchor_used": True,
+                            "selection_reason": "anchor_match_override_fix41afc21d",
+                        }
+                        try:
+                            dbg_fix41afc21d["schema_only_anchor_overrides_fix41afc21d"].append({
+                                "canonical_key": canonical_key,
+                                "anchor_hash": _ah_s,
+                                "source_url": _cand.get("source_url") or "",
+                            })
+                        except Exception:
+                            pass
+                        continue
+        except Exception:
+            pass
+        # =====================================================================
+        # END PATCH FIX41AFC21D
+        # =====================================================================
 
         # Use fix16 year-like & keyword pruning if available
         metric_is_year_like = _fix17_metric_is_year_like(spec, canonical_key=canonical_key)
