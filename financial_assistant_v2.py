@@ -77,9 +77,9 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc12_evo_admission_override_and_postfetch_trace_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc13_evo_pre_admission_override_injected_delta_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -5431,6 +5431,13 @@ def fetch_web_context(
     # - When True: normalized extra URLs will be appended to admitted list for scraping.
     # ============================================================
     force_scrape_extra_urls: bool = False,
+    # ============================================================
+    # PATCH FIX41AFC13 (ADDITIVE): force admit extra_urls into admitted list (pre-admission override)
+    # - Default False: no behavior change.
+    # - When True: normalized extra URLs will be appended to admitted list (not just scrape list),
+    #   enabling deterministic admission of injected URLs when delta exists.
+    # ============================================================
+    force_admit_extra_urls: bool = False,
 ) -> dict:
 
     """
@@ -5698,6 +5705,51 @@ def fetch_web_context(
                 "intake_minus_admitted": sorted(list(set(_intake_norm) - set(list(admitted or [])))),
             },
         }
+    except Exception:
+        pass
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH FIX41AFC13 (ADDITIVE): Pre-admission override for extra_urls (injection lane)
+    #
+    # Goal:
+    # - When force_admit_extra_urls is True, ensure normalized extra_urls are INCLUDED in the
+    #   admitted list itself (not only the scrape list). This prevents injected URLs from dying
+    #   at "intake_minus_admitted" and allows deterministic fetch/persist behavior.
+    #
+    # Safety:
+    # - Default flag False => no behavior change.
+    # - Never raises.
+    # =====================================================================
+    try:
+        if force_admit_extra_urls:
+            _fix41afc13_extra = _inj_diag_norm_url_list(extra_urls) if extra_urls else []
+            if _fix41afc13_extra:
+                _fix41afc13_before = list(admitted or [])
+                _fix41afc13_set = set(_inj_diag_norm_url_list(_fix41afc13_before))
+                _fix41afc13_added = []
+                for _u in _fix41afc13_extra:
+                    if _u and _u not in _fix41afc13_set:
+                        _fix41afc13_before.append(_u)
+                        _fix41afc13_set.add(_u)
+                        _fix41afc13_added.append(_u)
+                if _fix41afc13_added:
+                    admitted = _fix41afc13_before
+                    out.setdefault("debug_counts", {})
+                    if isinstance(out.get("debug_counts"), dict):
+                        out["debug_counts"].update({
+                            "forced_admit_extra_urls_count": int(len(_fix41afc13_added)),
+                        })
+                    out.setdefault("debug", {})
+                    if isinstance(out.get("debug"), dict):
+                        out["debug"].setdefault("fix41afc13", {})
+                        if isinstance(out["debug"].get("fix41afc13"), dict):
+                            out["debug"]["fix41afc13"].update({
+                                "forced_admit_applied": True,
+                                "forced_admit_added": list(_fix41afc13_added),
+                                "forced_admit_total_extra": int(len(_fix41afc13_extra)),
+                            })
     except Exception:
         pass
     # =====================================================================
@@ -22842,6 +22894,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 diag_extra_urls_ui_raw=(_fix41afc6_wc or {}).get("diag_extra_urls_ui_raw"),
                 # PATCH FIX41AFC8 (ADDITIVE): force scrape injected extras even if not admitted
                 force_scrape_extra_urls=True,
+                force_admit_extra_urls=True,
                 identity_only=False,
             ) or {}
 
@@ -23197,6 +23250,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     diag_extra_urls_ui_raw=(_fix41afc11_wc or {}).get("diag_extra_urls_ui_raw"),
                     identity_only=False,
                     force_scrape_extra_urls=True,
+                force_admit_extra_urls=True,
                 ) or {}
             except TypeError:
                 # Backward-compat: older fetch_web_context without force_scrape_extra_urls
