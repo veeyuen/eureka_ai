@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc14_evo_injected_delta_pre_rebuild_fetch_and_merge_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc15_evo_prehash_placeholder_injected_delta_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -17980,6 +17980,105 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # ============================================================
         _fix36_cur_hash = None
         _fix36_reason = ""
+
+        # =====================================================================
+        # PATCH FIX41AFC15 (ADDITIVE): Pre-hash merge of injected URL delta into baseline_sources_cache
+        #
+        # Why:
+        # - In your latest evolution JSON, fastpath was correctly bypassed due to injected delta,
+        #   but the current snapshot universe (baseline_sources_cache) still did NOT include the
+        #   injected URL, so the stable hash still matched and downstream logic treated the run
+        #   as "no delta" (no fetch, no rebuild, no injected lifecycle).
+        #
+        # Goal:
+        # - BEFORE computing the current stable hash / fastpath eligibility, deterministically
+        #   append placeholder snapshot rows for any injected URLs missing from the current
+        #   baseline_sources_cache universe. This makes the hash differ (as it should when the
+        #   source universe changes), forcing the normal rebuild/fetch pathways without changing
+        #   the hashing algorithm itself.
+        #
+        # Safety:
+        # - Purely additive.
+        # - No effect when no injected URLs are present OR all injected URLs already exist in
+        #   baseline_sources_cache.
+        # =====================================================================
+        try:
+            _fx15_wc = web_context if isinstance(web_context, dict) else {}
+            _fx15_extra = []
+            # Prefer already-wired list fields
+            if isinstance(_fx15_wc.get("extra_urls"), (list, tuple)):
+                _fx15_extra = list(_fx15_wc.get("extra_urls") or [])
+            elif isinstance(_fx15_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fx15_wc.get("diag_extra_urls_ui"):
+                _fx15_extra = list(_fx15_wc.get("diag_extra_urls_ui") or [])
+            elif isinstance(_fx15_wc.get("diag_extra_urls_ui_raw"), str) and (_fx15_wc.get("diag_extra_urls_ui_raw") or "").strip():
+                _raw = str(_fx15_wc.get("diag_extra_urls_ui_raw") or "")
+                _parts = []
+                for _line in _raw.splitlines():
+                    _line = (_line or "").strip()
+                    if not _line:
+                        continue
+                    for _p in _line.split(","):
+                        _p = (_p or "").strip()
+                        if _p:
+                            _parts.append(_p)
+                _fx15_extra = _parts
+
+            _fx15_inj_norm = _inj_diag_norm_url_list(_fx15_extra) if _fx15_extra else []
+            if _fx15_inj_norm and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                _fx15_base_urls = []
+                for _r in (baseline_sources_cache or []):
+                    if not isinstance(_r, dict):
+                        continue
+                    _u = _r.get("source_url") or _r.get("url") or ""
+                    if isinstance(_u, str) and _u:
+                        _fx15_base_urls.append(_u)
+                _fx15_base_set = set(_inj_diag_norm_url_list(_fx15_base_urls)) if _fx15_base_urls else set()
+                _fx15_delta = [u for u in _fx15_inj_norm if u and u not in _fx15_base_set]
+                if _fx15_delta:
+                    # Append stable placeholders so the snapshot hash changes deterministically.
+                    for _u in _fx15_delta:
+                        baseline_sources_cache.append({
+                            "source_url": _u,
+                            "url": _u,
+                            "status": "injected_pending",
+                            "status_detail": "injected_url_placeholder_pre_hash",
+                            "snapshot_text": "",
+                            "extracted_numbers": [],
+                            "numbers_found": 0,
+                            "injected": True,
+                            "injected_reason": "prehash_placeholder",
+                        })
+                    # Also ensure downstream sees a consistent universe via web_context["extra_urls"].
+                    try:
+                        if isinstance(_fx15_wc, dict):
+                            _fx15_wc.setdefault("extra_urls", [])
+                            if isinstance(_fx15_wc.get("extra_urls"), list):
+                                # keep original order; append unique normalized
+                                _seen = set(_inj_diag_norm_url_list(_fx15_wc.get("extra_urls") or []))
+                                for _u in _fx15_delta:
+                                    if _u not in _seen:
+                                        _fx15_wc["extra_urls"].append(_u)
+                                        _seen.add(_u)
+                    except Exception:
+                        pass
+                    # Debug
+                    try:
+                        output.setdefault("debug", {})
+                        if isinstance(output.get("debug"), dict):
+                            output["debug"].setdefault("fix41afc15", {})
+                            if isinstance(output["debug"].get("fix41afc15"), dict):
+                                output["debug"]["fix41afc15"].update({
+                                    "inj_norm_count": int(len(_fx15_inj_norm)),
+                                    "inj_norm": list(_fx15_inj_norm),
+                                    "inj_delta_count": int(len(_fx15_delta)),
+                                    "inj_delta": list(_fx15_delta),
+                                    "baseline_sources_cache_count_after_placeholder": int(len(baseline_sources_cache or [])),
+                                })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         try:
             if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
                 _fix36_reason = "no_snapshots"
