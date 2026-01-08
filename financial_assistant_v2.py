@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc25_evo_parity_lock_assert_guard_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -23654,6 +23654,156 @@ def _canonical_value_normalize_v1(schema: dict, metric: dict) -> dict:
 # PATCH FIX41AFC24A END
 
 
+# =====================================================================
+# PATCH FIX41AFC25 (ADDITIVE): Parity lock / assertion guard (instrumentation-only)
+#
+# Goal:
+# - Make analysis/evolution parity non-accidental by checking (debug-only) that
+#   anchored metrics in Evolution still resolve to the SAME anchor_hash and a
+#   canonically-normalized value consistent with the anchored candidate in the
+#   current snapshot pool.
+#
+# Safety:
+# - Purely additive. No behavior changes to selection, eligibility, hashing, or fastpath.
+# - Emits ONLY debug fields; never blocks execution.
+# =====================================================================
+def _parity_assert_fix41afc25(prev_response: dict, rebuilt: dict, baseline_sources_cache, schema_map: dict = None) -> list:
+    try:
+        if not isinstance(prev_response, dict) or not isinstance(rebuilt, dict):
+            return []
+        schema_map = schema_map if isinstance(schema_map, dict) else {}
+
+        # Get anchors (best-effort; supports multiple container shapes)
+        anchors = {}
+        try:
+            fn = globals().get("_get_metric_anchors_any")
+            if callable(fn):
+                anchors = fn(prev_response) or {}
+        except Exception:
+            anchors = {}
+        if not anchors:
+            try:
+                anchors = prev_response.get("metric_anchors") or (prev_response.get("primary_response") or {}).get("metric_anchors") or {}
+            except Exception:
+                anchors = {}
+        if not isinstance(anchors, dict) or not anchors:
+            return []
+
+        # Build anchor_hash -> candidate index from the actual current pool
+        ah_to_cand = {}
+        try:
+            if isinstance(baseline_sources_cache, list):
+                for _row in (baseline_sources_cache or []):
+                    if not isinstance(_row, dict):
+                        continue
+                    nums = _row.get("extracted_numbers")
+                    if not isinstance(nums, list) or not nums:
+                        continue
+                    for _c in nums:
+                        if not isinstance(_c, dict):
+                            continue
+                        _ah = _c.get("anchor_hash") or ""
+                        if isinstance(_ah, str) and _ah and _ah not in ah_to_cand:
+                            ah_to_cand[_ah] = _c
+        except Exception:
+            pass
+
+        def _num(x):
+            try:
+                if x is None:
+                    return None
+                if isinstance(x, (int, float)):
+                    return float(x)
+                s = str(x).strip()
+                if not s:
+                    return None
+                return float(s)
+            except Exception:
+                return None
+
+        violations = []
+        for ck, a in anchors.items():
+            if not isinstance(ck, str) or not ck:
+                continue
+            if not isinstance(a, dict):
+                continue
+            ah = a.get("anchor_hash") or ""
+            if not isinstance(ah, str) or not ah:
+                continue
+
+            mv = rebuilt.get(ck)
+            if not isinstance(mv, dict):
+                continue
+
+            # Check anchor hash match in emitted metric
+            cur_ah = mv.get("anchor_hash") or mv.get("cur_anchor_hash") or mv.get("selected_anchor_hash") or ""
+            if isinstance(cur_ah, str) and cur_ah and cur_ah != ah:
+                violations.append({
+                    "canonical_key": ck,
+                    "reason": "anchor_hash_mismatch",
+                    "expected_anchor_hash": ah,
+                    "current_anchor_hash": cur_ah,
+                })
+                continue  # no need to value-compare if anchor mismatched
+
+            # Find expected candidate from pool for this anchor hash
+            cand = ah_to_cand.get(ah)
+            if not isinstance(cand, dict):
+                violations.append({
+                    "canonical_key": ck,
+                    "reason": "anchor_candidate_missing_in_pool",
+                    "expected_anchor_hash": ah,
+                })
+                continue
+
+            # Build expected metric-shaped dict and apply same post-norm helper (if available)
+            schema = schema_map.get(ck) if isinstance(schema_map.get(ck), dict) else {}
+            expected_metric = {
+                "value": cand.get("value"),
+                "value_norm": cand.get("value_norm") if cand.get("value_norm") is not None else cand.get("value"),
+                "unit": cand.get("unit") or cand.get("unit_raw") or "",
+                "dimension": (schema.get("dimension") if isinstance(schema, dict) else "") or mv.get("dimension") or "",
+                "anchor_hash": ah,
+            }
+            try:
+                fn_norm = globals().get("_canonical_value_normalize_v1")
+                if callable(fn_norm):
+                    expected_metric = fn_norm(schema, expected_metric) or expected_metric
+            except Exception:
+                pass
+
+            exp = _num(expected_metric.get("value_norm"))
+            cur = _num(mv.get("value_norm") if mv.get("value_norm") is not None else mv.get("cur_value_norm"))
+            if exp is None or cur is None:
+                continue
+
+            # Tolerances (debug-only): conservative defaults
+            dim = (schema.get("dimension") if isinstance(schema, dict) else "") or (mv.get("dimension") or "")
+            abs_eps = 1e-9
+            rel_eps = 0.0005
+            if str(dim).lower() in ("percent", "percentage", "market_share"):
+                abs_eps = 0.05  # 0.05 percentage-point
+                rel_eps = 0.01
+
+            ok = abs(cur - exp) <= max(abs_eps, rel_eps * max(1.0, abs(exp)))
+            if not ok:
+                violations.append({
+                    "canonical_key": ck,
+                    "reason": "value_norm_mismatch_post_norm",
+                    "expected_anchor_hash": ah,
+                    "expected_value_norm": exp,
+                    "current_value_norm": cur,
+                    "dimension": dim,
+                })
+
+        return violations
+    except Exception:
+        return []
+# =====================================================================
+# END PATCH FIX41AFC25
+# =====================================================================
+
+
 def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     FIX18 rebuild:
@@ -23731,6 +23881,23 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
     except Exception:
         pass
 # PATCH FIX41AFC24B END
+# PATCH FIX41AFC25_EMIT START
+    # Parity lock (instrumentation-only): assert anchored metrics resolve consistently.
+    try:
+        _viol = _parity_assert_fix41afc25(prev_response, rebuilt, baseline_sources_cache, schema_map=schema_map)
+        if _viol:
+            # Emit into rebuild debug (non-behavioral)
+            try:
+                prev_response.setdefault("_evolution_rebuild_debug", {})
+                if isinstance(prev_response.get("_evolution_rebuild_debug"), dict):
+                    prev_response["_evolution_rebuild_debug"]["parity_fix41afc25_violations"] = list(_viol or [])
+                    prev_response["_evolution_rebuild_debug"]["parity_fix41afc25_violation"] = True
+                    prev_response["_evolution_rebuild_debug"]["parity_fix41afc25_violation_count"] = int(len(_viol or []))
+            except Exception:
+                pass
+    except Exception:
+        pass
+# PATCH FIX41AFC25_EMIT END
     return rebuilt
 
 
@@ -25068,3 +25235,15 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
 # ==============================================================================
 # END FIX32
 # ==============================================================================
+
+
+# =====================================================================
+# PATCH FIX41AFC25_VERSION (ADDITIVE): CODE_VERSION bump for auditability
+# =====================================================================
+try:
+    CODE_VERSION = "fix41afc25_evo_parity_lock_assert_guard_v1"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX41AFC25_VERSION
+# =====================================================================
