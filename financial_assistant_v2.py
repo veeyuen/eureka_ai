@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc16_evo_fetch_and_extract_injected_placeholders_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc17_evo_attach_injected_snapshots_to_output_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -18232,6 +18232,72 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
         except Exception:
             pass
+
+
+        # =====================================================================
+        # PATCH FIX41AFC17 (ADDITIVE): Pin fetched injected snapshots into canonical snapshot plumbing
+        #
+        # Observed gap (from evolution JSON after FIX41AFC16):
+        #   - Injected URL reaches intake/admitted/attempted/hash_inputs, but snapshot_debug remains empty
+        #     (origin none / raw_count 0), and downstream consumers appear to miss the fetched snapshot_text.
+        #
+        # Goal:
+        #   - Ensure the same snapshot-carrier fields used by New Analysis are populated for Evolution,
+        #     so that attach_source_snapshots_to_analysis() (and any downstream rebuild plumbing) can
+        #     “see” the injected (and other) snapshots deterministically.
+        #
+        # Safety:
+        #   - Purely additive wiring.
+        #   - No effect if baseline_sources_cache is missing.
+        #   - Does not alter hashing logic; only ensures snapshots are attached consistently.
+        # =====================================================================
+        try:
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache and isinstance(web_context, dict):
+                # Provide canonical aliases for current pool (additive; downstream may read any of these)
+                web_context.setdefault("current_baseline_sources_cache", baseline_sources_cache)
+                web_context.setdefault("baseline_sources_cache_current", baseline_sources_cache)
+                web_context.setdefault("current_source_results", baseline_sources_cache)
+
+                # Mirror into output for downstream consumers/debug (additive)
+                try:
+                    output.setdefault("baseline_sources_cache_current", baseline_sources_cache)
+                except Exception:
+                    pass
+                try:
+                    output.setdefault("baseline_sources_cache", baseline_sources_cache)
+                except Exception:
+                    pass
+                try:
+                    output.setdefault("results", {})
+                    if isinstance(output.get("results"), dict):
+                        output["results"].setdefault("baseline_sources_cache_current", baseline_sources_cache)
+                        output["results"].setdefault("baseline_sources_cache", baseline_sources_cache)
+                except Exception:
+                    pass
+
+                # Call the same snapshot attach helper used by analysis if present (best-effort)
+                try:
+                    _att_fn = globals().get("attach_source_snapshots_to_analysis")
+                    if callable(_att_fn):
+                        _att_fn(output, web_context)
+                except Exception:
+                    pass
+
+                # Small debug breadcrumb
+                try:
+                    output.setdefault("debug", {})
+                    if isinstance(output.get("debug"), dict):
+                        output["debug"].setdefault("fix41afc17", {})
+                        if isinstance(output["debug"].get("fix41afc17"), dict):
+                            output["debug"]["fix41afc17"].update({
+                                "attached_pool_count": int(len(baseline_sources_cache)),
+                                "attach_called": bool(callable(globals().get("attach_source_snapshots_to_analysis"))),
+                            })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # =====================================================================
 
         try:
             if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
