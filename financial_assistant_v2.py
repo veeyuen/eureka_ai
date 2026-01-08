@@ -1,4 +1,4 @@
-# ===============================================================================
+## ===============================================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.41
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc31_evo_bare_year_hard_block_v2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+#CODE_VERSION = "fix41afc32_evo_value_range_mandatory_rescale_scorecard_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -115,13 +115,13 @@ CODE_VERSION = "fix41afc31_evo_bare_year_hard_block_v2"  # PATCH FIX41G (ADD): s
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
+#CODE_VERSION = "fix41afc32_evo_value_range_mandatory_rescale_scorecard_v1"
 # =====================================================================
 # PATCH FIX41AFC20 (ADDITIVE): bump CODE_VERSION to this file version
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
+#CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
 # =====================================================================
 
 # =====================================================================
@@ -24588,6 +24588,330 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
         pass
     # PATCH FIX41AFC30 END
 
+    # PATCH FIX41AFC32 START
+    # Mandatory schema-unit rescaling + cohort-scoped value_range for ALL paths (presentation-only).
+    # Purpose: eliminate residual range volatility when some rebuild paths leave value_range.method as
+    # "snapshot_candidates" or otherwise bypass FIX41AFC29/30 hooks. This patch does not change selection
+    # (current_value), only recomputes value_range/value_range_display using:
+    #   1) Anchor-hash cohort (preferred) when anchored
+    #   2) Target-year cohort if year can be inferred
+    #   3) ±30% neighborhood around selected value_norm as last resort
+    # Then rescales evidence values into the schema unit scale before computing min/max.
+
+    try:
+        def _fix41afc32_guess_target_year(metric_obj: dict, schema_obj: dict, canonical_key: str):
+            # Heuristic: prefer explicit 4-digit year in canonical_key/schema/name.
+            import re
+            for s in [canonical_key, (schema_obj or {}).get("name"), (metric_obj or {}).get("name")]:
+                try:
+                    s = str(s or "")
+                except Exception:
+                    s = ""
+                m = re.search(r"\b(19|20)\d{2}\b", s)
+                if m:
+                    try:
+                        y = int(m.group(0))
+                        if 1900 <= y <= 2100:
+                            return y
+                    except Exception:
+                        pass
+            return None
+
+        def _fix41afc32_has_unit_evidence(e: dict) -> bool:
+            try:
+                return bool((e or {}).get("unit_tag") or (e or {}).get("unit") or (e or {}).get("base_unit") or (e or {}).get("unit_family"))
+            except Exception:
+                return False
+
+        def _fix41afc32_ctx_has_year(e: dict, year: int) -> bool:
+            if not year:
+                return False
+            y = str(int(year))
+            for k in ("context", "raw_context", "context_window", "context_text"):
+                try:
+                    ctx = (e or {}).get(k) or ""
+                    if y in str(ctx):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _fix41afc32_rescale_vn(metric_obj: dict, e: dict):
+            # Prefer FIX41AFC30 rescaler if available in scope, else identity.
+            try:
+                fn = locals().get("_fix41afc30_rescale_vn_to_schema") or globals().get("_fix41afc30_rescale_vn_to_schema")
+                if callable(fn):
+                    return fn(metric_obj, e)
+            except Exception:
+                pass
+            try:
+                vn = (e or {}).get("value_norm")
+                return float(vn) if vn is not None else None
+            except Exception:
+                return None
+
+        def _fix41afc32_compute_range_from_evidence(metric_obj: dict, schema_obj: dict, canonical_key: str):
+            if not isinstance(metric_obj, dict):
+                return False
+            ev = metric_obj.get("evidence") or []
+            if not isinstance(ev, list) or not ev:
+                return False
+
+            selected_vn = metric_obj.get("value_norm")
+            try:
+                selected_vn = float(selected_vn) if selected_vn is not None else None
+            except Exception:
+                selected_vn = None
+
+            anchored = bool(metric_obj.get("anchor_hash") or metric_obj.get("anchor_used"))
+            anchor_hash = metric_obj.get("anchor_hash") or ""
+            year = _fix41afc32_guess_target_year(metric_obj, schema_obj, canonical_key)
+
+            # Step 1: cohort filter
+            cohort = []
+            if anchored and anchor_hash:
+                cohort = [e for e in ev if isinstance(e, dict) and (e.get("anchor_hash") == anchor_hash)]
+            if not cohort and year:
+                cohort = [e for e in ev if isinstance(e, dict) and _fix41afc32_ctx_has_year(e, year)]
+            if not cohort and selected_vn is not None:
+                # ±30% neighborhood fallback
+                lo = selected_vn * 0.70
+                hi = selected_vn * 1.30
+                cohort = []
+                for e in ev:
+                    if not isinstance(e, dict):
+                        continue
+                    vn = _fix41afc32_rescale_vn(metric_obj, e)
+                    try:
+                        vn = float(vn) if vn is not None else None
+                    except Exception:
+                        vn = None
+                    if vn is None:
+                        continue
+                    if lo <= vn <= hi:
+                        cohort.append(e)
+
+            if not cohort:
+                cohort = ev  # last resort: avoid losing range entirely
+
+            # Step 2: rescale all cohort values into schema scale before min/max
+            vals = []
+            for e in cohort:
+                if not isinstance(e, dict):
+                    continue
+                vn = _fix41afc32_rescale_vn(metric_obj, e)
+                try:
+                    vn = float(vn) if vn is not None else None
+                except Exception:
+                    vn = None
+                if vn is None:
+                    continue
+                # Extra safety: ignore bare years when unitless to avoid range pollution
+                try:
+                    iv = int(vn)
+                    if 1900 <= iv <= 2100 and not _fix41afc32_has_unit_evidence(e):
+                        continue
+                except Exception:
+                    pass
+                vals.append(vn)
+
+            if not vals:
+                return False
+
+            mn = min(vals)
+            mx = max(vals)
+            vr = metric_obj.get("value_range") if isinstance(metric_obj.get("value_range"), dict) else {}
+            vr = dict(vr or {})
+            vr["min"] = mn
+            vr["max"] = mx
+            # Mark method without destroying existing provenance
+            m0 = vr.get("method") or "snapshot_candidates"
+            if "fix41afc32" not in str(m0):
+                vr["method"] = f"{m0}|fix41afc32_mandatory_rescale_cohort"
+            metric_obj["value_range"] = vr
+
+            # Display (keep simple and deterministic)
+            ut = (schema_obj or {}).get("unit_tag") or metric_obj.get("unit_tag") or metric_obj.get("unit") or ""
+            try:
+                metric_obj["value_range_display"] = f"{mn:.4g}–{mx:.4g} {ut}".strip()
+            except Exception:
+                metric_obj["value_range_display"] = ""
+            metric_obj["_value_range_scope_fix41afc32"] = "anchor_cohort_or_neighborhood"
+            metric_obj["_value_range_rescaled_fix41afc32"] = True
+            return True
+
+        # Apply to all rebuilt metrics that have a value_range or evidence list
+        _fix41afc32_keys = []
+        for _ck, _mobj in (rebuilt or {}).items():
+            try:
+                _schema_obj = None
+                if isinstance(schema_map, dict):
+                    _schema_obj = schema_map.get(_ck)
+                # If schema_map missing, fall back to prev_response schema stores
+                if not _schema_obj and isinstance(prev_response, dict):
+                    _schema_obj = (prev_response.get("metric_schema_frozen") or {}).get(_ck) or (prev_response.get("primary_metrics_canonical") or {}).get(_ck)
+                if _fix41afc32_compute_range_from_evidence(_mobj, _schema_obj or {}, _ck):
+                    _fix41afc32_keys.append(_ck)
+            except Exception:
+                continue
+
+        try:
+            prev_response.setdefault("_evolution_rebuild_debug", {})
+            prev_response["_evolution_rebuild_debug"]["value_range_mandatory_fix41afc32_count"] = len(_fix41afc32_keys)
+            prev_response["_evolution_rebuild_debug"]["value_range_mandatory_fix41afc32_keys"] = _fix41afc32_keys[:50]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # PATCH FIX41AFC32 END
+
+
+    # PATCH FIX41AFC32_SCORECARD START
+    # Extraction quality scorecard (instrumentation-only) to track convergence across patches.
+    # Counts are derived from baseline_sources_cache/source_results extracted_numbers pools.
+    try:
+        def _fix41afc32_scorecard_from_pool(baseline_sources_cache):
+            score = {
+                "candidate_total": 0,
+                "candidate_junk": 0,
+                "candidate_year_only": 0,
+                "candidate_unitless": 0,
+                "candidate_has_unit": 0,
+                "candidate_has_percent": 0,
+                "candidate_has_currency": 0,
+            }
+
+            def _is_year_only(e: dict) -> bool:
+                try:
+                    vn = e.get("value_norm")
+                    if vn is None:
+                        return False
+                    iv = int(float(vn))
+                    if not (1900 <= iv <= 2100):
+                        return False
+                    # year-only if no unit evidence
+                    return not bool(e.get("unit_tag") or e.get("unit") or e.get("base_unit") or e.get("unit_family"))
+                except Exception:
+                    return False
+
+            def _has_percent(e: dict) -> bool:
+                try:
+                    if "%" in str(e.get("raw_disp") or ""):
+                        return True
+                    uf = (e.get("unit_family") or "").lower()
+                    ut = (e.get("unit_tag") or e.get("unit") or "").lower()
+                    return ("percent" in uf) or ("%" in ut) or ("percent" in ut)
+                except Exception:
+                    return False
+
+            def _has_currency(e: dict) -> bool:
+                try:
+                    uf = (e.get("unit_family") or "").lower()
+                    if "currency" in uf:
+                        return True
+                    ctx = (e.get("context") or e.get("raw_context") or "")
+                    ctx = str(ctx)
+                    # light heuristic: common currency symbols/codes
+                    return any(tok in ctx for tok in ["$", "USD", "EUR", "SGD", "GBP", "JPY", "CNY", "RMB", "AUD", "CAD"])
+                except Exception:
+                    return False
+
+            def _is_junk(e: dict) -> bool:
+                try:
+                    if e.get("is_junk") is True:
+                        return True
+                    jr = (e.get("junk_reason") or e.get("reject_reason") or "")
+                    return bool(jr) and ("junk" in str(jr).lower() or "phone" in str(jr).lower() or "cookie" in str(jr).lower())
+                except Exception:
+                    return False
+
+            def _has_unit(e: dict) -> bool:
+                try:
+                    return bool(e.get("unit_tag") or e.get("unit") or e.get("base_unit") or e.get("unit_family"))
+                except Exception:
+                    return False
+
+            # baseline_sources_cache may be a list of source dicts or dict keyed by url
+            src_items = []
+            try:
+                if isinstance(baseline_sources_cache, list):
+                    src_items = baseline_sources_cache
+                elif isinstance(baseline_sources_cache, dict):
+                    src_items = list(baseline_sources_cache.values())
+            except Exception:
+                src_items = []
+
+            for s in src_items:
+                try:
+                    nums = (s or {}).get("extracted_numbers") or (s or {}).get("numbers") or []
+                    if not isinstance(nums, list):
+                        continue
+                    for e in nums:
+                        if not isinstance(e, dict):
+                            continue
+                        score["candidate_total"] += 1
+                        if _is_junk(e):
+                            score["candidate_junk"] += 1
+                        if _is_year_only(e):
+                            score["candidate_year_only"] += 1
+                        if _has_unit(e):
+                            score["candidate_has_unit"] += 1
+                        else:
+                            score["candidate_unitless"] += 1
+                        if _has_percent(e):
+                            score["candidate_has_percent"] += 1
+                        if _has_currency(e):
+                            score["candidate_has_currency"] += 1
+                except Exception:
+                    continue
+            return score
+
+        def _fix41afc32_scorecard_from_rebuilt(rebuilt: dict):
+            score = {
+                "rebuilt_metric_count": 0,
+                "anchor_used_count": 0,
+                "schema_eligible_count": 0,
+                "blocked_count": 0,
+                "top_reject_reasons": {},
+            }
+            if not isinstance(rebuilt, dict):
+                return score
+            score["rebuilt_metric_count"] = len(rebuilt)
+            for ck, m in rebuilt.items():
+                if not isinstance(m, dict):
+                    continue
+                if m.get("anchor_used") is True:
+                    score["anchor_used_count"] += 1
+                if m.get("eligibility_pass_reason_fix41afc28"):
+                    score["schema_eligible_count"] += 1
+                if m.get("cur_value_blocked_reason") or m.get("value_blocked_reason"):
+                    score["blocked_count"] += 1
+            return score
+
+        _pool_score = _fix41afc32_scorecard_from_pool(baseline_sources_cache)
+        _rebuilt_score = _fix41afc32_scorecard_from_rebuilt(rebuilt)
+
+        # Merge and add light rates
+        _scorecard = dict(_pool_score or {})
+        _scorecard.update(_rebuilt_score or {})
+        try:
+            tot = float(_scorecard.get("candidate_total") or 0.0)
+            if tot > 0:
+                _scorecard["junk_rate"] = (_scorecard.get("candidate_junk", 0) / tot)
+                _scorecard["year_only_rate"] = (_scorecard.get("candidate_year_only", 0) / tot)
+                _scorecard["unitless_rate"] = (_scorecard.get("candidate_unitless", 0) / tot)
+        except Exception:
+            pass
+
+        try:
+            prev_response.setdefault("_evolution_rebuild_debug", {})
+            prev_response["_evolution_rebuild_debug"]["scorecard_fix41afc32"] = _scorecard
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # PATCH FIX41AFC32_SCORECARD END
+
     return rebuilt
 
 
@@ -26057,3 +26381,12 @@ try:
 except Exception:
     pass
 # =====================================================================
+
+
+
+# PATCH FIX41AFC32_VERSION START
+try:
+    CODE_VERSION = "fix41afc32_evo_value_range_mandatory_rescale_scorecard_v1"
+except Exception:
+    pass
+# PATCH FIX41AFC32_VERSION END
