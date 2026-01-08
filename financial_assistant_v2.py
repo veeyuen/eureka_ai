@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc21_evo_anchor_first_selection_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc22_evo_diag17_artifact_state_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -5330,6 +5330,136 @@ def _inj_trace_v1_enrich_diag_from_scraped_meta(diag: dict, scraped_meta: dict, 
         return d
     except Exception:
         return diag if isinstance(diag, dict) else {}
+
+# =====================================================================
+# PATCH DIAG17 (ADDITIVE): derive injection attempted/persisted/failed from actual artifacts
+# Goal:
+# - Prevent stale/early-stage diagnostic lists (e.g., admitted_minus_attempted) from contradicting
+#   final artifact state (source_results / baseline_sources_cache).
+# - Diagnostics only: does NOT affect fastpath, hashing, scraping, or metric selection.
+#
+# Emitted at:
+#   output.debug.inj_trace_diag17
+#   output.results.debug.inj_trace_diag17
+# =====================================================================
+def _inj_trace_diag17_from_artifacts(extra_urls: list, source_results: Any, baseline_sources_cache: Any) -> dict:
+    try:
+        xs = _inj_diag_norm_url_list(extra_urls or [])
+        if not xs:
+            return {"method": "artifact_state_scan", "note": "no_extra_urls"}
+
+        # Normalize source_results into a url->status/status_detail map
+        sr_map = {}
+        try:
+            if isinstance(source_results, dict):
+                # allow dict keyed by url
+                for k, v in source_results.items():
+                    u = str(k or "").strip()
+                    if not u:
+                        continue
+                    vv = v if isinstance(v, dict) else {}
+                    sr_map[u] = {
+                        "status": str(vv.get("status") or vv.get("fetch_status") or "").strip(),
+                        "status_detail": str(vv.get("status_detail") or vv.get("fail_reason") or "").strip(),
+                    }
+            elif isinstance(source_results, list):
+                for row in source_results:
+                    if not isinstance(row, dict):
+                        continue
+                    u = str(row.get("url") or row.get("source_url") or "").strip()
+                    if not u:
+                        continue
+                    sr_map[u] = {
+                        "status": str(row.get("status") or row.get("fetch_status") or "").strip(),
+                        "status_detail": str(row.get("status_detail") or row.get("fail_reason") or "").strip(),
+                    }
+        except Exception:
+            sr_map = {}
+
+        # Normalize baseline_sources_cache into url->(status, extracted_numbers_count)
+        bsc_map = {}
+        try:
+            bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
+            for row in bsc:
+                if not isinstance(row, dict):
+                    continue
+                u = str(row.get("url") or row.get("source_url") or "").strip()
+                if not u:
+                    continue
+                st = str(row.get("status") or row.get("fetch_status") or "").strip()
+                nums = row.get("extracted_numbers") or []
+                try:
+                    ncnt = int(len(nums)) if isinstance(nums, list) else 0
+                except Exception:
+                    ncnt = 0
+                bsc_map[u] = {"status": st, "numbers_count": ncnt}
+        except Exception:
+            bsc_map = {}
+
+        attempted = []
+        persisted = []
+        failed = []
+        missing = []
+
+        def _is_success_status(s: str) -> bool:
+            s2 = (s or "").lower().strip()
+            return s2 in ("success", "ok", "fetched")
+
+        def _is_fail_status(s: str) -> bool:
+            s2 = (s or "").lower().strip()
+            if not s2:
+                return False
+            return any(tok in s2 for tok in ("fail", "error", "blocked", "timeout"))
+
+        for u in xs:
+            # attempted if present in either artifact set
+            in_sr = u in sr_map
+            in_bsc = u in bsc_map
+            if not (in_sr or in_bsc):
+                missing.append(u)
+                continue
+
+            attempted.append(u)
+
+            st_sr = sr_map.get(u, {}).get("status", "")
+            st_bsc = bsc_map.get(u, {}).get("status", "")
+            nums_cnt = bsc_map.get(u, {}).get("numbers_count", 0)
+
+            # persisted if:
+            # - BSC indicates fetched/success OR
+            # - extracted_numbers exist
+            if _is_success_status(st_bsc) or nums_cnt > 0 or _is_success_status(st_sr):
+                persisted.append(u)
+            else:
+                # failed if SR/BSC looks failed OR explicit non-success and no numbers
+                if _is_fail_status(st_sr) or _is_fail_status(st_bsc) or ((st_sr or st_bsc) and not (_is_success_status(st_sr) or _is_success_status(st_bsc)) and nums_cnt == 0):
+                    failed.append(u)
+
+        out = {
+            "method": "artifact_state_scan",
+            "extra_urls_norm": xs,
+            "attempted_norm": sorted(set(attempted)),
+            "persisted_norm": sorted(set(persisted)),
+            "failed_norm": sorted(set(failed)),
+            "missing_norm": sorted(set(missing)),
+            "counts": {
+                "extra_urls_norm": int(len(xs)),
+                "attempted_norm": int(len(set(attempted))),
+                "persisted_norm": int(len(set(persisted))),
+                "failed_norm": int(len(set(failed))),
+                "missing_norm": int(len(set(missing))),
+            },
+            "notes": {
+                "attempted_definition": "url present in source_results or baseline_sources_cache",
+                "persisted_definition": "success/fetched status OR extracted_numbers present",
+                "failed_definition": "fail-like status OR non-success with zero extracted_numbers",
+            }
+        }
+        return out
+    except Exception:
+        return {"method": "artifact_state_scan", "error": "diag17_failed"}
+# =====================================================================
+
 # =====================================================================
 
 # =====================================================================
@@ -19432,6 +19562,39 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["debug"]["inj_trace_v2_postfetch"] = _trace2
                     if isinstance(output.get("results"), dict) and isinstance(output["results"].get("debug"), dict):
                         output["results"]["debug"]["inj_trace_v2_postfetch"] = _trace2
+
+                    # =====================================================================
+                    # PATCH DIAG17_EMIT (ADDITIVE): artifact-derived attempted/persisted/failed (injection)
+                    # - Derives from output.results.source_results + baseline_sources_cache (post-run state)
+                    # - Diagnostics only; does not affect behavior
+                    # =====================================================================
+                    try:
+                        _diag17_extra = []
+                        try:
+                            _diag17_extra = list((_fx12_wc.get("extra_urls") if isinstance(locals().get("_fx12_wc"), dict) else []) or (_inj_extra_urls or []) or [])
+                        except Exception:
+                            _diag17_extra = list((_inj_extra_urls or []) or [])
+                        _diag17_sr = None
+                        try:
+                            _diag17_sr = (output.get("results", {}) or {}).get("source_results")
+                        except Exception:
+                            _diag17_sr = None
+                        _diag17_bsc = None
+                        try:
+                            _diag17_bsc = locals().get("cur_bsc") or locals().get("baseline_sources_cache") or baseline_sources_cache
+                        except Exception:
+                            _diag17_bsc = baseline_sources_cache
+                        _diag17 = _inj_trace_diag17_from_artifacts(_diag17_extra, _diag17_sr, _diag17_bsc)
+                        output.setdefault("debug", {})
+                        if isinstance(output.get("debug"), dict):
+                            output["debug"]["inj_trace_diag17"] = _diag17
+                        if isinstance(output.get("results"), dict):
+                            output["results"].setdefault("debug", {})
+                            if isinstance(output["results"].get("debug"), dict):
+                                output["results"]["debug"]["inj_trace_diag17"] = _diag17
+                    except Exception:
+                        pass
+                    # =====================================================================
                 except Exception:
                     pass
                 # =====================================================================
