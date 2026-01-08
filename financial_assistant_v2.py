@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc3_evo_recover_extra_urls_from_ui_raw_v1_structural_fix"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc3_evo_recover_extra_urls_from_ui_raw_v1_structural_fix3"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -22280,63 +22280,63 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     urls = _fix24_extract_source_urls(prev_full)
 
 
-# =====================================================================
-        # PATCH FIX41AFC3 (ADDITIVE): Recover Evolution injected URLs into web_context["extra_urls"]
-        #
-        # Problem observed:
-        # - Streamlit often passes injected URLs via diagnostic fields (e.g. diag_extra_urls_ui_raw),
-        #   while web_context["extra_urls"] may be empty. Downstream evolution wiring (including the
-        #   FIX24 wrapper and identity_only fetch_web_context) keys off web_context["extra_urls"].
-        #
-        # Goal:
-        # - If web_context["extra_urls"] is empty, recover from:
-        #     1) web_context["diag_extra_urls_ui"]       (list)
-        #     2) web_context["diag_extra_urls_ui_raw"]   (str; newline/comma separated)
-        #
-        # Safety:
-        # - Purely additive wiring; no effect when no injection is present.
-        # - Never raises; falls back silently.
-        # =====================================================================
-        try:
-            if isinstance(web_context, dict):
-                _wc_extra0 = web_context.get("extra_urls")
-                _needs = (not isinstance(_wc_extra0, (list, tuple)) or not _wc_extra0)
-                if _needs:
-                    _recovered = []
-                    _v_list = web_context.get("diag_extra_urls_ui")
-                    if isinstance(_v_list, (list, tuple)) and _v_list:
-                        _recovered = list(_v_list)
-                    if not _recovered:
-                        _raw = web_context.get("diag_extra_urls_ui_raw")
-                        if isinstance(_raw, str) and _raw.strip():
-                            _parts = []
-                            for _line in _raw.splitlines():
-                                _line = (_line or "").strip()
-                                if not _line:
-                                    continue
-                                for _p in _line.split(","):
-                                    _p = (_p or "").strip()
-                                    if _p:
-                                        _parts.append(_p)
-                            if _parts:
-                                _recovered = _parts
-                    if _recovered:
-                        # Normalize/canonicalize consistently
-                        _recovered_norm = _inj_diag_norm_url_list(_recovered)
-                        if _recovered_norm:
-                            web_context["extra_urls"] = list(_recovered_norm)
-                            # small debug breadcrumb
-                            web_context.setdefault("debug", {})
-                            if isinstance(web_context.get("debug"), dict):
-                                web_context["debug"].setdefault("fix41afc3", {})
-                                if isinstance(web_context["debug"].get("fix41afc3"), dict):
-                                    web_context["debug"]["fix41afc3"].update({
-                                        "extra_urls_recovered": True,
-                                        "extra_urls_recovered_count": int(len(_recovered_norm)),
-                                    })
-        except Exception:
-            pass
-        # =====================================================================
+    # =====================================================================
+    # PATCH FIX41AFC3 (ADDITIVE): Recover Evolution injected URLs into web_context["extra_urls"]
+    #
+    # Problem observed:
+    # - Streamlit often passes injected URLs via diagnostic fields (e.g. diag_extra_urls_ui_raw),
+    #   while web_context["extra_urls"] may be empty. Downstream evolution wiring (including the
+    #   FIX24 wrapper and identity_only fetch_web_context) keys off web_context["extra_urls"].
+    #
+    # Goal:
+    # - If web_context["extra_urls"] is empty, recover from:
+    #     1) web_context["diag_extra_urls_ui"]       (list)
+    #     2) web_context["diag_extra_urls_ui_raw"]   (str; newline/comma separated)
+    #
+    # Safety:
+    # - Purely additive wiring; no effect when no injection is present.
+    # - Never raises; falls back silently.
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            _wc_extra0 = web_context.get("extra_urls")
+            _needs = (not isinstance(_wc_extra0, (list, tuple)) or not _wc_extra0)
+            if _needs:
+                _recovered = []
+                _v_list = web_context.get("diag_extra_urls_ui")
+                if isinstance(_v_list, (list, tuple)) and _v_list:
+                    _recovered = list(_v_list)
+                if not _recovered:
+                    _raw = web_context.get("diag_extra_urls_ui_raw")
+                    if isinstance(_raw, str) and _raw.strip():
+                        _parts = []
+                        for _line in _raw.splitlines():
+                            _line = (_line or "").strip()
+                            if not _line:
+                                continue
+                            for _p in _line.split(","):
+                                _p = (_p or "").strip()
+                                if _p:
+                                    _parts.append(_p)
+                        if _parts:
+                            _recovered = _parts
+                if _recovered:
+                    # Normalize/canonicalize consistently
+                    _recovered_norm = _inj_diag_norm_url_list(_recovered)
+                    if _recovered_norm:
+                        web_context["extra_urls"] = list(_recovered_norm)
+                        # small debug breadcrumb
+                        web_context.setdefault("debug", {})
+                        if isinstance(web_context.get("debug"), dict):
+                            web_context["debug"].setdefault("fix41afc3", {})
+                            if isinstance(web_context["debug"].get("fix41afc3"), dict):
+                                web_context["debug"]["fix41afc3"].update({
+                                    "extra_urls_recovered": True,
+                                    "extra_urls_recovered_count": int(len(_recovered_norm)),
+                                })
+    except Exception:
+        pass
+    # =====================================================================
 
 
 
