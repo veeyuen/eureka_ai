@@ -77,7 +77,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc23_evo_junkphone_unitgate_anchorreq_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc24_evo_post_selection_normalization_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# PATCH FIX41AFC24_VERSION START
+# Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
+#CODE_VERSION = "fix41afc24_evo_post_selection_normalization_parity_v1"
+# PATCH FIX41AFC24_VERSION END
+
 # =====================================================================
 # PATCH FIX41AFC23V (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
@@ -23567,6 +23572,88 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
 #   - Additive only: leaves FIX17 implementations intact.
 # =====================================================================
 
+# PATCH FIX41AFC24A START
+def _canonical_value_normalize_v1(schema: dict, metric: dict) -> dict:
+    """
+    Post-selection normalization parity helper.
+
+    Goal: align Evolution's emitted metric 'value/value_norm' with Analysis' presentation canonicalization
+    (e.g., 17.8 million units -> 18 million units for large-count unit_sales).
+
+    Additive-only: does not change candidate eligibility/selection/hashing. Rebuild-only caller.
+    """
+    try:
+        sch = schema if isinstance(schema, dict) else {}
+        m = metric if isinstance(metric, dict) else {}
+        dim = (sch.get("dimension") or m.get("dimension") or "").strip().lower()
+        uf = (sch.get("unit_family") or m.get("unit_family") or "").strip().lower()
+        ut = (m.get("unit_tag") or m.get("unit") or "").strip().lower()
+        vn = m.get("value_norm", None)
+        if vn is None:
+            return m
+        try:
+            vn_f = float(vn)
+        except Exception:
+            return m
+
+        # Detect magnitude-style million/billion tags (kept intentionally conservative)
+        is_magnitude = (uf == "magnitude") or ("million" in ut) or (ut in {"m", "mn", "million", "millions", "b", "bn", "billion", "billions"})
+        # Percent
+        is_percent = (dim == "percent") or (uf == "percent") or ("%" in ut) or ("percent" in ut)
+        # Currency (very light detection; schema-driven if present)
+        is_currency = (dim == "currency") or (uf == "currency") or any(tok in ut for tok in ["usd", "sgd", "eur", "gbp", "$", "€", "£"])
+
+        vn_norm = vn_f
+        # --- Canonicalization rules (mirrors typical Analysis rounding behavior) ---
+        if is_percent:
+            # 1 decimal is usually stable for dashboards
+            vn_norm = round(vn_f, 1)
+        elif is_currency:
+            # Keep 2 decimals for small values, 1 decimal for medium, integer for very large
+            if abs(vn_f) >= 100:
+                vn_norm = round(vn_f)
+            elif abs(vn_f) >= 10:
+                vn_norm = round(vn_f, 1)
+            else:
+                vn_norm = round(vn_f, 2)
+        elif dim == "unit_sales" and is_magnitude:
+            # Key parity rule observed in your outputs: large million-unit counts are integer-rounded.
+            if abs(vn_f) >= 10:
+                vn_norm = round(vn_f)
+            elif abs(vn_f) >= 1:
+                vn_norm = round(vn_f, 1)
+            else:
+                vn_norm = round(vn_f, 2)
+        elif is_magnitude:
+            # Generic magnitude rounding
+            if abs(vn_f) >= 100:
+                vn_norm = round(vn_f)
+            elif abs(vn_f) >= 10:
+                vn_norm = round(vn_f, 1)
+            else:
+                vn_norm = round(vn_f, 2)
+
+        # Apply if changed (keep existing keys; add debug fields)
+        if vn_norm != vn_f:
+            m = dict(m)
+            m["value_norm"] = float(vn_norm)
+            # Also update 'value' when it is numeric-like
+            try:
+                # Preserve ints as ints for display parity
+                if float(vn_norm).is_integer():
+                    m["value"] = int(round(float(vn_norm)))
+                else:
+                    m["value"] = float(vn_norm)
+            except Exception:
+                pass
+            m["post_norm_applied"] = True
+            m["post_norm_rule"] = "canonical_value_normalize_v1"
+        return m
+    except Exception:
+        return metric
+# PATCH FIX41AFC24A END
+
+
 def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     FIX18 rebuild:
@@ -23618,7 +23705,33 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
         for k, v in unanchored.items():
             if k not in rebuilt:
                 rebuilt[k] = v
-    return rebuilt
+    # PATCH FIX41AFC24B START
+# Post-selection normalization parity: normalize emitted metric values to match Analysis presentation rules.
+try:
+    schema_map = {}
+    if isinstance(prev_response, dict):
+        schema_map = prev_response.get("metric_schema_frozen") or {}
+    if isinstance(rebuilt, dict) and rebuilt:
+        for _ck, _mv in list(rebuilt.items()):
+            _schema = {}
+            if isinstance(schema_map, dict) and _ck in schema_map and isinstance(schema_map.get(_ck), dict):
+                _schema = schema_map.get(_ck) or {}
+            # Fallback to prev canonical schema when frozen map missing
+            if not _schema and isinstance(prev_response, dict):
+                pmc = prev_response.get("primary_metrics_canonical") or {}
+                if isinstance(pmc, dict) and _ck in pmc and isinstance(pmc.get(_ck), dict):
+                    _schema = pmc.get(_ck) or {}
+            if isinstance(_mv, dict):
+                rebuilt[_ck] = _canonical_value_normalize_v1(_schema, _mv)
+        # Attach lightweight debug marker
+        if isinstance(prev_response, dict):
+            dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
+            if isinstance(dbg, dict):
+                dbg["post_norm_fix41afc24b_applied"] = True
+except Exception:
+    pass
+# PATCH FIX41AFC24B END
+return rebuilt
 
 
 # Re-wire schema-only entrypoint to FIX18 (keep names identical for evolution dispatch)
