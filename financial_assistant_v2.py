@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc27_evo_anchor_scoped_value_range_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc28_evo_junk_hard_block_unit_required_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -14846,7 +14846,8 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                     "match_confidence": 0.0,
                     "context_snippet": _ctx,
                     "source_url": _src,
-                    "anchor_used": False,  # not applicable when current metric missing
+                    "anchor_used": False,
+            "eligibility_pass_reason_fix41afc28": _fix41afc28_candidate_pass_reason(spec, best),  # not applicable when current metric missing
                     "canonical_key": ckey,
                     "metric_definition": definition,
                     "anchor_confidence": _aconf,
@@ -17189,6 +17190,8 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                     "canonical_key": ckey,
                     "anchor_hash": ah,
                     "anchor_used": True,
+            "eligibility_pass_reason_fix41afc28": _fix41afc28_candidate_pass_reason(spec, c),
+                            "eligibility_pass_reason_fix41afc28": _fix41afc28_candidate_pass_reason(spec, _cand),
                     "anchor_confidence": a.get("anchor_confidence"),
                     "source_url": cand.get("source_url") or a.get("source_url"),
                     "raw": cand.get("raw"),
@@ -23172,6 +23175,69 @@ def _fix17_candidate_allowed_with_reason(c: dict, metric_spec: dict, canonical_k
         return (True, "")
 
 
+
+# PATCH FIX41AFC28A START
+def _fix41afc28_candidate_block_reasons(schema: dict, cand: dict) -> list:
+    """Hard-block reasons for candidate eligibility (Evolution).
+
+    Additive-only guardrail:
+      - Block junk candidates even if earlier gates accidentally allow them.
+      - Treat magnitude as unit-required when schema has unit_tag.
+    Returns: list[str] reasons (empty => allowed by this patch)
+    """
+    import re
+    reasons = []
+    try:
+        sch = schema if isinstance(schema, dict) else {}
+        c = cand if isinstance(cand, dict) else {}
+        # 1) Junk hard-block
+        if bool(c.get("is_junk")):
+            jr = c.get("junk_reason") or c.get("junk_tag") or "is_junk"
+            reasons.append(f"junk_candidate_hard_block:{jr}")
+        # 1b) Phone/contact pattern hard-block (extra safety even if is_junk not set)
+        ctx = " ".join([
+            str(c.get("raw") or ""),
+            str(c.get("context_snippet") or c.get("context") or c.get("context_window") or ""),
+        ]).lower()
+        if any(k in ctx for k in ["phone", "tel", "telephone", "call", "contact", "email", "investor relations"]):
+            if re.search(r"(\+?\d{1,2}[\s\-]?)?(\(?\d{2,4}\)?[\s\-]?)\d{3}[\s\-]?\d{4}", ctx):
+                reasons.append("phone_like_contact_block")
+            # Tail-4: protect against fragments like '6441' from '+1-888-600-6441'
+            if re.search(r"\b\d{4}\b", str(c.get("raw") or "")) and re.search(r"\b\d{3}[\s\-]?\d{4}\b", ctx):
+                reasons.append("phone_tail_fragment_block")
+
+        # 2) Magnitude unit-required when schema has unit_tag (e.g., 'million vehicles')
+        uf = str(sch.get("unit_family") or "").strip().lower()
+        dim = str(sch.get("dimension") or "").strip().lower()
+        sch_ut = str(sch.get("unit_tag") or "").strip()
+        cand_ut = str(c.get("unit_tag") or c.get("unit") or "").strip()
+        if sch_ut and (uf == "magnitude" or dim == "unit_sales"):
+            if not cand_ut:
+                reasons.append("missing_required_unit_tag")
+    except Exception:
+        # Fail-open: if helper errors, do not block
+        return []
+    return reasons
+
+
+def _fix41afc28_candidate_pass_reason(schema: dict, cand: dict) -> str:
+    """Small debug string explaining why a candidate passed this patch."""
+    try:
+        sch = schema if isinstance(schema, dict) else {}
+        c = cand if isinstance(cand, dict) else {}
+        uf = str(sch.get("unit_family") or "").strip().lower()
+        dim = str(sch.get("dimension") or "").strip().lower()
+        sch_ut = str(sch.get("unit_tag") or "").strip()
+        cand_ut = str(c.get("unit_tag") or c.get("unit") or "").strip()
+        if bool(c.get("is_junk")):
+            return "passed_unexpected_is_junk"  # should have been blocked
+        if sch_ut and (uf == "magnitude" or dim == "unit_sales"):
+            return "passed_required_unit_tag" if cand_ut else "passed_missing_unit_tag_unexpected"
+        return "passed_fix41afc28"
+    except Exception:
+        return "passed_fix41afc28"
+# PATCH FIX41AFC28A END
+
 def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     FIX17 anchor-aware rebuild:
@@ -23231,6 +23297,27 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
         if not ok:
             rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": reason})
             continue
+
+        # PATCH FIX41AFC28B START
+        # Additional hard eligibility stops (instrumentation-only + safety):
+        # - Block junk/phone/contact candidates even if earlier gates allow them.
+        # - Enforce unit_tag when schema demands magnitude/unit_sales with unit_tag.
+        try:
+            _reasons28 = _fix41afc28_candidate_block_reasons(spec, c)
+            if _reasons28:
+                try:
+                    rej.append({
+                        "canonical_key": canonical_key,
+                        "anchor_hash": ah,
+                        "reason": ";".join(_reasons28),
+                        "patch": "FIX41AFC28B"
+                    })
+                except Exception:
+                    pass
+                continue
+        except Exception:
+            pass
+        # PATCH FIX41AFC28B END
 
         rebuilt[canonical_key] = {
             "canonical_key": canonical_key,
@@ -23404,6 +23491,26 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
                     except Exception:
                         _ok2 = True
 
+                    # PATCH FIX41AFC28D START
+                    # Even for anchor override, enforce hard-block reasons (junk/phone/unit-tag) to prevent anchor index pollution.
+                    try:
+                        _reasons28 = _fix41afc28_candidate_block_reasons(spec, _cand)
+                        if _reasons28:
+                            try:
+                                dbg_fix41afc21d["schema_only_anchor_overrides_fix41afc21d"].append({
+                                    "canonical_key": canonical_key,
+                                    "anchor_hash": _ah_s,
+                                    "source_url": _cand.get("source_url") or "",
+                                    "blocked_reasons": list(_reasons28),
+                                    "patch": "FIX41AFC28D"
+                                })
+                            except Exception:
+                                pass
+                            _ok = False
+                    except Exception:
+                        pass
+                    # PATCH FIX41AFC28D END
+
                     if _ok and _ok2:
                         rebuilt[canonical_key] = {
                             "canonical_key": canonical_key,
@@ -23461,6 +23568,32 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
+
+            # PATCH FIX41AFC28C START
+            # Hard-block junk/contact/phone candidates + enforce required unit_tag for magnitude/unit_sales when schema has unit_tag.
+            # Also record lightweight reject reasons for diagnostics (top-N).
+            try:
+                _dbg28 = prev_response.setdefault("_evolution_rebuild_debug", {})
+                if isinstance(_dbg28, dict):
+                    _dbg28.setdefault("eligibility_fail_reasons_fix41afc28", {})
+                _reasons28 = _fix41afc28_candidate_block_reasons(spec, c)
+                if _reasons28:
+                    try:
+                        _dmap = _dbg28.get("eligibility_fail_reasons_fix41afc28") if isinstance(_dbg28, dict) else None
+                        if isinstance(_dmap, dict):
+                            _lst = _dmap.setdefault(canonical_key, [])
+                            if isinstance(_lst, list) and len(_lst) < 5:
+                                _lst.append({
+                                    "source_url": c.get("source_url") or "",
+                                    "raw": (c.get("raw") or "")[:80],
+                                    "reasons": list(_reasons28),
+                                })
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                pass
+            # PATCH FIX41AFC28C END
             # =====================================================================
             # PATCH FIX41AFC23C (ADDITIVE): anchor-required filtering when anchor exists
             # =====================================================================
