@@ -77,7 +77,15 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc22_evo_diag17_artifact_state_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc23_evo_junkphone_unitgate_anchorreq_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# =====================================================================
+# PATCH FIX41AFC23V (ADDITIVE): bump CODE_VERSION marker for this patched build
+# =====================================================================
+#CODE_VERSION = "fix41afc23_evo_junkphone_unitgate_anchorreq_v1"
+# =====================================================================
+# END PATCH FIX41AFC23V
+# =====================================================================
+
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -14898,6 +14906,33 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                     unit_mismatch = True
             except Exception:
                 unit_mismatch = False
+            # =====================================================================
+            # PATCH FIX41AFC23B (ADDITIVE): treat missing/empty units as mismatch when schema expects a unit family
+            # =====================================================================
+            try:
+                if not unit_mismatch:
+                    _sch = (prev_response.get("metric_schema_frozen") or {}).get(ckey) or {}
+                    _exp_family = (_sch.get("unit_family") or _sch.get("dimension") or "").lower()
+                    _exp_unit = str(_sch.get("unit") or _sch.get("unit_tag") or "").strip()
+                    _cur_u = str(cur_unit_cmp or "").strip()
+                    _prev_u = str(prev_unit_cmp or "").strip()
+
+                    if _prev_u and not _cur_u:
+                        if _exp_family in ("magnitude", "unit_sales") or (_sch.get("dimension") == "unit_sales") or (_exp_unit in ("M", "B", "K", "T")):
+                            unit_mismatch = True
+
+                    if not unit_mismatch and (_sch.get("dimension") == "percent" or _exp_family == "percent"):
+                        if not _cur_u or _cur_u != "%":
+                            unit_mismatch = True
+
+                    if not unit_mismatch and (_sch.get("dimension") == "currency" or _exp_family == "currency"):
+                        if not _cur_u:
+                            unit_mismatch = True
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH FIX41AFC23B
+            # =====================================================================
 
             # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
             _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, cm)
@@ -20141,6 +20176,39 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             except Exception:
                 pass
 
+        # =====================================================================
+        # PATCH FIX41AFC23A (ADDITIVE): hard junk for phone/contact numbers (prevents "+1-888-600-6441" tail capture)
+        # - Tag-only (non-destructive): marks candidate as junk, downstream excludes by default.
+        # - Handles full phone patterns AND "tail-4" captures when context shows a phone number.
+        # =====================================================================
+        try:
+            _ctx_raw = (ctx or "")
+            _ctx_l = _ctx_raw.lower()
+            _raw_s = (raw_disp or "").strip()
+            _digits = re.sub(r"\D", "", _raw_s)
+            _contact_kw = any(k in _ctx_l for k in [
+                "contact", "contact us", "tel", "telephone", "phone", "call", "hotline", "fax", "whatsapp",
+                "press@", "media@", "investor relations"
+            ])
+            _phone_pat = (
+                re.search(r"(?:\+?\d{1,3}[\s\-\.]*)?(?:\(?\d{2,4}\)?[\s\-\.]*)\d{3}[\s\-\.]*\d{4}\b", _raw_s)
+                or re.search(r"(?:\+?\d{1,3}[\s\-\.]*)?(?:\(?\d{2,4}\)?[\s\-\.]*)\d{3}[\s\-\.]*\d{4}\b", _ctx_raw)
+            )
+            if _phone_pat:
+                return True, "phone_number"
+            # Tail-4 capture: candidate is 4 digits but context includes full phone number
+            if u == "" and len(_digits) == 4:
+                if _contact_kw and re.search(r"\b\d{3}[\s\-\.]\d{3}[\s\-\.]\d{4}\b", _ctx_raw):
+                    return True, "phone_tail4"
+            # Toll-free hint + contact context
+            if u == "" and _contact_kw:
+                if re.search(r"\b(?:800|888|877|866|855|844|833)\b", _ctx_raw) and len(_digits) in (4, 7, 10, 11):
+                    return True, "phone_contact_context"
+        except Exception:
+            pass
+        # =====================================================================
+        # END PATCH FIX41AFC23A
+        # =====================================================================
         return False, ""
 
     # -------------------------------------------------------------------------
@@ -23279,6 +23347,22 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
         spec = dict(sch)
         spec.setdefault("canonical_key", canonical_key)
         spec.setdefault("name", sch.get("name") or canonical_key)
+        # =====================================================================
+        # PATCH FIX41AFC23C (ADDITIVE): if an anchor exists for this metric, require anchor-matched candidates only
+        # =====================================================================
+        _fix41afc23_anchor_required_hash = None
+        try:
+            _a_req = metric_anchors_fix41afc21d.get(canonical_key) if isinstance(metric_anchors_fix41afc21d, dict) else None
+            if isinstance(_a_req, dict):
+                _fix41afc23_anchor_required_hash = _a_req.get("anchor_hash") or _a_req.get("anchor") or _a_req.get("candidate_id")
+            if _fix41afc23_anchor_required_hash:
+                _fix41afc23_anchor_required_hash = str(_fix41afc23_anchor_required_hash)
+        except Exception:
+            _fix41afc23_anchor_required_hash = None
+        # =====================================================================
+        # END PATCH FIX41AFC23C
+        # =====================================================================
+
 
         # =====================================================================
         # PATCH FIX41AFC21D (ADDITIVE): Anchor-first override for this metric (schema-only path)
@@ -23372,6 +23456,37 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
+            # =====================================================================
+            # PATCH FIX41AFC23C (ADDITIVE): anchor-required filtering when anchor exists
+            # =====================================================================
+            try:
+                if _fix41afc23_anchor_required_hash:
+                    if str(c.get("anchor_hash") or "") != _fix41afc23_anchor_required_hash:
+                        continue
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH FIX41AFC23C
+            # =====================================================================
+
+            # =====================================================================
+            # PATCH FIX41AFC23B2 (ADDITIVE): hard unit-required gate for unit_sales/magnitude (blocks unitless years/phone tails)
+            # =====================================================================
+            try:
+                _dim = str(spec.get("dimension") or "").lower()
+                _uf = str(spec.get("unit_family") or "").lower()
+                _u = str(c.get("unit") or c.get("unit_tag") or "").strip()
+                if _dim == "unit_sales" or _uf == "magnitude":
+                    if not _u:
+                        continue
+                    if _u == "%" or "$" in _u or "usd" in _u.lower() or "sgd" in _u.lower() or "eur" in _u.lower():
+                        continue
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH FIX41AFC23B2
+            # =====================================================================
+
 
             ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
             raw = _norm(c.get("raw") or "")
