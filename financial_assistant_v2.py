@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc25_evo_parity_lock_assert_guard_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc26_evo_schema_authoritative_rebuild_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -23898,6 +23898,26 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
     except Exception:
         pass
 # PATCH FIX41AFC25_EMIT END
+# PATCH FIX41AFC26 START
+    # Schema-authoritative reconstruction for rebuilt metrics:
+    # Force dimension/unit/unit_tag/unit_family from frozen schema (analysis parity).
+    try:
+        if isinstance(schema_map, dict) and isinstance(rebuilt, dict):
+            for _ck, _m in list(rebuilt.items()):
+                if not isinstance(_m, dict):
+                    continue
+                _schema = schema_map.get(_ck) if isinstance(schema_map, dict) else None
+                if not isinstance(_schema, dict):
+                    continue
+                # Only override these schema-authoritative fields (do not alter value selection).
+                for _fld in ("dimension", "unit", "unit_tag", "unit_family"):
+                    _sv = _schema.get(_fld)
+                    if _sv is not None and _sv != "":
+                        _m[_fld] = _sv
+                _m["_schema_authoritative_fix41afc26"] = True
+    except Exception:
+        pass
+# PATCH FIX41AFC26 END
     return rebuilt
 
 
@@ -25247,3 +25267,9 @@ except Exception:
 # =====================================================================
 # END PATCH FIX41AFC25_VERSION
 # =====================================================================
+
+
+
+# PATCH FIX41AFC26_VERSION START
+CODE_VERSION = "fix41afc26_evo_schema_authoritative_rebuild_v1"
+# PATCH FIX41AFC26_VERSION END
