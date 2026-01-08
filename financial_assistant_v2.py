@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc30_evo_schema_unit_rescaling_value_range_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc31_evo_bare_year_hard_block_v2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -25963,3 +25963,97 @@ CODE_VERSION = "fix41afc29b_evo_anchor_cohort_lock_v2"
 # PATCH FIX41AFC30_VERSION START
 CODE_VERSION = "fix41afc30_evo_schema_unit_rescaling_value_range_v1"
 # PATCH FIX41AFC30_VERSION END
+
+
+# =====================================================================
+# PATCH FIX41AFC31 (ADDITIVE): Bare-year hard block for dashboard "Current"
+# - Implemented as a safe wrapper around diff_metrics_by_name to avoid touching
+#   existing locked-down diff logic.
+# - Blocks naked calendar years (1900-2100) with missing unit evidence for any
+#   non-year metric (including dimension="unknown").
+# =====================================================================
+try:
+    diff_metrics_by_name_FIX41AFC31_PRE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_FIX41AFC31_PRE = None
+
+import re
+
+def diff_metrics_by_name(prev_response: dict, cur_response: dict):
+    out = None
+    if callable(diff_metrics_by_name_FIX41AFC31_PRE):
+        out = diff_metrics_by_name_FIX41AFC31_PRE(prev_response, cur_response)
+    else:
+        fn = globals().get("diff_metrics_by_name_LEGACY")
+        out = fn(prev_response, cur_response) if callable(fn) else ([], 0, 0, 0, 0)
+
+    try:
+        metric_changes = out[0] if isinstance(out, (list, tuple)) and len(out) > 0 else []
+    except Exception:
+        metric_changes = []
+
+    def _is_year_metric_fix41afc31(row: dict) -> bool:
+        try:
+            md = row.get("metric_definition") if isinstance(row, dict) else None
+            md = md if isinstance(md, dict) else {}
+            dim = str(md.get("dimension") or "").strip().lower()
+            unit = str(md.get("unit") or "").strip().lower()
+            unit_tag = str(md.get("unit_tag") or "").strip().lower()
+            ckey = str(row.get("canonical_key") or "").lower()
+            name = str(row.get("name") or "").lower()
+            if dim in ("year", "years", "date", "time_year", "calendar_year"):
+                return True
+            if ("year" in unit) or ("year" in unit_tag):
+                return True
+            if re.search(r"__years?\\b", ckey):
+                return True
+            if ("year" in name) and ("cagr" not in name) and ("range" not in name):
+                return True
+        except Exception:
+            pass
+        return False
+
+    try:
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+            if _is_year_metric_fix41afc31(row):
+                continue
+
+            cur_val = row.get("cur_value_norm", None)
+            yr = None
+            try:
+                if cur_val is not None:
+                    fv = float(cur_val)
+                    if abs(fv - round(fv)) < 1e-9:
+                        iv = int(round(fv))
+                        if 1900 <= iv <= 2100:
+                            yr = iv
+            except Exception:
+                yr = None
+
+            if yr is None:
+                continue
+
+            cur_unit_cmp = str(row.get("cur_unit_cmp") or "").strip()
+            unit_mismatch = bool(row.get("unit_mismatch")) if "unit_mismatch" in row else False
+            blocked_reason = str(row.get("cur_value_blocked_reason") or "").strip()
+
+            if (not cur_unit_cmp) and (not blocked_reason) and (not unit_mismatch):
+                row["current_value"] = ""
+                row["cur_value_norm"] = None
+                row["cur_unit_cmp"] = ""
+                row["cur_value_blocked_reason"] = "bare_year_hard_block_fix41afc31"
+    except Exception:
+        pass
+
+    return out
+
+# =====================================================================
+# PATCH FIX41AFC31_VERSION (ADDITIVE): Version bump for auditability
+# =====================================================================
+try:
+    CODE_VERSION = "fix41afc31_evo_bare_year_hard_block_v2"
+except Exception:
+    pass
+# =====================================================================
