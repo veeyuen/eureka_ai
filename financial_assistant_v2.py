@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc4_evo_forced_admit_injected_urls_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc5_evo_rebuild_metric_eligibility_hardening_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -2550,6 +2550,41 @@ def rebuild_metrics_from_snapshots(
             if expected_family not in ("percent", "energy") and not (currencyish or expected_family == "currency"):
                 if (c.get("unit_tag") in ("", None)) and _is_yearish_value(c.get("value")):
                     continue
+            # =====================================================================
+            # PATCH FIX41AFC5 (ADDITIVE): hard-reject year-only + unitless candidates (evolution rebuild parity)
+            # Why:
+            #   - Prevent "2024"/"2025" from being selected as metric values (especially count/magnitude_other)
+            #   - Applies regardless of expected_family, but only when the candidate is unitless/non-percent.
+            # Determinism:
+            #   - Pure filtering; stable ordering; no refetch.
+            # =====================================================================
+            try:
+                _vnorm = c.get("value_norm", None)
+                if _vnorm is None:
+                    _vnorm = c.get("value", None)
+                _is_year = _is_yearish_value(_vnorm)
+                _cand_ut0 = (c.get("unit_tag") or normalize_unit_tag(c.get("unit") or "") or "").strip()
+                _cand_fam0 = (c.get("unit_family") or unit_family(_cand_ut0) or "").strip().lower()
+                _mk0 = str(c.get("measure_kind") or "").strip().lower()
+                _is_pct0 = bool(c.get("is_percent") or c.get("has_percent") or (_cand_ut0 == "%") or (_cand_fam0 == "percent"))
+                _has_curr0 = bool(str(c.get("currency_symbol") or c.get("currency") or "").strip())
+                _has_unit_ev0 = bool(_cand_ut0 or _cand_fam0 or _is_pct0 or _has_curr0)
+                # year-only guard (unitless, non-percent, non-currency)
+                if _is_year and (not _has_unit_ev0) and (not _is_pct0) and (not _has_curr0) and (_mk0 in ("magnitude_other", "count_units", "count", "number", "")):
+                    try:
+                        _fix41afc5_dbg["rejected_year_only"] = int(_fix41afc5_dbg.get("rejected_year_only", 0) or 0) + 1
+                    except Exception:
+                        pass
+                    continue
+                # magnitude_other guard (unitless, non-percent, non-currency)
+                if (_mk0 == "magnitude_other") and (not _has_unit_ev0) and (not _is_pct0) and (not _has_curr0):
+                    try:
+                        _fix41afc5_dbg["rejected_magnitude_other_unitless"] = int(_fix41afc5_dbg.get("rejected_magnitude_other_unitless", 0) or 0) + 1
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                pass
 
             cand_ut = c.get("unit_tag") or normalize_unit_tag(c.get("unit") or "")
             cand_fam = (c.get("unit_family") or unit_family(cand_ut) or "").strip().lower()
@@ -2825,6 +2860,18 @@ def rebuild_metrics_from_snapshots(
                     rebuilt["_rebuild_status"] = "fallback_prev_primary_metrics_canonical"
                 except Exception:
                     pass
+    except Exception:
+        pass
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX41AFC5 (ADDITIVE): attach eligibility-hardening debug counters
+    # =====================================================================
+    try:
+        if isinstance(rebuilt, dict):
+            rebuilt.setdefault("_fix41afc5_debug", {})
+            if isinstance(rebuilt.get("_fix41afc5_debug"), dict):
+                rebuilt["_fix41afc5_debug"].update(dict(_fix41afc5_dbg))
     except Exception:
         pass
     # =====================================================================
@@ -3224,6 +3271,29 @@ def rebuild_metrics_from_snapshots_schema_only(
                     # allow family match when tag differs
                     if not (spec_unit_family and str(c.get("unit_family") or "").strip() == spec_unit_family):
                         continue
+
+            # =====================================================================
+            # PATCH FIX41AFC5 (ADDITIVE): reject year-only candidates early (schema-only rebuild parity)
+            # =====================================================================
+            try:
+                _vnorm = c.get("value_norm", None)
+                if _vnorm is None:
+                    _vnorm = c.get("value", None)
+                _is_year = _is_yearish_value(_vnorm)
+                _mk0 = str(c.get("measure_kind") or "").strip().lower()
+                _cand_ut0 = str(c.get("unit_tag") or "").strip()
+                _cand_fam0 = str(c.get("unit_family") or "").strip().lower()
+                _is_pct0 = bool(c.get("is_percent") or c.get("has_percent") or (_cand_ut0 == "%") or (_cand_fam0 == "percent"))
+                _has_curr0 = bool(str(c.get("currency_symbol") or c.get("currency") or "").strip())
+                _has_unit_ev0 = bool(_cand_ut0 or _cand_fam0 or _is_pct0 or _has_curr0 or str(c.get("base_unit") or c.get("unit") or "").strip())
+                if _is_year and (not _has_unit_ev0) and (not _is_pct0) and (not _has_curr0) and (_mk0 in ("magnitude_other", "count_units", "count", "number", "")):
+                    try:
+                        _fix41afc5_dbg2["rejected_year_only"] = int(_fix41afc5_dbg2.get("rejected_year_only", 0) or 0) + 1
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                pass
 
             # =====================================================================
             # PATCH FIX33 (ADDITIVE): hard-reject unit-less candidates when unit is required
@@ -3645,6 +3715,18 @@ def get_history_options() -> List[Tuple[str, int]]:
 
 def load_api_keys():
     """Load and validate API keys from secrets or environment"""
+
+    # =====================================================================
+    # PATCH FIX41AFC5 (ADDITIVE): debug counters for schema-only rebuild eligibility hardening
+    # =====================================================================
+    _fix41afc5_dbg2 = {"rejected_year_only": 0, "rejected_unitless": 0, "rejected_magnitude_other_unitless": 0}
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX41AFC5 (ADDITIVE): debug counters for rebuild eligibility hardening
+    # =====================================================================
+    _fix41afc5_dbg = {"rejected_year_only": 0, "rejected_unitless": 0, "rejected_magnitude_other_unitless": 0}
+    # =====================================================================
     try:
         PERPLEXITY_KEY = st.secrets.get("PERPLEXITY_API_KEY") or os.getenv("PERPLEXITY_API_KEY", "")
         GEMINI_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
@@ -12440,6 +12522,18 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
 
         pass
 
+
+    # =====================================================================
+    # PATCH FIX41AFC5 (ADDITIVE): attach eligibility-hardening debug counters
+    # =====================================================================
+    try:
+        if isinstance(rebuilt, dict):
+            rebuilt.setdefault("_fix41afc5_debug", {})
+            if isinstance(rebuilt.get("_fix41afc5_debug"), dict):
+                rebuilt["_fix41afc5_debug"].update(dict(_fix41afc5_dbg2))
+    except Exception:
+        pass
+    # =====================================================================
 
     return rebuilt
 def _sheets_now_ts():
