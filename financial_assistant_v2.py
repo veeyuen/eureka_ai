@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc3_evo_recover_extra_urls_from_ui_raw_v1_clean"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc4_evo_forced_admit_injected_urls_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -22428,7 +22428,74 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
 
     # =====================================================================
-    # PATCH EVO_INJ_ADMISSION_TRACE_V1 (ADDITIVE): pinpoint where injected URLs are dropped
+
+    # =====================================================================
+    # PATCH FIX41AFC4 (ADDITIVE): Force-admit injected URL deltas into evolution URL universe
+    #
+    # Problem (observed in evolution JSON):
+    # - Injected URL appears in ui_norm/intake_norm but is missing from admitted_norm,
+    #   so it never reaches attempted/persisted/hash_inputs.
+    # - This typically happens when admission/allowlist logic rejects injected URLs
+    #   before the fetch loop, leaving attempted empty.
+    #
+    # Goal:
+    # - ONLY when injection is present AND it introduces a true delta vs the baseline
+    #   source universe, ensure the injected URLs are included in `urls` (the universe
+    #   FIX24 uses for scrape_meta building).
+    #
+    # Safety:
+    # - Purely additive; no effect when no injection or no delta.
+    # - Does not modify fastpath logic/hashing; it only ensures injected URLs are
+    #   present in the post-intake universe when delta exists.
+    # - Never raises; falls back silently.
+    # =====================================================================
+    try:
+        _fix41afc4_inj_norm = _inj_diag_norm_url_list(_inj_extra_urls or [])
+        _fix41afc4_base_norm = _inj_diag_norm_url_list(_fix24_extract_source_urls(prev_full) or [])
+        _fix41afc4_delta = sorted(list(set(_fix41afc4_inj_norm) - set(_fix41afc4_base_norm))) if _fix41afc4_inj_norm else []
+        _fix41afc4_applied = False
+
+        if _fix41afc4_delta:
+            # Determine expected URL container shape (strings vs dicts)
+            _urls_list = urls if isinstance(urls, list) else []
+            _urls_are_dicts = bool(_urls_list) and isinstance(_urls_list[0], dict)
+
+            # Build a normalized "seen" set from existing urls
+            if _urls_are_dicts:
+                _seen_norm = set(_inj_diag_norm_url_list([(_d.get("url") if isinstance(_d, dict) else "") for _d in _urls_list]))
+            else:
+                _seen_norm = set(_inj_diag_norm_url_list(_urls_list))
+
+            for _u in _fix41afc4_delta:
+                if _u in _seen_norm:
+                    continue
+                _seen_norm.add(_u)
+                if _urls_are_dicts:
+                    _urls_list.append({"url": _u})
+                else:
+                    _urls_list.append(_u)
+                _fix41afc4_applied = True
+
+            urls = _urls_list  # rebind defensively
+
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].setdefault("fix41afc4", {})
+                if isinstance(web_context["debug"].get("fix41afc4"), dict):
+                    web_context["debug"]["fix41afc4"].update({
+                        "forced_admit_applied": bool(_fix41afc4_applied),
+                        "forced_admit_injected_urls_count": int(len(_fix41afc4_delta)),
+                        "forced_admit_injected_urls": list(_fix41afc4_delta),
+                        "baseline_urls_count": int(len(_fix41afc4_base_norm)),
+                        "urls_after_forced_admit_count": int(len(_inj_diag_norm_url_list([(_d.get("url") if isinstance(_d, dict) else _d) for _d in (urls or [])] if isinstance(urls, list) else []))),
+                    })
+    except Exception:
+        pass
+    # =====================================================================
+
+
+# PATCH EVO_INJ_ADMISSION_TRACE_V1 (ADDITIVE): pinpoint where injected URLs are dropped
     #
     # Why:
     # - When a URL appears in ui_norm/intake_norm but not in admitted_norm, we need
