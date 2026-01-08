@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc29b_evo_anchor_cohort_lock_v2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc30_evo_schema_unit_rescaling_value_range_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -24428,6 +24428,166 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
         pass
     # PATCH FIX41AFC29 END
 
+
+    # PATCH FIX41AFC30 START
+    # Schema-unit rescaling for evidence/value_range aggregation (presentation-only).
+    # Some evidence items may carry value_norm in a different magnitude scale (e.g., billions)
+    # while the metric schema/unit_tag expects millions. This patch rescales evidence-derived
+    # ranges into the schema's display unit scale to eliminate misleading ranges.
+    try:
+        def _fix41afc30_unit_mult_from_text(u: str):
+            try:
+                u = (u or "").lower()
+            except Exception:
+                u = ""
+            if not u:
+                return None
+            # magnitude tokens / words
+            if "trillion" in u or u.strip() in ("t",):
+                return 1e12
+            if "billion" in u or u.strip() in ("b",):
+                return 1e9
+            if "million" in u or u.strip() in ("m",):
+                return 1e6
+            if "thousand" in u or u.strip() in ("k",):
+                return 1e3
+            return None
+
+        def _fix41afc30_get_mult_schema(metric_obj: dict):
+            if not isinstance(metric_obj, dict):
+                return None
+            # Prefer explicit multiplier fields if present
+            m = metric_obj.get("multiplier_to_base")
+            try:
+                m = float(m) if m is not None else None
+            except Exception:
+                m = None
+            if m and m > 0:
+                return m
+            # Derive from unit_tag/unit strings
+            ut = metric_obj.get("unit_tag") or ""
+            uu = metric_obj.get("unit") or ""
+            return _fix41afc30_unit_mult_from_text(ut) or _fix41afc30_unit_mult_from_text(uu)
+
+        def _fix41afc30_get_mult_cand(e: dict):
+            if not isinstance(e, dict):
+                return None
+            m = e.get("multiplier_to_base")
+            try:
+                m = float(m) if m is not None else None
+            except Exception:
+                m = None
+            if m and m > 0:
+                return m
+            ut = e.get("unit_tag") or e.get("unit") or ""
+            bu = e.get("base_unit") or ""
+            return _fix41afc30_unit_mult_from_text(str(ut)) or _fix41afc30_unit_mult_from_text(str(bu))
+
+        def _fix41afc30_rescale_vn_to_schema(metric_obj: dict, e: dict):
+            # Returns rescaled value_norm into schema's unit scale (if derivable); else original.
+            if not isinstance(e, dict):
+                return None
+            vn = e.get("value_norm")
+            try:
+                vn = float(vn) if vn is not None else None
+            except Exception:
+                vn = None
+            if vn is None:
+                return None
+
+            # Only apply for magnitude-like families (unit_sales/magnitude). Avoid percent/currency.
+            fam = (metric_obj.get("unit_family") or "").lower() if isinstance(metric_obj, dict) else ""
+            dim = (metric_obj.get("dimension") or "").lower() if isinstance(metric_obj, dict) else ""
+            if ("percent" in fam) or ("percent" in dim):
+                return vn
+            if ("currency" in fam) or ("currency" in dim):
+                return vn
+
+            sm = _fix41afc30_get_mult_schema(metric_obj)
+            em = _fix41afc30_get_mult_cand(e)
+            if not sm or not em:
+                return vn
+
+            # base_value = vn * em ; schema_value = base_value / sm
+            try:
+                base_val = vn * float(em)
+                return base_val / float(sm)
+            except Exception:
+                return vn
+
+        def _fix41afc30_apply_rescaled_ranges(metric_obj: dict, canonical_key: str):
+            if not isinstance(metric_obj, dict):
+                return False
+            vr = metric_obj.get("value_range") or {}
+            if not isinstance(vr, dict):
+                return False
+            # Only rescale when range was computed by cohort/anchor scoping logic
+            method = (vr.get("method") or "")
+            if ("fix41afc29" not in method) and ("fix41afc27" not in method):
+                return False
+
+            ev = metric_obj.get("evidence") or []
+            if not isinstance(ev, list) or not ev:
+                return False
+
+            # Use the same cohort criteria already applied: if cohort examples exist, try to match by raw strings.
+            # Otherwise rescale all evidence and rely on existing method scoping having reduced noise.
+            vals = []
+            for e in ev:
+                if not isinstance(e, dict):
+                    continue
+                rvn = _fix41afc30_rescale_vn_to_schema(metric_obj, e)
+                if rvn is None:
+                    continue
+                vals.append(rvn)
+
+            if not vals:
+                return False
+
+            vmin = min(vals)
+            vmax = max(vals)
+
+            # Update range + display using schema unit_tag/unit
+            try:
+                metric_obj["value_range"] = dict(vr)
+                metric_obj["value_range"]["min"] = vmin
+                metric_obj["value_range"]["max"] = vmax
+                metric_obj["value_range"]["method"] = str(method) + "|rescaled_fix41afc30"
+            except Exception:
+                metric_obj["value_range"] = {"min": vmin, "max": vmax, "n": len(vals), "method": "rescaled_fix41afc30"}
+
+            _unit_disp = metric_obj.get("unit_tag") or metric_obj.get("unit") or ""
+            try:
+                # reuse formatter if present
+                _fmt_fn = locals().get("_fix41afc27_fmt_range")
+                if callable(_fmt_fn):
+                    metric_obj["value_range_display"] = _fmt_fn(vmin, vmax, _unit_disp)
+                else:
+                    metric_obj["value_range_display"] = f"{vmin:.4g}–{vmax:.4g} {_unit_disp}".strip()
+            except Exception:
+                metric_obj["value_range_display"] = f"{vmin}–{vmax} {_unit_disp}".strip()
+
+            metric_obj["_value_range_rescaled_fix41afc30"] = True
+            return True
+
+        _fix41afc30_rescaled_keys = []
+        if isinstance(rebuilt, dict):
+            for _ck, _m in list(rebuilt.items()):
+                try:
+                    if _fix41afc30_apply_rescaled_ranges(_m, _ck):
+                        _fix41afc30_rescaled_keys.append(_ck)
+                except Exception:
+                    pass
+
+        try:
+            prev_response["_evolution_rebuild_debug"]["value_range_rescaled_fix41afc30_count"] = len(_fix41afc30_rescaled_keys)
+            prev_response["_evolution_rebuild_debug"]["value_range_rescaled_fix41afc30_keys"] = _fix41afc30_rescaled_keys[:50]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # PATCH FIX41AFC30 END
+
     return rebuilt
 
 
@@ -25799,3 +25959,7 @@ CODE_VERSION = "fix41afc29_evo_anchor_cohort_lock_v1"
 # (surgical) Ensure return rebuilt remains within function scope.
 CODE_VERSION = "fix41afc29b_evo_anchor_cohort_lock_v2"
 # PATCH FIX41AFC29_INDENT END
+
+# PATCH FIX41AFC30_VERSION START
+CODE_VERSION = "fix41afc30_evo_schema_unit_rescaling_value_range_v1"
+# PATCH FIX41AFC30_VERSION END
