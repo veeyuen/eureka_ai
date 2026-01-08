@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc33_unit_family_schema_unit_required_reason_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc34_evo_schema_authority_propagation_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -115,13 +115,13 @@ CODE_VERSION = "fix41afc33_unit_family_schema_unit_required_reason_v1"  # PATCH 
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
+#CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
 # =====================================================================
 # PATCH FIX41AFC20 (ADDITIVE): bump CODE_VERSION to this file version
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
+#CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
 # =====================================================================
 
 # =====================================================================
@@ -24912,6 +24912,48 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
         pass
     # PATCH FIX41AFC32_SCORECARD END
 
+
+
+    # PATCH FIX41AFC34 START
+    # Schema-authoritative propagation (unit_family/unit/unit_tag) for rebuilt metric objects.
+    # This is presentation/metadata parity only; does NOT affect selection, hashing, or fastpath.
+    try:
+        _schema_map_fix41afc34 = None
+        try:
+            _schema_map_fix41afc34 = schema_map if isinstance(locals().get("schema_map"), dict) else None
+        except Exception:
+            _schema_map_fix41afc34 = None
+        if _schema_map_fix41afc34 is None and isinstance(prev_response, dict):
+            _schema_map_fix41afc34 = prev_response.get("metric_schema_frozen") or {}
+        _applied_fix41afc34 = []
+        if isinstance(rebuilt, dict) and isinstance(_schema_map_fix41afc34, dict):
+            for _ck_fix41afc34, _mv_fix41afc34 in rebuilt.items():
+                if not isinstance(_mv_fix41afc34, dict):
+                    continue
+                _sc_fix41afc34 = _schema_map_fix41afc34.get(_ck_fix41afc34) or {}
+                if not isinstance(_sc_fix41afc34, dict) or not _sc_fix41afc34:
+                    continue
+                _changed_fix41afc34 = False
+                for _fld_fix41afc34 in ("unit_family", "unit", "unit_tag"):
+                    _sv_fix41afc34 = _sc_fix41afc34.get(_fld_fix41afc34)
+                    if _sv_fix41afc34 is None or _sv_fix41afc34 == "":
+                        continue
+                    if _mv_fix41afc34.get(_fld_fix41afc34) is None or _mv_fix41afc34.get(_fld_fix41afc34) == "":
+                        _mv_fix41afc34[_fld_fix41afc34] = _sv_fix41afc34
+                        _changed_fix41afc34 = True
+                if _changed_fix41afc34:
+                    _mv_fix41afc34["_schema_authority_fix41afc34"] = True
+                    _applied_fix41afc34.append(_ck_fix41afc34)
+        try:
+            if isinstance(prev_response, dict):
+                prev_response.setdefault("_evolution_rebuild_debug", {})
+                prev_response["_evolution_rebuild_debug"]["schema_authority_applied_fix41afc34_count"] = len(_applied_fix41afc34)
+                prev_response["_evolution_rebuild_debug"]["schema_authority_applied_fix41afc34_keys"] = _applied_fix41afc34[:50]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # PATCH FIX41AFC34 END
     return rebuilt
 
 
@@ -26601,3 +26643,7 @@ try:
 except Exception:
     pass
 # =====================================================================
+
+# PATCH FIX41AFC34_VERSION START
+CODE_VERSION = "fix41afc34_evo_schema_authority_propagation_v1"
+# PATCH FIX41AFC34_VERSION END
