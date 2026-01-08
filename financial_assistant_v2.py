@@ -77,9 +77,9 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc8_evo_force_fetch_injected_even_if_not_admitted_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc9_evo_merge_injected_into_urls_universe_v1_clean"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -22550,7 +22550,55 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
 
     # =====================================================================
-    # PATCH FIX41AFC6 (ADDITIVE): When injected URL delta exists, actually FETCH it
+        # =====================================================================
+    # PATCH FIX41AFC9 (ADDITIVE): Merge injected URLs into `urls` universe BEFORE scrape_meta build
+    #
+    # Problem observed (inj_trace_v1):
+    # - Injected URL shows up in ui_norm/intake_norm, but can still vanish from admitted_norm/hash_inputs_norm.
+    # - Root cause: the identity-only fetch_web_context() step may replace `urls` with an admitted list
+    #   that excludes injected URLs, and later injected logic may read from a different variable/path.
+    #
+    # Goal:
+    # - If injected URLs are present in web_context['extra_urls'], ensure they are ALWAYS merged into the
+    #   local `urls` list used by _fix24_build_scraped_meta(), so the injected URLs are at least
+    #   attempted (scraped_meta populated) and can become part of current hash identity when successful.
+    #
+    # Safety:
+    # - Only active when injection is present.
+    # - Purely additive: does not change hashing algorithm or fastpath rules; it only ensures the URL
+    #   universe includes the injected URLs when the user provided them.
+    # - Never raises.
+    # =====================================================================
+    try:
+        _fx9_wc = web_context if isinstance(web_context, dict) else {}
+        _fx9_inj = _inj_diag_norm_url_list((_fx9_wc or {}).get("extra_urls") or [])
+        if _fx9_inj and isinstance(urls, list):
+            _fx9_seen = set(_inj_diag_norm_url_list([(_d.get("url") if isinstance(_d, dict) else _d) for _d in urls]))
+            _fx9_added = []
+            for _u in _fx9_inj:
+                if _u in _fx9_seen:
+                    continue
+                _fx9_seen.add(_u)
+                urls.append(_u)
+                _fx9_added.append(_u)
+
+            if isinstance(_fx9_wc, dict):
+                _fx9_wc.setdefault("debug", {})
+                if isinstance(_fx9_wc.get("debug"), dict):
+                    _fx9_wc["debug"].setdefault("fix41afc9", {})
+                    if isinstance(_fx9_wc["debug"].get("fix41afc9"), dict):
+                        _fx9_wc["debug"]["fix41afc9"].update({
+                            "merged_into_urls_universe": True,
+                            "injected_urls_count": int(len(_fx9_inj)),
+                            "added_to_urls_count": int(len(_fx9_added)),
+                            "added_to_urls": list(_fx9_added),
+                            "urls_count_after_merge": int(len(urls)),
+                        })
+    except Exception:
+        pass
+    # =====================================================================
+
+# PATCH FIX41AFC6 (ADDITIVE): When injected URL delta exists, actually FETCH it
     #
     # Observation (from inj_trace_v1 in evolution JSON):
     # - Injected URL appears in ui_norm/intake_norm, but attempted/persisted remain empty,
