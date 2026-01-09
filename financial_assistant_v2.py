@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc39_evo_unit_out_backfill_ctxsnippet_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc40_unit_token_authority_unitcmp_backfill_runtimefp_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -13957,6 +13957,26 @@ def _fix41afc36_backfill_candidates_list(_lst):
             blob = " ".join([raw, unit, utag, base, ctx])
 
             if not uf:
+                # ============================================================
+                # PATCH FIX41AFC40A START
+                # Unit-token authoritative unit_family backfill:
+                # Prefer explicit unit/unit_tag/base_unit/raw tokens over nearby context
+                # (prevents "17.8 million units" being mislabeled as percent due to nearby "%").
+                # ============================================================
+                try:
+                    _explicit = " ".join([unit, utag, base, raw]).strip().lower()
+                    _has_pct = ("%" in _explicit) or ("percent" in _explicit) or ("percentage" in _explicit)
+                    _has_ccy = any(t in _explicit for t in ["$", "usd", "us$", "eur", "sgd", "gbp", "aud", "cad", "jpy", "cny", "rmb", "inr", "krw", "chf"])
+                    _has_mag = any(t in _explicit for t in ["million", "billion", "trillion", "mn", "bn", "tn"]) or any(t in (" " + _explicit + " ") for t in [" k ", " m ", " b ", " t "])
+                    if _has_pct:
+                        uf = "percent"
+                    elif _has_ccy:
+                        uf = "currency"
+                    elif _has_mag:
+                        uf = "magnitude"
+                except Exception:
+                    pass
+                # PATCH FIX41AFC40A END
                 if "%" in blob or "percent" in blob or "percentage" in blob:
                     uf = "percent"
                 elif any(t in blob for t in ["$", "usd", "us$", "eur", "sgd", "gbp", "aud", "cad", "jpy", "cny", "rmb", "inr", "krw", "chf"]):
@@ -16237,6 +16257,31 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 match_conf = 92.0
 
             # =====================================================================
+            # PATCH FIX41AFC40B START
+            # Post-selection unit compare backfill (dashboard-safe):
+            # If we have an expected schema unit family (percent/currency/magnitude) but cur_unit_cmp is blank,
+            # synthesize a comparable unit token from candidate/schema so unit_mismatch does not fail-open/blank.
+            # =====================================================================
+            try:
+                if (not str(cur_unit_cmp or "").strip()):
+                    exp_fam = str((definition or {}).get("unit_family") or "").strip().lower()
+                    cand_ut = str(cm.get("unit_tag") or cm.get("unit") or cm.get("base_unit") or "").strip()
+                    cand_raws = " ".join([str(cur_raw or ""), cand_ut]).lower()
+                    if exp_fam == "percent" or "%" in cand_raws or "percent" in cand_raws:
+                        cur_unit_cmp = "%"
+                    elif exp_fam == "currency":
+                        cur_unit_cmp = str((definition or {}).get("unit_tag") or (definition or {}).get("unit") or cand_ut or "").strip()
+                    elif exp_fam == "magnitude":
+                        cur_unit_cmp = str((definition or {}).get("unit_tag") or cand_ut or "").strip()
+                    # If mismatch was solely due to blank cur_unit_cmp, clear it when units now match
+                    if bool(unit_mismatch) and str(prev_unit_cmp or "").strip() and str(cur_unit_cmp or "").strip():
+                        if str(prev_unit_cmp).strip() == str(cur_unit_cmp).strip():
+                            unit_mismatch = False
+            except Exception:
+                pass
+            # PATCH FIX41AFC40B END
+
+            # =====================================================================
             # PATCH FIX41AFC20A (ADDITIVE): HARD unit-family mismatch eligibility gate
             # =====================================================================
             cur_value_blocked_reason = ""
@@ -18309,6 +18354,20 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["code_version"] = CODE_VERSION
     except Exception:
         pass
+    # ============================================================
+    # PATCH FIX41AFC40C START
+    # Runtime fingerprint + effective CODE_VERSION emission (debug-only).
+    # Helps confirm the deployed file matches the intended patch version.
+    # ============================================================
+    try:
+        if not isinstance(output.get("debug"), dict):
+            output["debug"] = {}
+        output["debug"].setdefault("fix41afc40_runtime", {})
+        output["debug"]["fix41afc40_runtime"]["runtime_file"] = __file__ if "__file__" in globals() else ""
+        output["debug"]["fix41afc40_runtime"]["code_version_effective"] = CODE_VERSION
+    except Exception:
+        pass
+    # PATCH FIX41AFC40C END
     try:
         if not isinstance(output.get("debug"), dict):
             output["debug"] = {}
@@ -27334,3 +27393,14 @@ try:
 except Exception:
     pass
 # PATCH FIX41AFC39_VERSION END
+
+
+# ============================================================
+# PATCH FIX41AFC40_VERSION START
+# Auditability: bump CODE_VERSION for this patch bundle.
+# ============================================================
+try:
+    CODE_VERSION = "fix41afc40_unit_token_authority_unitcmp_backfill_runtimefp_v1"
+except Exception:
+    pass
+# PATCH FIX41AFC40_VERSION END
