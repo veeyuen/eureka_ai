@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc70_canonical_selector_strict_family_eligibility_v1"  # PATCH FIX41AFC69
+CODE_VERSION = "fix41afc71_family_unit_evidence_guard_v1"  # PATCH FIX41AFC69
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -258,6 +258,79 @@ def _fix41afc69_candidate_has_unit_evidence(cand: dict, expected_unit_tag: str =
         return False
     except Exception:
         return False
+
+
+# =====================================================================
+# PATCH FIX41AFC71 START (ADDITIVE): family-aware unit-evidence guard
+# Why:
+# - FIX41AFC69's unit-evidence heuristic can be satisfied by unrelated tokens
+#   (e.g., "$", "USD") even when schema expects "million units" (unit_sales).
+# - This caused unitless/currency-context numbers from injected sources to pass
+#   the magnitude/unit_sales gate and leak into Current.
+# What:
+# - Provide a stricter, schema-family-aware unit evidence check that:
+#   * For percent: requires '%' or 'percent' in raw/unit/context.
+#   * For currency: requires currency token/symbol in raw/unit/context.
+#   * For magnitude/unit_sales: requires scale token AND a unit noun (unit/units/vehicle(s)/sales)
+#     OR an explicit unit/unit_tag/base_unit field.
+# - Used only by the hard-block gate (does not refactor scoring).
+# =====================================================================
+def _fix41afc71_candidate_has_required_unit_evidence(cand: dict, expected_unit_tag: str = "", expected_unit_family: str = "") -> bool:
+    try:
+        if not isinstance(cand, dict):
+            return False
+
+        exp_fam = str(expected_unit_family or "").strip().lower()
+        exp_tag = str(expected_unit_tag or "").strip().lower()
+
+        u = str(cand.get("unit") or "").strip()
+        ut = str(cand.get("unit_tag") or "").strip()
+        bu = str(cand.get("base_unit") or "").strip()
+        if u or ut or bu:
+            # explicit unit evidence always wins
+            return True
+
+        raw = str(cand.get("raw") or cand.get("raw_disp") or "").strip()
+        ctx = str(cand.get("context_snippet") or cand.get("context") or "").strip()
+        hay = f"{raw} {ctx}".lower()
+
+        # Percent requires explicit percent token
+        if exp_fam == "percent":
+            return bool(re.search(r"(?:%|\bpercent\b|\bpercentage\b)", hay))
+
+        # Currency requires explicit currency token/symbol
+        if exp_fam == "currency":
+            return bool(re.search(r"(?:\$|€|£|¥|\busd\b|\beur\b|\bgbp\b|\bjpy\b|\bsgd\b|\bcny\b|\brmb\b)", hay))
+
+        # Magnitude / unit_sales: require scale token AND unit noun
+        if exp_fam in ("magnitude", "unit_sales", "units", "count", "count_units"):
+            # scale hint (million/billion/etc.) based on expected tag; if not present, try generic
+            scale_ok = False
+            try:
+                if any(k in exp_tag for k in ["million", "mn", "mio", "m ", "m units", "m vehicles"]):
+                    scale_ok = bool(_fix41afc59_scale_hint_in_text("million", hay, unit=""))
+                elif any(k in exp_tag for k in ["billion", "bn", "b "]):
+                    scale_ok = bool(_fix41afc59_scale_hint_in_text("billion", hay, unit=""))
+                elif any(k in exp_tag for k in ["thousand", "k "]):
+                    scale_ok = bool(_fix41afc59_scale_hint_in_text("thousand", hay, unit=""))
+                elif any(k in exp_tag for k in ["trillion", "tn", "t "]):
+                    scale_ok = bool(_fix41afc59_scale_hint_in_text("trillion", hay, unit=""))
+                else:
+                    # generic: accept any scale token, but still require unit noun
+                    scale_ok = bool(re.search(r"\b(million|mn|mio|billion|bn|thousand|k|trillion|tn)\b", hay))
+            except Exception:
+                scale_ok = bool(re.search(r"\b(million|mn|mio|billion|bn|thousand|k|trillion|tn)\b", hay))
+
+            noun_ok = bool(re.search(r"\b(unit|units|vehicle|vehicles|sales|sold)\b", hay))
+            return bool(scale_ok and noun_ok)
+
+        # default: fall back to older heuristic (conservative false)
+        return False
+    except Exception:
+        return False
+# =====================================================================
+# PATCH FIX41AFC71 END
+# =====================================================================
 
 # =====================================================================
 # PATCH FIX41AFC69 END
@@ -17371,7 +17444,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 _exp_tag_69b = str((definition or {}).get("unit_tag") or "").strip()
                 if (not cur_value_blocked_reason) and _exp_fam_69b in ("magnitude", "unit_sales", "units", "count", "count_units"):
                     if str(cur_raw or "").strip():
-                        if not _fix41afc69_candidate_has_unit_evidence(cm, expected_unit_tag=_exp_tag_69b, expected_unit_family=_exp_fam_69b):
+                        if not _fix41afc71_candidate_has_required_unit_evidence(cm, expected_unit_tag=_exp_tag_69b, expected_unit_family=_exp_fam_69b):
                             cur_raw = ""
                             cur_value_norm = None
                             cur_unit_cmp = ""
@@ -24792,6 +24865,8 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         except Exception:
             _fx65_preferred_url = _fx65_preferred_url or ""
 
+        # PATCH FIX41AFC71 (ADDITIVE): ensure _norm_fn65 always defined for preferred-lock filtering
+        _norm_fn65 = None
         try:
             _norm_fn65 = globals().get("_fix41afc60_norm_url")
             _fx65_preferred_norm = _norm_fn65(_fx65_preferred_url) if callable(_norm_fn65) else (_fx65_preferred_url or "").lower().rstrip("/")
