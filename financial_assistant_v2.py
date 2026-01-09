@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc46_evo_anchor_same_source_rescue_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc47_percent_ctx_bleed_guard_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -14132,6 +14132,19 @@ def _fix41afc36_backfill_candidates_list(_lst):
                     uf = ""
                 _c["unit_family"] = uf
 
+
+                # ============================================================
+                # PATCH FIX41AFC47A START — clear context-bleed unit_family for unitless candidates
+                # - Prevents unitless numbers near '%' text from being labeled as percent/currency.
+                # ============================================================
+                try:
+                    _fix41afc47_ctx_bleed_guard(_c)
+                except Exception:
+                    pass
+                # ============================================================
+                # PATCH FIX41AFC47A END
+                # ============================================================
+
             unit_ev = any(str(_c.get(k) or "").strip() for k in ["unit", "unit_tag", "base_unit"])
             v = _c.get("value_norm", None)
             if v is None:
@@ -14224,6 +14237,69 @@ def _fix41afc42_apply_unit_family_lock(_c: dict) -> dict:
 
 # ============================================================
 # PATCH FIX41AFC42_HELPERS END
+# ============================================================
+
+
+# ============================================================
+# PATCH FIX41AFC47_HELPERS START — prevent context-bleed from promoting unitless numbers into percent/currency
+# ============================================================
+def _fix41afc47_has_explicit_percent_token(_c: dict) -> bool:
+    try:
+        if not isinstance(_c, dict):
+            return False
+        raw = str(_c.get("raw") or _c.get("raw_disp") or "").lower()
+        unit = str(_c.get("unit") or "").lower()
+        utag = str(_c.get("unit_tag") or "").lower()
+        base = str(_c.get("base_unit") or "").lower()
+        blob = " ".join([raw, unit, utag, base])
+        if "%" in blob:
+            return True
+        if "percent" in blob or "percentage" in blob or " pct" in (" " + blob + " "):
+            return True
+        return False
+    except Exception:
+        return False
+
+def _fix41afc47_has_explicit_currency_token(_c: dict) -> bool:
+    try:
+        if not isinstance(_c, dict):
+            return False
+        raw = str(_c.get("raw") or _c.get("raw_disp") or "").lower()
+        unit = str(_c.get("unit") or "").lower()
+        utag = str(_c.get("unit_tag") or "").lower()
+        base = str(_c.get("base_unit") or "").lower()
+        blob = " ".join([raw, unit, utag, base])
+        # Currency symbols/codes are considered explicit unit tokens
+        return any(t in blob for t in ["$", "€", "£", "¥", "usd", "us$", "eur", "sgd", "gbp", "aud", "cad", "jpy", "cny", "rmb", "inr", "krw", "chf", "hkd", "nzd"])
+    except Exception:
+        return False
+
+def _fix41afc47_ctx_bleed_guard(_c: dict) -> dict:
+    """If unit_family was inferred from *context* (e.g., nearby %), ensure it does not
+    'infect' unitless numbers. Percent/currency families must have explicit tokens on the candidate itself.
+    Additive-only: safe to call repeatedly; records a debug flag when it clears a context-bleed family.
+    """
+    try:
+        if not isinstance(_c, dict):
+            return _c
+        uf = str(_c.get("unit_family") or "").strip().lower()
+        if uf == "percent" and not _fix41afc47_has_explicit_percent_token(_c):
+            _c["unit_family"] = ""
+            # release any earlier lock that might have come from context inference
+            if _c.get("unit_family_locked_fix41afc42"):
+                _c["unit_family_locked_fix41afc42"] = False
+            _c["unit_family_cleared_fix41afc47"] = "ctx_bleed_no_explicit_percent_token"
+        if uf == "currency" and not _fix41afc47_has_explicit_currency_token(_c):
+            _c["unit_family"] = ""
+            if _c.get("unit_family_locked_fix41afc42"):
+                _c["unit_family_locked_fix41afc42"] = False
+            _c["unit_family_cleared_fix41afc47"] = "ctx_bleed_no_explicit_currency_token"
+        return _c
+    except Exception:
+        return _c
+
+# ============================================================
+# PATCH FIX41AFC47_HELPERS END
 # ============================================================
 
 def _fix41afc36_backfill_in_sources_cache(_cache):
@@ -20917,6 +20993,17 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                     pass
                 # ============================================================
                 # PATCH FIX41AFC42B END
+                # ============================================================
+
+                # ============================================================
+                # PATCH FIX41AFC47B START — clear context-bleed unit_family post-lock (extraction postpass)
+                # ============================================================
+                try:
+                    _fix41afc47_ctx_bleed_guard(_c)
+                except Exception:
+                    pass
+                # ============================================================
+                # PATCH FIX41AFC47B END
                 # ============================================================
 # ============================================================
 
@@ -28344,3 +28431,7 @@ except Exception:
     pass
 # PATCH FIX41AFC44_VERSION END
 # ================================================================
+
+# PATCH FIX41AFC47_VERSION START
+CODE_VERSION = "fix41afc47_percent_ctx_bleed_guard_v1"
+# PATCH FIX41AFC47_VERSION END
