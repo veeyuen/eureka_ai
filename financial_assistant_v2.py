@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc53_evo_anchor_resolve_source_lock_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc54_evo_anchor_candidate_id_source_lock_v1"
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
@@ -3871,6 +3871,8 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
             "value_norm": best.get("value_norm"),
             "source_url": best.get("source_url") or "",
             "anchor_hash": best.get("anchor_hash") or "",
+            "anchor_used": bool(best.get("_fix41afc54_anchor_used") or best.get("_fix41afc45_anchor_used")),
+            "anchor_resolve_method": str(best.get("_fix41afc54_anchor_method") or ("fix41afc45" if best.get("_fix41afc45_anchor_used") else "")),
             "evidence": [{
                 "source_url": best.get("source_url") or "",
                 "raw": best.get("raw") or "",
@@ -23616,6 +23618,18 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
         if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
             continue
 
+
+            # =================================================================
+            # PATCH FIX41AFC54 (ADDITIVE): schema unit-required missing-unit hard gate
+            # Prevent unitless candidates (e.g., "170") from being selected for unit-tagged metrics.
+            # =================================================================
+            try:
+                if _fix41afc33_schema_implies_unit_required(spec) and not _fix41afc54_candidate_has_unit_evidence(c):
+                    continue
+            except Exception:
+                pass
+            # =================================================================
+
         rebuilt[canonical_key] = {
             "canonical_key": canonical_key,
             "name": spec.get("name") or canonical_key,
@@ -23799,6 +23813,115 @@ def _fix41afc45_anchor_fallback_by_url_ctx(
     except Exception:
         return None
 
+
+
+# =====================================================================
+# PATCH FIX41AFC54 START
+# Anchor resolution hardening (schema-only rebuild):
+# - Adds candidate_id fallback when anchor_hash lookup misses (hash drift)
+# - Adds preferred-source lock to prevent injected/unrelated URL hijack
+# - Adds schema-unit-required missing-unit hard gate (selection-time)
+# Additive-only: no refactors, safe no-ops when fields missing.
+# =====================================================================
+
+def _fix41afc54_candidate_has_unit_evidence(c: dict) -> bool:
+    try:
+        if not isinstance(c, dict):
+            return False
+        # Most common candidate fields in this pipeline
+        if str(c.get('unit') or '').strip():
+            return True
+        if str(c.get('unit_tag') or '').strip():
+            return True
+        if str(c.get('unit_cmp') or '').strip():
+            return True
+        uf = str(c.get('unit_family') or '').strip()
+        if uf:
+            return True
+        # percent/currency hints sometimes live in raw/context only
+        raw = str(c.get('raw') or '')
+        if '%' in raw:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _fix41afc54_resolve_anchor_candidate(
+    canonical_key: str,
+    anchor_obj: dict,
+    candidates: list,
+    cand_index: dict,
+    spec: dict,
+) -> tuple:
+    """Return (candidate_or_None, method, preferred_url)"""
+    try:
+        if not isinstance(anchor_obj, dict):
+            return (None, '', '')
+
+        preferred_url = str(anchor_obj.get('source_url') or anchor_obj.get('url') or '').strip()
+        ah = str(anchor_obj.get('anchor_hash') or '').strip()
+        cid = str(anchor_obj.get('candidate_id') or '').strip()
+        actx = str(anchor_obj.get('context_snippet') or '')
+
+        # 1) anchor_hash -> cand_index
+        if ah and isinstance(cand_index, dict):
+            c = cand_index.get(ah)
+            if isinstance(c, dict):
+                if preferred_url and str(c.get('source_url') or '') != preferred_url:
+                    # reject cross-source even if hash hits
+                    c = None
+                else:
+                    try:
+                        if _metric_candidate_is_eligible_v2(spec, c):
+                            return (c, 'anchor_hash', preferred_url)
+                    except Exception:
+                        return (c, 'anchor_hash', preferred_url)
+
+        # 2) candidate_id fallback (hash drift): match by explicit candidate_id OR anchor_hash prefix
+        if cid and isinstance(candidates, list):
+            pool = []
+            for c in candidates:
+                if not isinstance(c, dict):
+                    continue
+                if preferred_url and str(c.get('source_url') or '') != preferred_url:
+                    continue
+                c_cid = str(c.get('candidate_id') or '').strip()
+                c_ah = str(c.get('anchor_hash') or '').strip()
+                if (c_cid and c_cid == cid) or (c_ah and c_ah.startswith(cid)):
+                    try:
+                        if not _metric_candidate_is_eligible_v2(spec, c):
+                            continue
+                    except Exception:
+                        pass
+                    pool.append(c)
+            if pool:
+                # deterministic: by anchor_hash, start_idx, raw
+                def _k(x: dict):
+                    return (
+                        str(x.get('anchor_hash') or ''),
+                        int(x.get('start_idx') or 0),
+                        str(x.get('raw') or ''),
+                    )
+                pool.sort(key=_k)
+                return (pool[0], 'candidate_id', preferred_url)
+
+        # 3) same-source + context overlap fallback (reuse FIX41AFC45 helper)
+        if preferred_url and actx and isinstance(candidates, list):
+            try:
+                c = _fix41afc45_anchor_fallback_by_url_ctx(preferred_url, actx, candidates, spec)
+                if isinstance(c, dict):
+                    return (c, 'same_source_ctx', preferred_url)
+            except Exception:
+                pass
+
+        return (None, '', preferred_url)
+    except Exception:
+        return (None, '', '')
+
+# =====================================================================
+# PATCH FIX41AFC54 END
+# =====================================================================
 def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     FIX16 schema-only rebuild:
@@ -23948,12 +24071,84 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             pass
         # =================================================================
         # END PATCH FIX41AFC45
+        # ==============================================================
+        # PATCH FIX41AFC54 (ADDITIVE): propagate anchor_used + resolve method
+        # ==============================================================
+        try:
+            if isinstance(best, dict) and best.get("_fix41afc54_anchor_used") is True:
+                rebuilt[canonical_key]["anchor_used"] = True
+                rebuilt[canonical_key]["anchor_resolve_method"] = str(best.get("_fix41afc54_anchor_method") or "")
+                if str(best.get("_fix41afc54_preferred_url") or "").strip():
+                    rebuilt[canonical_key]["anchor_preferred_url"] = str(best.get("_fix41afc54_preferred_url") or "").strip()
+        except Exception:
+            pass
+        # ==============================================================
+        # END PATCH FIX41AFC54
+        # ==============================================================
+
+
+        # =================================================================
+        # PATCH FIX41AFC54 (ADDITIVE): robust anchor override + source lock + best_tie sentinel
+        # - If anchor exists, resolve via anchor_hash then candidate_id fallback then same-source ctx
+        # - If resolved, set best + best_tie sentinel so scoring loop cannot overwrite
+        # =================================================================
+        try:
+            _a54 = (metric_anchors_fix41afc21d or {}).get(canonical_key) or {}
+            _cand54, _method54, _pref54 = _fix41afc54_resolve_anchor_candidate(
+                canonical_key=canonical_key,
+                anchor_obj=_a54,
+                candidates=candidates,
+                cand_index=cand_index_fix41afc21d,
+                spec=spec,
+            )
+            if isinstance(_cand54, dict):
+                best = dict(_cand54)
+                try:
+                    best['_fix41afc54_anchor_used'] = True
+                    best['_fix41afc54_anchor_method'] = _method54 or 'anchor'
+                    best['_fix41afc54_preferred_url'] = _pref54 or ''
+                except Exception:
+                    pass
+                # Sentinel tie so later keyword scoring cannot override anchored best
+                try:
+                    best_tie = (-1000000000,) + _cand_sort_key(best)
+                except Exception:
+                    best_tie = (-1000000000,) + (str(best.get('anchor_hash') or ''),)
+
+                try:
+                    dbg_fix41afc21d.setdefault('schema_only_anchor_overrides_fix41afc21d', []).append({
+                        'canonical_key': canonical_key,
+                        'used': True,
+                        'mode': 'fix41afc54_' + str(_method54 or ''),
+                        'anchor_hash': str(_a54.get('anchor_hash') or ''),
+                        'candidate_id': str(_a54.get('candidate_id') or ''),
+                        'anchor_source_url': str(_pref54 or ''),
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # =================================================================
+        # END PATCH FIX41AFC54
+        # =================================================================
         # =================================================================
 
         for c in candidates:
             # FIX16 hard eligibility gates
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
+
+            # =================================================================
+            # PATCH FIX41AFC54 (ADDITIVE): schema unit-required missing-unit hard gate
+            # Prevent unitless candidates (e.g., "170") from being selected for unit-tagged metrics.
+            # =================================================================
+            try:
+                if _fix41afc33_schema_implies_unit_required(spec) and not _fix41afc54_candidate_has_unit_evidence(c):
+                    continue
+            except Exception:
+                pass
+            # =================================================================
+
 
             # =================================================================
             # PATCH FIX41AFC20B (ADDITIVE): eligibility parity wrapper (v2)
@@ -24023,6 +24218,21 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             pass
         # ==============================================================
         # END PATCH FIX41AFC45
+        # ==============================================================
+        # PATCH FIX41AFC54 (ADDITIVE): propagate anchor_used + resolve method (post-emit)
+        # ==============================================================
+        try:
+            if isinstance(best, dict) and best.get("_fix41afc54_anchor_used") is True:
+                rebuilt[canonical_key]["anchor_used"] = True
+                rebuilt[canonical_key]["anchor_resolve_method"] = str(best.get("_fix41afc54_anchor_method") or "")
+                if str(best.get("_fix41afc54_preferred_url") or "").strip():
+                    rebuilt[canonical_key]["anchor_preferred_url"] = str(best.get("_fix41afc54_preferred_url") or "").strip()
+        except Exception:
+            pass
+        # ==============================================================
+        # END PATCH FIX41AFC54
+        # ==============================================================
+
         # ==============================================================
 
     return rebuilt
