@@ -77,7 +77,233 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc57_evo_anchor_lock_prevent_roam_v1"
+CODE_VERSION = "fix41afc58_canonical_selector_scaffold_v1"
+# =====================================================================
+# PATCH FIX41AFC58 START
+# Canonical downstream selector scaffold (single-source-of-truth target)
+#
+# Purpose:
+#   Introduce a shared, pipeline-agnostic selector function that can be
+#   called by BOTH Analysis and Evolution near the dashboard boundary.
+#
+# Scope:
+#   - Additive only; NO wiring changes in this patch.
+#   - Does not modify fastpath, hashing, snapshot plumbing, or existing
+#     selection behavior.
+#
+# Contract:
+#   _select_current_metric_canonical_v1(...) returns:
+#     (best_candidate_or_none, meta_dict)
+#
+# Notes:
+#   - The implementation is conservative and delegates to existing helpers
+#     (anchor resolution, eligibility checks) when present.
+#   - Call-sites will be wired in a subsequent patch (FIX41AFC59/60).
+# =====================================================================
+
+ENABLE_CANONICAL_SELECTOR_FIX41AFC58 = True  # scaffold only; not wired yet
+
+def _select_current_metric_canonical_v1(
+    canonical_key: str,
+    metric_schema: dict,
+    candidates: list,
+    metric_anchors: dict = None,
+    prev_metric: dict = None,
+    web_context: dict = None,
+    cand_index: dict = None,
+    prev_response: dict = None,
+) -> tuple:
+    """
+    Canonical selector (scaffold):
+      - Anchor-first (hash/id) when anchors exist
+      - Preferred source lock when available
+      - Eligibility parity via _metric_candidate_is_eligible_v2 when present
+      - Deterministic fallback ordering (stable tie-breaks)
+
+    Returns:
+      (best_candidate_or_none, meta)
+        meta includes:
+          - canonical_selector_used: bool
+          - anchor_used: bool
+          - anchor_resolve_method: str
+          - preferred_url: str
+          - blocked_reason: str
+          - debug: dict (optional)
+    """
+    meta = {
+        "canonical_selector_used": True,
+        "anchor_used": False,
+        "anchor_resolve_method": "",
+        "preferred_url": "",
+        "blocked_reason": "",
+        "debug": {},
+    }
+
+    metric_anchors = metric_anchors or {}
+    prev_metric = prev_metric or {}
+    web_context = web_context or {}
+    candidates = candidates or []
+
+    # Preferred URL derivation (anchors first, then prev_metric, then prev_response canonical)
+    preferred_url = ""
+    try:
+        if isinstance(metric_anchors, dict) and canonical_key in metric_anchors:
+            a = metric_anchors.get(canonical_key) or {}
+            if isinstance(a, dict):
+                preferred_url = (a.get("source_url") or a.get("url") or "").strip()
+        if not preferred_url and isinstance(prev_metric, dict):
+            preferred_url = (prev_metric.get("source_url") or prev_metric.get("url") or "").strip()
+        if not preferred_url and isinstance(prev_response, dict):
+            # best-effort
+            pmc = prev_response.get("primary_metrics_canonical")
+            if isinstance(pmc, dict):
+                pm = pmc.get(canonical_key) or {}
+                if isinstance(pm, dict):
+                    preferred_url = (pm.get("source_url") or pm.get("url") or "").strip()
+    except Exception:
+        preferred_url = preferred_url or ""
+
+    meta["preferred_url"] = preferred_url
+
+    # Build candidate index (anchor_hash -> candidate) if not provided
+    if cand_index is None:
+        try:
+            cand_index = {}
+            for c in candidates:
+                if not isinstance(c, dict):
+                    continue
+                ah = (c.get("anchor_hash") or "").strip()
+                if ah and ah not in cand_index:
+                    cand_index[ah] = c
+        except Exception:
+            cand_index = {}
+
+    def _eligible(c: dict) -> bool:
+        try:
+            fn = globals().get("_metric_candidate_is_eligible_v2")
+            if callable(fn):
+                return bool(fn(c, metric_schema, web_context))
+        except Exception:
+            return False
+        # If helper absent, be conservative: require dict + value_norm numeric
+        try:
+            return isinstance(c, dict) and isinstance(c.get("value_norm"), (int, float))
+        except Exception:
+            return False
+
+    def _url_of(c: dict) -> str:
+        try:
+            return (c.get("source_url") or c.get("url") or "").strip()
+        except Exception:
+            return ""
+
+    # -------------------------
+    # 1) Anchor-first resolution
+    # -------------------------
+    anchor_obj = {}
+    try:
+        if isinstance(metric_anchors, dict):
+            anchor_obj = metric_anchors.get(canonical_key) or {}
+            if not isinstance(anchor_obj, dict):
+                anchor_obj = {}
+    except Exception:
+        anchor_obj = {}
+
+    # Try: anchor_hash hit
+    try:
+        ah = (anchor_obj.get("anchor_hash") or anchor_obj.get("anchor_hash_v1") or "").strip()
+        if ah and isinstance(cand_index, dict) and ah in cand_index:
+            c = cand_index.get(ah)
+            if isinstance(c, dict) and _eligible(c):
+                if (not preferred_url) or (_url_of(c) == preferred_url):
+                    meta["anchor_used"] = True
+                    meta["anchor_resolve_method"] = "anchor_hash"
+                    return (c, meta)
+    except Exception:
+        pass
+
+    # Try: candidate_id prefix compatibility (when present)
+    try:
+        cid = (anchor_obj.get("candidate_id") or "").strip()
+        if cid:
+            # scan preferred-url pool first if preferred_url known
+            pool = candidates
+            if preferred_url:
+                pool = [c for c in candidates if isinstance(c, dict) and _url_of(c) == preferred_url]
+            for c in pool:
+                if not isinstance(c, dict):
+                    continue
+                ccid = (c.get("candidate_id") or "").strip()
+                if ccid and (ccid == cid or ccid.startswith(cid) or cid.startswith(ccid)):
+                    if _eligible(c):
+                        meta["anchor_used"] = True
+                        meta["anchor_resolve_method"] = "candidate_id"
+                        return (c, meta)
+    except Exception:
+        pass
+
+    # Try: same-source context rescue (delegate to FIX41AFC45 fallback if present)
+    try:
+        fn = globals().get("_fix41afc45_try_source_context_fallback")
+        if callable(fn) and preferred_url:
+            # build a minimal anchor_obj with source_url/context_snippet
+            _a = dict(anchor_obj or {})
+            if preferred_url and not (_a.get("source_url") or _a.get("url")):
+                _a["source_url"] = preferred_url
+            c2, r2 = fn(canonical_key, _a, candidates, metric_schema, web_context)
+            if isinstance(c2, dict) and _eligible(c2):
+                if (not preferred_url) or (_url_of(c2) == preferred_url):
+                    meta["anchor_used"] = True
+                    meta["anchor_resolve_method"] = "same_source_context"
+                    meta["debug"]["same_source_reason"] = r2
+                    return (c2, meta)
+    except Exception:
+        pass
+
+    # -------------------------
+    # 2) Preferred-source filter
+    # -------------------------
+    filtered = candidates
+    if preferred_url:
+        try:
+            filtered = [c for c in candidates if isinstance(c, dict) and _url_of(c) == preferred_url]
+        except Exception:
+            filtered = candidates
+
+    # -------------------------
+    # 3) Deterministic fallback
+    # -------------------------
+    eligible_cands = []
+    for c in filtered:
+        if not isinstance(c, dict):
+            continue
+        if _eligible(c):
+            eligible_cands.append(c)
+
+    if not eligible_cands:
+        meta["blocked_reason"] = "no_eligible_candidate"
+        return (None, meta)
+
+    # deterministic tie-break:
+    # - presence of unit_cmp, then presence of anchor_hash, then abs(value_norm) desc, then anchor_hash asc
+    def _tie(c: dict):
+        try:
+            unit_cmp = (c.get("unit_cmp") or c.get("unit_norm") or "").strip()
+            has_unit = 1 if unit_cmp else 0
+            ah = (c.get("anchor_hash") or "").strip()
+            has_ah = 1 if ah else 0
+            vn = c.get("value_norm")
+            vn = float(vn) if isinstance(vn, (int, float)) else 0.0
+            return (-has_unit, -has_ah, -abs(vn), ah)
+        except Exception:
+            return (0, 0, 0, "")
+
+    eligible_cands.sort(key=_tie)
+    return (eligible_cands[0], meta)
+
+# =====================================================================
+# PATCH FIX41AFC58 END
+# =====================================================================
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
@@ -24269,7 +24495,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         # =================================================================
         # =================================================================
 
-
+        
         # =================================================================
         # PATCH FIX41AFC57 START (ADDITIVE): Anchor-locked selection (prevent roam / override)
         # Problem:
@@ -24355,7 +24581,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 best = c
                 best_tie = tie
 
-
+        
         # =================================================================
         # PATCH FIX41AFC57_RESTORE START (ADDITIVE): restore candidate iterator after anchor lock
         try:
@@ -24365,8 +24591,10 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         # PATCH FIX41AFC57_RESTORE END
         # =================================================================
 
-if not isinstance(best, dict):
+        # PATCH FIX41AFC57B START (BUGFIX): fix indentation after restore block
+        if not isinstance(best, dict):
             continue
+        # PATCH FIX41AFC57B END
 
         # Require at least one keyword hit unless the schema has no keywords
         if kw_norm:
