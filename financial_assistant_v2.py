@@ -77,10 +77,10 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc36_extraction_hygiene_unit_family_backfill_v3"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc37_preselect_eligibility_skip_ineligible_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
-CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
+#CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
 # PATCH FIX41AFC24_VERSION END
 
 # =====================================================================
@@ -23401,6 +23401,90 @@ def _fix41afc28_candidate_block_reasons(schema: dict, cand: dict) -> list:
     return reasons
 
 
+
+# PATCH FIX41AFC37_HELPERS START
+def _fix41afc37_is_bare_year_no_unit(cand: dict) -> bool:
+    """Return True if cand looks like a naked calendar year with no unit evidence."""
+    try:
+        vn = cand.get("value_norm", cand.get("value"))
+        # accept float/int strings
+        try:
+            fv = float(vn)
+        except Exception:
+            return False
+        iv = int(round(fv))
+        if abs(fv - iv) > 1e-9:
+            return False
+        if iv < 1900 or iv > 2100:
+            return False
+        unit = (cand.get("unit") or "").strip()
+        unit_tag = (cand.get("unit_tag") or "").strip()
+        base_unit = (cand.get("base_unit") or "").strip()
+        fam = (cand.get("unit_family") or "").strip()
+        raw = (cand.get("raw") or "").strip()
+        # Any explicit unit evidence defeats bare-year classification
+        if unit or unit_tag or base_unit or fam:
+            return False
+        # If raw contains percent/currency symbols, not a naked year
+        if any(tok in raw for tok in ["%", "$", "€", "£", "¥"]):
+            return False
+        return True
+    except Exception:
+        return False
+
+def _fix41afc37_preselect_eligible(spec: dict, cand: dict, canonical_key: str = ""):
+    """Pre-selection eligibility gate to skip ineligible candidates BEFORE scoring.
+
+    Returns (ok: bool, reasons: list[str]).
+    """
+    reasons = []
+    try:
+        # Always skip explicit junk
+        if bool(cand.get("is_junk")):
+            jr = cand.get("junk_reason") or "junk"
+            reasons.append(f"junk:{jr}")
+            return False, reasons
+        # Skip naked years (most common '2023' creep vector)
+        if _fix41afc37_is_bare_year_no_unit(cand):
+            reasons.append("bare_year_no_unit")
+            return False, reasons
+
+        # Reuse existing hard-block logic if present (FIX41AFC28)
+        fn_block = globals().get("_fix41afc28_candidate_block_reasons")
+        if callable(fn_block):
+            try:
+                r28 = fn_block(spec, cand)
+                if r28:
+                    reasons.extend([f"block28:{x}" for x in list(r28)[:3]])
+                    return False, reasons
+            except Exception:
+                pass
+
+        # Schema-driven unit-required: if schema implies unit, require unit evidence
+        dim = (spec or {}).get("dimension") or ""
+        uf = (spec or {}).get("unit_family") or ""
+        su = (spec or {}).get("unit") or ""
+        sut = (spec or {}).get("unit_tag") or ""
+        schema_implies_unit = bool(su or sut or uf in ("percent","currency","magnitude","energy") or dim in ("percent","currency","unit_sales","energy"))
+        if schema_implies_unit:
+            unit = (cand.get("unit") or "").strip()
+            unit_tag = (cand.get("unit_tag") or "").strip()
+            base_unit = (cand.get("base_unit") or "").strip()
+            raw = (cand.get("raw") or "")
+            ctx = (cand.get("context_snippet") or "")
+            has_unit_evidence = bool(unit or unit_tag or base_unit) or ("%" in raw) or ("%" in ctx)
+            if not has_unit_evidence:
+                reasons.append("unit_required_missing")
+                return False, reasons
+
+        return True, reasons
+    except Exception:
+        return True, reasons
+# PATCH FIX41AFC37_HELPERS END
+
+
+
+
 def _fix41afc28_candidate_pass_reason(schema: dict, cand: dict) -> str:
     """Small debug string explaining why a candidate passed this patch."""
     try:
@@ -23744,8 +23828,29 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
         best = None
         best_tie = None
         best_hits = 0
-
         for c in candidates:
+
+            # PATCH FIX41AFC37 START
+            # Pre-selection eligibility gate: skip junk/bare-year/unitless candidates before scoring.
+            try:
+                _ok37, _r37 = _fix41afc37_preselect_eligible(spec, c, canonical_key=canonical_key)
+                if not _ok37:
+                    try:
+                        _dbg = prev_response.setdefault("_evolution_rebuild_debug", {}) if isinstance(prev_response, dict) else {}
+                        _m = _dbg.setdefault("preselect_skips_fix41afc37", {})
+                        _lst = _m.setdefault(canonical_key, [])
+                        if isinstance(_lst, list) and len(_lst) < 5:
+                            _lst.append({
+                                "source_url": c.get("source_url") or "",
+                                "raw": (c.get("raw") or "")[:80],
+                                "reasons": list(_r37)[:3],
+                            })
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                pass
+            # PATCH FIX41AFC37 END
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
@@ -26858,3 +26963,8 @@ CODE_VERSION = "fix41afc35_diff_bare_year_hard_block_v1"
 # PATCH FIX41AFC36_VERSION START
 CODE_VERSION = "fix41afc36_extraction_hygiene_unit_family_backfill_v1"
 # PATCH FIX41AFC36_VERSION END
+
+
+# PATCH FIX41AFC37_VERSION START
+CODE_VERSION = "fix41afc37_preselect_eligibility_skip_ineligible_v1"
+# PATCH FIX41AFC37_VERSION END
