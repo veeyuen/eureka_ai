@@ -77,10 +77,10 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc35_diff_bare_year_hard_block_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc36_extraction_hygiene_unit_family_backfill_v3"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
-#CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
+CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
 # PATCH FIX41AFC24_VERSION END
 
 # =====================================================================
@@ -13912,11 +13912,105 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # =========================
     analysis.setdefault("code_version", CODE_VERSION)
     # =========================
+# ============================================================
+    # PATCH FIX41AFC36C START — apply defensive backfill to attached snapshot artifacts
+    # ============================================================
+    try:
+        if isinstance(analysis, dict):
+            if isinstance(analysis.get("baseline_sources_cache"), (dict, list)):
+                _fix41afc36_backfill_in_sources_cache(analysis.get("baseline_sources_cache"))
+            if isinstance(analysis.get("results"), dict) and isinstance(analysis["results"].get("source_results"), list):
+                for _sr in analysis["results"]["source_results"]:
+                    if isinstance(_sr, dict) and isinstance(_sr.get("extracted_numbers"), list):
+                        _fix41afc36_backfill_candidates_list(_sr.get("extracted_numbers"))
+    except Exception:
+        pass
+    # ============================================================
+    # PATCH FIX41AFC36C END
+# ============================================================
+
+
 
 
     return analysis
 
 
+
+
+
+# ============================================================
+# PATCH FIX41AFC36B START — defensive backfill for snapshot caches (analysis + evolution)
+# ============================================================
+def _fix41afc36_backfill_candidates_list(_lst):
+    try:
+        if not isinstance(_lst, list):
+            return _lst
+        for _c in _lst:
+            if not isinstance(_c, dict):
+                continue
+            uf = str(_c.get("unit_family") or "").strip().lower()
+            raw = str(_c.get("raw") or _c.get("raw_disp") or "").lower()
+            unit = str(_c.get("unit") or "").lower()
+            utag = str(_c.get("unit_tag") or "").lower()
+            base = str(_c.get("base_unit") or "").lower()
+            ctx = str(_c.get("context") or "").lower()
+            blob = " ".join([raw, unit, utag, base, ctx])
+
+            if not uf:
+                if "%" in blob or "percent" in blob or "percentage" in blob:
+                    uf = "percent"
+                elif any(t in blob for t in ["$", "usd", "us$", "eur", "sgd", "gbp", "aud", "cad", "jpy", "cny", "rmb", "inr", "krw", "chf"]):
+                    uf = "currency"
+                elif any(t in blob for t in ["million", "billion", "trillion", " mn", " bn", " tn"]) or any(t in (unit + " " + utag + " " + base) for t in ["k", "m", "b", "t"]):
+                    uf = "magnitude"
+                elif any(t in blob for t in ["kwh", "mwh", "gwh", "twh", "wh", "mw", "gw", "tw"]):
+                    uf = "energy"
+                else:
+                    uf = ""
+                _c["unit_family"] = uf
+
+            unit_ev = any(str(_c.get(k) or "").strip() for k in ["unit", "unit_tag", "base_unit"])
+            v = _c.get("value_norm", None)
+            if v is None:
+                v = _c.get("value", None)
+            try:
+                if isinstance(v, str) and v.strip():
+                    v = float(v.strip())
+            except Exception:
+                v = None
+            try:
+                if (not unit_ev) and v is not None:
+                    iv = int(round(float(v)))
+                    if 1900 <= iv <= 2100 and abs(float(v) - iv) < 1e-9:
+                        _c["is_junk"] = True
+                        _c["junk_reason"] = (_c.get("junk_reason") or "bare_year_fix41afc36")
+            except Exception:
+                pass
+        return _lst
+    except Exception:
+        return _lst
+
+def _fix41afc36_backfill_in_sources_cache(_cache):
+    try:
+        if isinstance(_cache, dict):
+            if "sources" in _cache and isinstance(_cache.get("sources"), dict):
+                for _u, _s in _cache["sources"].items():
+                    if isinstance(_s, dict) and isinstance(_s.get("extracted_numbers"), list):
+                        _fix41afc36_backfill_candidates_list(_s.get("extracted_numbers"))
+            else:
+                for _u, _s in _cache.items():
+                    if isinstance(_s, dict) and isinstance(_s.get("extracted_numbers"), list):
+                        _fix41afc36_backfill_candidates_list(_s.get("extracted_numbers"))
+        elif isinstance(_cache, list):
+            for _s in _cache:
+                if isinstance(_s, dict) and isinstance(_s.get("extracted_numbers"), list):
+                    _fix41afc36_backfill_candidates_list(_s.get("extracted_numbers"))
+        return _cache
+    except Exception:
+        return _cache
+# ============================================================
+# PATCH FIX41AFC36B END
+# ============================================================
 
 def normalize_unit(unit: str) -> str:
     """Normalize unit to one of: T/B/M/%/'' (deterministic)."""
@@ -20436,6 +20530,64 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
         if len(out) >= int(max_results or 350):
             break
+# ============================================================
+    # PATCH FIX41AFC36A START — extraction hygiene: bare-year junk + unit_family backfill
+    # ============================================================
+    def _fix41afc36_infer_unit_family(_cand: dict) -> str:
+        try:
+            uf = (_cand.get("unit_family") or "").strip().lower()
+            if uf:
+                return uf
+            raw = str(_cand.get("raw") or _cand.get("raw_disp") or "").lower()
+            unit = str(_cand.get("unit") or "").lower()
+            utag = str(_cand.get("unit_tag") or "").lower()
+            base = str(_cand.get("base_unit") or "").lower()
+            ctx = str(_cand.get("context") or "").lower()
+            blob = " ".join([raw, unit, utag, base, ctx])
+
+            if "%" in blob or "percent" in blob or "percentage" in blob:
+                return "percent"
+            if any(t in blob for t in ["$", "usd", "us$", "eur", "sgd", "gbp", "aud", "cad", "jpy", "cny", "rmb", "inr", "krw", "chf"]):
+                return "currency"
+            if any(t in blob for t in ["million", "billion", "trillion", " mn", " bn", " tn"]) or any(t in (unit + " " + utag + " " + base) for t in ["k", "m", "b", "t"]):
+                return "magnitude"
+            if any(t in blob for t in ["kwh", "mwh", "gwh", "twh", "wh", "mw", "gw", "tw"]):
+                return "energy"
+            return ""
+        except Exception:
+            return (_cand.get("unit_family") or "")
+
+    def _fix41afc36_mark_bare_year_junk(_cand: dict) -> None:
+        try:
+            unit_ev = any(str(_cand.get(k) or "").strip() for k in ["unit", "unit_tag", "base_unit"])
+            v = _cand.get("value_norm", None)
+            if v is None:
+                v = _cand.get("value", None)
+            if isinstance(v, str) and v.strip():
+                try:
+                    v = float(v.strip())
+                except Exception:
+                    v = None
+            if not unit_ev and v is not None:
+                iv = int(round(float(v)))
+                if 1900 <= iv <= 2100 and abs(float(v) - iv) < 1e-9:
+                    _cand["is_junk"] = True
+                    _cand["junk_reason"] = (_cand.get("junk_reason") or "bare_year_fix41afc36")
+        except Exception:
+            pass
+
+    try:
+        for _c in (out or []):
+            if isinstance(_c, dict):
+                _c["unit_family"] = _fix41afc36_infer_unit_family(_c)
+                _fix41afc36_mark_bare_year_junk(_c)
+    except Exception:
+        pass
+    # ============================================================
+    # PATCH FIX41AFC36A END
+# ============================================================
+
+
 
     return out
 
@@ -23973,6 +24125,26 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
       - Unanchored metrics: schema-only rebuild (fix17) as before.
       - Never allows schema-only fallback to fill an anchored canonical_key.
     """
+
+# ============================================================
+    # PATCH FIX41AFC36D START — defensive backfill for baseline_sources_cache before rebuild
+    # ============================================================
+    try:
+        _fix41afc36_backfill_in_sources_cache(baseline_sources_cache)
+        if isinstance(prev_response, dict):
+            if isinstance(prev_response.get("baseline_sources_cache"), (dict, list)):
+                _fix41afc36_backfill_in_sources_cache(prev_response.get("baseline_sources_cache"))
+            if isinstance(prev_response.get("results"), dict) and isinstance(prev_response["results"].get("source_results"), list):
+                for _sr in prev_response["results"]["source_results"]:
+                    if isinstance(_sr, dict) and isinstance(_sr.get("extracted_numbers"), list):
+                        _fix41afc36_backfill_candidates_list(_sr.get("extracted_numbers"))
+    except Exception:
+        pass
+    # ============================================================
+    # PATCH FIX41AFC36D END
+# ============================================================
+
+
     if not isinstance(prev_response, dict):
         return {}
 
@@ -26681,3 +26853,8 @@ CODE_VERSION = "fix41afc34_evo_schema_authority_propagation_v1"
 # PATCH FIX41AFC35_VERSION START
 CODE_VERSION = "fix41afc35_diff_bare_year_hard_block_v1"
 # PATCH FIX41AFC35_VERSION END
+
+
+# PATCH FIX41AFC36_VERSION START
+CODE_VERSION = "fix41afc36_extraction_hygiene_unit_family_backfill_v1"
+# PATCH FIX41AFC36_VERSION END
