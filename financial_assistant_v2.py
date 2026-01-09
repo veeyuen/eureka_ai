@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc62_preferred_source_scale_token_rescue_v1"  # PATCH FIX41AFC60
+CODE_VERSION = "fix41afc63_percent_proxy_carry_forward_v1"  # PATCH FIX41AFC60
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -30501,6 +30501,70 @@ def _fix41afc62_best_from_preferred(schema: dict, preferred_url: str, evidence: 
     except Exception:
         return {}
 
+
+# =====================================================================
+# PATCH FIX41AFC63 START
+# Percent-proxy carry-forward when:
+#   - schema unit_family is percent
+#   - preferred-source rescue finds no eligible candidate (often because
+#     metric is proxy/evidence_missing and rebuilt metric has empty evidence)
+#
+# This restores analysis/evolution parity for proxy percent metrics and
+# prevents cross-source hijack from injected pages.
+# Additive-only: invoked only inside FIX41AFC62 wrapper flow.
+# =====================================================================
+
+def _fix41afc63_is_percent_schema(schema: dict) -> bool:
+    try:
+        uf = str((schema or {}).get("unit_family") or "").strip().lower()
+        ut = str((schema or {}).get("unit_tag") or (schema or {}).get("unit") or "").strip().lower()
+        return (uf == "percent") or (ut == "%") or ("percent" in ut)
+    except Exception:
+        return False
+
+def _fix41afc63_prev_metric(prev_response: dict, canonical_key: str) -> dict:
+    try:
+        pm = (prev_response or {}).get("primary_metrics_canonical") or {}
+        if isinstance(pm, dict) and isinstance(pm.get(canonical_key), dict):
+            return pm.get(canonical_key) or {}
+    except Exception:
+        pass
+    try:
+        # fallback: some payloads nest in primary_response
+        pm = (prev_response or {}).get("primary_response", {}).get("primary_metrics_canonical") or {}
+        if isinstance(pm, dict) and isinstance(pm.get(canonical_key), dict):
+            return pm.get(canonical_key) or {}
+    except Exception:
+        pass
+    return {}
+
+def _fix41afc63_apply_prev_as_current(schema: dict, m: dict, prevm: dict) -> bool:
+    """Carry forward previous metric value into current rebuilt metric m."""
+    try:
+        if not isinstance(m, dict) or not isinstance(prevm, dict):
+            return False
+        pv = prevm.get("value")
+        pvn = prevm.get("value_norm")
+        pu = prevm.get("unit") or prevm.get("unit_tag") or "%"
+        # apply
+        m["value"] = pv
+        m["value_norm"] = pvn if pvn is not None else pv
+        m["unit"] = pu
+        m["unit_tag"] = prevm.get("unit_tag") or "%"
+        # preserve preferred source for dashboard traceability
+        if prevm.get("source_url"):
+            m["source_url"] = prevm.get("source_url")
+        # mark proxy carry-forward
+        m["is_proxy"] = True
+        m["proxy_type"] = m.get("proxy_type") or prevm.get("proxy_type") or "evidence_missing"
+        m["proxy_reason"] = "percent_proxy_carry_forward_no_eligible_candidate_fix41afc63"
+        return True
+    except Exception:
+        return False
+
+# PATCH FIX41AFC63 END
+# =====================================================================
+
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     FIX41AFC62 wrapper:
@@ -30542,13 +30606,28 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
             ev = m.get("evidence") or []
             best = _fix41afc62_best_from_preferred(schema, pref, ev)
             if not best:
+                # FIX41AFC63: for percent metrics that are proxy/evidence_missing,
+                # carry forward prev value instead of blanking or roaming.
+                carried = False
+                if _fix41afc63_is_percent_schema(schema):
+                    prevm = _fix41afc63_prev_metric(prev_response, ck)
+                    if isinstance(prevm, dict) and (prevm.get("value_norm") is not None or prevm.get("value") is not None):
+                        carried = _fix41afc63_apply_prev_as_current(schema, m, prevm)
+                        if carried:
+                            try:
+                                m["anchor_used"] = True
+                                m["anchor_used_reason"] = "percent_proxy_carry_forward_fix41afc63"
+                                m["preferred_source_url_fix41afc63"] = pref
+                            except Exception:
+                                pass
                 # If we had a preferred source but no eligible candidate there, leave metric unchanged
-                # and add debug for visibility.
+                # (unless carried forward) and add debug for visibility.
                 dbg["fix41afc62_rescues"].append({
                     "canonical_key": ck,
                     "preferred_url": pref,
                     "rescued": False,
-                    "reason": "no_eligible_candidate_in_preferred_source",
+                    "carried_forward": bool(carried),
+                    "reason": "no_eligible_candidate_in_preferred_source" if not carried else "percent_proxy_carry_forward_fix41afc63",
                 })
                 continue
             # Apply rescued candidate to metric
@@ -30592,3 +30671,10 @@ try:
 except Exception:
     pass
 # PATCH FIX41AFC62_VERSION END
+
+# PATCH FIX41AFC63_VERSION START
+try:
+    CODE_VERSION = "fix41afc63_percent_proxy_carry_forward_v1"
+except Exception:
+    pass
+# PATCH FIX41AFC63_VERSION END
