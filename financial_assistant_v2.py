@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc69_unit_evidence_gate_no_synth_magnitude_v1"  # PATCH FIX41AFC69
+CODE_VERSION = "fix41afc70_canonical_selector_strict_family_eligibility_v1"  # PATCH FIX41AFC69
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -410,6 +410,100 @@ def _select_current_metric_canonical_v1(
         except Exception:
             return False
 
+
+    # =====================================================================
+    # PATCH FIX41AFC70 START (ADDITIVE)
+    # Canonical selector: strict schema unit_family eligibility
+    #
+    # Why:
+    # - We observed candidates like "2.0 B" (GlobeNewswire) being selected
+    #   for percent metrics, then hard-blocked downstream. That blanks the
+    #   dashboard even though correct % candidates exist in the preferred source.
+    # - Root cause: eligibility may treat missing/unknown unit_family as
+    #   eligible, allowing cross-dimension candidates to outrank correct ones.
+    #
+    # What:
+    # - Wrap the existing _eligible(...) with an additional strict gate that:
+    #     * requires percent metrics to have an explicit % signal
+    #     * requires currency metrics to have a currency signal/token
+    #     * requires energy metrics to have an energy unit signal
+    #     * requires magnitude metrics to have a magnitude/count signal, and
+    #       rejects candidates that look like percent/currency/energy
+    # - This executes INSIDE the canonical selector (downstream-only),
+    #   preserving fastpath/hashing/plumbing invariants.
+    # =====================================================================
+    _eligible_fix41afc70_prev = _eligible
+    def _eligible_fix41afc70(c: dict) -> bool:
+        try:
+            if not bool(_eligible_fix41afc70_prev(c)):
+                return False
+        except Exception:
+            return False
+
+        try:
+            sch_fam = (metric_schema or {}).get("unit_family") or ""
+            sch_fam = str(sch_fam).strip().lower()
+            sch_tag = (metric_schema or {}).get("unit_tag") or (metric_schema or {}).get("unit") or ""
+            sch_tag = str(sch_tag).strip().lower()
+
+            raw = str(c.get("raw") or c.get("text") or "").strip()
+            unit_tag = str(c.get("unit_tag") or c.get("unit") or c.get("unit_cmp") or c.get("unit_norm") or "").strip()
+            unit_tag_l = unit_tag.lower()
+            cand_fam = str(c.get("unit_family") or "").strip().lower()
+
+            # Lightweight inference when unit_family missing
+            if not cand_fam:
+                if "%" in raw or unit_tag_l == "%" or "percent" in unit_tag_l:
+                    cand_fam = "percent"
+                elif any(tok in unit_tag_l for tok in ["usd", "sgd", "eur", "gbp", "$", "€", "£"]):
+                    cand_fam = "currency"
+                elif any(tok in unit_tag_l for tok in ["twh", "gwh", "kwh", "mwh"]):
+                    cand_fam = "energy"
+                elif any(tok in unit_tag_l for tok in ["m", "mn", "million", "b", "bn", "billion", "k", "thousand", "t", "trillion"]):
+                    cand_fam = "magnitude"
+
+            # Strict family requirements
+            if sch_fam == "percent":
+                # Must have explicit % marker (raw or unit_tag). Unknown-family candidates are not allowed.
+                if not ("%" in raw or unit_tag_l == "%" or cand_fam == "percent"):
+                    return False
+                # Reject common scale/currency tokens
+                if unit_tag_l in ("b", "bn", "billion", "m", "mn", "million", "k", "t", "trillion"):
+                    return False
+                return True
+
+            if sch_fam == "currency":
+                # Must show currency token or inferred currency family
+                if not (cand_fam == "currency" or any(tok in raw for tok in ["$", "€", "£"]) or any(tok in unit_tag_l for tok in ["usd", "sgd", "eur", "gbp"])):
+                    return False
+                return True
+
+            if sch_fam == "energy":
+                if not (cand_fam == "energy" or any(tok in unit_tag_l for tok in ["twh", "gwh", "kwh", "mwh"])):
+                    return False
+                return True
+
+            if sch_fam == "magnitude":
+                # For magnitude, reject percent/currency/energy candidates even if upstream eligibility was permissive.
+                if cand_fam in ("percent", "currency", "energy"):
+                    return False
+                # If schema expects a scale token (e.g., million units), ensure candidate is magnitude-ish.
+                if _fix41afc59_schema_unit_tag_requires_token(sch_tag):
+                    if cand_fam != "magnitude":
+                        # allow count_units as magnitude-equivalent if upstream classified it that way
+                        mk = str(c.get("measure_kind") or "").strip().lower()
+                        if mk not in ("count_units", "magnitude_other"):
+                            return False
+                return True
+
+            # If schema doesn't declare a family, keep previous behavior.
+            return True
+        except Exception:
+            return True
+
+    # override local eligibility with strict wrapper
+    _eligible = _eligible_fix41afc70
+    # PATCH FIX41AFC70 END
     def _url_of(c: dict) -> str:
         try:
             return (c.get("source_url") or c.get("url") or "").strip()
