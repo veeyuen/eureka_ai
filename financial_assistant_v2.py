@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc56_evo_preferred_source_rescue_v1"
+CODE_VERSION = "fix41afc57_evo_anchor_lock_prevent_roam_v1"
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
@@ -24269,6 +24269,49 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         # =================================================================
         # =================================================================
 
+
+        # =================================================================
+        # PATCH FIX41AFC57 START (ADDITIVE): Anchor-locked selection (prevent roam / override)
+        # Problem:
+        #   - Even when an anchor override resolves an eligible candidate from the preferred source,
+        #     the subsequent keyword-scoring scan can still override it with a higher-scoring
+        #     cross-source candidate (e.g., injected GlobeNewswire "170" / "$1.3B"), causing
+        #     unit_mismatch hard-blocks and blank "Current" values.
+        # Fix:
+        #   - When an anchor override has been applied for this canonical_key, temporarily disable
+        #     the scoring scan by swapping the candidate iterator to an empty list.
+        #   - Restore the original candidates list immediately after the scan region.
+        # Notes:
+        #   - Additive-only: does not alter fastpath or hashing logic.
+        #   - Deterministic: anchor-first candidate remains the winner when eligible.
+        _fix41afc57_candidates_saved = candidates
+        _fix41afc57_anchor_locked = False
+        try:
+            if isinstance(best, dict) and (
+                best.get("_fix41afc54_anchor_used") is True
+                or best.get("_fix41afc45_anchor_used") is True
+                or best.get("_fix41afc54_anchor_method")
+                or best.get("_fix41afc45_anchor_used")
+            ):
+                _fix41afc57_anchor_locked = True
+        except Exception:
+            _fix41afc57_anchor_locked = False
+
+        if _fix41afc57_anchor_locked:
+            try:
+                candidates = []
+                dbg_fix41afc21d.setdefault("fix41afc57_anchor_locked", []).append({
+                    "canonical_key": canonical_key,
+                    "locked": True,
+                    "anchor_hash": str((metric_anchors_fix41afc21d or {}).get(canonical_key, {}).get("anchor_hash") or ""),
+                    "preferred_url": str((metric_anchors_fix41afc21d or {}).get(canonical_key, {}).get("source_url") or ""),
+                })
+            except Exception:
+                pass
+        # =================================================================
+        # PATCH FIX41AFC57 END
+        # =================================================================
+
         for c in candidates:
             # FIX16 hard eligibility gates
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
@@ -24312,7 +24355,17 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 best = c
                 best_tie = tie
 
-        if not isinstance(best, dict):
+
+        # =================================================================
+        # PATCH FIX41AFC57_RESTORE START (ADDITIVE): restore candidate iterator after anchor lock
+        try:
+            candidates = _fix41afc57_candidates_saved
+        except Exception:
+            pass
+        # PATCH FIX41AFC57_RESTORE END
+        # =================================================================
+
+if not isinstance(best, dict):
             continue
 
         # Require at least one keyword hit unless the schema has no keywords
