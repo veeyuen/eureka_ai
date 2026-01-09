@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc63_percent_proxy_carry_forward_v1"  # PATCH FIX41AFC60
+CODE_VERSION = "fix41afc64_preferred_only_no_roam_v1"  # PATCH FIX41AFC60
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -171,7 +171,7 @@ def _fix41afc59_candidate_matches_schema_unit_tag(metric_schema: dict, cand: dic
 
     # If schema expects a scale (e.g., million), require an explicit mention.
     # This prevents unitless '170' from being treated as 'million units'.
-
+    
     # =====================================================================
     # PATCH FIX41AFC61B START (ADDITIVE): accept million tokens in unit_tag/base_unit
     # =====================================================================
@@ -186,7 +186,7 @@ def _fix41afc59_candidate_matches_schema_unit_tag(metric_schema: dict, cand: dic
     # PATCH FIX41AFC61B END
     if hint == "million":
         return bool(re.search(r"\b(million|mn)\b", hay)) or ("m" in unit.lower() and len(unit.strip()) <= 2)
-
+    
     # =====================================================================
     # PATCH FIX41AFC61C START (ADDITIVE): accept billion tokens in unit_tag/base_unit
     # =====================================================================
@@ -24632,9 +24632,9 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         # =================================================================
         # =================================================================
 
-
+        
         # =================================================================
-
+        
 # =================================================================
         # =================================================================
         # PATCH FIX41AFC59 START (ADDITIVE): Wire canonical selector into EVO schema-only rebuild
@@ -24699,7 +24699,63 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         except Exception:
             pass
         # =================================================================
-        # PATCH FIX41AFC59 END
+                # =====================================================================
+        # PATCH FIX41AFC64 START (ADDITIVE): Preferred-source hard lock when canonical selector misses
+        #
+        # Why:
+        # - We observed canonical selector returning no best candidate (e.g., due to eligibility gating),
+        #   but the legacy fallback selector then 'roams' across the full candidate pool and latches onto
+        #   injected/unrelated sources (e.g., GlobeNewswire). This produces nonsense candidates that are
+        #   later hard-blocked, leaving the dashboard blank.
+        #
+        # What:
+        # - If canonical selector emits a preferred_url AND fails to return a best candidate, we
+        #   restrict the downstream (legacy) candidate pool to that preferred_url only.
+        # - This is deterministic, additive, and preserves fastpath/hashing behavior.
+        #
+        # Effect:
+        # - Prevents cross-source hijack when anchors are missing/unstable and eligibility is strict.
+        # =====================================================================
+        if not isinstance(_sel_best_fix41afc59, dict):
+            try:
+                _fx64_pref = ""
+                _fx64_pref_norm = ""
+                if isinstance(_sel_meta_fix41afc59, dict):
+                    _fx64_pref = str(_sel_meta_fix41afc59.get("preferred_url") or "").strip()
+                if _fx64_pref:
+                    fn_norm = globals().get("_fix41afc60_norm_url")
+                    if callable(fn_norm):
+                        _fx64_pref_norm = fn_norm(_fx64_pref)
+                    else:
+                        _fx64_pref_norm = _fx64_pref.rstrip("/").lower()
+
+                    _fx64_before = int(len(candidates or []))
+                    try:
+                        candidates = [
+                            c for c in (candidates or [])
+                            if isinstance(c, dict) and (
+                                (callable(fn_norm) and fn_norm((c.get("source_url") or c.get("url") or "").strip()) == _fx64_pref_norm)
+                                or ((not callable(fn_norm)) and ((c.get("source_url") or c.get("url") or "").strip().rstrip("/").lower() == _fx64_pref_norm))
+                            )
+                        ]
+                    except Exception:
+                        candidates = candidates
+
+                    try:
+                        dbg_fix41afc21d.setdefault("fix41afc64", []).append({
+                            "canonical_key": canonical_key,
+                            "preferred_url": _fx64_pref,
+                            "preferred_norm": _fx64_pref_norm,
+                            "candidates_before": _fx64_before,
+                            "candidates_after": int(len(candidates or [])),
+                            "selector_blocked_reason": (_sel_meta_fix41afc59.get("blocked_reason") if isinstance(_sel_meta_fix41afc59, dict) else ""),
+                        })
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        # ============================ END PATCH FIX41AFC64 ============================
+# PATCH FIX41AFC59 END
         # =================================================================
 # =================================================================
 
@@ -24729,7 +24785,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         except Exception:
             _fix41afc57_anchor_locked = False
 
-
+        
         # =================================================================
         # =================================================================
         # PATCH FIX41AFC59C START (ADDITIVE): Treat canonical-selector anchor_used as lock signal
@@ -24801,7 +24857,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 best = c
                 best_tie = tie
 
-
+        
         # =================================================================
         # PATCH FIX41AFC57_RESTORE START (ADDITIVE): restore candidate iterator after anchor lock
         try:
