@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc52_evo_post_rebuild_evidence_rescue_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc53_evo_anchor_resolve_source_lock_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
@@ -2483,7 +2483,183 @@ def rebuild_metrics_from_snapshots(
         return out
     # =========================
 
-    # ---------- 1) primary rebuild by anchor ----------
+
+    # =====================================================================
+    # PATCH FIX41AFC53 (ADDITIVE): anchor candidate resolution parity + anchor-source lock
+    #
+    # Problem addressed:
+    # - Evolution snapshots may contain candidates whose `anchor_hash` differs from Analysis anchors
+    #   (e.g., due to extractor hash drift or context normalization differences).
+    # - When direct `anchor_hash` lookup fails, Evolution falls back to global scoring and can pick
+    #   unrelated values from injected sources, causing blank/incorrect "current" values after
+    #   unit gates.
+    #
+    # Solution (additive, non-invasive):
+    # - Build a secondary index by candidate_id (derived from anchor_hash prefix when missing).
+    # - Attempt to resolve each prev anchor using:
+    #     (1) candidate_id match
+    #     (2) same-source fuzzy match using (raw/value_norm/unit_family + token overlap with anchor context)
+    # - Enforce a soft anchor-source lock: if an anchor has a source_url, prefer candidates from that
+    #   exact source_url; do not allow cross-source replacement unless no same-source candidates exist.
+    #
+    # Notes:
+    # - Fastpath/hashing remain untouched.
+    # - Existing anchor_hash path remains authoritative when it hits.
+    # =====================================================================
+
+    def _cand_candidate_id(cand: dict) -> str:
+        try:
+            if isinstance(cand, dict):
+                cid = str(cand.get("candidate_id") or "").strip()
+                if cid:
+                    return cid
+                ah2 = str(cand.get("anchor_hash") or "").strip()
+                if ah2 and len(ah2) >= 16:
+                    return ah2[:16]
+        except Exception:
+            pass
+        return ""
+
+    def _tokset(s: str) -> set:
+        import re
+        s = (s or "").lower()
+        s = re.sub(r"[^a-z0-9%$]+", " ", s)
+        return set([t for t in s.split() if len(t) >= 3])
+
+    def _floatish(v):
+        try:
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            s = str(v).strip()
+            if not s:
+                return None
+            return float(s)
+        except Exception:
+            return None
+
+    # secondary indexes
+    _cand_by_candidate_id = {}
+    _cands_by_url = {}
+    for _c in (all_candidates or []):
+        if not isinstance(_c, dict):
+            continue
+        _cid = _cand_candidate_id(_c)
+        if _cid and _cid not in _cand_by_candidate_id:
+            _cand_by_candidate_id[_cid] = _c
+        _u = str(_c.get("source_url") or "").strip()
+        if _u:
+            _cands_by_url.setdefault(_u, []).append(_c)
+
+    def _resolve_anchor_candidate(metric_key: str, anchor_obj) -> dict:
+        """Best-effort anchor candidate resolve when direct anchor_hash lookup misses."""
+        try:
+            a = _safe_anchor_obj(anchor_obj) if ' _safe_anchor_obj' else (anchor_obj if isinstance(anchor_obj, dict) else {})
+        except Exception:
+            a = anchor_obj if isinstance(anchor_obj, dict) else {}
+        if not isinstance(a, dict):
+            a = {}
+
+        a_url = str(a.get("source_url") or "").strip()
+        a_cid = str(a.get("candidate_id") or "").strip()
+        a_ah = str(a.get("anchor_hash") or a.get("anchor") or "").strip()
+        a_ctx = str(a.get("context_snippet") or a.get("context") or "").strip()
+        a_raw = str(a.get("raw") or a.get("anchor_raw") or "").strip()
+
+        # (1) candidate_id direct
+        if a_cid and a_cid in _cand_by_candidate_id:
+            c0 = _cand_by_candidate_id.get(a_cid) or {}
+            if isinstance(c0, dict):
+                if (not a_url) or (str(c0.get("source_url") or "").strip() == a_url):
+                    return c0
+
+        # (2) anchor_hash prefix as candidate_id
+        if (not a_cid) and a_ah and len(a_ah) >= 16:
+            cid2 = a_ah[:16]
+            if cid2 and cid2 in _cand_by_candidate_id:
+                c1 = _cand_by_candidate_id.get(cid2) or {}
+                if isinstance(c1, dict):
+                    if (not a_url) or (str(c1.get("source_url") or "").strip() == a_url):
+                        return c1
+
+        # (3) same-source fuzzy
+        pool = []
+        if a_url and a_url in _cands_by_url:
+            pool = _cands_by_url.get(a_url) or []
+        else:
+            # if anchor source missing, allow global (but very conservative)
+            pool = list(all_candidates or [])
+
+        expected_family, expected_unit_tag, expected_dim = _expected_from_schema(metric_key)
+
+        # Compute anchor numeric target if present
+        a_val = _floatish(a.get("value_norm"))
+        if a_val is None:
+            a_val = _floatish(a.get("value"))
+
+        a_toks = _tokset(a_ctx)
+        if a_raw:
+            a_toks |= _tokset(a_raw)
+
+        best = None
+        best_score = -1e9
+        for c in (pool or []):
+            if not isinstance(c, dict):
+                continue
+            if c.get("is_junk") is True:
+                continue
+
+            # enforce source lock if we have anchor url
+            if a_url and str(c.get("source_url") or "").strip() != a_url:
+                continue
+
+            # family/eligibility: prefer expected family if known
+            fam = str(c.get("unit_family") or "").strip().lower()
+            fam_score = 0.0
+            if expected_family and fam == expected_family:
+                fam_score = 5.0
+            elif expected_family and fam and fam != expected_family:
+                fam_score = -2.0
+
+            # numeric closeness (if we have an anchor numeric target)
+            cv = _floatish(c.get("value_norm"))
+            if cv is None:
+                cv = _floatish(c.get("value"))
+            num_score = 0.0
+            if a_val is not None and cv is not None:
+                # relative closeness
+                denom = max(1e-9, abs(a_val))
+                rel = abs(cv - a_val) / denom
+                num_score = 3.0 if rel <= 0.05 else (1.5 if rel <= 0.2 else (-1.0 if rel >= 2.0 else 0.0))
+
+            # token overlap with anchor context
+            c_ctx = str(c.get("context_snippet") or c.get("context") or "").strip()
+            ctoks = _tokset(c_ctx)
+            inter = len(a_toks & ctoks) if a_toks and ctoks else 0
+            tok_score = min(6.0, inter * 0.75)
+
+            # raw match bonus
+            raw_bonus = 0.0
+            if a_raw:
+                try:
+                    if a_raw in str(c.get("raw") or ""):
+                        raw_bonus = 2.0
+                except Exception:
+                    pass
+
+            score = fam_score + num_score + tok_score + raw_bonus
+            if score > best_score:
+                best_score = score
+                best = c
+
+        if isinstance(best, dict) and best_score >= 3.0:
+            return best or {}
+
+        return {}
+    # =====================================================================
+
+# ---------- 1) primary rebuild by anchor ----------
     rebuilt_by_anchor = set()
 
     for metric_key, anchor in prev_anchors.items():
@@ -2493,8 +2669,19 @@ def rebuild_metrics_from_snapshots(
         elif isinstance(anchor, str):
             ah = anchor
 
+        # ================================================================
+        # PATCH FIX41AFC53 (ADDITIVE): attempt anchor resolve when direct anchor_hash lookup misses
+        # ================================================================
+        c = None
         if ah and ah in anchor_to_candidate:
             c = anchor_to_candidate[ah]
+        else:
+            try:
+                c = _resolve_anchor_candidate(metric_key, anchor)
+            except Exception:
+                c = None
+
+        if isinstance(c, dict) and c:
 
             # =========================
             # PATCH RMS1 (ADDITIVE): overlay rebuilt candidate onto base canonical metric
