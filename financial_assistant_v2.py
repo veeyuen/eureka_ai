@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc60_canonical_selector_norm_url_source_lock_v1"  # PATCH FIX41AFC60
+CODE_VERSION = "fix41afc61_unit_tag_synonyms_gate_v1"  # PATCH FIX41AFC60
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -152,11 +152,52 @@ def _fix41afc59_candidate_matches_schema_unit_tag(metric_schema: dict, cand: dic
     unit_tag = (cand.get("unit_tag") or "")
     ctx = (cand.get("context_snippet") or cand.get("context") or "")
     hay = f"{raw} {unit} {unit_tag} {ctx}".lower()
+    # =====================================================================
+    # PATCH FIX41AFC61 START (ADDITIVE): unit_tag/base_unit synonyms for schema scale gate
+    # Why:
+    # - Some extractors emit scale in unit_tag (e.g., 'M') while leaving unit blank.
+    # - The prior gate only inspected 'unit' (and text), causing legitimate
+    #   magnitude candidates (e.g., 17.8 'M') to be rejected and allowing fallback
+    #   selection to roam into unrelated sources (e.g., GlobeNewswire '1.3B').
+    # - We keep the hard scale gate (still blocks unitless '170') but accept
+    #   common scale tokens in unit_tag/base_unit for parity with analysis.
+    # =====================================================================
+    base_unit = (cand.get("base_unit") or "")
+    unit_tag_l = (unit_tag or "").strip().lower()
+    base_unit_l = (base_unit or "").strip().lower()
+    unit_l = (unit or "").strip().lower()
+    # PATCH FIX41AFC61 END
+
 
     # If schema expects a scale (e.g., million), require an explicit mention.
     # This prevents unitless '170' from being treated as 'million units'.
+    
+    # =====================================================================
+    # PATCH FIX41AFC61B START (ADDITIVE): accept million tokens in unit_tag/base_unit
+    # =====================================================================
+    if hint == "million":
+        # accept explicit scale tokens even when unit is blank
+        if unit_tag_l in ("m", "mn", "mio", "mm") or base_unit_l in ("m", "mn", "mio", "mm") or unit_l in ("m", "mn", "mio", "mm"):
+            return True
+        if (unit_tag or "").strip() == "M" or (base_unit or "").strip() == "M" or (unit or "").strip() == "M":
+            return True
+        # fall through to original textual/unit heuristic
+    # =====================================================================
+    # PATCH FIX41AFC61B END
     if hint == "million":
         return bool(re.search(r"\b(million|mn)\b", hay)) or ("m" in unit.lower() and len(unit.strip()) <= 2)
+    
+    # =====================================================================
+    # PATCH FIX41AFC61C START (ADDITIVE): accept billion tokens in unit_tag/base_unit
+    # =====================================================================
+    if hint == "billion":
+        if unit_tag_l in ("b", "bn", "bb") or base_unit_l in ("b", "bn", "bb") or unit_l in ("b", "bn", "bb"):
+            return True
+        if (unit_tag or "").strip() == "B" or (base_unit or "").strip() == "B" or (unit or "").strip() == "B":
+            return True
+        # fall through to original textual/unit heuristic
+    # =====================================================================
+    # PATCH FIX41AFC61C END
     if hint == "billion":
         return bool(re.search(r"\b(billion|bn)\b", hay)) or ("b" in unit.lower() and len(unit.strip()) <= 2)
     if hint == "thousand":
