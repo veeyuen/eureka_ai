@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc58_canonical_selector_scaffold_v1"
+CODE_VERSION = "fix41afc59_canonical_selector_wired_preferred_source_unit_tag_v1"
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -102,6 +102,72 @@ CODE_VERSION = "fix41afc58_canonical_selector_scaffold_v1"
 # =====================================================================
 
 ENABLE_CANONICAL_SELECTOR_FIX41AFC58 = True  # scaffold only; not wired yet
+
+# =====================================================================
+# PATCH FIX41AFC59 START (ADDITIVE)
+# Canonical selector: strict schema unit_tag gating + preferred-source lock
+#
+# Goals:
+#   1) Prevent unitless / wrong-scale magnitude values (e.g., "170") from
+#      satisfying a schema that expects "million units".
+#   2) Enforce preferred-source lock deterministically when a preferred URL
+#      is available (anchors or prev canonical metric).
+#   3) Keep behavior additive: only engaged when canonical selector wiring
+#      calls it (Evolution/Analysis downstream).
+# =====================================================================
+
+def _fix41afc59_schema_unit_tag_requires_token(unit_tag: str) -> str:
+    """Return a normalized token hint (e.g., 'million', 'billion') from a schema unit_tag."""
+    import re
+    ut = (unit_tag or "").lower().strip()
+    if not ut:
+        return ""
+    # common scale hints
+    if re.search(r"\b(million|mn|m)\b", ut):
+        return "million"
+    if re.search(r"\b(billion|bn|b)\b", ut):
+        return "billion"
+    if re.search(r"\b(thousand|k)\b", ut):
+        return "thousand"
+    if re.search(r"\b(trillion|tn|t)\b", ut):
+        return "trillion"
+    return ""
+
+def _fix41afc59_candidate_matches_schema_unit_tag(metric_schema: dict, cand: dict) -> bool:
+    """Hard gate candidates based on schema.unit_tag when it implies a specific scale."""
+    import re
+    if not isinstance(metric_schema, dict) or not isinstance(cand, dict):
+        return True
+    ut = (metric_schema.get("unit_tag") or metric_schema.get("unit") or "").strip()
+    fam = (metric_schema.get("unit_family") or "").strip().lower()
+    if not ut or fam not in ("magnitude", "currency", "energy", "count", "unit_sales", "units", "unit"):
+        return True
+
+    hint = _fix41afc59_schema_unit_tag_requires_token(ut)
+    if not hint:
+        return True
+
+    raw = (cand.get("raw") or "")
+    unit = (cand.get("unit") or "")
+    unit_tag = (cand.get("unit_tag") or "")
+    ctx = (cand.get("context_snippet") or cand.get("context") or "")
+    hay = f"{raw} {unit} {unit_tag} {ctx}".lower()
+
+    # If schema expects a scale (e.g., million), require an explicit mention.
+    # This prevents unitless '170' from being treated as 'million units'.
+    if hint == "million":
+        return bool(re.search(r"\b(million|mn)\b", hay)) or ("m" in unit.lower() and len(unit.strip()) <= 2)
+    if hint == "billion":
+        return bool(re.search(r"\b(billion|bn)\b", hay)) or ("b" in unit.lower() and len(unit.strip()) <= 2)
+    if hint == "thousand":
+        return bool(re.search(r"\b(thousand)\b", hay)) or ("k" == unit.strip().lower())
+    if hint == "trillion":
+        return bool(re.search(r"\b(trillion|tn)\b", hay)) or ("t" == unit.strip().lower())
+    return True
+
+# =====================================================================
+# PATCH FIX41AFC59 END
+# =====================================================================
 
 def _select_current_metric_canonical_v1(
     canonical_key: str,
@@ -180,6 +246,9 @@ def _select_current_metric_canonical_v1(
 
     def _eligible(c: dict) -> bool:
         try:
+            # FIX41AFC59: schema unit_tag hard gate (prevents unitless scale drift)
+            if not _fix41afc59_candidate_matches_schema_unit_tag(metric_schema, c):
+                return False
             fn = globals().get("_metric_candidate_is_eligible_v2")
             if callable(fn):
                 return bool(fn(c, metric_schema, web_context))
@@ -24497,6 +24566,75 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
 
         
         # =================================================================
+        
+# =================================================================
+        # =================================================================
+        # PATCH FIX41AFC59 START (ADDITIVE): Wire canonical selector into EVO schema-only rebuild
+        #
+        # Goal:
+        #   Make Evolution downstream selection call the shared canonical selector,
+        #   so anchors + preferred-source + eligibility parity are applied BEFORE
+        #   the legacy keyword scoring scan.
+        #
+        # Notes:
+        #   - Additive only: does not remove/modify existing scoring logic.
+        #   - When selector returns a best candidate, we set best/best_tie in a way
+        #     that preserves determinism and allows FIX41AFC57 to lock the winner.
+        # =================================================================
+        try:
+            if globals().get("ENABLE_CANONICAL_SELECTOR_FIX41AFC58") is True and callable(globals().get("_select_current_metric_canonical_v1")):
+                _prev_metric_fix41afc59 = None
+                try:
+                    _pmc = (prev_response.get("primary_metrics_canonical") or (prev_response.get("primary_response") or {}).get("primary_metrics_canonical") or {})
+                    if isinstance(_pmc, dict):
+                        _prev_metric_fix41afc59 = _pmc.get(canonical_key)
+                except Exception:
+                    _prev_metric_fix41afc59 = None
+
+                _sel_best_fix41afc59, _sel_meta_fix41afc59 = _select_current_metric_canonical_v1(
+                    canonical_key=canonical_key,
+                    metric_schema=spec,
+                    candidates=candidates,
+                    metric_anchors=(metric_anchors_fix41afc21d or {}),
+                    prev_metric=(_prev_metric_fix41afc59 or {}),
+                    web_context=(web_context or {}),
+                    cand_index=(cand_index_fix41afc21d or {}),
+                    prev_response=(prev_response or {}),
+                )
+
+                if isinstance(_sel_best_fix41afc59, dict):
+                    best = dict(_sel_best_fix41afc59)
+                    # mark as anchor-used when selector says so; this enables FIX41AFC57 lock.
+                    try:
+                        if isinstance(_sel_meta_fix41afc59, dict) and _sel_meta_fix41afc59.get("anchor_used") is True:
+                            best["_fix41afc59_anchor_used"] = True
+                    except Exception:
+                        pass
+                    # deterministic best_tie sentinel
+                    try:
+                        best_tie = (-1500000000,) + (str(best.get("anchor_hash") or ""), str(best.get("source_url") or ""))
+                    except Exception:
+                        best_tie = (-1500000000,)
+
+                    # attach selector meta for downstream debug / dashboard
+                    try:
+                        dbg_fix41afc21d.setdefault("canonical_selector_fix41afc59", []).append({
+                            "canonical_key": canonical_key,
+                            "used": True,
+                            "preferred_url": str(((_sel_meta_fix41afc59 or {}).get("preferred_url") or "")),
+                            "anchor_used": bool((_sel_meta_fix41afc59 or {}).get("anchor_used")),
+                            "anchor_resolve_method": str(((_sel_meta_fix41afc59 or {}).get("anchor_resolve_method") or "")),
+                            "blocked_reason": str(((_sel_meta_fix41afc59 or {}).get("blocked_reason") or "")),
+                        })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # =================================================================
+        # PATCH FIX41AFC59 END
+        # =================================================================
+# =================================================================
+
         # PATCH FIX41AFC57 START (ADDITIVE): Anchor-locked selection (prevent roam / override)
         # Problem:
         #   - Even when an anchor override resolves an eligible candidate from the preferred source,
@@ -24522,6 +24660,20 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 _fix41afc57_anchor_locked = True
         except Exception:
             _fix41afc57_anchor_locked = False
+
+        
+        # =================================================================
+        # =================================================================
+        # PATCH FIX41AFC59C START (ADDITIVE): Treat canonical-selector anchor_used as lock signal
+        # =================================================================
+        try:
+            if isinstance(best, dict) and best.get("_fix41afc59_anchor_used") is True:
+                _fix41afc57_anchor_locked = True
+        except Exception:
+            pass
+        # =================================================================
+        # PATCH FIX41AFC59C END
+        # =================================================================
 
         if _fix41afc57_anchor_locked:
             try:
@@ -24635,6 +24787,21 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             pass
         # ==============================================================
         # END PATCH FIX41AFC45
+
+# ==============================================================
+        # ==============================================================
+        # PATCH FIX41AFC59B START (ADDITIVE): propagate canonical selector anchor_used/meta
+        # ==============================================================
+        try:
+            if isinstance(best, dict) and best.get("_fix41afc59_anchor_used") is True:
+                rebuilt[canonical_key]["anchor_used"] = True
+                rebuilt[canonical_key]["anchor_resolve_method"] = (rebuilt[canonical_key].get("anchor_resolve_method") or "canonical_selector_fix41afc59")
+        except Exception:
+            pass
+        # ==============================================================
+        # PATCH FIX41AFC59B END
+        # ==============================================================
+# ==============================================================
         # ==============================================================
         # PATCH FIX41AFC54 (ADDITIVE): propagate anchor_used + resolve method (post-emit)
         # ==============================================================
