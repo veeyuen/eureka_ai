@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc64_preferred_only_no_roam_v1"  # PATCH FIX41AFC60
+CODE_VERSION = "fix41afc65_strict_preferred_unit_evidence_carryforward_v1"  # PATCH FIX41AFC60
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -24507,6 +24507,16 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     # Deterministic global ordering of candidates
     candidates.sort(key=_cand_sort_key)
 
+    # =================================================================
+    # PATCH FIX41AFC65 START (ADDITIVE): snapshot global candidate pool
+    # - Each metric iteration can start from the same full pool, then apply
+    #   strict preferred-source locks without leaking across metrics.
+    # =================================================================
+    candidates_all_fix41afc65 = list(candidates) if isinstance(candidates, list) else []
+    # =================================================================
+    # PATCH FIX41AFC65 END
+    # =================================================================
+
     rebuilt = {}
 
     for canonical_key, sch in metric_schema.items():
@@ -24526,6 +24536,72 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         kw_norm = [_norm(k) for k in keywords if k]
 
         expected_dim = _fix16_expected_dimension(spec)
+
+        # =================================================================
+        # PATCH FIX41AFC65 START (ADDITIVE): strict preferred-source lock (per-metric)
+        # - Prevent injected / unrelated sources from winning anchored metrics
+        # - Does NOT affect fastpath/hashing; rebuild-only scope
+        # =================================================================
+        # Start each metric from the global pool snapshot
+        try:
+            candidates = candidates_all_fix41afc65
+        except Exception:
+            pass
+
+        _fx65_preferred_url = ""
+        _fx65_preferred_norm = ""
+        try:
+            _a65 = (metric_anchors_fix41afc21d or {}).get(canonical_key) if isinstance(metric_anchors_fix41afc21d, dict) else None
+            if isinstance(_a65, dict):
+                _fx65_preferred_url = str(_a65.get("source_url") or _a65.get("url") or "").strip()
+            if not _fx65_preferred_url and isinstance(prev_response, dict):
+                _pmc65 = (prev_response.get("primary_metrics_canonical")
+                          or (prev_response.get("primary_response") or {}).get("primary_metrics_canonical")
+                          or {})
+                if isinstance(_pmc65, dict):
+                    _pm65 = _pmc65.get(canonical_key) or {}
+                    if isinstance(_pm65, dict):
+                        _fx65_preferred_url = str(_pm65.get("source_url") or _pm65.get("url") or "").strip()
+        except Exception:
+            _fx65_preferred_url = _fx65_preferred_url or ""
+
+        try:
+            _norm_fn65 = globals().get("_fix41afc60_norm_url")
+            _fx65_preferred_norm = _norm_fn65(_fx65_preferred_url) if callable(_norm_fn65) else (_fx65_preferred_url or "").lower().rstrip("/")
+        except Exception:
+            _fx65_preferred_norm = (_fx65_preferred_url or "").lower().rstrip("/")
+
+        _fx65_before = int(len(candidates or []))
+        _fx65_after = _fx65_before
+        _fx65_preferred_empty = False
+
+        if _fx65_preferred_norm:
+            try:
+                def _fx65_cand_norm_url(c):
+                    u = (c.get("source_url") or c.get("url") or "").strip()
+                    if callable(_norm_fn65):
+                        return _norm_fn65(u)
+                    return (u or "").lower().rstrip("/")
+                candidates = [c for c in (candidates or []) if isinstance(c, dict) and (_fx65_cand_norm_url(c) == _fx65_preferred_norm)]
+                _fx65_after = int(len(candidates or []))
+                _fx65_preferred_empty = (_fx65_after == 0)
+            except Exception:
+                pass
+
+        try:
+            dbg_fix41afc21d.setdefault("fix41afc65_preferred_lock", []).append({
+                "canonical_key": canonical_key,
+                "preferred_url": _fx65_preferred_url,
+                "preferred_norm": _fx65_preferred_norm,
+                "before": _fx65_before,
+                "after": _fx65_after,
+                "preferred_empty": bool(_fx65_preferred_empty),
+            })
+        except Exception:
+            pass
+        # =================================================================
+        # PATCH FIX41AFC65 END
+        # =================================================================
 
         best = None
         best_tie = None
@@ -24881,6 +24957,90 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 except Exception:
                     pass
 
+        # =================================================================
+        # PATCH FIX41AFC65 START (ADDITIVE): unit-evidence-required hard gate + safe carry-forward
+        # =================================================================
+        def _fix41afc65_unit_evidence_required(schema: dict) -> bool:
+            try:
+                fam = (schema or {}).get("unit_family") or ""
+                unit_tag = (schema or {}).get("unit_tag") or ""
+                if fam in ("percent", "currency"):
+                    return True
+                if fam == "magnitude" and str(unit_tag).strip():
+                    return True
+            except Exception:
+                return False
+            return False
+
+        def _fix41afc65_has_unit_evidence(c: dict) -> bool:
+            try:
+                if not isinstance(c, dict):
+                    return False
+                u = (c.get("unit_cmp") or c.get("unit_norm") or c.get("unit") or "").strip()
+                if u:
+                    return True
+                # explicit tokens
+                if (c.get("currency") or c.get("currency_token")):
+                    return True
+                raw = str(c.get("raw") or "")
+                if "%" in raw:
+                    return True
+                if (c.get("scale_token") or c.get("scale") or c.get("unit_tag")):
+                    return True
+                ctx = str(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
+                if any(tok in ctx.lower() for tok in ["million", "mn", "mio", "billion", "bn", "trillion", "tn"]):
+                    return True
+            except Exception:
+                return False
+            return False
+
+        # If best exists but lacks required unit evidence, drop it deterministically
+        try:
+            if isinstance(best, dict) and _fix41afc65_unit_evidence_required(spec) and (not _fix41afc65_has_unit_evidence(best)):
+                dbg_fix41afc21d.setdefault("fix41afc65_unit_evidence_block", []).append({
+                    "canonical_key": canonical_key,
+                    "reason": "unit_evidence_missing_hard_block",
+                    "picked_url": str(best.get("source_url") or best.get("url") or ""),
+                    "picked_raw": str(best.get("raw") or ""),
+                    "schema_unit_family": str(spec.get("unit_family") or ""),
+                    "schema_unit_tag": str(spec.get("unit_tag") or ""),
+                })
+                best = None
+                best_tie = None
+        except Exception:
+            pass
+
+        # If no eligible best AND we had a preferred source lock, carry forward previous metric safely
+        try:
+            if best is None and _fx65_preferred_norm:
+                _pmc65b = (prev_response.get("primary_metrics_canonical")
+                           or (prev_response.get("primary_response") or {}).get("primary_metrics_canonical")
+                           or {})
+                _prevm65b = _pmc65b.get(canonical_key) if isinstance(_pmc65b, dict) else None
+                if isinstance(_prevm65b, dict) and isinstance(_prevm65b.get("value_norm"), (int, float)):
+                    best = {
+                        "value": _prevm65b.get("value"),
+                        "value_norm": _prevm65b.get("value_norm"),
+                        "unit": _prevm65b.get("unit") or _prevm65b.get("unit_tag") or "",
+                        "unit_cmp": _prevm65b.get("unit") or _prevm65b.get("unit_tag") or "",
+                        "unit_tag": _prevm65b.get("unit_tag") or "",
+                        "unit_family": _prevm65b.get("unit_family") or "",
+                        "source_url": _fx65_preferred_url or (_prevm65b.get("source_url") or ""),
+                        "anchor_hash": _prevm65b.get("anchor_hash") or "",
+                        "raw": _prevm65b.get("raw") or "",
+                        "_fix41afc65_carry_forward": True,
+                        "_fix41afc65_blocked_reason": "carry_forward_preferred_source_no_eligible_candidate",
+                    }
+                    dbg_fix41afc21d.setdefault("fix41afc65_carry_forward", []).append({
+                        "canonical_key": canonical_key,
+                        "preferred_url": _fx65_preferred_url,
+                        "prev_value_norm": _prevm65b.get("value_norm"),
+                    })
+        except Exception:
+            pass
+        # =================================================================
+        # PATCH FIX41AFC65 END
+        # =================================================================
         rebuilt[canonical_key] = {
             "canonical_key": canonical_key,
             "name": spec.get("name") or canonical_key,
