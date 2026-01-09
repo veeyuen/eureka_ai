@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc47_percent_ctx_bleed_guard_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc48_anchor_candidate_direct_resolve_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -23335,7 +23335,31 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
         spec.setdefault("name", a.get("name") or canonical_key)
         spec.setdefault("canonical_key", canonical_key)
 
-        c = cand_index.get(ah)
+        # =====================================================================
+        # PATCH FIX41AFC48B START — anchor candidate direct-resolve (candidate_id + hash)
+        # Try candidate_id first (most stable), then anchor_hash.
+        _cid_req = _safe_str(a.get("candidate_id"))
+        c = None
+        if _cid_req:
+            c = cand_id_index.get(_cid_req)
+            if not isinstance(c, dict):
+                # prefix match for truncated IDs (common in some snapshots)
+                _p16 = _cid_req[:16] if len(_cid_req) >= 16 else _cid_req
+                _p12 = _cid_req[:12] if len(_cid_req) >= 12 else _cid_req
+                c = cand_id_prefix_index.get(_p16) or cand_id_prefix_index.get(_p12)
+            if isinstance(c, dict):
+                dbg.setdefault("anchor_direct_resolve_fix41afc48", []).append(
+                    {"canonical_key": canonical_key, "method": "candidate_id", "candidate_id": _cid_req}
+                )
+        if not isinstance(c, dict):
+            c = cand_index.get(ah)
+            if isinstance(c, dict):
+                dbg.setdefault("anchor_direct_resolve_fix41afc48", []).append(
+                    {"canonical_key": canonical_key, "method": "anchor_hash", "anchor_hash": ah}
+                )
+        # =====================================================================
+        # PATCH FIX41AFC48B END — anchor candidate direct-resolve (candidate_id + hash)
+
         if not isinstance(c, dict):
             continue
 
@@ -24305,6 +24329,44 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
     # Deterministic candidate index (anchor_hash -> best candidate)
     fn_idx = globals().get("_es_build_candidate_index_deterministic")
     cand_index = fn_idx(baseline_sources_cache) if callable(fn_idx) else {}
+
+    # =====================================================================
+    # PATCH FIX41AFC48A START — candidate_id index for anchor direct-resolve
+    # Build a deterministic index: candidate_id -> candidate
+    # This allows Evolution to resolve the exact anchored candidate even if
+    # anchor_hash drifts due to context-window normalization changes.
+    cand_id_index = {}
+    cand_id_prefix_index = {}
+    try:
+        _bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
+        for _sr in _bsc:
+            if not isinstance(_sr, dict):
+                continue
+            _nums = _sr.get("extracted_numbers") or []
+            if not isinstance(_nums, list):
+                continue
+            for _c in _nums:
+                if not isinstance(_c, dict):
+                    continue
+                _cid = str(_c.get("candidate_id") or "").strip()
+                if _cid:
+                    # First-wins for determinism (do not overwrite existing)
+                    cand_id_index.setdefault(_cid, _c)
+                    if len(_cid) >= 16:
+                        cand_id_prefix_index.setdefault(_cid[:16], _c)
+                    if len(_cid) >= 12:
+                        cand_id_prefix_index.setdefault(_cid[:12], _c)
+                # Also allow anchor_hash as a weak candidate_id fallback when stored that way
+                _ah2 = str(_c.get("anchor_hash") or _c.get("anchor") or "").strip()
+                if _ah2 and _ah2 not in cand_index:
+                    # do not change cand_index itself (off-limits), but we can store as id prefix
+                    if len(_ah2) >= 16:
+                        cand_id_prefix_index.setdefault(_ah2[:16], _c)
+    except Exception:
+        cand_id_index = cand_id_index if isinstance(cand_id_index, dict) else {}
+        cand_id_prefix_index = cand_id_prefix_index if isinstance(cand_id_prefix_index, dict) else {}
+    # =====================================================================
+    # PATCH FIX41AFC48A END — candidate_id index for anchor direct-resolve
 
     # Debug sink (additive mutation; safe if ignored)
     dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
@@ -28435,3 +28497,9 @@ except Exception:
 # PATCH FIX41AFC47_VERSION START
 CODE_VERSION = "fix41afc47_percent_ctx_bleed_guard_v1"
 # PATCH FIX41AFC47_VERSION END
+
+
+# =====================================================================
+# PATCH FIX41AFC48_VERSION START — version bump (audit)
+CODE_VERSION = "fix41afc48_anchor_candidate_direct_resolve_v1"
+# PATCH FIX41AFC48_VERSION END — version bump (audit)
