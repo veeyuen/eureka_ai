@@ -77,18 +77,18 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc50_evo_candidateid_unitcmp_trace_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
-#CODE_VERSION = "fix41afc49_evo_anchor_signature_resolve_v1"
+#CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC49C END — bump CODE_VERSION
 # PATCH FIX41AFC24_VERSION END
 
 # =====================================================================
 # PATCH FIX41AFC23V (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "fix41afc23_evo_junkphone_unitgate_anchorreq_v1"
+#CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # =====================================================================
 # END PATCH FIX41AFC23V
 # =====================================================================
@@ -117,13 +117,13 @@ CODE_VERSION = "fix41afc50_evo_candidateid_unitcmp_trace_v1"  # PATCH FIX41G (AD
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
+#CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # =====================================================================
 # PATCH FIX41AFC20 (ADDITIVE): bump CODE_VERSION to this file version
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
+#CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # =====================================================================
 
 # =====================================================================
@@ -24430,6 +24430,121 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
     # =====================================================================
     # PATCH FIX41AFC48A END — candidate_id index for anchor direct-resolve
 
+    # =====================================================================
+    # PATCH FIX41AFC51 START — anchor-resolve candidate payload enrichment (analysis parity)
+    # Problem observed:
+    # - Anchor signature/compat resolvers can return a *thin* candidate (missing context_snippet,
+    #   unit_tag/unit_family/base_unit/multiplier/value_norm, etc.), which then cascades into
+    #   blank "current" values and incorrect eligibility decisions.
+    # Fix:
+    # - Deterministically enrich the resolved candidate from the *actual* snapshot pool
+    #   (baseline_sources_cache.extracted_numbers) using candidate_id / anchor_hash.
+    # - Additive-only: never overwrite existing candidate fields; first-wins.
+    # =====================================================================
+    def _fix41afc51_enrich_candidate_payload(cand: dict, *, anchor_hash: str = "", anchor_dict: dict = None, canonical_key: str = ""):
+        try:
+            if not isinstance(cand, dict):
+                return cand
+            _ah = str(cand.get("anchor_hash") or anchor_hash or "").strip()
+            _cid = str(cand.get("candidate_id") or "").strip()
+            # also allow anchor dict to supply candidate_id
+            try:
+                if (not _cid) and isinstance(anchor_dict, dict):
+                    _cid = str(anchor_dict.get("candidate_id") or anchor_dict.get("candidate") or "").strip()
+            except Exception:
+                pass
+
+            # Only enrich when key evidence is missing
+            _need = False
+            for _k in ("context_snippet","unit_tag","unit_family","base_unit","multiplier_to_base","value_norm","candidate_id"):
+                if cand.get(_k) is None or str(cand.get(_k) or "").strip() == "":
+                    _need = True
+                    break
+            if not _need:
+                return cand
+
+            _src_c = None
+            try:
+                if _cid and isinstance(cand_id_index, dict) and _cid in cand_id_index and isinstance(cand_id_index[_cid], dict):
+                    _src_c = cand_id_index[_cid]
+                if _src_c is None and _cid and isinstance(cand_id_prefix_index, dict):
+                    _p16 = _cid[:16] if len(_cid) >= 16 else ""
+                    _p12 = _cid[:12] if len(_cid) >= 12 else ""
+                    for _p in (_p16, _p12):
+                        if _p and _p in cand_id_prefix_index and isinstance(cand_id_prefix_index[_p], dict):
+                            _src_c = cand_id_prefix_index[_p]
+                            break
+                if _src_c is None and _ah and isinstance(cand_index, dict) and _ah in cand_index and isinstance(cand_index[_ah], dict):
+                    _src_c = cand_index[_ah]
+            except Exception:
+                _src_c = None
+
+            if not isinstance(_src_c, dict):
+                # Deterministic scan (first-wins) as last resort
+                try:
+                    _bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
+                    for _sr in _bsc:
+                        if not isinstance(_sr, dict):
+                            continue
+                        _nums = _sr.get("extracted_numbers") or []
+                        if not isinstance(_nums, list):
+                            continue
+                        for _x in _nums:
+                            if not isinstance(_x, dict):
+                                continue
+                            _xah = str(_x.get("anchor_hash") or _x.get("anchor") or "").strip()
+                            _xcid = str(_x.get("candidate_id") or "").strip()
+                            if (_cid and _xcid and _xcid == _cid) or (_ah and _xah and _xah == _ah):
+                                _src_c = _x
+                                raise StopIteration
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass
+
+            if isinstance(_src_c, dict):
+                # Merge missing fields only
+                for _k in ("raw","unit","unit_tag","unit_family","base_unit","multiplier_to_base","value_norm","candidate_id","context_snippet","source_url","url","anchor_hash"):
+                    if cand.get(_k) is None or (isinstance(cand.get(_k), str) and not cand.get(_k).strip()):
+                        if _k in _src_c and _src_c.get(_k) not in (None, ""):
+                            cand[_k] = _src_c.get(_k)
+                # Backfill unit fields if still missing (existing helper)
+                try:
+                    _bf = globals().get("_fix41afc39_backfill_candidate_unit_fields")
+                    if callable(_bf):
+                        _bf(cand)
+                except Exception:
+                    pass
+                # Record debug
+                try:
+                    dbg.setdefault("anchor_payload_enrich_fix41afc51", []).append({
+                        "canonical_key": canonical_key,
+                        "anchor_hash": _ah,
+                        "candidate_id": _cid,
+                        "enriched": True,
+                        "had_context": bool(str(cand.get("context_snippet") or "").strip()),
+                        "unit_family": cand.get("unit_family"),
+                    })
+                except Exception:
+                    pass
+            else:
+                try:
+                    dbg.setdefault("anchor_payload_enrich_fix41afc51", []).append({
+                        "canonical_key": canonical_key,
+                        "anchor_hash": _ah,
+                        "candidate_id": _cid,
+                        "enriched": False,
+                        "reason": "no_match_in_snapshot_pool"
+                    })
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+        return cand
+    # PATCH FIX41AFC51 END
+
+
     # Debug sink (additive mutation; safe if ignored)
     dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
     rej = dbg.setdefault("anchor_rejects_fix17", [])
@@ -24493,6 +24608,17 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
             # =====================================================================
             # PATCH FIX41AFC41A END
             # =====================================================================
+
+
+
+        # =====================================================================
+        # PATCH FIX41AFC51B START — ensure anchor-resolved candidate is fully hydrated
+        # (This is critical for downstream unit_cmp/value_norm/value_range parity)
+        try:
+            c = _fix41afc51_enrich_candidate_payload(c, anchor_hash=str(ah or ""), anchor_dict=a, canonical_key=canonical_key)
+        except Exception:
+            pass
+        # PATCH FIX41AFC51B END
 
         ok, reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
         if not ok:
@@ -27905,27 +28031,27 @@ except Exception:
 
 
 # PATCH FIX41AFC26_VERSION START
-CODE_VERSION = "fix41afc26_evo_schema_authoritative_rebuild_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC26_VERSION END
 
 
 # PATCH FIX41AFC27_VERSION START
-CODE_VERSION = "fix41afc27_evo_anchor_scoped_value_range_parity_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC27_VERSION END
 
 
 # PATCH FIX41AFC29_VERSION START
-CODE_VERSION = "fix41afc29_evo_anchor_cohort_lock_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC29_VERSION END
 
 
 # PATCH FIX41AFC29_INDENT START
 # (surgical) Ensure return rebuilt remains within function scope.
-CODE_VERSION = "fix41afc29b_evo_anchor_cohort_lock_v2"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC29_INDENT END
 
 # PATCH FIX41AFC30_VERSION START
-CODE_VERSION = "fix41afc30_evo_schema_unit_rescaling_value_range_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC30_VERSION END
 
 
@@ -28243,26 +28369,26 @@ except Exception:
 # =====================================================================
 
 # PATCH FIX41AFC34_VERSION START
-CODE_VERSION = "fix41afc34_evo_schema_authority_propagation_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC34_VERSION END
 
 
 # PATCH FIX41AFC35_VERSION START
-CODE_VERSION = "fix41afc35_diff_bare_year_hard_block_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC35_VERSION END
 
 
 # PATCH FIX41AFC36_VERSION START
-CODE_VERSION = "fix41afc36_extraction_hygiene_unit_family_backfill_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC36_VERSION END
 
 
 # PATCH FIX41AFC37_VERSION START
-CODE_VERSION = "fix41afc37_preselect_eligibility_skip_ineligible_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC37_VERSION END
 
 # PATCH FIX41AFC38_VERSION START
-CODE_VERSION = "fix41afc38_unit_cmp_scale_explain_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC38_VERSION END
 
 # PATCH FIX41AFC39_VERSION START
@@ -28504,7 +28630,7 @@ def _fix41afc41_diag_state_v2(prev_response: dict) -> dict:
 # =====================================================================
 
 # PATCH FIX41AFC41_VERSION START
-CODE_VERSION = "fix41afc41_anchor_compat_diag_state_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC41_VERSION END
 
 
@@ -28574,7 +28700,7 @@ except Exception:
 
 
 # PATCH FIX41AFC43_VERSION START
-CODE_VERSION = "fix41afc43_schema_normalization_reconcile_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC43_VERSION END
 
 
@@ -28588,13 +28714,13 @@ except Exception:
 # ================================================================
 
 # PATCH FIX41AFC47_VERSION START
-CODE_VERSION = "fix41afc47_percent_ctx_bleed_guard_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC47_VERSION END
 
 
 # =====================================================================
 # PATCH FIX41AFC48_VERSION START — version bump (audit)
-CODE_VERSION = "fix41afc48_anchor_candidate_direct_resolve_v1"
+CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"
 # PATCH FIX41AFC48_VERSION END — version bump (audit)
 
 
