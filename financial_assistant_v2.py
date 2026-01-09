@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc54_evo_anchor_candidate_id_source_lock_v1"
+CODE_VERSION = "fix41afc55_evo_anchor_prev_evidence_resolve_unit_gate_v1"
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
@@ -23612,11 +23612,62 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
         # PATCH FIX41AFC48B END — anchor candidate direct-resolve (candidate_id + hash)
 
         if not isinstance(c, dict):
-            continue
+            # =============================================================
+            # PATCH FIX41AFC55 (ADDITIVE): prev-evidence same-source rescue
+            # If anchor_hash/candidate_id lookup misses due to hash drift,
+            # try to recover the exact candidate using prev evidence (raw/start_idx)
+            # inside the preferred source URL.
+            # =============================================================
+            try:
+                _pm = (primary_metrics_canonical or {}).get(canonical_key) if isinstance(primary_metrics_canonical, dict) else None
+                _ev0 = None
+                if isinstance(_pm, dict):
+                    _evs = _pm.get("evidence") or []
+                    if isinstance(_evs, list) and _evs:
+                        _ev0 = _evs[0] if isinstance(_evs[0], dict) else None
+                _pref_url = _safe_str(a.get("source_url")) or _safe_str((_pm or {}).get("source_url"))
+                _c55 = _fix41afc55_resolve_by_prev_evidence(_pref_url, _ev0, candidates) if _pref_url and isinstance(_ev0, dict) else None
+                if isinstance(_c55, dict):
+                    c = _c55
+                    dbg.setdefault("anchor_prev_evidence_rescue_fix41afc55", []).append(
+                        {"canonical_key": canonical_key, "method": "prev_evidence", "preferred_url": _pref_url, "raw": _safe_str(_ev0.get("raw"))}
+                    )
+            except Exception:
+                pass
+            if not isinstance(c, dict):
+                continue
+            # =============================================================
 
         # FIX16 eligibility hard-gates
         if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
             continue
+
+        # =================================================================
+        # PATCH FIX41AFC55 (ADDITIVE): schema unit-required missing-unit hard gate (reachable)
+        # Prevent unitless candidates (e.g., "170") from being selected for unit-tagged metrics.
+        # (Previous FIX41AFC54 insertion landed after a continue and could be unreachable.)
+        # =================================================================
+        try:
+            if _fix41afc33_schema_implies_unit_required(spec) and not _fix41afc54_candidate_has_unit_evidence(c):
+                # As a last attempt, try same-source rescue via prev evidence (raw/start_idx)
+                _pm = (primary_metrics_canonical or {}).get(canonical_key) if isinstance(primary_metrics_canonical, dict) else None
+                _ev0 = None
+                if isinstance(_pm, dict):
+                    _evs = _pm.get("evidence") or []
+                    if isinstance(_evs, list) and _evs and isinstance(_evs[0], dict):
+                        _ev0 = _evs[0]
+                _pref_url = _safe_str(a.get("source_url")) or _safe_str((_pm or {}).get("source_url"))
+                _c55b = _fix41afc55_resolve_by_prev_evidence(_pref_url, _ev0, candidates) if _pref_url and isinstance(_ev0, dict) else None
+                if isinstance(_c55b, dict) and _fix41afc54_candidate_has_unit_evidence(_c55b):
+                    c = _c55b
+                    dbg.setdefault("schema_unit_required_rescue_fix41afc55", []).append(
+                        {"canonical_key": canonical_key, "method": "prev_evidence_rescue", "preferred_url": _pref_url}
+                    )
+                else:
+                    continue
+        except Exception:
+            pass
+        # =================================================================
 
 
             # =================================================================
@@ -23649,8 +23700,7 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
             "anchor_used": True,
         }
 
-    return rebuilt
-
+        return rebuilt
 
 
 # =====================================================================
@@ -23921,6 +23971,92 @@ def _fix41afc54_resolve_anchor_candidate(
 
 # =====================================================================
 # PATCH FIX41AFC54 END
+
+# =====================================================================
+# PATCH FIX41AFC55 START
+# Anchor compatibility rescue using PREV evidence fields (raw/start_idx/url)
+# Why:
+# - candidate_id / anchor_hash may drift across hygiene changes
+# - prev_response often contains canonical evidence with raw + start/end idx
+# This resolver finds the matching candidate inside the preferred source pool
+# using deterministic (url, raw, start_idx proximity) matching.
+# Additive-only: does not modify hashing/fastpath; safe no-op when fields missing.
+# =====================================================================
+
+def _fix41afc55_resolve_by_prev_evidence(preferred_url: str, prev_ev: dict, candidates: list):
+    try:
+        if not preferred_url or not isinstance(prev_ev, dict) or not isinstance(candidates, list) or not candidates:
+            return None
+        raw0 = str(prev_ev.get("raw") or "").strip()
+        si0 = prev_ev.get("start_idx")
+        ei0 = prev_ev.get("end_idx")
+        # Allow a small drift window (hygiene edits can shift indices slightly)
+        try:
+            si0 = int(si0) if si0 is not None else None
+        except Exception:
+            si0 = None
+        try:
+            ei0 = int(ei0) if ei0 is not None else None
+        except Exception:
+            ei0 = None
+
+        pool = []
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            if (c.get("source_url") or "") != preferred_url:
+                continue
+            if c.get("is_junk") is True:
+                continue
+            if raw0 and str(c.get("raw") or "").strip() != raw0:
+                continue
+            # score by proximity to prev indices, then existing context_score, then stable tie
+            si = c.get("start_idx")
+            ei = c.get("end_idx")
+            try:
+                si = int(si) if si is not None else 0
+            except Exception:
+                si = 0
+            try:
+                ei = int(ei) if ei is not None else 0
+            except Exception:
+                ei = 0
+            d = 0
+            if si0 is not None:
+                d += abs(si - si0)
+            if ei0 is not None:
+                d += abs(ei - ei0)
+            cs = 0.0
+            try:
+                cs = float(c.get("context_score") or 0.0)
+            except Exception:
+                cs = 0.0
+            tie = (
+                d,
+                -cs,  # prefer higher context_score
+                str(c.get("anchor_hash") or ""),
+                str(c.get("raw") or ""),
+            )
+            pool.append((tie, c))
+
+        if not pool:
+            return None
+        pool.sort(key=lambda x: x[0])
+        # If we have an index target, require drift to be reasonably small (avoid wrong raw duplicates)
+        try:
+            d0 = pool[0][0][0]
+            if (si0 is not None or ei0 is not None) and d0 > 80:
+                return None
+        except Exception:
+            pass
+        return pool[0][1]
+    except Exception:
+        return None
+
+# =====================================================================
+# PATCH FIX41AFC55 END
+# =====================================================================
+
 # =====================================================================
 def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
