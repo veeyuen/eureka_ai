@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc61_unit_tag_synonyms_gate_v1"  # PATCH FIX41AFC60
+CODE_VERSION = "fix41afc62_preferred_source_scale_token_rescue_v1"  # PATCH FIX41AFC60
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -171,7 +171,7 @@ def _fix41afc59_candidate_matches_schema_unit_tag(metric_schema: dict, cand: dic
 
     # If schema expects a scale (e.g., million), require an explicit mention.
     # This prevents unitless '170' from being treated as 'million units'.
-    
+
     # =====================================================================
     # PATCH FIX41AFC61B START (ADDITIVE): accept million tokens in unit_tag/base_unit
     # =====================================================================
@@ -186,7 +186,7 @@ def _fix41afc59_candidate_matches_schema_unit_tag(metric_schema: dict, cand: dic
     # PATCH FIX41AFC61B END
     if hint == "million":
         return bool(re.search(r"\b(million|mn)\b", hay)) or ("m" in unit.lower() and len(unit.strip()) <= 2)
-    
+
     # =====================================================================
     # PATCH FIX41AFC61C START (ADDITIVE): accept billion tokens in unit_tag/base_unit
     # =====================================================================
@@ -24632,9 +24632,9 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         # =================================================================
         # =================================================================
 
-        
+
         # =================================================================
-        
+
 # =================================================================
         # =================================================================
         # PATCH FIX41AFC59 START (ADDITIVE): Wire canonical selector into EVO schema-only rebuild
@@ -24729,7 +24729,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         except Exception:
             _fix41afc57_anchor_locked = False
 
-        
+
         # =================================================================
         # =================================================================
         # PATCH FIX41AFC59C START (ADDITIVE): Treat canonical-selector anchor_used as lock signal
@@ -24801,7 +24801,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 best = c
                 best_tie = tie
 
-        
+
         # =================================================================
         # PATCH FIX41AFC57_RESTORE START (ADDITIVE): restore candidate iterator after anchor lock
         try:
@@ -30344,3 +30344,251 @@ CODE_VERSION = "fix41afc52_evo_post_rebuild_evidence_rescue_v1"
 CODE_VERSION = "fix41afc56_evo_preferred_source_rescue_v1"
 # PATCH FIX41AFC56V END — bump CODE_VERSION
 # =====================================================================
+
+
+# =====================================================================
+# PATCH FIX41AFC62 START
+# Preferred-source + schema-scale-token rescue (post-rebuild) to prevent
+# cross-source roam when anchor_hash/candidate_id drifts, and to prevent
+# unitless candidates from being "upcast" to schema unit_tag.
+#
+# Additive-only: does NOT refactor existing rebuild logic. We provide a
+# wrapper rebuild fn that Evolution will prefer via globals().get(
+# "rebuild_metrics_from_snapshots_schema_only").
+# =====================================================================
+
+def _fix41afc62_norm_url(u: str) -> str:
+    try:
+        fn = globals().get("_fix41afc60_norm_url") or globals().get("_fix41afc56_norm_url")
+        if callable(fn):
+            return fn(u)
+    except Exception:
+        pass
+    try:
+        return (u or "").strip()
+    except Exception:
+        return str(u)
+
+def _fix41afc62_preferred_url(prev_response: dict, canonical_key: str, schema: dict = None) -> str:
+    try:
+        # Prefer explicit anchor source_url when present
+        ma = (prev_response or {}).get("metric_anchors") or (prev_response or {}).get("primary_response", {}).get("metric_anchors") or {}
+        a = (ma or {}).get(canonical_key) or {}
+        u = (a.get("source_url") or a.get("url") or "").strip()
+        if u:
+            return u
+    except Exception:
+        pass
+    try:
+        # Fallback to helper if it exists
+        fn = globals().get("_fix41afc56_preferred_url_for_metric")
+        if callable(fn):
+            u = fn(prev_response, canonical_key)
+            if u:
+                return str(u).strip()
+    except Exception:
+        pass
+    try:
+        # Last: schema/primary metric source_url (if present)
+        s = schema or {}
+        u = (s.get("source_url") or s.get("url") or "").strip()
+        if u:
+            return u
+    except Exception:
+        pass
+    return ""
+
+def _fix41afc62_schema_scale_token(schema: dict) -> str:
+    """Return scale token hint like 'million'/'billion' if schema unit_tag implies it."""
+    try:
+        fn = globals().get("_fix41afc59_schema_unit_tag_requires_token")
+        if callable(fn):
+            return fn((schema or {}).get("unit_tag") or (schema or {}).get("unit") or "")
+    except Exception:
+        pass
+    return ""
+
+def _fix41afc62_candidate_matches_scale(schema: dict, cand: dict) -> bool:
+    """If schema implies a scale token, require it to appear on candidate (unit/unit_tag/raw/context)."""
+    try:
+        tok = _fix41afc62_schema_scale_token(schema)
+        if not tok:
+            return True
+        fn = globals().get("_fix41afc59_candidate_matches_schema_unit_tag")
+        if callable(fn):
+            return bool(fn((schema or {}).get("unit_tag") or "", cand or {}))
+        # fallback: very light check
+        hay = " ".join([
+            str((cand or {}).get("unit") or ""),
+            str((cand or {}).get("unit_tag") or ""),
+            str((cand or {}).get("raw") or ""),
+            str((cand or {}).get("context_snippet") or ""),
+        ]).lower()
+        return tok.lower() in hay
+    except Exception:
+        return True
+
+def _fix41afc62_evidence_find_selected(metric: dict) -> dict:
+    """Try to locate the evidence dict corresponding to the current selected anchor_hash."""
+    try:
+        if not isinstance(metric, dict):
+            return {}
+        ah = str(metric.get("anchor_hash") or metric.get("cur_anchor_hash") or "").strip()
+        ev = metric.get("evidence") or []
+        if ah and isinstance(ev, list):
+            for e in ev:
+                if isinstance(e, dict) and str(e.get("anchor_hash") or "") == ah:
+                    return e
+    except Exception:
+        pass
+    return {}
+
+def _fix41afc62_should_rescue(schema: dict, metric: dict, preferred_url: str) -> bool:
+    """Rescue when selected is cross-source OR selected is unitless/scale-missing for magnitude schema."""
+    try:
+        if not isinstance(metric, dict):
+            return False
+        sel_e = _fix41afc62_evidence_find_selected(metric)
+        sel_url = str((sel_e.get("source_url") or sel_e.get("url") or metric.get("source_url") or "")).strip()
+        if preferred_url and _fix41afc62_norm_url(sel_url) and _fix41afc62_norm_url(preferred_url):
+            if _fix41afc62_norm_url(sel_url) != _fix41afc62_norm_url(preferred_url):
+                return True
+        # Scale-token guard: if schema implies scale, selected evidence must carry it
+        if not _fix41afc62_candidate_matches_scale(schema, sel_e or metric):
+            return True
+        # Unitless guard for magnitude/energy: require explicit unit evidence on selected evidence
+        uf = str((schema or {}).get("unit_family") or "").strip().lower()
+        if uf in ("magnitude", "energy"):
+            u = str((sel_e.get("unit_tag") or sel_e.get("unit") or sel_e.get("base_unit") or "")).strip()
+            if not u:
+                # only rescue if we have a preferred_url (avoid changing unanchored behavior)
+                return bool(preferred_url)
+        return False
+    except Exception:
+        return False
+
+def _fix41afc62_best_from_preferred(schema: dict, preferred_url: str, evidence: list) -> dict:
+    """Pick best eligible candidate from preferred_url evidence, deterministic."""
+    try:
+        if not preferred_url or not isinstance(evidence, list):
+            return {}
+        pref_n = _fix41afc62_norm_url(preferred_url)
+        pool = []
+        fn_el = globals().get("_fix41afc52_candidate_is_eligible")
+        for e in evidence:
+            if not isinstance(e, dict):
+                continue
+            eurl = str(e.get("source_url") or e.get("url") or "").strip()
+            if pref_n and _fix41afc62_norm_url(eurl) != pref_n:
+                continue
+            # Respect eligibility
+            try:
+                if callable(fn_el) and not fn_el(schema, e):
+                    continue
+            except Exception:
+                pass
+            # Respect scale-token requirement (prevents unitless "170" from being treated as "million units")
+            if not _fix41afc62_candidate_matches_scale(schema, e):
+                continue
+            pool.append(e)
+        if not pool:
+            return {}
+        fn_pick = globals().get("_fix41afc52_pick_best_candidate")
+        if callable(fn_pick):
+            return dict(fn_pick(schema, pool) or {})
+        # fallback: first
+        return dict(pool[0])
+    except Exception:
+        return {}
+
+def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """
+    FIX41AFC62 wrapper:
+      - Calls existing schema-only rebuild (FIX16) if available
+      - Post-processes rebuilt metrics to prevent cross-source hijack when anchors drift:
+          * preferred-source rescue using evidence
+          * schema scale-token guard to avoid unitless coercion
+      - Leaves fastpath/hashing untouched (wrapper only affects rebuild path).
+    """
+    fn_base = (
+        globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+        or globals().get("rebuild_metrics_from_snapshots_schema_only")
+        or globals().get("rebuild_metrics_from_snapshots")
+    )
+    if not callable(fn_base):
+        return {}
+    rebuilt = fn_base(prev_response, baseline_sources_cache, web_context=web_context)
+    try:
+        if not isinstance(rebuilt, dict):
+            return rebuilt
+        # Build schema map for lookups
+        schema_map = (prev_response or {}).get("metric_schema_frozen") or (prev_response or {}).get("metric_schema") or {}
+        prim_map = (prev_response or {}).get("primary_metrics_canonical") or {}
+        dbg = (prev_response or {}).setdefault("_evolution_rebuild_debug", {})
+        dbg.setdefault("fix41afc62_rescues", [])
+        for ck, m in list(rebuilt.items()):
+            if not isinstance(m, dict):
+                continue
+            schema = {}
+            if isinstance(schema_map, dict) and ck in schema_map and isinstance(schema_map.get(ck), dict):
+                schema = schema_map.get(ck) or {}
+            elif isinstance(prim_map, dict) and ck in prim_map and isinstance(prim_map.get(ck), dict):
+                schema = prim_map.get(ck) or {}
+            pref = _fix41afc62_preferred_url(prev_response, ck, schema=schema)
+            if not pref:
+                continue
+            if not _fix41afc62_should_rescue(schema, m, pref):
+                continue
+            ev = m.get("evidence") or []
+            best = _fix41afc62_best_from_preferred(schema, pref, ev)
+            if not best:
+                # If we had a preferred source but no eligible candidate there, leave metric unchanged
+                # and add debug for visibility.
+                dbg["fix41afc62_rescues"].append({
+                    "canonical_key": ck,
+                    "preferred_url": pref,
+                    "rescued": False,
+                    "reason": "no_eligible_candidate_in_preferred_source",
+                })
+                continue
+            # Apply rescued candidate to metric
+            try:
+                fn_apply = globals().get("_fix41afc52_apply_candidate_to_metric")
+                if callable(fn_apply):
+                    fn_apply(schema, m, best)
+                else:
+                    # minimal in-place apply fallback
+                    m["value_norm"] = best.get("value_norm", best.get("value"))
+                    m["value"] = best.get("value", m.get("value"))
+                    m["unit"] = best.get("unit", m.get("unit"))
+                    m["unit_tag"] = best.get("unit_tag", m.get("unit_tag"))
+                    m["anchor_hash"] = best.get("anchor_hash", m.get("anchor_hash"))
+                    m["source_url"] = best.get("source_url", m.get("source_url"))
+            except Exception:
+                pass
+            try:
+                m["anchor_used"] = True
+                m["anchor_used_reason"] = "preferred_source_scale_token_rescue_fix41afc62"
+                m["preferred_source_url_fix41afc62"] = pref
+            except Exception:
+                pass
+            dbg["fix41afc62_rescues"].append({
+                "canonical_key": ck,
+                "preferred_url": pref,
+                "rescued": True,
+                "selected_anchor_hash": str(best.get("anchor_hash") or ""),
+                "selected_raw": str(best.get("raw") or ""),
+            })
+    except Exception:
+        return rebuilt
+    return rebuilt
+
+# PATCH FIX41AFC62 END
+# =====================================================================
+
+# PATCH FIX41AFC62_VERSION START
+try:
+    CODE_VERSION = "fix41afc62_preferred_source_scale_token_rescue_v1"
+except Exception:
+    pass
+# PATCH FIX41AFC62_VERSION END
