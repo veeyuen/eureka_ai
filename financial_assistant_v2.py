@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc43_schema_normalization_reconcile_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc44_evo_schema_unit_value_range_rebuild_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -25910,6 +25910,147 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
 
 
     # =====================================================================
+    # ================================================================
+    # PATCH FIX41AFC44 START — schema-authoritative value_range rebuild
+    # Purpose:
+    #   Some magnitude metrics (esp. "million units") were still emitting value_range
+    #   as if values were base-units (e.g., 0.0178–0.09 million units) which causes
+    #   downstream eligibility/range checks to blank "Current". This patch rebuilds
+    #   value_range directly in schema units from evidence/candidate norms.
+    try:
+        _vr_fix44_cnt = 0
+        _vr_fix44_keys = []
+        _schema_map_fix44 = schema_map if isinstance(schema_map, dict) else (prev_response.get("metric_schema_frozen") if isinstance(prev_response, dict) else None) or {}
+        for _ck_fix44, _m_fix44 in (rebuilt or {}).items():
+            if not isinstance(_m_fix44, dict):
+                continue
+            _schema_fix44 = _schema_map_fix44.get(_ck_fix44) if isinstance(_schema_map_fix44, dict) else None
+            if not isinstance(_schema_fix44, dict):
+                continue
+            # Only act on magnitude-family metrics where schema implies "million" scaling
+            _uf_fix44 = (_schema_fix44.get("unit_family") or _m_fix44.get("unit_family") or "").strip().lower()
+            if _uf_fix44 != "magnitude":
+                continue
+            _ut_fix44 = (_schema_fix44.get("unit_tag") or _schema_fix44.get("unit") or _m_fix44.get("unit_tag") or _m_fix44.get("unit") or "")
+            _ut_l_fix44 = str(_ut_fix44).lower()
+            _implies_million_fix44 = ("million" in _ut_l_fix44) or (_ut_l_fix44.strip() in ("m", "mn"))
+            if not _implies_million_fix44:
+                continue
+
+            _sel_vn_fix44 = _m_fix44.get("value_norm")
+            if _sel_vn_fix44 is None:
+                continue
+
+            # Collect evidence norms
+            _ev_list_fix44 = _m_fix44.get("evidence") or []
+            _ev_vns_fix44 = []
+            for _ev_fix44 in _ev_list_fix44:
+                if not isinstance(_ev_fix44, dict):
+                    continue
+                _vn = _ev_fix44.get("value_norm")
+                if _vn is None:
+                    continue
+                try:
+                    _vn_f = float(_vn)
+                except Exception:
+                    continue
+                if _vn_f != _vn_f:
+                    continue
+                _ev_vns_fix44.append(_vn_f)
+
+            # If evidence list is empty, try any embedded candidate list (best-effort)
+            if not _ev_vns_fix44:
+                _cand_list_fix44 = _m_fix44.get("candidates") or _m_fix44.get("candidates_considered") or []
+                for _c_fix44 in _cand_list_fix44:
+                    if not isinstance(_c_fix44, dict):
+                        continue
+                    _vn = _c_fix44.get("value_norm")
+                    if _vn is None:
+                        continue
+                    try:
+                        _vn_f = float(_vn)
+                    except Exception:
+                        continue
+                    if _vn_f != _vn_f:
+                        continue
+                    _ev_vns_fix44.append(_vn_f)
+
+            if len(_ev_vns_fix44) < 2:
+                continue
+
+            # Detect double-normalization signature: range is 1000x smaller than selected
+            _vr_fix44 = _m_fix44.get("value_range") or {}
+            _vr_min_fix44 = _vr_fix44.get("min")
+            _vr_max_fix44 = _vr_fix44.get("max")
+            try:
+                _vr_min_f = float(_vr_min_fix44) if _vr_min_fix44 is not None else None
+                _vr_max_f = float(_vr_max_fix44) if _vr_max_fix44 is not None else None
+            except Exception:
+                _vr_min_f = _vr_max_f = None
+
+            # Normalize evidence norms into schema units:
+            # - If evidence norms look like base units (e.g., 17800000) convert to millions
+            # - Else assume already in schema units (e.g., 17.8)
+            _ev_max_fix44 = max(_ev_vns_fix44)
+            _ev_min_fix44 = min(_ev_vns_fix44)
+            _ev_units_millions_fix44 = _ev_vns_fix44
+            try:
+                _sel_vn_f = float(_sel_vn_fix44)
+            except Exception:
+                _sel_vn_f = None
+            if _ev_max_fix44 > 1000 and (_sel_vn_f is not None and _sel_vn_f < 1000):
+                _ev_units_millions_fix44 = [v / 1_000_000.0 for v in _ev_vns_fix44]
+                _ev_min_fix44 = min(_ev_units_millions_fix44)
+                _ev_max_fix44 = max(_ev_units_millions_fix44)
+
+            _need_rebuild_fix44 = False
+            try:
+                if _sel_vn_f is not None and _vr_min_f is not None and _vr_max_f is not None:
+                    if (_sel_vn_f >= 1.0) and (_vr_max_f <= 1.0) and (_vr_max_f > 0):
+                        _need_rebuild_fix44 = True
+                    if (_vr_max_f < (_ev_max_fix44 * 0.2)):
+                        _need_rebuild_fix44 = True
+                else:
+                    _need_rebuild_fix44 = True
+            except Exception:
+                _need_rebuild_fix44 = True
+
+            if not _need_rebuild_fix44:
+                continue
+
+            _new_min_fix44 = float(_ev_min_fix44)
+            _new_max_fix44 = float(_ev_max_fix44)
+            if _new_min_fix44 > _new_max_fix44:
+                _new_min_fix44, _new_max_fix44 = _new_max_fix44, _new_min_fix44
+
+            _m_fix44.setdefault("value_range", {})
+            if isinstance(_m_fix44.get("value_range"), dict):
+                _m_fix44["value_range"]["min"] = _new_min_fix44
+                _m_fix44["value_range"]["max"] = _new_max_fix44
+                _m_fix44["value_range"]["method"] = str(_m_fix44["value_range"].get("method") or "") + "|fix41afc44_schema_unit_range"
+            _unit_out_fix44 = (_m_fix44.get("unit_tag") or _schema_fix44.get("unit_tag") or _schema_fix44.get("unit") or _m_fix44.get("unit") or "").strip()
+            if _unit_out_fix44 and ("million" not in _unit_out_fix44.lower()) and (_unit_out_fix44.lower() in ("m", "mn")):
+                _unit_out_fix44 = "million"
+            _m_fix44["value_range_display"] = f"{_new_min_fix44:g}–{_new_max_fix44:g} {_unit_out_fix44}".strip()
+
+            _m_fix44["_value_range_rebuilt_fix41afc44"] = True
+            _vr_fix44_cnt += 1
+            if len(_vr_fix44_keys) < 50:
+                _vr_fix44_keys.append(_ck_fix44)
+        if isinstance(prev_response, dict):
+            prev_response.setdefault("_evolution_rebuild_debug", {})
+            prev_response["_evolution_rebuild_debug"]["value_range_rebuilt_fix41afc44_count"] = _vr_fix44_cnt
+            prev_response["_evolution_rebuild_debug"]["value_range_rebuilt_fix41afc44_keys"] = _vr_fix44_keys
+    except Exception as _e_fix44:
+        try:
+            if isinstance(prev_response, dict):
+                prev_response.setdefault("_evolution_rebuild_debug", {})
+                prev_response["_evolution_rebuild_debug"]["value_range_rebuilt_fix41afc44_error"] = str(_e_fix44)
+        except Exception:
+            pass
+    # PATCH FIX41AFC44 END
+    # ================================================================
+
     return rebuilt
 
 
@@ -27934,3 +28075,13 @@ except Exception:
 # PATCH FIX41AFC43_VERSION START
 CODE_VERSION = "fix41afc43_schema_normalization_reconcile_v1"
 # PATCH FIX41AFC43_VERSION END
+
+
+# ================================================================
+# PATCH FIX41AFC44_VERSION START — version bump (auditability)
+try:
+    CODE_VERSION = "fix41afc44_evo_schema_unit_value_range_rebuild_v1"
+except Exception:
+    pass
+# PATCH FIX41AFC44_VERSION END
+# ================================================================
