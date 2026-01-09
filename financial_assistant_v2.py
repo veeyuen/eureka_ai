@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc59_canonical_selector_wired_preferred_source_unit_tag_v1"
+CODE_VERSION = "fix41afc60_canonical_selector_norm_url_source_lock_v1"  # PATCH FIX41AFC60
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -266,6 +266,33 @@ def _select_current_metric_canonical_v1(
         except Exception:
             return ""
 
+    # =====================================================================
+    # PATCH FIX41AFC60 START
+    # Canonical selector: normalize URLs for preferred-source matching
+    # Why:
+    # - upstream sources sometimes vary by trailing slash / www / scheme
+    # - strict string equality causes preferred-source filtering to miss
+    #   and allows "roaming" to injected/unrelated sources (e.g., GlobeNewswire).
+    # =====================================================================
+    def _fix41afc60_norm_url(u: str) -> str:
+        try:
+            import re
+            s = (u or "").strip().lower()
+            if not s:
+                return ""
+            # strip scheme
+            s = re.sub(r"^https?://", "", s)
+            # strip www
+            s = re.sub(r"^www\.", "", s)
+            # strip trailing slash
+            s = s.rstrip("/")
+            return s
+        except Exception:
+            return (u or "").strip().lower().rstrip("/")
+
+    _preferred_norm = _fix41afc60_norm_url(preferred_url)
+    # PATCH FIX41AFC60 END
+
     # -------------------------
     # 1) Anchor-first resolution
     # -------------------------
@@ -284,7 +311,7 @@ def _select_current_metric_canonical_v1(
         if ah and isinstance(cand_index, dict) and ah in cand_index:
             c = cand_index.get(ah)
             if isinstance(c, dict) and _eligible(c):
-                if (not preferred_url) or (_url_of(c) == preferred_url):
+                if (not preferred_url) or (_fix41afc60_norm_url(_url_of(c)) == _preferred_norm):
                     meta["anchor_used"] = True
                     meta["anchor_resolve_method"] = "anchor_hash"
                     return (c, meta)
@@ -298,7 +325,7 @@ def _select_current_metric_canonical_v1(
             # scan preferred-url pool first if preferred_url known
             pool = candidates
             if preferred_url:
-                pool = [c for c in candidates if isinstance(c, dict) and _url_of(c) == preferred_url]
+                pool = [c for c in candidates if isinstance(c, dict) and _fix41afc60_norm_url(_url_of(c)) == _preferred_norm]
             for c in pool:
                 if not isinstance(c, dict):
                     continue
@@ -321,7 +348,7 @@ def _select_current_metric_canonical_v1(
                 _a["source_url"] = preferred_url
             c2, r2 = fn(canonical_key, _a, candidates, metric_schema, web_context)
             if isinstance(c2, dict) and _eligible(c2):
-                if (not preferred_url) or (_url_of(c2) == preferred_url):
+                if (not preferred_url) or (_fix41afc60_norm_url(_url_of(c2)) == _preferred_norm):
                     meta["anchor_used"] = True
                     meta["anchor_resolve_method"] = "same_source_context"
                     meta["debug"]["same_source_reason"] = r2
@@ -335,7 +362,7 @@ def _select_current_metric_canonical_v1(
     filtered = candidates
     if preferred_url:
         try:
-            filtered = [c for c in candidates if isinstance(c, dict) and _url_of(c) == preferred_url]
+            filtered = [c for c in candidates if isinstance(c, dict) and _fix41afc60_norm_url(_url_of(c)) == _preferred_norm]
         except Exception:
             filtered = candidates
 
