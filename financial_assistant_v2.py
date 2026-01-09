@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc49_evo_anchor_signature_resolve_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc50_evo_candidateid_unitcmp_trace_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
@@ -715,6 +715,10 @@ def add_to_history(analysis: dict) -> bool:
                         "raw": raw,
                         "context_snippet": ctx[:240],
                         "anchor_hash": anchor_hash,
+            # PATCH FIX41AFC50 START — propagate candidate_id for anchor parity
+            "candidate_id": (anchor_hash[:16] if isinstance(anchor_hash, str) else ""),
+            # PATCH FIX41AFC50 END
+
                 "candidate_id": hashlib.sha1(str(anchor_hash or "").encode("utf-8")).hexdigest()[:16] if anchor_hash else None,
 
             # =====================================================================
@@ -14989,6 +14993,28 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
             try:
                 v = float(m.get("value_norm"))
                 u = str(m.get("base_unit") or m.get("unit") or "").strip()
+
+                # ============================================================
+                # PATCH FIX41AFC50A START — unit_cmp fallback from unit_tag/family
+                # Some rebuilt metrics omit base_unit/unit but carry unit_tag or unit_family.
+                # Without this, diffing sees cur_unit_cmp="" and triggers unit_mismatch blocks.
+                if not u:
+                    try:
+                        ut = str(m.get("unit_tag") or "").strip()
+                        uf = str(m.get("unit_family") or "").strip().lower()
+                        if ut:
+                            u = ut
+                        elif uf == "percent":
+                            u = "%"
+                        elif uf in ("currency", "money"):
+                            u = str(m.get("currency") or "$")  # best-effort
+                        elif uf == "magnitude":
+                            u = str(m.get("unit") or "M").strip() or "M"
+                    except Exception:
+                        pass
+                # PATCH FIX41AFC50A END
+                # ============================================================
+
                 return v, u
             except Exception:
                 pass
@@ -16634,6 +16660,40 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 "anchor_used": bool(anchor_same),
                 "prev_anchor_hash": prev_ah,
                 "cur_anchor_hash": cur_ah,
+
+                # ============================================================
+                # PATCH FIX41AFC50B START — selection trace (diagnostic only)
+                # Captures raw fields for prev/cur metrics to debug blanks & scaling.
+                "fix41afc50_trace": {
+                    "prev_metric": {
+                        "value": (pm or {}).get("value"),
+                        "value_norm": (pm or {}).get("value_norm"),
+                        "unit": (pm or {}).get("unit"),
+                        "unit_tag": (pm or {}).get("unit_tag"),
+                        "unit_family": (pm or {}).get("unit_family"),
+                        "base_unit": (pm or {}).get("base_unit"),
+                        "multiplier_to_base": (pm or {}).get("multiplier_to_base"),
+                        "candidate_id": (pm or {}).get("candidate_id"),
+                        "anchor_hash": (pm or {}).get("anchor_hash"),
+                        "source_url": (pm or {}).get("source_url") or (pm or {}).get("url"),
+                        "context_snippet": (pm or {}).get("context_snippet"),
+                    },
+                    "cur_metric": {
+                        "value": (cm or {}).get("value"),
+                        "value_norm": (cm or {}).get("value_norm"),
+                        "unit": (cm or {}).get("unit"),
+                        "unit_tag": (cm or {}).get("unit_tag"),
+                        "unit_family": (cm or {}).get("unit_family"),
+                        "base_unit": (cm or {}).get("base_unit"),
+                        "multiplier_to_base": (cm or {}).get("multiplier_to_base"),
+                        "candidate_id": (cm or {}).get("candidate_id"),
+                        "anchor_hash": (cm or {}).get("anchor_hash"),
+                        "source_url": (cm or {}).get("source_url") or (cm or {}).get("url"),
+                        "context_snippet": (cm or {}).get("context_snippet"),
+                    },
+                },
+                # PATCH FIX41AFC50B END
+                # ============================================================
 
                 "canonical_key": ckey,
                 "metric_definition": definition,
