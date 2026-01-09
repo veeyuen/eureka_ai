@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc38_unit_cmp_scale_explain_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc39_evo_unit_out_backfill_ctxsnippet_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -121,7 +121,7 @@ CODE_VERSION = "fix41afc38_unit_cmp_scale_explain_v1"  # PATCH FIX41G (ADD): set
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
+#CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
 # =====================================================================
 
 # =====================================================================
@@ -23651,6 +23651,84 @@ def _fix41afc38_scale_sanity_adjust(cand: dict, spec: dict, prev_vn):
         pass
 # PATCH FIX41AFC38_HELPERS END
 
+# PATCH FIX41AFC39_UNIT_OUT_BACKFILL START
+def _fix41afc39_best_unit_out(cand: dict, spec: dict) -> str:
+    """Best-effort deterministic unit string for output metrics (dashboard-safe).
+    Prefers base_unit/unit_tag when cand['unit'] is empty.
+    """
+    try:
+        c = cand if isinstance(cand, dict) else {}
+        s = spec if isinstance(spec, dict) else {}
+        dim = str(s.get("dimension") or "").lower()
+        uf_exp = str(s.get("unit_family") or "").lower()
+
+        u = str(c.get("unit") or "").strip()
+        ut = str(c.get("unit_tag") or "").strip()
+        bu = str(c.get("base_unit") or "").strip()
+        raw = str(c.get("raw") or c.get("raw_disp") or "").lower()
+        ctx = str(c.get("context_snippet") or c.get("context") or c.get("context_window") or c.get("ctx") or "").lower()
+        blob = " ".join([u.lower(), ut.lower(), bu.lower(), raw, ctx])
+
+        if dim == "percent" or uf_exp == "percent":
+            if "%" in blob or " percent" in blob or "percentage" in blob:
+                return "%"
+
+        if dim == "currency" or uf_exp == "currency":
+            for tok in ["usd", "sgd", "eur", "gbp", "aud", "cad", "chf", "jpy", "cny", "rmb", "$", "€", "£", "¥"]:
+                if tok in blob:
+                    if tok in ("$", "€", "£", "¥"):
+                        return tok
+                    return tok.upper()
+
+        for v in (bu, ut, u):
+            vv = str(v or "").strip()
+            if vv:
+                return vv
+
+        # Context phrase normalization (aligns with analysis 'million units' style)
+        if "trillion" in blob or " tn" in blob:
+            return "trillion units" if "unit" in blob else "T"
+        if "billion" in blob or " bn" in blob:
+            return "billion units" if "unit" in blob else "B"
+        if "million" in blob or " mn" in blob:
+            return "million units" if "unit" in blob else "M"
+        if "thousand" in blob or " k" in blob:
+            return "thousand units" if "unit" in blob else "K"
+    except Exception:
+        pass
+    return ""
+
+def _fix41afc39_backfill_candidate_unit_fields(cand: dict):
+    """Backfill cand['unit_family'] using context_snippet and set base_unit if missing."""
+    try:
+        if not isinstance(cand, dict):
+            return
+        if not (cand.get("unit_family") or "").strip():
+            ut = (cand.get("unit_tag") or cand.get("unit") or cand.get("base_unit") or "").strip().lower()
+            raw = (cand.get("raw") or cand.get("raw_disp") or "").lower()
+            ctx = (cand.get("context_snippet") or cand.get("context") or cand.get("context_window") or cand.get("ctx") or "").lower()
+            blob = " ".join([ut, raw, ctx])
+            if "%" in blob or " percent" in blob or "percentage" in blob:
+                cand["unit_family"] = "percent"
+                cand["_unit_family_backfilled_fix41afc39"] = True
+            elif any(tok in blob for tok in [" usd", " sgd", " eur", " gbp", " aud", " cad", " chf", " jpy", " cny", " rmb", "$", "€", "£", "¥"]):
+                cand["unit_family"] = "currency"
+                cand["_unit_family_backfilled_fix41afc39"] = True
+            elif any(tok in blob for tok in [" million", " billion", " trillion", " mn", " bn", " tn"]) or ut in ("k","m","b","t","mn","bn","tn"):
+                cand["unit_family"] = "magnitude"
+                cand["_unit_family_backfilled_fix41afc39"] = True
+        if not str(cand.get("base_unit") or "").strip():
+            if str(cand.get("unit_tag") or "").strip():
+                cand["base_unit"] = str(cand.get("unit_tag") or "")
+                cand["_base_unit_backfilled_fix41afc39"] = True
+        if not str(cand.get("unit") or "").strip() and str(cand.get("base_unit") or "").strip():
+            cand["unit"] = str(cand.get("base_unit") or "")
+            cand["_unit_backfilled_fix41afc39"] = True
+    except Exception:
+        pass
+# PATCH FIX41AFC39_UNIT_OUT_BACKFILL END
+
+
 
 
 
@@ -23770,8 +23848,28 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
                 "method": "anchor_hash_rebuild_fix17",
             }],
             "anchor_used": True,
-        }
-        used.append({"canonical_key": canonical_key, "anchor_hash": ah, "source_url": c.get("source_url") or ""})
+        }    # PATCH FIX41AFC39_UNIT_OUT_APPLY_ANCHOR_REBUILD START
+    try:
+        _fix41afc39_backfill_candidate_unit_fields(c)
+        if isinstance(rebuilt.get(canonical_key), dict):
+            if not str(rebuilt[canonical_key].get("unit") or "").strip():
+                rebuilt[canonical_key]["unit"] = _fix41afc39_best_unit_out(c, spec)
+                rebuilt[canonical_key]["unit_backfilled_fix41afc39"] = True
+            if c.get("unit_family") and not rebuilt[canonical_key].get("unit_family"):
+                rebuilt[canonical_key]["unit_family"] = c.get("unit_family")
+            if c.get("base_unit") and not rebuilt[canonical_key].get("base_unit"):
+                rebuilt[canonical_key]["base_unit"] = c.get("base_unit")
+            ev0 = (rebuilt[canonical_key].get("evidence") or [])
+            if isinstance(ev0, list) and ev0 and isinstance(ev0[0], dict):
+                if not ev0[0].get("unit") and rebuilt[canonical_key].get("unit"):
+                    ev0[0]["unit"] = rebuilt[canonical_key].get("unit")
+                if not ev0[0].get("unit_family") and rebuilt[canonical_key].get("unit_family"):
+                    ev0[0]["unit_family"] = rebuilt[canonical_key].get("unit_family")
+    except Exception:
+        pass
+    # PATCH FIX41AFC39_UNIT_OUT_APPLY_ANCHOR_REBUILD END
+
+    used.append({"canonical_key": canonical_key, "anchor_hash": ah, "source_url": c.get("source_url") or ""})
 
     return rebuilt
 
@@ -23965,6 +24063,28 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
                             "anchor_used": True,
                             "selection_reason": "anchor_match_override_fix41afc21d",
                         }
+
+
+                        # PATCH FIX41AFC39_UNIT_OUT_APPLY_SCHEMA_ANCHOR_OVERRIDE START
+                        try:
+                            _fix41afc39_backfill_candidate_unit_fields(_cand)
+                            if isinstance(rebuilt.get(canonical_key), dict):
+                                if not str(rebuilt[canonical_key].get("unit") or "").strip():
+                                    rebuilt[canonical_key]["unit"] = _fix41afc39_best_unit_out(_cand, spec)
+                                    rebuilt[canonical_key]["unit_backfilled_fix41afc39"] = True
+                                if _cand.get("unit_family") and not rebuilt[canonical_key].get("unit_family"):
+                                    rebuilt[canonical_key]["unit_family"] = _cand.get("unit_family")
+                                if _cand.get("base_unit") and not rebuilt[canonical_key].get("base_unit"):
+                                    rebuilt[canonical_key]["base_unit"] = _cand.get("base_unit")
+                                ev0 = (rebuilt[canonical_key].get("evidence") or [])
+                                if isinstance(ev0, list) and ev0 and isinstance(ev0[0], dict):
+                                    if not ev0[0].get("unit") and rebuilt[canonical_key].get("unit"):
+                                        ev0[0]["unit"] = rebuilt[canonical_key].get("unit")
+                                    if not ev0[0].get("unit_family") and rebuilt[canonical_key].get("unit_family"):
+                                        ev0[0]["unit_family"] = rebuilt[canonical_key].get("unit_family")
+                        except Exception:
+                            pass
+                        # PATCH FIX41AFC39_UNIT_OUT_APPLY_SCHEMA_ANCHOR_OVERRIDE END
 
                         # PATCH FIX41AFC38_EMIT_TOPK START
                         try:
@@ -24164,6 +24284,28 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
             }],
             "anchor_used": False,
         }
+
+
+        # PATCH FIX41AFC39_UNIT_OUT_APPLY_SCHEMA_BEST START
+        try:
+            _fix41afc39_backfill_candidate_unit_fields(best)
+            if isinstance(rebuilt.get(canonical_key), dict):
+                if not str(rebuilt[canonical_key].get("unit") or "").strip():
+                    rebuilt[canonical_key]["unit"] = _fix41afc39_best_unit_out(best, spec)
+                    rebuilt[canonical_key]["unit_backfilled_fix41afc39"] = True
+                if best.get("unit_family") and not rebuilt[canonical_key].get("unit_family"):
+                    rebuilt[canonical_key]["unit_family"] = best.get("unit_family")
+                if best.get("base_unit") and not rebuilt[canonical_key].get("base_unit"):
+                    rebuilt[canonical_key]["base_unit"] = best.get("base_unit")
+                ev0 = (rebuilt[canonical_key].get("evidence") or [])
+                if isinstance(ev0, list) and ev0 and isinstance(ev0[0], dict):
+                    if not ev0[0].get("unit") and rebuilt[canonical_key].get("unit"):
+                        ev0[0]["unit"] = rebuilt[canonical_key].get("unit")
+                    if not ev0[0].get("unit_family") and rebuilt[canonical_key].get("unit_family"):
+                        ev0[0]["unit_family"] = rebuilt[canonical_key].get("unit_family")
+        except Exception:
+            pass
+        # PATCH FIX41AFC39_UNIT_OUT_APPLY_SCHEMA_BEST END
 
     return rebuilt
 
@@ -27185,3 +27327,10 @@ CODE_VERSION = "fix41afc37_preselect_eligibility_skip_ineligible_v1"
 # PATCH FIX41AFC38_VERSION START
 CODE_VERSION = "fix41afc38_unit_cmp_scale_explain_v1"
 # PATCH FIX41AFC38_VERSION END
+
+# PATCH FIX41AFC39_VERSION START
+try:
+    CODE_VERSION = "fix41afc39_evo_unit_out_backfill_ctxsnippet_v1"
+except Exception:
+    pass
+# PATCH FIX41AFC39_VERSION END
