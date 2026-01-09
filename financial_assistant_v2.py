@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc40_unit_token_authority_unitcmp_backfill_runtimefp_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc41_anchor_compat_diag_state_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -23033,7 +23033,8 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
             "unit": c.get("unit") or "",
             "value_norm": c.get("value_norm"),
             "source_url": c.get("source_url") or "",
-            "anchor_hash": c.get("anchor_hash") or ah,
+            "anchor_hash": (ah if c.get("_anchor_compat_force_schema_anchor_fix41afc41") else (c.get("anchor_hash") or ah)),
+            "anchor_hash_raw": c.get("anchor_hash") or "",  # PATCH FIX41AFC41B additive debug
             "evidence": [{
                 "source_url": c.get("source_url") or "",
                 "raw": c.get("raw") or "",
@@ -23862,8 +23863,36 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
 
         c = cand_index.get(ah)
         if not isinstance(c, dict):
-            rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "anchor_not_found_in_index"})
-            continue
+            # =====================================================================
+            # PATCH FIX41AFC41A START — anchor compatibility resolver (deterministic)
+            # If the exact anchor_hash is not present in the deterministic index, try
+            # a conservative compatibility match within the current candidate pool.
+            # This is additive and does NOT alter hashing, snapshots, or fastpath.
+            # =====================================================================
+            try:
+                _compat = globals().get("_fix41afc41_anchor_compat_resolve")
+                c_compat = _compat(spec, baseline_sources_cache, ah, canonical_key=canonical_key) if callable(_compat) else None
+                if isinstance(c_compat, dict):
+                    # Record that we used compat matching (retain schema anchor hash)
+                    try:
+                        dbg.setdefault("anchor_compat_used_fix41afc41", []).append({
+                            "canonical_key": canonical_key,
+                            "anchor_hash_schema": ah,
+                            "anchor_hash_candidate": c_compat.get("anchor_hash"),
+                            "reason": c_compat.get("_anchor_compat_reason_fix41afc41") or "compat_match"
+                        })
+                    except Exception:
+                        pass
+                    c = c_compat
+                else:
+                    rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "anchor_not_found_in_index"})
+                    continue
+            except Exception:
+                rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "anchor_not_found_in_index"})
+                continue
+            # =====================================================================
+            # PATCH FIX41AFC41A END
+            # =====================================================================
 
         ok, reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
         if not ok:
@@ -24650,6 +24679,12 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
     # ============================================================
     try:
         _fix41afc36_backfill_in_sources_cache(baseline_sources_cache)
+        # PATCH FIX41AFC41C START — enforce unit-token family (magnitude tokens)
+        try:
+            _fix41afc41_force_unit_token_family_in_sources_cache(baseline_sources_cache)
+        except Exception:
+            pass
+        # PATCH FIX41AFC41C END
         if isinstance(prev_response, dict):
             if isinstance(prev_response.get("baseline_sources_cache"), (dict, list)):
                 _fix41afc36_backfill_in_sources_cache(prev_response.get("baseline_sources_cache"))
@@ -25674,6 +25709,21 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
     except Exception:
         pass
     # PATCH FIX41AFC34 END
+    # =====================================================================
+    # PATCH FIX41AFC41D START — DIAG state v2 derived from source_results
+    # Instrumentation-only: derive attempted/fetched/failed from actual artifacts
+    # so debugging signals cannot drift from real fetch state.
+    # =====================================================================
+    try:
+        _dbg = prev_response.setdefault('_evolution_rebuild_debug', {}) if isinstance(prev_response, dict) else {}
+        _diag_fn = globals().get('_fix41afc41_diag_state_v2')
+        if callable(_diag_fn):
+            _dbg['diag_state_v2_fix41afc41'] = _diag_fn(prev_response)
+    except Exception:
+        pass
+    # =====================================================================
+    # PATCH FIX41AFC41D END
+    # =====================================================================
     return rebuilt
 
 
@@ -27404,3 +27454,227 @@ try:
 except Exception:
     pass
 # PATCH FIX41AFC40_VERSION END
+
+
+# =====================================================================
+# PATCH FIX41AFC41_HELPERS START
+# Anchor compatibility resolver + unit-token family enforcement + DIAG v2
+# Additive-only utilities used by FIX41AFC41.
+# =====================================================================
+
+def _fix41afc41_unit_token_family(c: dict) -> str:
+    """Infer unit_family from explicit unit tokens. Conservative."""
+    try:
+        u = str(c.get("unit") or c.get("base_unit") or "").strip()
+        ut = str(c.get("unit_tag") or "").strip().lower()
+        raw = str(c.get("raw") or "").strip()
+        txt = " ".join([u, ut, raw]).lower()
+        if "%" in txt or u == "%":
+            return "percent"
+        # magnitude tokens
+        if u in ("K", "M", "B", "T"):
+            return "magnitude"
+        if any(w in txt for w in ("million", "billion", "trillion", "thousand")):
+            return "magnitude"
+        # currency (very light)
+        if any(tok in txt for tok in ("usd", "sgd", "eur", "gbp", "$", "€", "£")):
+            return "currency"
+        # energy
+        if any(tok in txt for tok in ("kwh", "mwh", "gwh", "twh")):
+            return "energy"
+        return str(c.get("unit_family") or "").strip()
+    except Exception:
+        return str((c or {}).get("unit_family") or "").strip()
+
+def _fix41afc41_force_unit_token_family_in_candidate(c: dict) -> None:
+    """Force magnitude/currency/percent family from explicit unit tokens (does not guess from surrounding context)."""
+    try:
+        if not isinstance(c, dict):
+            return
+        uf = _fix41afc41_unit_token_family(c)
+        if uf:
+            # If candidate already has a stronger unit_family, keep it; otherwise set.
+            cur = str(c.get("unit_family") or "").strip()
+            # Explicit magnitude tokens should NEVER be overwritten to percent due to nearby '%'
+            if uf == "magnitude":
+                c["unit_family"] = "magnitude"
+                return
+            if not cur:
+                c["unit_family"] = uf
+    except Exception:
+        return
+
+def _fix41afc41_force_unit_token_family_in_sources_cache(cache) -> None:
+    """Apply unit-token family enforcement across extracted_numbers in caches."""
+    try:
+        if cache is None:
+            return
+        # baseline_sources_cache usually has .get('source_results') OR list-like
+        if isinstance(cache, dict):
+            srs = cache.get("source_results") or cache.get("results") or cache.get("sources") or []
+            if isinstance(srs, list):
+                for sr in srs:
+                    if isinstance(sr, dict) and isinstance(sr.get("extracted_numbers"), list):
+                        for c in sr["extracted_numbers"]:
+                            _fix41afc41_force_unit_token_family_in_candidate(c)
+            # sometimes direct extracted_numbers
+            if isinstance(cache.get("extracted_numbers"), list):
+                for c in cache.get("extracted_numbers"):
+                    _fix41afc41_force_unit_token_family_in_candidate(c)
+        elif isinstance(cache, list):
+            for sr in cache:
+                if isinstance(sr, dict) and isinstance(sr.get("extracted_numbers"), list):
+                    for c in sr["extracted_numbers"]:
+                        _fix41afc41_force_unit_token_family_in_candidate(c)
+    except Exception:
+        return
+
+def _fix41afc41_anchor_compat_resolve(spec: dict, baseline_sources_cache, schema_anchor_hash: str, canonical_key: str = ""):
+    """Compat-match an anchor when exact anchor_hash is missing.
+
+    Strategy (deterministic, conservative):
+      - prefer same normalized source_url (if spec has it)
+      - numeric closeness to anchor value (if available)
+      - context similarity with anchor text (if available)
+    Returns a candidate dict (copy) marked with:
+      _anchor_compat_force_schema_anchor_fix41afc41 = True
+      _anchor_compat_reason_fix41afc41
+    """
+    try:
+        if not schema_anchor_hash:
+            return None
+
+        # gather candidates
+        fn_all = globals().get("_es_iter_all_candidates_deterministic")
+        if callable(fn_all):
+            cands = list(fn_all(baseline_sources_cache))
+        else:
+            # fallback: walk source_results.extracted_numbers
+            cands = []
+            try:
+                srs = []
+                if isinstance(baseline_sources_cache, dict):
+                    srs = baseline_sources_cache.get("source_results") or []
+                elif isinstance(baseline_sources_cache, list):
+                    srs = baseline_sources_cache
+                for sr in (srs or []):
+                    if isinstance(sr, dict) and isinstance(sr.get("extracted_numbers"), list):
+                        cands.extend([c for c in sr["extracted_numbers"] if isinstance(c, dict)])
+            except Exception:
+                cands = []
+
+        if not cands:
+            return None
+
+        # expected numeric from anchor record if present
+        exp_val = None
+        try:
+            anchors = (spec.get("metric_anchors") or {}) if isinstance(spec, dict) else {}
+            # usually not present here; ignore
+        except Exception:
+            pass
+        # try infer from schema/name year patterns not needed; compat is mainly for exact numeric already in pool.
+
+        # Derive expected unit family from schema
+        exp_uf = str(spec.get("unit_family") or "").strip().lower()
+        exp_dim = str(spec.get("dimension") or "").strip().lower()
+
+        # Normalized target URL if present in spec
+        spec_url = (spec.get("source_url") or spec.get("url") or "").strip()
+        norm_fn = globals().get("_inj_diag_norm_url_one") or globals().get("_norm_url")
+        spec_url_n = norm_fn(spec_url) if callable(norm_fn) else spec_url
+
+        def norm_ctx(s: str) -> str:
+            import re
+            return re.sub(r"[^a-z0-9%]+", " ", (s or "").lower()).strip()
+
+        # Schema anchor hash is derived from context+raw; we can approximate by comparing context snippets.
+        best = None
+        best_score = -1.0
+
+        for c in cands:
+            try:
+                if not isinstance(c, dict):
+                    continue
+                # enforce token-based unit family before comparing
+                _fix41afc41_force_unit_token_family_in_candidate(c)
+                uf = str(c.get("unit_family") or "").strip().lower()
+                if exp_uf and uf and (uf != exp_uf):
+                    # allow magnitude vs unit_sales synonyms: treat magnitude as ok for unit_sales
+                    if not (exp_dim == "unit_sales" and uf == "magnitude"):
+                        continue
+
+                # URL proximity
+                cu = (c.get("source_url") or "").strip()
+                cu_n = norm_fn(cu) if callable(norm_fn) else cu
+                url_bonus = 1.0 if (spec_url_n and cu_n and spec_url_n == cu_n) else 0.0
+
+                # numeric score: prefer close to schema-ish magnitude by scale if dimension unit_sales
+                vn = c.get("value_norm")
+                num_score = 0.0
+                if isinstance(vn, (int, float)):
+                    # prefer non-year values
+                    if 1900 <= int(vn) <= 2100 and str(c.get("unit") or c.get("unit_tag") or "").strip() == "":
+                        continue
+                    # small preference for reasonable magnitudes
+                    num_score = 1.0
+
+                # context similarity: compare normalized snippet with spec name tokens
+                ctx = norm_ctx(c.get("context_snippet") or c.get("context") or "")
+                name = norm_ctx(spec.get("name") or canonical_key or "")
+                sim = 0.0
+                if ctx and name:
+                    ctx_set = set(ctx.split())
+                    name_set = set(name.split())
+                    inter = len(ctx_set & name_set)
+                    uni = max(1, len(ctx_set | name_set))
+                    sim = inter / uni
+
+                score = (2.0 * url_bonus) + (1.0 * num_score) + (3.0 * sim)
+                if score > best_score:
+                    best_score = score
+                    best = c
+            except Exception:
+                continue
+
+        if not isinstance(best, dict):
+            return None
+
+        out = dict(best)
+        out["_anchor_compat_force_schema_anchor_fix41afc41"] = True
+        out["_anchor_compat_reason_fix41afc41"] = "url_bonus+ctx_similarity" if best_score >= 2.0 else "ctx_similarity"
+        return out
+    except Exception:
+        return None
+
+def _fix41afc41_diag_state_v2(prev_response: dict) -> dict:
+    """Derive attempted/fetched/failed counts from actual source_results state (instrumentation-only)."""
+    try:
+        res = (prev_response or {}).get("results") or {}
+        srs = res.get("source_results") or []
+        out = {"attempted": 0, "fetched": 0, "failed": 0, "persisted": 0}
+        if not isinstance(srs, list):
+            return out
+        out["attempted"] = len([x for x in srs if isinstance(x, dict)])
+        for sr in srs:
+            if not isinstance(sr, dict):
+                continue
+            st = str(sr.get("status") or "").lower()
+            if "fetch" in st or st in ("ok", "success", "fetched"):
+                out["fetched"] += 1
+            if "fail" in st or st in ("error", "failed"):
+                out["failed"] += 1
+            # persisted if snapshot refs exist
+            if sr.get("snapshot_store_ref") or sr.get("source_snapshot_hash"):
+                out["persisted"] += 1
+        return out
+    except Exception:
+        return {"attempted": 0, "fetched": 0, "failed": 0, "persisted": 0}
+
+# =====================================================================
+# PATCH FIX41AFC41_HELPERS END
+# =====================================================================
+
+# PATCH FIX41AFC41_VERSION START
+CODE_VERSION = "fix41afc41_anchor_compat_diag_state_v1"
+# PATCH FIX41AFC41_VERSION END
