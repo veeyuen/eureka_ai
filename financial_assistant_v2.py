@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc45_evo_anchor_fallback_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc46_evo_anchor_same_source_rescue_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -3365,6 +3365,130 @@ def rebuild_metrics_from_snapshots_schema_only(
             if best is None or tie < best_key:
                 best = c
                 best_key = tie
+
+
+        # =====================================================================
+        # PATCH FIX41AFC46 (ADDITIVE): Anchor / same-source rescue to prevent
+        # cross-source hijack when an injected or unrelated URL contains a
+        # numerically-eligible but semantically-wrong candidate.
+        #
+        # Why:
+        # - We observed 'Current' selecting 170.0 from an injected GlobeNewswire
+        #   page for Units Sold (2024) instead of 17.8M from ev-volumes.
+        # - Root cause is usually anchor/hash non-compatibility + permissive
+        #   fallback that roams across the entire candidate pool.
+        #
+        # What this does (non-fastpath only, pure selection-time override):
+        # - If a preferred URL exists from prev metric_anchors or prev metric
+        #   source_url, and best candidate comes from a different URL, attempt to
+        #   re-select the best eligible candidate from the preferred URL.
+        # - Also attempts anchor-hash compatibility matches (legacy vs v2).
+        # - If a preferred-URL candidate is found, it replaces `best`.
+        # - If none found, selection remains unchanged (backward compatible).
+        # =====================================================================
+        try:
+            _ck = str(spec.get("canonical_key") or "")
+            _prev_anchors = (prev_response.get("metric_anchors") or {}) if isinstance(prev_response, dict) else {}
+            _prev_pm = (prev_response.get("primary_metrics_canonical") or {}) if isinstance(prev_response, dict) else {}
+            _pa = _prev_anchors.get(_ck) if isinstance(_prev_anchors, dict) else None
+            _pm = _prev_pm.get(_ck) if isinstance(_prev_pm, dict) else None
+
+            def _fix41afc46__get_pref_url():
+                # Prefer anchor URL; else prev metric's source_url; else blank.
+                if isinstance(_pa, dict) and str(_pa.get("source_url") or "").strip():
+                    return str(_pa.get("source_url")).strip()
+                if isinstance(_pm, dict) and str(_pm.get("source_url") or "").strip():
+                    return str(_pm.get("source_url")).strip()
+                return ""
+
+            def _fix41afc46__anchor_hashes(a):
+                if not isinstance(a, dict):
+                    return set()
+                hs = set()
+                for k in ("anchor_hash", "anchor_hash_v2", "anchor_hash_stable", "cur_anchor_hash", "prev_anchor_hash"):
+                    v = a.get(k)
+                    if v is not None and str(v).strip():
+                        hs.add(str(v).strip())
+                # Some historic anchor_hash values are stored as "None" string.
+                hs = {h for h in hs if h.lower() != "none"}
+                return hs
+
+            def _fix41afc46__cand_hashes(c):
+                if not isinstance(c, dict):
+                    return set()
+                hs = set()
+                for k in ("anchor_hash", "anchor_hash_v2", "anchor_hash_stable"):
+                    v = c.get(k)
+                    if v is not None and str(v).strip():
+                        hs.add(str(v).strip())
+                # Support legacy "candidate_id"+"suffix" anchor form when present
+                cid = str(c.get("candidate_id") or "").strip()
+                if cid and len(cid) >= 8:
+                    hs.add(cid)
+                return hs
+
+            _pref_url = _fix41afc46__get_pref_url()
+            _best_url = str(best.get("source_url") or best.get("url") or "").strip()
+            if _pref_url and _best_url and _pref_url != _best_url:
+                _pa_hashes = _fix41afc46__anchor_hashes(_pa)
+                _pm_hashes = _fix41afc46__anchor_hashes(_pm)
+                _want_hashes = set()
+                _want_hashes |= _pa_hashes
+                _want_hashes |= _pm_hashes
+
+                _best_pref = None
+                _best_pref_key = None
+
+                for _c in candidates:
+                    if not isinstance(_c, dict):
+                        continue
+                    _cu = str(_c.get("source_url") or _c.get("url") or "").strip()
+                    if _cu != _pref_url:
+                        continue
+                    # Must still respect all existing disallow/eligibility logic.
+                    if _candidate_disallowed_for_metric(_c, spec):
+                        continue
+
+                    # If we have anchor hashes, require a compatible match OR a value+unit match.
+                    _cand_hs = _fix41afc46__cand_hashes(_c)
+                    _hash_ok = (bool(_want_hashes) and bool(_cand_hs.intersection(_want_hashes)))
+
+                    _val_ok = False
+                    try:
+                        _pv = None
+                        if isinstance(_pm, dict):
+                            _pv = _pm.get("value_norm", _pm.get("value"))
+                        if _pv is None:
+                            _pv = prev_val_norm  # may exist in outer scope in some implementations
+                        if _pv is not None and _c.get("value_norm") is not None:
+                            if abs(float(_c.get("value_norm")) - float(_pv)) <= max(1e-9, abs(float(_pv))*0.005):
+                                _val_ok = True
+                    except Exception:
+                        pass
+
+                    if _want_hashes and not (_hash_ok or _val_ok):
+                        continue
+
+                    _k = _cand_sort_key(_c)
+                    if _best_pref is None or _k < _best_pref_key:
+                        _best_pref = _c
+                        _best_pref_key = _k
+
+                if isinstance(_best_pref, dict):
+                    # Swap-in preferred source candidate.
+                    best = _best_pref
+                    best_key = _best_pref_key
+                    # Annotate (additive) that a rescue occurred for downstream debug
+                    try:
+                        best.setdefault("_fix41afc46_rescued", True)
+                        best.setdefault("_fix41afc46_preferred_url", _pref_url)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # =====================================================================
+        # PATCH FIX41AFC46 END
+        # =====================================================================
 
         if not isinstance(best, dict):
             continue
