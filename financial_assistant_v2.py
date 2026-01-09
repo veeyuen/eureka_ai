@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc68_prev_metric_seed_from_metric_changes_v1"  # PATCH FIX41AFC68
+CODE_VERSION = "fix41afc69_unit_evidence_gate_no_synth_magnitude_v1"  # PATCH FIX41AFC69
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -210,6 +210,58 @@ def _fix41afc59_candidate_matches_schema_unit_tag(metric_schema: dict, cand: dic
 # PATCH FIX41AFC59 END
 # =====================================================================
 
+# =====================================================================
+# PATCH FIX41AFC69 START
+# Unit-evidence gate to prevent false-positive magnitude matches when unit is blank.
+#
+# Problem observed:
+# - Some candidates (e.g. raw "170" with unit="") get their cur_unit_cmp synthesized from schema
+#   (see FIX41AFC40B), which can cause unit_mismatch to incorrectly appear False and leak to dashboard.
+#
+# Rule (deterministic, additive):
+# - For magnitude / unit_sales style metrics: if the chosen candidate has no explicit unit evidence
+#   (unit/unit_tag/base_unit AND no scale-token in raw/context), we DO NOT allow schema-unit synthesis
+#   to make it look compatible. We hard-block at diff-boundary with reason "unit_missing_evidence_hard_block".
+# =====================================================================
+
+def _fix41afc69_candidate_has_unit_evidence(cand: dict, expected_unit_tag: str = "", expected_unit_family: str = "") -> bool:
+    try:
+        if not isinstance(cand, dict):
+            return False
+        u = str(cand.get("unit") or "").strip()
+        ut = str(cand.get("unit_tag") or "").strip()
+        bu = str(cand.get("base_unit") or "").strip()
+        if u or ut or bu:
+            return True
+
+        raw = str(cand.get("raw") or cand.get("raw_disp") or "").strip()
+        ctx = str(cand.get("context_snippet") or cand.get("context") or "").strip()
+        hay = f"{raw} {ctx}".lower()
+
+        # Quick allow for obvious unit words
+        if re.search(r"\b(%|percent|percentage|usd|sgd|eur|gbp|jpy|cny|rmb|\$|€|£)\b", hay):
+            return True
+
+        exp_tag = (expected_unit_tag or "").lower().strip()
+
+        # Scale-token evidence for magnitude style tags
+        if any(k in exp_tag for k in ["million", "mn", "m ", "m$", "m\$", "mio", "m vehicles", "m units"]):
+            return _fix41afc59_scale_hint_in_text("million", hay, unit=u or "")
+        if any(k in exp_tag for k in ["billion", "bn", "b ", "b$", "b\$"]):
+            return _fix41afc59_scale_hint_in_text("billion", hay, unit=u or "")
+        if any(k in exp_tag for k in ["thousand", "k "]):
+            return _fix41afc59_scale_hint_in_text("thousand", hay, unit=u or "")
+        if any(k in exp_tag for k in ["trillion", "tn", "t "]):
+            return _fix41afc59_scale_hint_in_text("trillion", hay, unit=u or "")
+
+        # If schema expects a specific family, and candidate provided none, treat as no evidence.
+        return False
+    except Exception:
+        return False
+
+# =====================================================================
+# PATCH FIX41AFC69 END
+# =====================================================================
 def _select_current_metric_canonical_v1(
     canonical_key: str,
     metric_schema: dict,
@@ -17214,6 +17266,30 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             # PATCH FIX41AFC20A (ADDITIVE): HARD unit-family mismatch eligibility gate
             # =====================================================================
             cur_value_blocked_reason = ""
+            # =====================================================================
+            # PATCH FIX41AFC69B START
+            # If schema expects magnitude/unit_sales style units but candidate carries no unit evidence,
+            # hard-block BEFORE the generic unit_mismatch gate. This prevents schema-based unit synthesis
+            # (FIX41AFC40B) from making a unitless raw number look compatible.
+            # =====================================================================
+            try:
+                _exp_fam_69b = str((definition or {}).get("unit_family") or "").strip().lower()
+                _exp_tag_69b = str((definition or {}).get("unit_tag") or "").strip()
+                if (not cur_value_blocked_reason) and _exp_fam_69b in ("magnitude", "unit_sales", "units", "count", "count_units"):
+                    if str(cur_raw or "").strip():
+                        if not _fix41afc69_candidate_has_unit_evidence(cm, expected_unit_tag=_exp_tag_69b, expected_unit_family=_exp_fam_69b):
+                            cur_raw = ""
+                            cur_value_norm = None
+                            cur_unit_cmp = ""
+                            cur_unit_family = ""
+                            # Ensure downstream gates don't overwrite the reason
+                            unit_mismatch = False
+                            cur_value_blocked_reason = "unit_missing_evidence_hard_block"
+            except Exception:
+                pass
+            # =====================================================================
+            # PATCH FIX41AFC69B END
+            # =====================================================================
             try:
                 if bool(unit_mismatch):
                     cur_raw = ""
