@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc51_evo_anchor_payload_enrich_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc52_evo_post_rebuild_evidence_rescue_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
@@ -28855,3 +28855,246 @@ def _fix41afc49_anchor_signature_resolve(spec: dict, anchor_dict: dict, baseline
 # =====================================================================
 # PATCH FIX41AFC49 END — anchor signature resolve (value+unit+source)
 # =====================================================================
+
+
+# =====================================================================
+# PATCH FIX41AFC52 START (ADDITIVE): Post-rebuild evidence rescue to prevent blank/incorrect "current" values
+#   - If selected metric is ineligible vs schema (unit_family mismatch / missing required unit evidence),
+#     attempt to rescue using the metric's own evidence pool (schema-authoritative).
+#   - This is a deterministic, schema-driven post-processing step; does NOT touch fastpath/hashing.
+# =====================================================================
+
+try:
+    _fix41afc52__orig_rebuild_fix18 = rebuild_metrics_from_snapshots_schema_only_fix18
+except Exception:
+    _fix41afc52__orig_rebuild_fix18 = None
+
+def _fix41afc52_schema_unit_family(schema: dict) -> str:
+    try:
+        if not isinstance(schema, dict):
+            return ""
+        uf = str(schema.get("unit_family") or "").strip().lower()
+        if uf:
+            return uf
+        dim = str(schema.get("dimension") or "").strip().lower()
+        if dim in ("percent", "percentage", "share", "ratio"):
+            return "percent"
+        if dim in ("currency", "money", "revenue", "market_size", "market_value", "price"):
+            return "currency"
+        if dim in ("unit_sales", "count", "volume"):
+            return "magnitude"
+        if dim in ("energy",):
+            return "energy"
+        return ""
+    except Exception:
+        return ""
+
+def _fix41afc52_infer_unit_family(obj: dict) -> str:
+    # Prefer existing FIX41AFC33 inference if present.
+    try:
+        fn = globals().get("_fix41afc33_infer_unit_family")
+        if callable(fn):
+            return str(fn(obj) or "").strip().lower()
+    except Exception:
+        pass
+    try:
+        return str((obj or {}).get("unit_family") or "").strip().lower()
+    except Exception:
+        return ""
+
+def _fix41afc52_has_required_unit_evidence(schema: dict, cand: dict) -> bool:
+    try:
+        if not isinstance(schema, dict) or not isinstance(cand, dict):
+            return False
+        # Percent: require explicit % token or percent unit_family
+        uf = _fix41afc52_schema_unit_family(schema)
+        raw = str(cand.get("raw") or cand.get("raw_disp") or "").strip()
+        unit = str(cand.get("unit") or "").strip()
+        ctx = str(cand.get("context") or cand.get("context_snippet") or "").lower()
+
+        if uf == "percent":
+            if "%" in raw or "%" in unit:
+                return True
+            if _fix41afc52_infer_unit_family(cand) == "percent":
+                return True
+            return False
+
+        # Currency: require explicit currency token (USD/$/US$ etc) OR currency unit_family locked
+        if uf == "currency":
+            if _fix41afc52_infer_unit_family(cand) == "currency":
+                # still ensure some currency token exists somewhere if possible
+                if any(tok in (raw + " " + ctx) for tok in ["usd", "us$", "$", "eur", "gbp", "sgd", "aud", "cad", "jpy", "cny", "rmb"]):
+                    return True
+                # If unit_family explicitly currency but tokens stripped, allow schema-authoritative fallback
+                return True
+            return any(tok in (raw + " " + ctx) for tok in ["usd", "us$", "$", "eur", "gbp", "sgd", "aud", "cad", "jpy", "cny", "rmb"])
+
+        # Magnitude/energy: require any unit hint OR inferred family
+        if uf in ("magnitude", "energy"):
+            if str(cand.get("unit") or "").strip():
+                return True
+            if _fix41afc52_infer_unit_family(cand) in (uf,):
+                return True
+            return False
+
+        # Unknown schema: do not require
+        return True
+    except Exception:
+        return True
+
+def _fix41afc52_candidate_is_eligible(schema: dict, cand: dict) -> bool:
+    try:
+        if not isinstance(schema, dict) or not isinstance(cand, dict):
+            return False
+        uf_schema = _fix41afc52_schema_unit_family(schema)
+        uf_cand = _fix41afc52_infer_unit_family(cand)
+        if uf_schema:
+            if uf_cand and uf_cand != uf_schema:
+                return False
+            # When schema implies unit required, enforce required evidence
+            fn_req = globals().get("_fix41afc33_schema_implies_unit_required")
+            if callable(fn_req) and fn_req(schema):
+                if not _fix41afc52_has_required_unit_evidence(schema, cand):
+                    return False
+        return True
+    except Exception:
+        return False
+
+def _fix41afc52_pick_best_candidate(schema: dict, candidates: list) -> dict:
+    """Deterministic selection: highest context_score, then highest absolute value_norm (tie-break), then first."""
+    best = None
+    best_key = None
+    for c in candidates or []:
+        if not isinstance(c, dict):
+            continue
+        cs = c.get("context_score")
+        try:
+            cs = float(cs) if cs is not None else 0.0
+        except Exception:
+            cs = 0.0
+        vn = c.get("value_norm")
+        if vn is None:
+            vn = c.get("value")
+        try:
+            vn = float(vn) if vn is not None else 0.0
+        except Exception:
+            vn = 0.0
+        key = (cs, abs(vn))
+        if best is None or key > best_key:
+            best = c
+            best_key = key
+    return best or {}
+
+def _fix41afc52_apply_candidate_to_metric(schema: dict, metric: dict, cand: dict):
+    """Mutate metric in-place with rescued candidate, schema-authoritative unit display."""
+    try:
+        if not isinstance(metric, dict) or not isinstance(cand, dict):
+            return
+        vn = cand.get("value_norm")
+        if vn is None:
+            vn = cand.get("value")
+        try:
+            vn_f = float(vn) if vn is not None else None
+        except Exception:
+            vn_f = None
+
+        # Use schema unit_tag as the display unit_cmp where possible (parity & dashboard safety)
+        unit_tag = str(schema.get("unit_tag") or "").strip()
+        unit_cmp = unit_tag if unit_tag else str(metric.get("unit") or metric.get("unit_tag") or cand.get("unit") or "").strip()
+        metric["value_norm"] = vn_f
+        metric["value"] = vn_f if vn_f is not None else metric.get("value")
+        metric["unit"] = unit_cmp
+        metric["unit_tag"] = unit_cmp
+        metric["unit_family"] = _fix41afc52_schema_unit_family(schema) or _fix41afc52_infer_unit_family(cand) or str(metric.get("unit_family") or "")
+        metric["source_url"] = cand.get("source_url") or cand.get("url") or metric.get("source_url")
+        metric["context_snippet"] = cand.get("context_snippet") or cand.get("context") or metric.get("context_snippet")
+        metric["candidate_id"] = cand.get("candidate_id") or metric.get("candidate_id")
+        metric["anchor_hash"] = cand.get("anchor_hash") or metric.get("anchor_hash")
+    except Exception:
+        pass
+
+def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """Wrapper (ADDITIVE): post-rebuild rescue using evidence pool when selection is blank/invalid vs schema."""
+    if _fix41afc52__orig_rebuild_fix18 is None:
+        return {}
+
+    rebuilt = _fix41afc52__orig_rebuild_fix18(prev_response, baseline_sources_cache, web_context=web_context)
+
+    try:
+        schema_map = {}
+        if isinstance(prev_response, dict):
+            schema_map = prev_response.get("metric_schema_frozen") or prev_response.get("primary_metrics_canonical") or {}
+        metrics = {}
+        if isinstance(rebuilt, dict):
+            metrics = rebuilt.get("primary_metrics_canonical") or rebuilt.get("primary_metrics") or {}
+
+        if isinstance(metrics, dict) and isinstance(schema_map, dict):
+            for ck, metric in metrics.items():
+                if not isinstance(metric, dict):
+                    continue
+                schema = schema_map.get(ck) if isinstance(schema_map.get(ck), dict) else {}
+                # Determine if selected metric is eligible
+                uf_schema = _fix41afc52_schema_unit_family(schema)
+                uf_metric = str(metric.get("unit_family") or "").strip().lower()
+                if not uf_metric:
+                    uf_metric = _fix41afc52_infer_unit_family(metric)
+
+                bad = False
+                if uf_schema and uf_metric and uf_metric != uf_schema:
+                    bad = True
+                # Missing unit evidence when schema requires it
+                fn_req = globals().get("_fix41afc33_schema_implies_unit_required")
+                if callable(fn_req) and fn_req(schema):
+                    if not _fix41afc52_has_required_unit_evidence(schema, metric):
+                        bad = True
+                # Blank / None values
+                if metric.get("value_norm") is None and (metric.get("value") in (None, "", [])):
+                    bad = True
+
+                if not bad:
+                    continue
+
+                # Rescue from evidence pool
+                evidence = metric.get("evidence") if isinstance(metric.get("evidence"), list) else []
+                # Sometimes evidence is under value_range.examples
+                if not evidence and isinstance(metric.get("value_range"), dict):
+                    ex = metric.get("value_range", {}).get("examples")
+                    if isinstance(ex, list):
+                        evidence = ex
+
+                eligible = [c for c in evidence if _fix41afc52_candidate_is_eligible(schema, c)]
+                if not eligible:
+                    # Record why we couldn't rescue (instrumentation only)
+                    metric["_fix41afc52_rescue_used"] = False
+                    metric["_fix41afc52_rescue_reason"] = "no_eligible_evidence"
+                    continue
+
+                chosen = _fix41afc52_pick_best_candidate(schema, eligible)
+                if chosen:
+                    metric["_fix41afc52_rescue_used"] = True
+                    metric["_fix41afc52_rescue_reason"] = "selected_from_evidence_pool"
+                    metric["_fix41afc52_rescue_prev_value_norm"] = metric.get("value_norm")
+                    metric["_fix41afc52_rescue_prev_unit"] = metric.get("unit") or metric.get("unit_tag")
+                    _fix41afc52_apply_candidate_to_metric(schema, metric, chosen)
+
+        # Attach debug marker for auditability
+        if isinstance(rebuilt, dict):
+            dbg = rebuilt.get("debug")
+            if not isinstance(dbg, dict):
+                dbg = {}
+                rebuilt["debug"] = dbg
+            dbg["fix41afc52_post_rebuild_rescue"] = {
+                "applied": True,
+                "note": "Post-rebuild schema-driven rescue from evidence pool for blank/ineligible selections."
+            }
+    except Exception:
+        pass
+
+    return rebuilt
+
+# PATCH FIX41AFC52 END
+# =====================================================================
+
+# PATCH FIX41AFC52V START — bump CODE_VERSION
+CODE_VERSION = "fix41afc52_evo_post_rebuild_evidence_rescue_v1"
+# PATCH FIX41AFC52V END — bump CODE_VERSION
