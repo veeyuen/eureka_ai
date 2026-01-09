@@ -77,10 +77,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc48_anchor_candidate_direct_resolve_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc49_evo_anchor_signature_resolve_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
-#CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
+# PATCH FIX41AFC49C START — bump CODE_VERSION
+#CODE_VERSION = "fix41afc49_evo_anchor_signature_resolve_v1"
+# PATCH FIX41AFC49C END — bump CODE_VERSION
 # PATCH FIX41AFC24_VERSION END
 
 # =====================================================================
@@ -24412,8 +24414,19 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
                         pass
                     c = c_compat
                 else:
-                    rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "anchor_not_found_in_index"})
-                    continue
+                    # PATCH FIX41AFC49A START — anchor signature resolve before rejecting missing anchor
+                    try:
+                        _sig = globals().get("_fix41afc49_anchor_signature_resolve")
+                        c_sig = _sig(spec, a, baseline_sources_cache, canonical_key=canonical_key, dbg=dbg) if callable(_sig) else None
+                        if isinstance(c_sig, dict):
+                            c = c_sig
+                        else:
+                            rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "anchor_not_found_in_index"})
+                            continue
+                    except Exception:
+                        rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "anchor_not_found_in_index"})
+                        continue
+                    # PATCH FIX41AFC49A END — anchor signature resolve before rejecting missing anchor
             except Exception:
                 rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "anchor_not_found_in_index"})
                 continue
@@ -24423,8 +24436,28 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
 
         ok, reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
         if not ok:
-            rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": reason})
-            continue
+            # PATCH FIX41AFC49B START — anchor signature retry on ineligible candidate
+            try:
+                if str(reason or "").strip() in ("unit_mismatch", "unit_required_missing", "bare_year", "junk_hard_block"):
+                    _sig = globals().get("_fix41afc49_anchor_signature_resolve")
+                    c_sig = _sig(spec, a, baseline_sources_cache, canonical_key=canonical_key, dbg=dbg) if callable(_sig) else None
+                    if isinstance(c_sig, dict):
+                        ok2, reason2 = _fix17_candidate_allowed_with_reason(c_sig, spec, canonical_key=canonical_key)
+                        if ok2:
+                            c = c_sig
+                        else:
+                            rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": reason})
+                            continue
+                    else:
+                        rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": reason})
+                        continue
+                else:
+                    rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": reason})
+                    continue
+            except Exception:
+                rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": reason})
+                continue
+            # PATCH FIX41AFC49B END — anchor signature retry on ineligible candidate
 
         # PATCH FIX41AFC28B START
         # Additional hard eligibility stops (instrumentation-only + safety):
@@ -28503,3 +28536,136 @@ CODE_VERSION = "fix41afc47_percent_ctx_bleed_guard_v1"
 # PATCH FIX41AFC48_VERSION START — version bump (audit)
 CODE_VERSION = "fix41afc48_anchor_candidate_direct_resolve_v1"
 # PATCH FIX41AFC48_VERSION END — version bump (audit)
+
+
+
+# =====================================================================
+# PATCH FIX41AFC49 START — anchor signature resolve (value+unit+source)
+# Motivation:
+#   When anchor_hash/candidate_id drift (or compat-matching is ambiguous),
+#   fall back to a deterministic signature match using:
+#     - source_url (if known)
+#     - anchor value_norm/value
+#     - anchor unit_tag / expected schema unit_family
+# This is additive and does NOT touch fastpath, hashing, or snapshot writes.
+# =====================================================================
+
+def _fix41afc49_anchor_signature_resolve(spec: dict, anchor_dict: dict, baseline_sources_cache, *, canonical_key: str = "", dbg: dict = None):
+    """Deterministically try to resolve an anchored metric to a current candidate by signature.
+    Returns candidate dict or None.
+    """
+    try:
+        if not isinstance(spec, dict) or not isinstance(anchor_dict, dict):
+            return None
+        # expected
+        exp_family = (spec.get("unit_family") or "").strip().lower()
+        exp_tag = (spec.get("unit_tag") or spec.get("unit") or "").strip()
+        # anchor-provided hints
+        a_url = (anchor_dict.get("source_url") or anchor_dict.get("url") or "").strip()
+        a_v = anchor_dict.get("value_norm")
+        if a_v is None:
+            a_v = anchor_dict.get("value")
+        try:
+            a_v = float(a_v) if a_v is not None and str(a_v).strip() != "" else None
+        except Exception:
+            a_v = None
+        a_utag = (anchor_dict.get("unit_tag") or anchor_dict.get("unit") or "").strip()
+
+        if a_v is None:
+            return None
+
+        # Gather candidates (deterministic iteration order)
+        cands = []
+        if isinstance(baseline_sources_cache, list):
+            for it in baseline_sources_cache:
+                if not isinstance(it, dict):
+                    continue
+                url = (it.get("url") or it.get("source_url") or "").strip()
+                if a_url and url and url != a_url:
+                    continue
+                nums = it.get("extracted_numbers") or it.get("numbers") or []
+                if isinstance(nums, list):
+                    for c in nums:
+                        if isinstance(c, dict):
+                            cands.append(c)
+
+        if not cands:
+            return None
+
+        def _cfam(c):
+            return (c.get("unit_family") or "").strip().lower()
+
+        def _utag(c):
+            return (c.get("unit_tag") or c.get("unit") or "").strip()
+
+        def _vnorm(c):
+            v = c.get("value_norm")
+            if v is None:
+                v = c.get("value")
+            try:
+                return float(v) if v is not None and str(v).strip() != "" else None
+            except Exception:
+                return None
+
+        # Score candidates:
+        #  - same unit_family is strong
+        #  - close value_norm is strong
+        #  - unit_tag overlap (contains expected or anchor tag) is medium
+        best = None
+        best_score = None
+        for c in cands:
+            cv = _vnorm(c)
+            if cv is None:
+                continue
+            fam = _cfam(c)
+
+            # hard family gate if spec is explicit (percent/currency/etc.)
+            if exp_family in ("percent", "currency", "magnitude", "energy", "count") and fam and fam != exp_family:
+                continue
+
+            # distance score (cap to avoid huge floats)
+            dist = abs(cv - a_v)
+            dist_score = 1.0 / (1.0 + min(dist, 1e9))
+
+            ut = _utag(c)
+            ut_low = ut.lower()
+            tag_score = 0.0
+            if exp_tag and exp_tag.lower() in ut_low:
+                tag_score += 0.6
+            if a_utag and a_utag.lower() in ut_low:
+                tag_score += 0.4
+
+            fam_score = 0.0
+            if exp_family and fam == exp_family:
+                fam_score = 1.0
+            elif exp_family and not fam:
+                fam_score = 0.1
+            elif not exp_family:
+                fam_score = 0.2
+
+            score = fam_score * 2.0 + tag_score + dist_score
+            if best is None or (best_score is not None and score > best_score):
+                best = c
+                best_score = score
+
+        if isinstance(best, dict):
+            if isinstance(dbg, dict):
+                dbg.setdefault("anchor_signature_resolve_fix41afc49", []).append({
+                    "canonical_key": canonical_key or (spec.get("canonical_key") or ""),
+                    "source_url": a_url,
+                    "anchor_value": a_v,
+                    "anchor_unit_tag": a_utag,
+                    "expected_unit_family": exp_family,
+                    "expected_unit_tag": exp_tag,
+                    "resolved_value_norm": best.get("value_norm"),
+                    "resolved_unit_tag": best.get("unit_tag"),
+                    "resolved_unit_family": best.get("unit_family"),
+                })
+            return best
+        return None
+    except Exception:
+        return None
+
+# =====================================================================
+# PATCH FIX41AFC49 END — anchor signature resolve (value+unit+source)
+# =====================================================================
