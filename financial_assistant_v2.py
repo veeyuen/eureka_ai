@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc55_evo_anchor_prev_evidence_resolve_unit_gate_v1"
+CODE_VERSION = "fix41afc56_evo_preferred_source_rescue_v1"
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 # PATCH FIX41AFC49C START — bump CODE_VERSION
@@ -25076,6 +25076,165 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
             pass
         return cand
     # PATCH FIX41AFC51 END
+    # =====================================================================
+    # PATCH FIX41AFC56 START — preferred-source rescue for anchored metrics (prevents injected-source hijack)
+    #
+    # Problem:
+    #   When anchor_hash drifts (context-window hygiene changes), compat/signature resolvers may
+    #   return a candidate from an injected/unrelated URL (e.g., GlobeNewswire), which then gets
+    #   hard-blocked by unit gates and blanks the dashboard.
+    #
+    # Goal:
+    #   If a metric is anchored and we know its preferred URL (from metric_anchors or prev canonical),
+    #   then any non-preferred candidate MUST be replaced by the best eligible candidate from the
+    #   preferred URL when available. This keeps selection aligned to Analysis and stabilizes Current.
+    #
+    # Notes:
+    #   - Additive only; does not touch fastpath or hashing.
+    #   - Applies only inside anchor-aware rebuild (FIX17).
+    # =====================================================================
+
+    def _fix41afc56_norm_url(u: str) -> str:
+        try:
+            u = (u or "").strip()
+            # keep scheme+host+path, drop fragments/query for stability
+            u = re.sub(r"[#?].*$", "", u)
+            return u.rstrip("/")
+        except Exception:
+            return (u or "").strip().rstrip("/")
+
+    def _fix41afc56_tokens(s: str):
+        try:
+            s = (s or "").lower()
+            toks = re.findall(r"[a-z0-9]{3,}", s)
+            # small stopword list (deterministic)
+            stop = set(["the","and","for","with","from","that","this","into","than","then","are","was","were","has","have","had","its","their","global","sales"])
+            return set([t for t in toks if t not in stop])
+        except Exception:
+            return set()
+
+    def _fix41afc56_preferred_url_for_metric(prev_response: dict, canonical_key: str, anchor_dict: dict) -> str:
+        try:
+            # 1) anchor dict preferred source_url
+            if isinstance(anchor_dict, dict):
+                u = anchor_dict.get("source_url") or ""
+                if u:
+                    return _fix41afc56_norm_url(u)
+            # 2) prev canonical metric source_url (analysis authoritative)
+            pmc = (prev_response or {}).get("primary_metrics_canonical") or {}
+            if isinstance(pmc, dict) and isinstance(pmc.get(canonical_key), dict):
+                u = pmc[canonical_key].get("source_url") or ""
+                if u:
+                    return _fix41afc56_norm_url(u)
+        except Exception:
+            pass
+        return ""
+
+    def _fix41afc56_prev_value_norm(prev_response: dict, canonical_key: str):
+        try:
+            pmc = (prev_response or {}).get("primary_metrics_canonical") or {}
+            if isinstance(pmc, dict) and isinstance(pmc.get(canonical_key), dict):
+                v = pmc[canonical_key].get("value_norm")
+                if v is None:
+                    v = pmc[canonical_key].get("value")
+                return float(v) if v is not None else None
+        except Exception:
+            return None
+        return None
+
+    def _fix41afc56_iter_candidates_for_url(baseline_sources_cache, preferred_url: str):
+        pu = _fix41afc56_norm_url(preferred_url)
+        if not pu:
+            return
+        _bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
+        for _sr in _bsc:
+            if not isinstance(_sr, dict):
+                continue
+            u = _fix41afc56_norm_url(_sr.get("source_url") or _sr.get("url") or "")
+            if not u or u != pu:
+                continue
+            nums = _sr.get("extracted_numbers") or []
+            if not isinstance(nums, list):
+                continue
+            for _c in nums:
+                if isinstance(_c, dict):
+                    yield _c
+
+    def _fix41afc56_best_candidate_same_source(spec: dict, anchor_dict: dict, prev_response: dict, baseline_sources_cache, canonical_key: str = ""):
+        preferred_url = _fix41afc56_preferred_url_for_metric(prev_response, canonical_key, anchor_dict)
+        if not preferred_url:
+            return None
+        anchor_ctx = ""
+        try:
+            if isinstance(anchor_dict, dict):
+                anchor_ctx = anchor_dict.get("context_snippet") or anchor_dict.get("context") or ""
+        except Exception:
+            anchor_ctx = ""
+        anchor_toks = _fix41afc56_tokens(anchor_ctx)
+        prev_vn = _fix41afc56_prev_value_norm(prev_response, canonical_key)
+
+        fn_v2 = globals().get("_metric_candidate_is_eligible_v2")
+        best = None
+        best_score = None
+
+        for c0 in _fix41afc56_iter_candidates_for_url(baseline_sources_cache, preferred_url):
+            c = dict(c0)
+            # ensure source_url is present
+            c.setdefault("source_url", preferred_url)
+            # reject junk early
+            if c.get("is_junk") is True:
+                continue
+
+            # eligibility gates (reuse existing)
+            ok, _r = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
+            if not ok:
+                continue
+            try:
+                if callable(fn_v2) and not bool(fn_v2(spec, c)):
+                    continue
+            except Exception:
+                pass
+
+            # score = context overlap (if available) + numeric proximity (if available)
+            ctx = c.get("context_snippet") or c.get("context") or ""
+            toks = _fix41afc56_tokens(ctx)
+            overlap = 0.0
+            if anchor_toks:
+                overlap = (len(anchor_toks & toks) / max(1, len(anchor_toks)))
+
+            vn = c.get("value_norm")
+            try:
+                vn = float(vn) if vn is not None else None
+            except Exception:
+                vn = None
+
+            prox = 0.0
+            if prev_vn is not None and vn is not None and prev_vn != 0:
+                prox = -abs(vn - prev_vn) / abs(prev_vn)
+
+            # small boost when unit evidence matches schema family
+            uf = str(c.get("unit_family") or "").lower()
+            uf_s = str((spec or {}).get("unit_family") or "").lower()
+            uf_boost = 0.1 if (uf and uf_s and uf == uf_s) else 0.0
+
+            score = (2.0 * overlap) + prox + uf_boost
+            if best_score is None or score > best_score:
+                best = c
+                best_score = score
+
+        if isinstance(best, dict):
+            try:
+                best["_fix41afc56_same_source_rescue"] = True
+                best["_fix41afc56_preferred_url"] = preferred_url
+                best["_fix41afc56_score"] = best_score
+            except Exception:
+                pass
+            return best
+        return None
+
+    # =====================================================================
+    # PATCH FIX41AFC56 END
+    # =====================================================================
 
 
     # Debug sink (additive mutation; safe if ignored)
@@ -25153,6 +25312,38 @@ def rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response: dict, basel
             pass
         # PATCH FIX41AFC51B END
 
+        # =====================================================================
+        # PATCH FIX41AFC56B START — enforce preferred-source for anchored candidates
+        # =====================================================================
+        try:
+            _pref_u = _fix41afc56_preferred_url_for_metric(prev_response, canonical_key, a)
+            _cand_u = _fix41afc56_norm_url(c.get("source_url") or c.get("url") or "")
+            if _pref_u and _cand_u and _cand_u != _pref_u:
+                _resc = _fix41afc56_best_candidate_same_source(spec, a, prev_response, baseline_sources_cache, canonical_key=canonical_key)
+                if isinstance(_resc, dict):
+                    try:
+                        dbg.setdefault("anchor_preferred_source_rescue_fix41afc56", []).append({
+                            "canonical_key": canonical_key,
+                            "preferred_url": _pref_u,
+                            "replaced_url": _cand_u,
+                            "rescued_anchor_hash": _resc.get("anchor_hash"),
+                            "rescued_value_norm": _resc.get("value_norm"),
+                        })
+                    except Exception:
+                        pass
+                    c = _resc
+                else:
+                    # No rescue candidate in preferred source — reject cross-source hijack deterministically
+                    try:
+                        rej.append({"canonical_key": canonical_key, "anchor_hash": ah, "reason": "preferred_source_no_match_fix41afc56", "preferred_url": _pref_u, "selected_url": _cand_u})
+                    except Exception:
+                        pass
+                    continue
+        except Exception:
+            pass
+        # =====================================================================
+        # PATCH FIX41AFC56B END
+        # =====================================================================
         ok, reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
         if not ok:
             # PATCH FIX41AFC49B START — anchor signature retry on ineligible candidate
@@ -29631,3 +29822,9 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
 # PATCH FIX41AFC52V START — bump CODE_VERSION
 CODE_VERSION = "fix41afc52_evo_post_rebuild_evidence_rescue_v1"
 # PATCH FIX41AFC52V END — bump CODE_VERSION
+
+# =====================================================================
+# PATCH FIX41AFC56V START — bump CODE_VERSION
+CODE_VERSION = "fix41afc56_evo_preferred_source_rescue_v1"
+# PATCH FIX41AFC56V END — bump CODE_VERSION
+# =====================================================================
