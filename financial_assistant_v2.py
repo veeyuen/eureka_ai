@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc67_preferred_url_from_prev_metric_changes_v1"  # PATCH FIX41AFC67
+CODE_VERSION = "fix41afc68_prev_metric_seed_from_metric_changes_v1"  # PATCH FIX41AFC68
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -24791,6 +24791,52 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                         _prev_metric_fix41afc59 = _pmc.get(canonical_key)
                 except Exception:
                     _prev_metric_fix41afc59 = None
+
+                # =====================================================================
+                # PATCH FIX41AFC68 START (ADDITIVE): seed prev_metric from prev_response.results.metric_changes
+                #
+                # Why:
+                # - In several evolution baselines, primary_metrics_canonical may be missing or
+                #   incomplete, even though the diff payload persisted the metric's preferred
+                #   source_url in results.metric_changes.
+                # - When prev_metric is missing, the canonical selector cannot derive a preferred_url,
+                #   allowing the legacy scorer to roam into injected/unrelated sources.
+                #
+                # What:
+                # - If _prev_metric_fix41afc59 is empty, attempt to locate canonical_key in
+                #   prev_response['results']['metric_changes'] and build a minimal prev_metric dict.
+                # - This is strictly additive and only affects the canonical selector wiring path.
+                # =====================================================================
+                try:
+                    if not isinstance(_prev_metric_fix41afc59, dict) or not (_prev_metric_fix41afc59.get("source_url") or _prev_metric_fix41afc59.get("url")):
+                        _res68 = (prev_response or {}).get("results") or {}
+                        _mc68 = _res68.get("metric_changes") or []
+                        if isinstance(_mc68, list):
+                            for _row68 in _mc68:
+                                if not isinstance(_row68, dict):
+                                    continue
+                                if str(_row68.get("canonical_key") or "") != str(canonical_key):
+                                    continue
+                                _prev_metric_fix41afc59 = {
+                                    "source_url": (_row68.get("source_url") or _row68.get("url") or "").strip(),
+                                    "unit": (_row68.get("unit") or "").strip(),
+                                    "unit_tag": (_row68.get("unit_tag") or _row68.get("unit") or "").strip(),
+                                    "value": _row68.get("previous_value"),
+                                    "value_norm": _row68.get("prev_value_norm"),
+                                    "context_snippet": (_row68.get("context_snippet") or "").strip(),
+                                }
+                                try:
+                                    dbg_fix41afc21d.setdefault("fix41afc68_prev_metric_seed", []).append({
+                                        "canonical_key": canonical_key,
+                                        "seeded": True,
+                                        "source_url": _prev_metric_fix41afc59.get("source_url") or "",
+                                    })
+                                except Exception:
+                                    pass
+                                break
+                except Exception:
+                    pass
+                # PATCH FIX41AFC68 END
 
                 _sel_best_fix41afc59, _sel_meta_fix41afc59 = _select_current_metric_canonical_v1(
                     canonical_key=canonical_key,
