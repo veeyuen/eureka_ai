@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc44_evo_schema_unit_value_range_rebuild_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc45_evo_anchor_fallback_parity_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -23236,6 +23236,85 @@ def _metric_candidate_is_eligible_v2(metric_schema: dict, cand: dict) -> bool:
     except Exception:
         return True
 # =====================================================================
+
+# =====================================================================
+# PATCH FIX41AFC45 (ADDITIVE): anchor fallback resolver (url + ctx overlap)
+# Why:
+# - anchor_hash can drift if derived from context windows; analysis anchors then fail to match
+# - when direct anchor_hash lookup misses, recover the intended candidate deterministically
+#   using the authoritative anchor's (source_url, context_snippet) against snapshot candidates.
+# Notes:
+# - Used only inside rebuild (non-fastpath).
+# - Additive only: does not change extraction; only selection recovery when anchor lookup misses.
+# =====================================================================
+def _fix41afc45_anchor_fallback_by_url_ctx(
+    source_url: str,
+    anchor_ctx: str,
+    candidates: list,
+    spec: dict,
+):
+    try:
+        import re as _re
+        if not source_url or not isinstance(candidates, list) or not candidates:
+            return None
+
+        # token overlap scorer (deterministic, cheap)
+        def _tok(s: str):
+            return set(_re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).split())
+
+        a = _tok(anchor_ctx or "")
+        if not a:
+            return None
+
+        best = None
+        best_score = -1
+        best_tie = None
+
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            if (c.get("source_url") or "") != source_url:
+                continue
+            if c.get("is_junk") is True:
+                continue
+
+            # eligibility parity (reuse v2 if present)
+            try:
+                if not _metric_candidate_is_eligible_v2(spec, c):
+                    continue
+            except Exception:
+                pass
+
+            ctx = c.get("context_snippet") or c.get("context") or c.get("context_window") or ""
+            t = _tok(ctx)
+            if not t:
+                continue
+            overlap = len(a.intersection(t))
+            if overlap <= 0:
+                continue
+
+            # Tie-breaker: prefer higher existing context_score, then stable sort key
+            cs = 0.0
+            try:
+                cs = float(c.get("context_score") or 0.0)
+            except Exception:
+                cs = 0.0
+
+            tie = (overlap, cs)
+            if overlap > best_score:
+                best = c
+                best_score = overlap
+                best_tie = tie
+            elif overlap == best_score:
+                # higher cs wins
+                if best_tie is None or tie[1] > best_tie[1]:
+                    best = c
+                    best_tie = tie
+
+        return best
+    except Exception:
+        return None
+
 def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     FIX16 schema-only rebuild:
@@ -23345,6 +23424,48 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         best = None
         best_tie = None
 
+
+        # =================================================================
+        # PATCH FIX41AFC45 (ADDITIVE): apply anchor override (hash -> candidate),
+        # with deterministic fallback (url + ctx overlap) when hash lookup misses.
+        # =================================================================
+        try:
+            _a = (metric_anchors_fix41afc21d or {}).get(canonical_key) or {}
+            _ah = _a.get("anchor_hash") if isinstance(_a, dict) else None
+            _asrc = _a.get("source_url") if isinstance(_a, dict) else None
+            _actx = _a.get("context_snippet") if isinstance(_a, dict) else ""
+
+            _anchor_best = None
+            if _ah and isinstance(cand_index_fix41afc21d, dict):
+                _anchor_best = cand_index_fix41afc21d.get(_ah)
+
+            if _anchor_best is None and _asrc:
+                _anchor_best = _fix41afc45_anchor_fallback_by_url_ctx(
+                    _asrc, _actx, candidates, spec
+                )
+
+            if isinstance(_anchor_best, dict):
+                best = dict(_anchor_best)
+                try:
+                    best["_fix41afc45_anchor_used"] = True
+                except Exception:
+                    pass
+                try:
+                    dbg_fix41afc21d.setdefault("schema_only_anchor_overrides_fix41afc21d", []).append({
+                        "canonical_key": canonical_key,
+                        "used": True,
+                        "mode": "anchor_hash" if (_ah and isinstance(cand_index_fix41afc21d, dict) and cand_index_fix41afc21d.get(_ah) is not None) else "anchor_fallback_url_ctx",
+                        "anchor_hash": _ah or "",
+                        "anchor_source_url": _asrc or "",
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # =================================================================
+        # END PATCH FIX41AFC45
+        # =================================================================
+
         for c in candidates:
             # FIX16 hard eligibility gates
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
@@ -23405,6 +23526,20 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             }],
             "anchor_used": False,
         }
+
+        # ==============================================================
+        # PATCH FIX41AFC45 (ADDITIVE): propagate anchor_used + anchor meta
+        # ==============================================================
+        try:
+            if isinstance(best, dict) and best.get("_fix41afc45_anchor_used") is True:
+                rebuilt[canonical_key]["anchor_used"] = True
+                rebuilt[canonical_key]["anchor_hash"] = best.get("anchor_hash") or rebuilt[canonical_key].get("anchor_hash") or ""
+                rebuilt[canonical_key]["anchor_source_url"] = best.get("source_url") or rebuilt[canonical_key].get("source_url") or ""
+        except Exception:
+            pass
+        # ==============================================================
+        # END PATCH FIX41AFC45
+        # ==============================================================
 
     return rebuilt
 
