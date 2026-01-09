@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc66_canonical_selector_eligibility_sig_fix_v1"  # PATCH FIX41AFC60
+CODE_VERSION = "fix41afc67_preferred_url_from_prev_metric_changes_v1"  # PATCH FIX41AFC67
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -267,6 +267,37 @@ def _select_current_metric_canonical_v1(
                 pm = pmc.get(canonical_key) or {}
                 if isinstance(pm, dict):
                     preferred_url = (pm.get("source_url") or pm.get("url") or "").strip()
+        # =====================================================================
+        # PATCH FIX41AFC67 START (ADDITIVE): preferred_url fallback from prev_response.results.metric_changes
+        #
+        # Why:
+        # - Some stored prev_response payloads (especially older evolution baselines) may not
+        #   carry primary_metrics_canonical or anchors for every canonical_key.
+        # - However, the evolution diff layer often persists source_url per metric in
+        #   results.metric_changes. When present, this is still a deterministic indicator of
+        #   the preferred source and should be used to prevent cross-source roaming.
+        #
+        # What:
+        # - If preferred_url is still empty, attempt to locate a matching entry in
+        #   prev_response['results']['metric_changes'] and use its source_url.
+        # - Add debug marker to meta to aid troubleshooting.
+        # =====================================================================
+        if not preferred_url and isinstance(prev_response, dict):
+            try:
+                _res = prev_response.get("results") or {}
+                _mc = _res.get("metric_changes") or []
+                if isinstance(_mc, list):
+                    for _row in _mc:
+                        if not isinstance(_row, dict):
+                            continue
+                        if str(_row.get("canonical_key") or "") == str(canonical_key):
+                            preferred_url = (_row.get("source_url") or _row.get("url") or "").strip()
+                            if preferred_url:
+                                meta["debug"]["fix41afc67_preferred_from"] = "prev_response.results.metric_changes"
+                            break
+            except Exception:
+                pass
+        # PATCH FIX41AFC67 END
     except Exception:
         preferred_url = preferred_url or ""
 
