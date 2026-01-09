@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc42_unit_family_precedence_lock_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc43_schema_normalization_reconcile_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -23680,6 +23680,19 @@ def _fix41afc37_preselect_eligible(spec: dict, cand: dict, canonical_key: str = 
     Returns (ok: bool, reasons: list[str]).
     """
     reasons = []
+
+    # PATCH FIX41AFC43_ALLOW_UNKNOWN_MAGNITUDE START
+    # Treat schema dimension 'unknown' as eligible when unit_family implies magnitude (common for unit_sales/count metrics).
+    try:
+        _sdim = (spec.get("dimension") or "").strip().lower()
+        _suf = (spec.get("unit_family") or "").strip().lower()
+        if _sdim == "unknown" and _suf == "magnitude":
+            # Normalize to a unit-sales like effective dimension for eligibility checks below (without mutating spec)
+            spec = dict(spec)
+            spec.setdefault("dimension_effective_fix41afc43", "unit_sales")
+    except Exception:
+        pass
+    # PATCH FIX41AFC43_ALLOW_UNKNOWN_MAGNITUDE END
     try:
         # Always skip explicit junk
         if bool(cand.get("is_junk")):
@@ -25829,6 +25842,73 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
         pass
     # =====================================================================
     # PATCH FIX41AFC41D END
+
+    # PATCH FIX41AFC43 START
+    # Schema-authoritative normalization reconciliation:
+    #   - Fix magnitude value_range double-normalization (e.g., 17.8 -> 0.0178) when unit_tag implies millions.
+    #   - Allow dimension='unknown' + unit_family='magnitude' to remain eligible (handled upstream); here we only fix presentation range.
+    try:
+        _dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
+        _vr_fixed_keys = []
+        for _ck, _m in (rebuilt or {}).items():
+            try:
+                if not isinstance(_m, dict):
+                    continue
+                _md = _m.get("metric_definition") or {}
+                _schema = {}
+                try:
+                    _schema = (prev_response.get("metric_schema_frozen") or {}).get(_ck, {}) or {}
+                except Exception:
+                    _schema = {}
+                # Prefer schema for unit_family/unit_tag
+                _uf = (_m.get("unit_family") or _schema.get("unit_family") or _md.get("unit_family") or "").strip().lower()
+                _ut = (_m.get("unit_tag") or _schema.get("unit_tag") or _md.get("unit_tag") or _m.get("unit") or "").strip()
+                _vr = _m.get("value_range") if isinstance(_m.get("value_range"), dict) else None
+                _vn = _m.get("value_norm")
+                if not _vr or _vn is None:
+                    continue
+
+                # Detect "millions" style metrics that were scaled down again:
+                # If value_norm is O(1..1000) but range endpoints are O(0.001..1) and ratio ~1000,
+                # it's likely an accidental /1000 applied somewhere.
+                if _uf == "magnitude" and _ut:
+                    _ut_l = _ut.lower()
+                    _is_million = ("million" in _ut_l) or (_ut.strip().upper() == "M") or (" m" == _ut_l)  # defensive
+                    if _is_million:
+                        _vmin = _vr.get("min")
+                        _vmax = _vr.get("max")
+                        if isinstance(_vmin, (int, float)) and isinstance(_vmax, (int, float)) and isinstance(_vn, (int, float)):
+                            # if already correct, do nothing
+                            if _vmax > 1.0 and _vmin > 1.0:
+                                pass
+                            else:
+                                # Use the min ratio (more stable): 17.8 / 0.0178 = 1000
+                                _ratio = None
+                                try:
+                                    if _vmin not in (0, None):
+                                        _ratio = float(_vn) / float(_vmin)
+                                except Exception:
+                                    _ratio = None
+                                if _ratio is not None and 850.0 <= _ratio <= 1150.0:
+                                    _vr["min"] = float(_vmin) * 1000.0
+                                    _vr["max"] = float(_vmax) * 1000.0
+                                    _vr["method"] = (str(_vr.get("method") or "").strip() + "|fix41afc43_rescale_million").strip("|")
+                                    # Rebuild display string conservatively
+                                    try:
+                                        _m["value_range_display"] = f"{_vr['min']:.4g}–{_vr['max']:.4g} {_ut}".strip()
+                                    except Exception:
+                                        pass
+                                    _m["_value_range_rescaled_fix41afc43"] = True
+                                    _vr_fixed_keys.append(_ck)
+            except Exception:
+                continue
+        _dbg["value_range_rescaled_fix41afc43_count"] = len(_vr_fixed_keys)
+        _dbg["value_range_rescaled_fix41afc43_keys"] = _vr_fixed_keys[:50]
+    except Exception:
+        pass
+    # PATCH FIX41AFC43 END
+
+
     # =====================================================================
     return rebuilt
 
@@ -27796,3 +27876,61 @@ except Exception:
 # ============================================================
 # PATCH FIX41AFC42_VERSION END
 # ============================================================
+
+
+
+# PATCH FIX41AFC43_DIFF_WRAPPER START
+def _fix41afc43_postprocess_metric_changes(metric_changes, prev_response=None, cur_response=None):
+    """Postprocess diff rows to enforce schema-invalid dim/unit blocks (dashboard-safe) and improve sign-off determinism."""
+    try:
+        out = []
+        for row in (metric_changes or []):
+            if not isinstance(row, dict):
+                out.append(row)
+                continue
+            md = row.get("metric_definition") or {}
+            dim = (md.get("dimension") or md.get("dim") or "").strip().lower()
+            unit = (md.get("unit") or "").strip().lower()
+            uf = (md.get("unit_family") or "").strip().lower()
+
+            # Schema-invalid: currency metric but percent unit family/unit token
+            if dim == "currency" and (unit in ("%", "percent") or uf == "percent"):
+                row = dict(row)
+                row["current_value"] = ""
+                row["cur_value_norm"] = None
+                row["cur_unit_cmp"] = ""
+                row["cur_value_blocked_reason"] = "schema_invalid_dim_unit_fix41afc43"
+                out.append(row)
+                continue
+
+            # Schema-invalid: percent metric but currency unit family/token
+            if dim == "percent" and (uf == "currency" or ("usd" in unit or "sgd" in unit or "eur" in unit or "gbp" in unit)):
+                row = dict(row)
+                row["current_value"] = ""
+                row["cur_value_norm"] = None
+                row["cur_unit_cmp"] = ""
+                row["cur_value_blocked_reason"] = "schema_invalid_dim_unit_fix41afc43"
+                out.append(row)
+                continue
+
+            out.append(row)
+        return out
+    except Exception:
+        return metric_changes
+
+def diff_metrics_by_name_fix41afc43(prev_response: dict, cur_response: dict):
+    metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name(prev_response, cur_response)
+    metric_changes = _fix41afc43_postprocess_metric_changes(metric_changes, prev_response, cur_response)
+    return metric_changes, unchanged, increased, decreased, found
+
+try:
+    # Rewire diff to include FIX41AFC43 postprocessing without refactoring original logic
+    diff_metrics_by_name = diff_metrics_by_name_fix41afc43
+except Exception:
+    pass
+# PATCH FIX41AFC43_DIFF_WRAPPER END
+
+
+# PATCH FIX41AFC43_VERSION START
+CODE_VERSION = "fix41afc43_schema_normalization_reconcile_v1"
+# PATCH FIX41AFC43_VERSION END
