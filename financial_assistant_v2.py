@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc65_strict_preferred_unit_evidence_carryforward_v1"  # PATCH FIX41AFC60
+CODE_VERSION = "fix41afc66_canonical_selector_eligibility_sig_fix_v1"  # PATCH FIX41AFC60
 # =====================================================================
 # PATCH FIX41AFC58 START
 # Canonical downstream selector scaffold (single-source-of-truth target)
@@ -292,6 +292,32 @@ def _select_current_metric_canonical_v1(
                 return False
             fn = globals().get("_metric_candidate_is_eligible_v2")
             if callable(fn):
+                # ==============================================================
+                # PATCH FIX41AFC66 START
+                # Eligibility signature compatibility shim.
+                # Some code paths define _metric_candidate_is_eligible_v2 as:
+                #   fn(metric_schema, cand)  (or with web_context),
+                # while older paths used:
+                #   fn(cand, metric_schema, web_context)
+                # We try common signatures deterministically, then fall back.
+                # ==============================================================
+                try:
+                    return bool(fn(metric_schema, c, web_context))
+                except TypeError:
+                    pass
+                try:
+                    return bool(fn(metric_schema, c))
+                except TypeError:
+                    pass
+                try:
+                    return bool(fn(c, metric_schema, web_context))
+                except TypeError:
+                    pass
+                try:
+                    return bool(fn(c, metric_schema))
+                except TypeError:
+                    pass
+                # PATCH FIX41AFC66 END
                 return bool(fn(c, metric_schema, web_context))
         except Exception:
             return False
