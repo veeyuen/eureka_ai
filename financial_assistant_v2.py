@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc37_preselect_eligibility_skip_ineligible_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc38_unit_cmp_scale_explain_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -121,7 +121,7 @@ CODE_VERSION = "fix41afc37_preselect_eligibility_skip_ineligible_v1"  # PATCH FI
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
+CODE_VERSION = "fix41afc20_evo_extraction_selection_parity_v1"
 # =====================================================================
 
 # =====================================================================
@@ -15076,6 +15076,57 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 "rel_eps_used": rel_eps,
             })
 
+        # PATCH FIX41AFC38_UNITCMP_BACKFILL START
+
+        try:
+
+            for _row in metric_changes:
+
+                if not isinstance(_row, dict):
+
+                    continue
+
+                _md = _row.get("metric_definition") or {}
+
+                if not isinstance(_md, dict):
+
+                    _md = {}
+
+                _uf = (_md.get("unit_family") or "").lower()
+
+                if (_row.get("cur_unit_cmp") or "") == "" and _row.get("cur_value_norm") is not None and (_row.get("current_value") not in ["", None, "N/A"]):
+
+                    if _uf == "percent":
+
+                        _row["cur_unit_cmp"] = "%"
+
+                        _row["cur_unit_cmp_backfilled_fix41afc38"] = True
+
+                        if _row.get("unit_mismatch") is True and str(_row.get("prev_unit_cmp","")) .strip() in ["%", "percent", ""]:
+
+                            _row["unit_mismatch"] = False
+
+                    elif _uf == "currency":
+
+                        _ut = _md.get("unit_tag") or _md.get("unit") or ""
+
+                        if _ut:
+
+                            _row["cur_unit_cmp"] = str(_ut)
+
+                            _row["cur_unit_cmp_backfilled_fix41afc38"] = True
+
+                            if _row.get("unit_mismatch") is True and str(_row.get("prev_unit_cmp","")) .strip() in ["", str(_ut)]:
+
+                                _row["unit_mismatch"] = False
+
+        except Exception:
+
+            pass
+
+        # PATCH FIX41AFC38_UNITCMP_BACKFILL END
+
+
         return metric_changes, unchanged, increased, decreased, found
 
     # =========================
@@ -20589,6 +20640,31 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
 
 
+    # PATCH FIX41AFC38_EXTRACT_POSTPASS START
+
+
+
+    try:
+
+
+
+        _fix41afc38_backfill_unit_family_in_list(out)
+
+
+
+    except Exception:
+
+
+
+        pass
+
+
+
+    # PATCH FIX41AFC38_EXTRACT_POSTPASS END
+
+
+
+
     return out
 
 
@@ -23482,6 +23558,100 @@ def _fix41afc37_preselect_eligible(spec: dict, cand: dict, canonical_key: str = 
         return True, reasons
 # PATCH FIX41AFC37_HELPERS END
 
+# PATCH FIX41AFC38_HELPERS START
+def _fix41afc38_guess_unit_family(cand: dict) -> str:
+    """Deterministic unit_family guess from existing cand fields."""
+    try:
+        ut = (cand.get("unit_tag") or cand.get("unit") or cand.get("base_unit") or "").strip().lower()
+        raw = (cand.get("raw") or cand.get("raw_disp") or "").lower()
+        ctx = (cand.get("context") or cand.get("ctx") or "").lower()
+        blob = " ".join([ut, raw, ctx])
+        if "%" in blob or " percent" in blob or "percentage" in blob:
+            return "percent"
+        if any(tok in blob for tok in [" usd", " sgd", " eur", " gbp", " aud", " cad", " chf", " jpy", " cny", " rmb", "$", "€", "£", "¥"]):
+            return "currency"
+        if any(tok in blob for tok in [" million", " billion", " trillion", " mn", " bn", " tn"]):
+            return "magnitude"
+        if ut in ("k","m","b","t","mn","bn","tn"):
+            return "magnitude"
+        if any(tok in blob for tok in ["kwh","mwh","gwh","twh"]):
+            return "energy"
+    except Exception:
+        pass
+    return (cand.get("unit_family") or "").strip()
+
+def _fix41afc38_magnitude_context_override(cand: dict) -> bool:
+    """Correct magnitude-vs-percent mislabels like 17.8 million being tagged percent."""
+    try:
+        uf = (cand.get("unit_family") or "").strip().lower()
+        ut = (cand.get("unit_tag") or cand.get("unit") or cand.get("base_unit") or "").lower()
+        raw = (cand.get("raw") or cand.get("raw_disp") or "").lower()
+        ctx = (cand.get("context") or cand.get("ctx") or "").lower()
+        blob = " ".join([ut, raw, ctx])
+        mag = ("million" in blob) or ("billion" in blob) or ("trillion" in blob) or (ut in ("k","m","b","t","mn","bn","tn"))
+        unitsy = any(w in blob for w in [" unit", " units", " vehicle", " vehicles", " sales", " sold", " shipments"])
+        if uf == "percent" and mag and unitsy and "%" not in blob:
+            cand["unit_family"] = "magnitude"
+            cand["_unit_family_overridden_fix41afc38"] = True
+            return True
+    except Exception:
+        pass
+    return False
+
+def _fix41afc38_backfill_unit_family_in_list(cands):
+    try:
+        if not isinstance(cands, list):
+            return
+        for c in cands:
+            if not isinstance(c, dict):
+                continue
+            if not (c.get("unit_family") or "").strip():
+                uf = _fix41afc38_guess_unit_family(c)
+                if uf:
+                    c["unit_family"] = uf
+                    c["_unit_family_backfilled_fix41afc38"] = True
+            _fix41afc38_magnitude_context_override(c)
+    except Exception:
+        pass
+
+def _fix41afc38_prev_value_norm(prev_response: dict, canonical_key: str):
+    try:
+        pmc = prev_response.get("primary_metrics_canonical") or {}
+        if isinstance(pmc, dict) and canonical_key in pmc and isinstance(pmc[canonical_key], dict):
+            return pmc[canonical_key].get("value_norm") or pmc[canonical_key].get("cur_value_norm") or pmc[canonical_key].get("value")
+    except Exception:
+        pass
+    return None
+
+def _fix41afc38_scale_sanity_adjust(cand: dict, spec: dict, prev_vn):
+    """Deterministic rescale for unit_sales/magnitude when off by ~10x/100x vs prev."""
+    try:
+        if not isinstance(cand, dict) or not isinstance(spec, dict):
+            return
+        dim = (spec.get("dimension") or "").lower()
+        uf = (spec.get("unit_family") or "").lower()
+        if not (dim in ("unit_sales","units","volume") or uf == "magnitude"):
+            return
+        vn = cand.get("value_norm")
+        if vn is None or prev_vn is None:
+            return
+        vn = float(vn)
+        pv = float(prev_vn)
+        if pv == 0:
+            return
+        ratio = vn / pv
+        for f in (10.0, 100.0):
+            if ratio > (0.8*f) and ratio < (1.2*f):
+                cand["_fix41afc38_rescaled"] = True
+                cand["_fix41afc38_rescale_factor"] = f
+                cand["value_norm"] = vn / f
+                cand["_fix41afc38_rescale_reason"] = "ratio_vs_prev"
+                return
+    except Exception:
+        pass
+# PATCH FIX41AFC38_HELPERS END
+
+
 
 
 
@@ -23795,6 +23965,15 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
                             "anchor_used": True,
                             "selection_reason": "anchor_match_override_fix41afc21d",
                         }
+
+                        # PATCH FIX41AFC38_EMIT_TOPK START
+                        try:
+                            if canonical_key in rebuilt and isinstance(rebuilt[canonical_key], dict):
+                                rebuilt[canonical_key]["top_candidates_considered_fix41afc38"] = list(top_candidates_considered_fix41afc38) if isinstance(top_candidates_considered_fix41afc38, list) else []
+                                rebuilt[canonical_key]["winner_reason_fix41afc38"] = "selected_best_score"
+                        except Exception:
+                            pass
+                        # PATCH FIX41AFC38_EMIT_TOPK END
                         try:
                             dbg_fix41afc21d["schema_only_anchor_overrides_fix41afc21d"].append({
                                 "canonical_key": canonical_key,
@@ -23825,6 +24004,13 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 
         kw_norm = [_norm(k) for k in (keywords2 or []) if k]
 
+        # PATCH FIX41AFC38_TOPK_INIT START
+
+        top_candidates_considered_fix41afc38 = []
+
+        # PATCH FIX41AFC38_TOPK_INIT END
+
+
         best = None
         best_tie = None
         best_hits = 0
@@ -23851,6 +24037,33 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
             except Exception:
                 pass
             # PATCH FIX41AFC37 END
+            # PATCH FIX41AFC38_SCALE_TOPK START
+            try:
+                if isinstance(c, dict) and not (c.get("unit_family") or "").strip():
+                    _uf = _fix41afc38_guess_unit_family(c)
+                    if _uf:
+                        c["unit_family"] = _uf
+                        c["_unit_family_backfilled_fix41afc38"] = True
+                _fix41afc38_magnitude_context_override(c)
+                _pv = _fix41afc38_prev_value_norm(prev_response, canonical_key)
+                _fix41afc38_scale_sanity_adjust(c, spec, _pv)
+            except Exception:
+                pass
+            try:
+                if isinstance(top_candidates_considered_fix41afc38, list) and len(top_candidates_considered_fix41afc38) < 5:
+                    top_candidates_considered_fix41afc38.append({
+                        "value_norm": c.get("value_norm"),
+                        "raw": (c.get("raw") or "")[:80],
+                        "unit_tag": c.get("unit_tag") or c.get("unit") or "",
+                        "unit_family": c.get("unit_family") or "",
+                        "source_url": c.get("source_url") or "",
+                        "_rescaled": bool(c.get("_fix41afc38_rescaled")),
+                        "_rescale_factor": c.get("_fix41afc38_rescale_factor"),
+                    })
+            except Exception:
+                pass
+            # PATCH FIX41AFC38_SCALE_TOPK END
+
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
@@ -26968,3 +27181,7 @@ CODE_VERSION = "fix41afc36_extraction_hygiene_unit_family_backfill_v1"
 # PATCH FIX41AFC37_VERSION START
 CODE_VERSION = "fix41afc37_preselect_eligibility_skip_ineligible_v1"
 # PATCH FIX41AFC37_VERSION END
+
+# PATCH FIX41AFC38_VERSION START
+CODE_VERSION = "fix41afc38_unit_cmp_scale_explain_v1"
+# PATCH FIX41AFC38_VERSION END
