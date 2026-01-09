@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc41_anchor_compat_diag_state_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc42_unit_family_precedence_lock_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC24_VERSION START
 # Additive override: later assignment ensures runtime CODE_VERSION matches filename for auditability.
 #CODE_VERSION = "fix41afc24b_evo_post_selection_normalization_parity_v2"
@@ -13979,10 +13979,29 @@ def _fix41afc36_backfill_candidates_list(_lst):
                 # PATCH FIX41AFC40A END
                 if "%" in blob or "percent" in blob or "percentage" in blob:
                     uf = "percent"
-                elif any(t in blob for t in ["$", "usd", "us$", "eur", "sgd", "gbp", "aud", "cad", "jpy", "cny", "rmb", "inr", "krw", "chf"]):
+
+                # ============================================================
+                # PATCH FIX41AFC42A START — enforce explicit unit token precedence (post-inference)
+                # ============================================================
+                try:
+                    _fix41afc42_apply_unit_family_lock(_c)
+                    uf = str(_c.get("unit_family") or uf or "").strip().lower()
+                except Exception:
+                    pass
+                # ============================================================
+                # PATCH FIX41AFC42A END
+                # ============================================================
+
+                # ============================================================
+                # PATCH FIX41AFC42_SYNTAXFIX START — repair truncated token lists to valid Python
+                # ============================================================
+                if any(t in blob for t in ["$", "usd", "us$", "eur", "sgd", "gbp", "aud", "cad", "jpy", "cny", "rmb", "inr", "krw", "chf"]):
                     uf = "currency"
-                elif any(t in blob for t in ["million", "billion", "trillion", " mn", " bn", " tn"]) or any(t in (unit + " " + utag + " " + base) for t in ["k", "m", "b", "t"]):
+                elif ("million" in blob) or ("billion" in blob) or ("trillion" in blob) or any((unit + " " + utag + " " + base).strip() == t for t in ["k","m","b","t"]):
                     uf = "magnitude"
+                # ============================================================
+                # PATCH FIX41AFC42_SYNTAXFIX END
+                # ============================================================
                 elif any(t in blob for t in ["kwh", "mwh", "gwh", "twh", "wh", "mw", "gw", "tw"]):
                     uf = "energy"
                 else:
@@ -14009,6 +14028,79 @@ def _fix41afc36_backfill_candidates_list(_lst):
         return _lst
     except Exception:
         return _lst
+
+
+# ============================================================
+# PATCH FIX41AFC42_HELPERS START — unit_family precedence hard lock (explicit unit tokens win)
+# ============================================================
+def _fix41afc42_apply_unit_family_lock(_c: dict) -> dict:
+    """Enforce unit_family based on explicit unit tokens (unit/unit_tag/base_unit/raw), and lock it.
+    This prevents context-derived '%' proximity from overwriting magnitude/currency/energy tokens.
+    Additive-only: safe to call repeatedly; respects existing locks unless they are empty/invalid.
+    """
+    try:
+        if not isinstance(_c, dict):
+            return _c
+
+        # Respect existing lock unless unit_family is empty
+        _locked = bool(_c.get("unit_family_locked_fix41afc42"))
+        _uf = str(_c.get("unit_family") or "").strip().lower()
+
+        raw = str(_c.get("raw") or _c.get("raw_disp") or "").strip()
+        unit = str(_c.get("unit") or "").strip()
+        utag = str(_c.get("unit_tag") or "").strip()
+        base = str(_c.get("base_unit") or "").strip()
+        blob = " ".join([raw, unit, utag, base]).lower()
+
+        def _has_any(tokens):
+            return any(t in blob for t in tokens)
+
+        # Explicit token families (authoritative)
+        energy_tokens = ["twh", "gwh", "mwh", "kwh"]
+        magnitude_tokens = [" thousand", " million", " billion", " trillion", "k", "m", "b", "t"]
+        percent_tokens = ["%", " percent", " percentage", " pct"]
+        currency_tokens = ["$", "€", "£", "¥", "usd", "eur", "sgd", "gbp", "jpy", "cny", "rmb", "aud", "cad", "inr", "chf", "hkd", "nzd"]
+
+        forced = ""
+        reason = ""
+
+        # Energy first (distinct)
+        if _has_any(energy_tokens):
+            forced, reason = "energy", "explicit_energy_token"
+
+        # Percent explicit
+        if not forced and _has_any(percent_tokens):
+            forced, reason = "percent", "explicit_percent_token"
+
+        # Currency explicit (symbols/codes)
+        if not forced and _has_any(currency_tokens):
+            forced, reason = "currency", "explicit_currency_token"
+
+        # Magnitude explicit (K/M/B/T or million/billion words). Avoid mis-firing on currency codes.
+        if not forced:
+            # word forms are safest; also single-letter tokens when present in unit fields
+            if any(w in blob for w in [" thousand", " million", " billion", " trillion"]):
+                forced, reason = "magnitude", "explicit_magnitude_word"
+            else:
+                # token from unit/unit_tag/base only (avoid random 'm' in text)
+                toks = " ".join([unit, utag, base]).strip().lower()
+                if toks in {"k", "m", "b", "t"} or toks.endswith("k") or toks.endswith("m") or toks.endswith("b") or toks.endswith("t"):
+                    forced, reason = "magnitude", "explicit_magnitude_token"
+
+        # Apply if:
+        # - not locked, OR
+        # - locked but unit_family is empty (repair)
+        if forced and ((not _locked) or (not _uf)):
+            _c["unit_family"] = forced
+            _c["unit_family_locked_fix41afc42"] = True
+            _c["unit_family_lock_reason_fix41afc42"] = reason
+        return _c
+    except Exception:
+        return _c
+
+# ============================================================
+# PATCH FIX41AFC42_HELPERS END
+# ============================================================
 
 def _fix41afc36_backfill_in_sources_cache(_cache):
     try:
@@ -20690,6 +20782,20 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         for _c in (out or []):
             if isinstance(_c, dict):
                 _c["unit_family"] = _fix41afc36_infer_unit_family(_c)
+
+# ============================================================
+                # ============================================================
+                # PATCH FIX41AFC42B START — explicit unit token precedence lock (extraction postpass)
+                # ============================================================
+                try:
+                    _fix41afc42_apply_unit_family_lock(_c)
+                except Exception:
+                    pass
+                # ============================================================
+                # PATCH FIX41AFC42B END
+                # ============================================================
+# ============================================================
+
                 _fix41afc36_mark_bare_year_junk(_c)
     except Exception:
         pass
@@ -27678,3 +27784,15 @@ def _fix41afc41_diag_state_v2(prev_response: dict) -> dict:
 # PATCH FIX41AFC41_VERSION START
 CODE_VERSION = "fix41afc41_anchor_compat_diag_state_v1"
 # PATCH FIX41AFC41_VERSION END
+
+
+# ============================================================
+# PATCH FIX41AFC42_VERSION START
+# ============================================================
+try:
+    CODE_VERSION = "fix41afc42_unit_family_precedence_lock_v1"
+except Exception:
+    pass
+# ============================================================
+# PATCH FIX41AFC42_VERSION END
+# ============================================================
