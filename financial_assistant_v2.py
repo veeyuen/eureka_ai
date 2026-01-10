@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v26'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v27'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -14704,6 +14704,21 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 pass
 
         # 2) legacy parse path
+        # =================================================================
+        # PATCH V27_DISABLE_NUMERIC_INFERENCE_FOR_CURRENT (ADDITIVE)
+        # When canonical-for-render is active, do NOT infer/parse numbers from
+        # free-form raw strings for CURRENT-side metrics. We only trust
+        # schema-canonical value_norm emitted by the rebuild layer.
+        #
+        # Activation: cur_response['_disable_numeric_inference_v27'] == True
+        # Safety: render/diff-layer only. Does not touch fastpath/hashing/etc.
+        # =================================================================
+        try:
+            if isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
+                u = str(m.get("unit") or "").strip()
+                return None, u
+        except Exception:
+            pass
         u = str(m.get("unit") or "").strip()
         v = parse_num(m.get("value"), u)
         return v, u
@@ -15281,6 +15296,21 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 pass
 
         # 2) legacy parse path
+        # =================================================================
+        # PATCH V27_DISABLE_NUMERIC_INFERENCE_FOR_CURRENT (ADDITIVE)
+        # When canonical-for-render is active, do NOT infer/parse numbers from
+        # free-form raw strings for CURRENT-side metrics. We only trust
+        # schema-canonical value_norm emitted by the rebuild layer.
+        #
+        # Activation: cur_response['_disable_numeric_inference_v27'] == True
+        # Safety: render/diff-layer only. Does not touch fastpath/hashing/etc.
+        # =================================================================
+        try:
+            if isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
+                u = str(m.get("unit") or "").strip()
+                return None, u
+        except Exception:
+            pass
         u = str(m.get("unit") or "").strip()
         v = parse_num(m.get("value"), u)
         return v, u
@@ -15853,6 +15883,21 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 pass
 
         # 2) legacy parse path
+        # =================================================================
+        # PATCH V27_DISABLE_NUMERIC_INFERENCE_FOR_CURRENT (ADDITIVE)
+        # When canonical-for-render is active, do NOT infer/parse numbers from
+        # free-form raw strings for CURRENT-side metrics. We only trust
+        # schema-canonical value_norm emitted by the rebuild layer.
+        #
+        # Activation: cur_response['_disable_numeric_inference_v27'] == True
+        # Safety: render/diff-layer only. Does not touch fastpath/hashing/etc.
+        # =================================================================
+        try:
+            if isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
+                u = str(m.get("unit") or "").strip()
+                return None, u
+        except Exception:
+            pass
         u = str(m.get("unit") or "").strip()
         v = parse_num(m.get("value"), u)
         return v, u
@@ -19848,6 +19893,18 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
             cur_resp_for_diff = {"primary_metrics_canonical": canonical_for_render}
+            # =====================================================================
+            # PATCH V27_DISABLE_NUMERIC_INFERENCE_FLAG (ADDITIVE)
+            # Signal to diff layer: when canonical-for-render is active, do NOT
+            # infer/parse numeric values for CURRENT from free-form strings.
+            # =====================================================================
+            try:
+                cur_resp_for_diff["_disable_numeric_inference_v27"] = True
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH V27_DISABLE_NUMERIC_INFERENCE_FLAG
+            # =====================================================================
             # =====================================================================
             # PATCH V24_STRICT_CKEY_FLAG (ADDITIVE)
             # When using canonical-for-render, force strict canonical_key identity matching in diff layer.
@@ -26511,4 +26568,15 @@ except Exception:
 CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v26'
 # =====================================================================
 # END PATCH CODE_VERSION_V26
+# =====================================================================
+
+# =====================================================================
+# PATCH V27_VERSION_BUMP (ADDITIVE)
+# =====================================================================
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v27'
+except Exception:
+    pass
+# =====================================================================
+# END PATCH V27_VERSION_BUMP
 # =====================================================================
