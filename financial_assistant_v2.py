@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34e'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -17849,6 +17849,48 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                 pass
             # ============================================================
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+
+            # ============================================================
+            # PATCH V34F (ADDITIVE): force-run strict anchor-hash join diff and preserve diagnostics
+            # WHY:
+            # - Some deployments still route through a legacy diff function (or strip diagnostics),
+            #   leaving Current blank/N/A even when a stable anchor match exists.
+            # - We deterministically re-run the v34 anchor-join diff against the exact same
+            #   (prev_response, cur_resp_for_diff) payload, then adopt its output if it yields
+            #   any per-row v34 diagnostics.
+            # SAFETY:
+            # - Render/diff layer only. No fetch, no inference, no hashing changes.
+            # ============================================================
+            try:
+                _v34f_fn = (
+                    globals().get("diff_metrics_by_name_FIX41_V34C_UNWRAP")
+                    or globals().get("diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN")
+                    or globals().get("diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN".lower())
+                )
+                if callable(_v34f_fn):
+                    _mc_v34f, _u_v34f, _i_v34f, _d_v34f, _f_v34f = _v34f_fn(prev_response, cur_resp_for_diff)
+                    # Adopt only if it looks like the v34 pipeline (has diag.diff_join_trace_v1 anywhere)
+                    _has_v34_diag = False
+                    if isinstance(_mc_v34f, list):
+                        for _r_v34f in _mc_v34f:
+                            if isinstance(_r_v34f, dict) and isinstance(_r_v34f.get("diag"), dict) and _r_v34f["diag"].get("diff_join_trace_v1"):
+                                _has_v34_diag = True
+                                break
+                    if _has_v34_diag:
+                        metric_changes, unchanged, increased, decreased, found = _mc_v34f, _u_v34f, _i_v34f, _d_v34f, _f_v34f
+                        # Surface top-level join summary debug (emitted on cur_resp_for_diff by v34)
+                        try:
+                            _v34f_dbg = None
+                            if isinstance(cur_resp_for_diff, dict) and isinstance(cur_resp_for_diff.get("debug"), dict):
+                                _v34f_dbg = cur_resp_for_diff["debug"].get("diff_join_anchor_v34")
+                            if isinstance(_v34f_dbg, dict) and isinstance(output.get("debug"), dict):
+                                output["debug"]["diff_join_anchor_v34"] = _v34f_dbg
+                                output["debug"]["diff_join_anchor_v34"]["v34f_forced_rerun"] = True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # ============================================================
             # ============================================================
             # ============================================================
             # PATCH V34D (ADDITIVE): merge diff join summary debug into evolution output debug
@@ -28039,3 +28081,12 @@ except Exception:
 # =====================================================================
 # END PATCH V34C_DIFF_RESPONSE_UNWRAP
 # =====================================================================
+
+
+# =====================================================================
+# PATCH V34F_VERSION_BUMP (ADDITIVE)
+# =====================================================================
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f'
+except Exception:
+    pass
