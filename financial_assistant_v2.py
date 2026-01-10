@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v7"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v9"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -13786,6 +13786,128 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         pass
     # =====================================================================
 
+
+    # =====================================================================
+    # PATCH FIX2B_RANGE3 (ADDITIVE): Schema-unit value_range rebuild for primary_metrics_canonical
+    #
+    # Why:
+    # - We observed value_range values scaled as if converted to billions (e.g., 17.8M -> 0.0178)
+    #   while still displaying "million units", causing downstream eligibility drift.
+    # - FIX2B_RANGE2 only patches analysis["results"] (often empty); the dashboard-facing
+    #   canonicals live under analysis["primary_response"]["primary_metrics_canonical"].
+    #
+    # What:
+    # - Rebuild value_range from baseline_sources_cache extracted_numbers, treating candidate.value_norm
+    #   as schema units (NO double scaling), constrained to the metric's chosen source_url.
+    # - Pure post-processing: NO IO, NO refetch, NO hashing changes.
+    # =====================================================================
+    try:
+        import re
+        _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
+        _pmc = _pr.get("primary_metrics_canonical") if isinstance(_pr, dict) else None
+        _schema = (
+            (analysis.get("metric_schema_frozen") if isinstance(analysis, dict) else None)
+            or (_pr.get("metric_schema_frozen") if isinstance(_pr, dict) else None)
+            or {}
+        )
+        _bsc = analysis.get("baseline_sources_cache") if isinstance(analysis, dict) else None
+        if isinstance(_pmc, dict) and isinstance(_schema, dict) and isinstance(_bsc, list) and _bsc:
+            # Flatten candidate universe from snapshots
+            _flat = []
+            for _src in _bsc:
+                if not isinstance(_src, dict):
+                    continue
+                _nums = _src.get("extracted_numbers")
+                if isinstance(_nums, list):
+                    _flat.extend([n for n in _nums if isinstance(n, dict)])
+            # Helper: scale evidence presence for common magnitudes
+            def _ph2b_scale_token_ok(_spec_unit_tag: str, _cand: dict) -> bool:
+                try:
+                    sut = str(_spec_unit_tag or "").lower()
+                    if not sut:
+                        return True
+                    # Only enforce for explicit scaled magnitudes
+                    if ("million" not in sut) and ("billion" not in sut) and ("thousand" not in sut) and ("trillion" not in sut):
+                        return True
+                    raw = str(_cand.get("raw") or "").lower()
+                    ut = str(_cand.get("unit_tag") or _cand.get("unit") or "").lower()
+                    ctx = str(_cand.get("context_snippet") or "").lower()
+                    blob = " ".join([raw, ut, ctx])
+                    if "million" in sut:
+                        return ("million" in blob) or re.search(r"\bm\b", blob) is not None or " mn" in blob
+                    if "billion" in sut:
+                        return ("billion" in blob) or re.search(r"\bb\b", blob) is not None or " bn" in blob
+                    if "thousand" in sut:
+                        return ("thousand" in blob) or re.search(r"\bk\b", blob) is not None
+                    if "trillion" in sut:
+                        return ("trillion" in blob) or re.search(r"\bt\b", blob) is not None
+                except Exception:
+                    pass
+                return True
+
+            for _ck, _m in list(_pmc.items()):
+                if not isinstance(_m, dict):
+                    continue
+                _spec = _schema.get(_ck) if isinstance(_schema, dict) else None
+                if not isinstance(_spec, dict):
+                    continue
+                _src_url = _m.get("source_url") or _spec.get("preferred_url") or ""
+                if not _src_url:
+                    continue
+                _src_url_n = _ph2b_norm_url(_src_url)
+                # Collect eligible vals from same source_url
+                _vals = []
+                _examples = []
+                for _c in _flat:
+                    try:
+                        if _ph2b_norm_url(_c.get("source_url") or "") != _src_url_n:
+                            continue
+                        if _c.get("is_junk") is True:
+                            continue
+                        # Reuse FIX16 allowlist if present
+                        try:
+                            if callable(globals().get("_fix16_candidate_allowed")):
+                                if not globals().get("_fix16_candidate_allowed")(_c, _spec, canonical_key=_ck):
+                                    continue
+                        except Exception:
+                            pass
+                        # Enforce scale token for scaled magnitudes
+                        if not _ph2b_scale_token_ok(_spec.get("unit_tag") or _spec.get("unit") or "", _c):
+                            continue
+                        _v = _c.get("value_norm")
+                        if _v is None:
+                            _v = _c.get("value")
+                        if isinstance(_v, (int, float)):
+                            _vals.append(float(_v))
+                            if len(_examples) < 4:
+                                _examples.append({
+                                    "raw": _c.get("raw"),
+                                    "source_url": _c.get("source_url"),
+                                    "context_snippet": (str(_c.get("context_snippet") or "")[:180])
+                                })
+                    except Exception:
+                        continue
+                if len(_vals) < 2:
+                    continue
+                _vmin = min(_vals); _vmax = max(_vals)
+                if abs(_vmax - _vmin) <= max(1e-9, abs(_vmin) * 0.02):
+                    continue
+                _m["value_range"] = {
+                    "min": _vmin,
+                    "max": _vmax,
+                    "n": len(_vals),
+                    "examples": _examples,
+                    "method": "ph2b_schema_unit_range_v2|fix2b_range3"
+                }
+                try:
+                    _unit_disp = _m.get("unit") or _m.get("unit_tag") or _spec.get("unit_tag") or ""
+                    _m["value_range_display"] = f"{_vmin:g}–{_vmax:g} {_unit_disp}".strip()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # =====================================================================
+
     # =====================================================================
     # PATCH V1 (ADDITIVE): analysis & schema version stamping
     # - Pure metadata, NO logic impact
@@ -19079,6 +19201,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _fix41afc19_applied = True
                     _fix41afc19_rebuilt_count = len(current_metrics)
                     _fix41afc19_reason = "override_current_metrics_with_fix16_anchor_rebuild"
+                else:
+                    _fix41afc19_reason = (_fix41afc19_reason or "") + "|rebuilt_empty_or_non_dict"
     except Exception:
         pass
 
@@ -22805,6 +22929,44 @@ def _analysis_canonical_final_selector_v1(
     eligible = []
     for c in cands:
         try:
+            # =====================================================================
+            # PATCH PH2B_UF1 (ADDITIVE): Fill missing unit_family/unit_cmp deterministically
+            # Many snapshot candidates omit unit_family even when unit_tag/raw clearly indicates
+            # magnitude/percent/currency. The analysis selector treats unit_family as authoritative
+            # for schema gating; leaving it blank causes false ineligibility (empty Current).
+            # =====================================================================
+            try:
+                if isinstance(c, dict) and not str(c.get("unit_family") or "").strip():
+                    _raw = str(c.get("raw") or "")
+                    _ut = str(c.get("unit_tag") or c.get("unit") or "")
+                    _ctx = str(c.get("context_snippet") or "")
+                    _blob = (" ".join([_raw, _ut, _ctx])).lower()
+                    uf = ""
+                    if "%" in _blob or "percent" in _blob or "percentage" in _blob:
+                        uf = "percent"
+                    elif any(tok in _blob for tok in ["usd", "sgd", "eur", "gbp", "$", "€", "£", "¥", "aud", "cad", "inr", "cny", "rmb"]):
+                        uf = "currency"
+                    else:
+                        # Magnitude / counts (incl. unit sales)
+                        if any(w in _blob for w in ["million", "billion", "thousand", "trillion"]) or re.search(r"[mbkt]", _blob):
+                            uf = "magnitude"
+                        elif str(c.get("measure_kind") or "").lower() in ("count_units", "count", "quantity"):
+                            uf = "magnitude"
+                        elif str(c.get("measure_assoc") or "").lower() in ("units", "unit_sales", "sales"):
+                            uf = "magnitude"
+                    if uf:
+                        c["unit_family"] = uf
+                        # unit_cmp hint (best-effort; used only for display/debug)
+                        if not str(c.get("unit_cmp") or "").strip():
+                            if uf == "percent":
+                                c["unit_cmp"] = "%"
+                            elif uf == "currency":
+                                c["unit_cmp"] = "currency"
+                            else:
+                                c["unit_cmp"] = (_ut or "").strip()
+            except Exception:
+                pass
+
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
 
