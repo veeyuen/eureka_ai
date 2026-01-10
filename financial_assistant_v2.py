@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34h'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34i'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34g"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34i"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -15315,7 +15315,7 @@ metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, 
 "unit_mismatch": bool(unit_mismatch),
                 "abs_eps_used": abs_eps,
                 "rel_eps_used": rel_eps,
-            
+
                 # v34 join diagnostics (per-row)
                 "diag": {
                     "diff_join_trace_v1": {
@@ -19802,6 +19802,21 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     _fix41afc19_keys_sample_v19 = []
     _fix41afc19_winner_trace_v19 = {}
 
+    # =====================================================================
+    # PATCH V34I (ADDITIVE): protect downstream diff from accidental clobbering
+    # If the forced display rebuild produces an empty dict, do NOT overwrite the
+    # existing current_metrics (which may already contain a valid canonical pool).
+    # This fixes the v34g/v34h regression where metric_changes became [] and UI showed
+    # 'No metrics to display' despite pool_count_v19 > 0.
+    # =====================================================================
+    _fix34i_orig_current_metrics_v1 = (
+        dict(locals().get("current_metrics"))
+        if isinstance(locals().get("current_metrics"), dict)
+        else {}
+    )
+    # =====================================================================
+
+
     try:
         # Start with whatever earlier stage produced
         current_metrics_for_display = locals().get("current_metrics") if isinstance(locals().get("current_metrics"), dict) else {}
@@ -19875,6 +19890,25 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         # Apply display override (used by diff below)
         locals()["current_metrics"] = current_metrics_for_display  # keep variable name used by downstream diff
+
+        # =====================================================================
+        # PATCH V34I_GUARD (ADDITIVE): if display rebuild is empty, restore original
+        # =====================================================================
+        try:
+            _cm_now = locals().get("current_metrics")
+            if isinstance(_cm_now, dict) and (len(_cm_now) == 0) and isinstance(_fix34i_orig_current_metrics_v1, dict) and _fix34i_orig_current_metrics_v1:
+                locals()["current_metrics"] = _fix34i_orig_current_metrics_v1
+                # tiny breadcrumb for JSON debug (safe if output exists)
+                try:
+                    if isinstance(output, dict):
+                        output.setdefault("debug", {}).setdefault("fix34i", {})["restored_current_metrics_after_empty_rebuild"] = True
+                        output["debug"]["fix34i"]["restored_count"] = len(_fix34i_orig_current_metrics_v1)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # =====================================================================
+
         try:
             _fix41afc19_keys_sample_v19 = _fix41afc19_keys_sample_v19 or (list(current_metrics_for_display.keys())[:10] if isinstance(current_metrics_for_display, dict) else [])
         except Exception:
