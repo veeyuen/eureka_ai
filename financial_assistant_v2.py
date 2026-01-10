@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v29'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v30'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v30"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -19703,6 +19703,28 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         # Default: use whatever current_metrics we already have
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
+        # =====================================================================
+        # PATCH V30_CANONICAL_FOR_RENDER_SEED_DISABLE (ADDITIVE)
+        # Goal:
+        # - Stop seeding canonical_for_render from current_metrics because current_metrics may already
+        #   contain year-like / unitless / junk winners (e.g., "2.0 B", "-6441").
+        # - Force the downstream rebuild path (which is intended to be analysis-aligned) to run,
+        #   while keeping fastpath/hashing/injection/snapshot attach untouched.
+        #
+        # Mechanism:
+        # - If prev_response carries a frozen schema, disable the seed by default.
+        # - Allow opt-out via env var EVO_CANONICAL_FOR_RENDER_ALLOW_SEED=1.
+        # - Emit a small trace later via _canonical_for_render_reason tag.
+        # =====================================================================
+        try:
+            _allow_seed = str(os.getenv("EVO_CANONICAL_FOR_RENDER_ALLOW_SEED", "") or "").strip() in ("1", "true", "True", "yes", "YES")
+            _has_schema = isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen") or {}, dict) and bool(prev_response.get("metric_schema_frozen"))
+            if _has_schema and not _allow_seed:
+                canonical_for_render = {}
+                _canonical_for_render_reason = "v30_seed_disabled_force_rebuild"
+        except Exception:
+            pass
+
         # PATCH V21_CANONICAL_FOR_RENDER_SUSPICION (ADDITIVE):
         # Even when current_metrics has "enough" keys, it can still be junk (year-like/unitless winners).
         # Detect suspicious existing canonical dict and force a render-only rebuild in that case.
@@ -19806,7 +19828,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
         _canonical_for_render_reason = "exception_fallback_existing"
 
-    
+
     # =====================================================================
     # PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER (ADDITIVE)
     # Problem observed:
@@ -20400,6 +20422,70 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             for _k, _m in list(canonical_for_render.items()):
                 if isinstance(_m, dict):
                     canonical_for_render[_k] = _v22_norm_metric(_m)
+    except Exception:
+        pass
+
+
+    # =====================================================================
+    # PATCH V30_STRICT_SCHEMA_UNIT_GATE (ADDITIVE)
+    # Goal:
+    # - Apply an analysis-like schema/unit compatibility gate at render-time.
+    # - Explicitly reject obviously incompatible unit evidence (e.g. "2.0 B" for a % metric,
+    #   or unitless negatives like "-6441" for a unit_sales metric).
+    #
+    # Notes:
+    # - Render-only: does not affect extraction, snapshot attach, hashing, or fastpath replay.
+    # - Best-effort: only runs if FIX16 helpers are present.
+    # =====================================================================
+    _v30_strict_gate = {"attempted": False, "dropped": 0, "dropped_keys_sample": []}
+    try:
+        _v30_strict_gate["attempted"] = True
+        _schema = {}
+        try:
+            if isinstance(prev_response, dict):
+                _schema = prev_response.get("metric_schema_frozen") or {}
+        except Exception:
+            _schema = {}
+
+        _fix16_exp = globals().get("_fix16_expected_dimension")
+        _fix16_comp = globals().get("_fix16_unit_compatible")
+        _fix16_has_unit = globals().get("_fix16_candidate_has_any_unit")
+        if callable(_fix16_exp) and callable(_fix16_comp) and isinstance(_schema, dict) and _schema:
+            _dropped = []
+            for _ck, _m in list((canonical_for_render or {}).items()):
+                if not isinstance(_m, dict):
+                    continue
+                _defn = _schema.get(_ck) or {}
+                try:
+                    _expected = _fix16_exp(_defn)
+                except Exception:
+                    _expected = None
+
+                # pull unit evidence in the same style analysis expects
+                _unit_tag = str(_m.get("unit_tag") or _m.get("unit") or "").strip()
+                _raw = str(_m.get("raw") or _m.get("raw_value") or "").strip()
+                _has_any = False
+                try:
+                    if callable(_fix16_has_unit):
+                        _has_any = bool(_fix16_has_unit(_m))
+                except Exception:
+                    _has_any = bool(_unit_tag) or ("% " in (_raw + " ") or "$" in _raw)
+
+                _ok = True
+                try:
+                    _ok = bool(_fix16_comp(_expected, _unit_tag, _has_any))
+                except Exception:
+                    _ok = True
+
+                if not _ok:
+                    _dropped.append(_ck)
+                    try:
+                        canonical_for_render.pop(_ck, None)
+                    except Exception:
+                        pass
+
+            _v30_strict_gate["dropped"] = len(_dropped)
+            _v30_strict_gate["dropped_keys_sample"] = list(_dropped[:12])
     except Exception:
         pass
 
