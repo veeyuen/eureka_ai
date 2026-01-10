@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v33'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -27494,4 +27494,263 @@ except Exception:
 
 # =====================================================================
 # END PATCH V32_PREFER_CUR_PRIMARY_METRICS_CANONICAL
+# =====================================================================
+
+
+# =====================================================================
+# PATCH V34_EVOLUTION_DIFF_ANCHOR_JOIN (ADDITIVE)
+# Goal: Fix Evolution Diff Metrics panel by adding a STRICT, ORDERED secondary join on anchor_hash.
+#       - Primary join remains canonical_key equality (unchanged).
+#       - Secondary join (NEW): if current missing, map prev_anchor_hash -> current canonical_key via cur metric_anchors.
+#       - Current value sourcing: ONLY from cur_response['primary_metrics_canonical'][resolved_cur_ckey].
+#       - No other fallback: no name similarity, no unit-family matching, no numeric inference, no raw numeric pools.
+# Safety: Evolution render/diff layer ONLY. Does not touch fastpath replay / hashing universe / injection lifecycle /
+#         snapshot attach / extraction / Analysis rebuild logic.
+#
+# Adds per-row diagnostics (exact requested shape):
+#   row['diag']['diff_join_trace_v1']
+#   row['diag']['diff_current_source_trace_v1']
+# Adds top-level debug summary:
+#   cur_response['debug']['diff_join_anchor_v34']
+# =====================================================================
+
+try:
+    diff_metrics_by_name_V34_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_V34_BASE = None  # type: ignore
+
+
+def _v34_safe_str(x):
+    try:
+        if x is None:
+            return ""
+        return str(x)
+    except Exception:
+        return ""
+
+
+def _v34_get_anchor_hash(metric_anchors: dict, ckey: str):
+    try:
+        if not isinstance(metric_anchors, dict) or not ckey:
+            return None
+        a = metric_anchors.get(ckey)
+        if not isinstance(a, dict):
+            return None
+        ah = a.get("anchor_hash")
+        ahs = _v34_safe_str(ah).strip()
+        if not ahs or ahs.lower() == "none":
+            return None
+        return ahs
+    except Exception:
+        return None
+
+
+def _v34_build_cur_anchor_index(cur_metric_anchors: dict):
+    """Return map anchor_hash -> deterministic canonical_key (lexicographically smallest)"""
+    idx = {}
+    try:
+        if not isinstance(cur_metric_anchors, dict):
+            return idx
+        for ckey, a in cur_metric_anchors.items():
+            if not isinstance(ckey, str):
+                ckey = _v34_safe_str(ckey)
+            ckey_s = ckey.strip()
+            if not ckey_s:
+                continue
+            if not isinstance(a, dict):
+                continue
+            ah = _v34_safe_str(a.get("anchor_hash")).strip()
+            if not ah or ah.lower() == "none":
+                continue
+            prev = idx.get(ah)
+            if prev is None or ckey_s < prev:
+                idx[ah] = ckey_s
+    except Exception:
+        pass
+    return idx
+
+
+def diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN(prev_response: dict, cur_response: dict):
+    """
+    Evolution Diff Metrics join fix:
+      1) Run base diff to get row set (keeps primary ckey join behavior).
+      2) For rows that are missing CURRENT due to canonical_key drift, attempt strict anchor_hash join.
+      3) If resolved_cur_ckey found, source CURRENT ONLY from cur primary_metrics_canonical[resolved_cur_ckey].
+      4) Emit requested diagnostics and top-level debug summary.
+    """
+    if not callable(diff_metrics_by_name_V34_BASE):
+        return ([], 0, 0, 0, 0)
+
+    metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_V34_BASE(prev_response, cur_response)
+
+    # Build anchor indices
+    prev_ma = (prev_response or {}).get("metric_anchors") if isinstance(prev_response, dict) else None
+    cur_ma = (cur_response or {}).get("metric_anchors") if isinstance(cur_response, dict) else None
+    cur_pmc = (cur_response or {}).get("primary_metrics_canonical") if isinstance(cur_response, dict) else None
+
+    prev_ma = prev_ma if isinstance(prev_ma, dict) else {}
+    cur_ma = cur_ma if isinstance(cur_ma, dict) else {}
+    cur_pmc = cur_pmc if isinstance(cur_pmc, dict) else {}
+
+    cur_anchor_idx = _v34_build_cur_anchor_index(cur_ma)
+
+    joined_by_ckey = 0
+    joined_by_anchor = 0
+    not_found = 0
+    sample_anchor_joins = []
+
+    def _is_missing_current(row: dict):
+        try:
+            # Treat "" / None / "N/A" as missing.
+            v = row.get("current_value")
+            if v is None:
+                return True
+            vs = _v34_safe_str(v).strip()
+            if not vs or vs.upper() == "N/A":
+                return True
+            # Some codepaths may store numeric current_value_norm only.
+            cvn = row.get("cur_value_norm", row.get("current_value_norm", None))
+            if (cvn is None) and (not vs):
+                return True
+            return False
+        except Exception:
+            return True
+
+    try:
+        if isinstance(metric_changes, list):
+            for row in metric_changes:
+                if not isinstance(row, dict):
+                    continue
+
+                row.setdefault("diag", {})
+                if not isinstance(row.get("diag"), dict):
+                    row["diag"] = {}
+
+                # Determine prev_ckey (what the diff row is keyed on)
+                prev_ckey = row.get("canonical_key") or row.get("ckey") or row.get("canonical") or ""
+                prev_ckey = _v34_safe_str(prev_ckey).strip()
+
+                # Primary join (ckey): if base diff already has a non-missing CURRENT, call that "ckey".
+                resolved_cur_ckey = prev_ckey if prev_ckey else None
+                method = "none"
+                prev_anchor_hash = _v34_get_anchor_hash(prev_ma, prev_ckey) if prev_ckey else None
+                cur_anchor_hash = None
+
+                if prev_ckey and (not _is_missing_current(row)):
+                    method = "ckey"
+                    joined_by_ckey += 1
+                    # cur_anchor_hash is best-effort for trace
+                    cur_anchor_hash = _v34_get_anchor_hash(cur_ma, prev_ckey)
+                else:
+                    # Secondary join (anchor_hash)
+                    if prev_anchor_hash and prev_anchor_hash in cur_anchor_idx:
+                        resolved_cur_ckey = cur_anchor_idx.get(prev_anchor_hash)
+                        if resolved_cur_ckey:
+                            method = "anchor_hash"
+                            joined_by_anchor += 1
+                            cur_anchor_hash = _v34_get_anchor_hash(cur_ma, resolved_cur_ckey) or prev_anchor_hash
+                            # Capture a small sample for debug
+                            if len(sample_anchor_joins) < 6:
+                                sample_anchor_joins.append({
+                                    "prev_ckey": prev_ckey,
+                                    "resolved_cur_ckey": resolved_cur_ckey,
+                                    "anchor_hash": prev_anchor_hash,
+                                })
+                    else:
+                        resolved_cur_ckey = None
+                        method = "none"
+                        not_found += 1
+
+                # Per-row diagnostics (exact requested keys)
+                try:
+                    row["diag"]["diff_join_trace_v1"] = {
+                        "prev_ckey": prev_ckey or None,
+                        "resolved_cur_ckey": resolved_cur_ckey if resolved_cur_ckey else None,
+                        "method": method,
+                        "prev_anchor_hash": prev_anchor_hash,
+                        "cur_anchor_hash": cur_anchor_hash,
+                    }
+                except Exception:
+                    pass
+
+                # Current sourcing (strict)
+                used_path = "none"
+                cur_value_norm = None
+                cur_unit_tag = None
+
+                if method in ("ckey", "anchor_hash") and resolved_cur_ckey:
+                    cm = cur_pmc.get(resolved_cur_ckey)
+                    if isinstance(cm, dict) and cm:
+                        # Prefer normalized values directly from canonical metric
+                        cur_value_norm = cm.get("value_norm", cm.get("value", None))
+                        cur_unit_tag = (cm.get("unit_tag") or cm.get("unit") or cm.get("unit_cmp") or "")
+                        cur_unit_tag = _v34_safe_str(cur_unit_tag).strip() or None
+
+                        # Update row CURRENT fields ONLY if we have something concrete
+                        try:
+                            if cur_value_norm is not None:
+                                # build display similar to v32 helper but without inference
+                                if cur_unit_tag:
+                                    row["current_value"] = f"{cur_value_norm} {cur_unit_tag}".strip()
+                                    row["current_unit"] = cur_unit_tag
+                                    row["cur_unit_cmp"] = cur_unit_tag
+                                else:
+                                    row["current_value"] = _v34_safe_str(cur_value_norm)
+                                row["cur_value_norm"] = cur_value_norm
+                                row["current_value_norm"] = cur_value_norm
+                                used_path = "primary_metrics_canonical"
+                        except Exception:
+                            pass
+
+                # If still missing after strict sourcing, do NOT substitute.
+                if used_path != "primary_metrics_canonical" and _is_missing_current(row):
+                    # Ensure canonical not_found semantics stay as blank/N/A
+                    used_path = "none"
+
+                try:
+                    row["diag"]["diff_current_source_trace_v1"] = {
+                        "current_source_path_used": used_path,
+                        "current_value_norm": cur_value_norm if used_path == "primary_metrics_canonical" else None,
+                        "current_unit_tag": cur_unit_tag if used_path == "primary_metrics_canonical" else None,
+                        "inference_disabled": True,
+                    }
+                except Exception:
+                    pass
+
+    except Exception:
+        pass
+
+    # Top-level debug summary (on cur_response)
+    try:
+        if isinstance(cur_response, dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"]["diff_join_anchor_v34"] = {
+                    "rows_total": len(metric_changes) if isinstance(metric_changes, list) else 0,
+                    "joined_by_ckey": joined_by_ckey,
+                    "joined_by_anchor_hash": joined_by_anchor,
+                    "not_found": not_found,
+                    "sample_anchor_joins": sample_anchor_joins,
+                }
+    except Exception:
+        pass
+
+    return metric_changes, unchanged, increased, decreased, found
+
+
+# PATCH V34_WIRE (ADDITIVE): override diff_metrics_by_name entrypoint with v34 anchor join wrapper.
+try:
+    if callable(diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN):
+        diff_metrics_by_name = diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN  # type: ignore
+except Exception:
+    pass
+
+# PATCH V34_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH V34_EVOLUTION_DIFF_ANCHOR_JOIN
 # =====================================================================
