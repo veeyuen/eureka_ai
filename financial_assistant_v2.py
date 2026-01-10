@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v24'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -19848,6 +19848,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
             cur_resp_for_diff = {"primary_metrics_canonical": canonical_for_render}
+            # =====================================================================
+            # PATCH V24_STRICT_CKEY_FLAG (ADDITIVE)
+            # When using canonical-for-render, force strict canonical_key identity matching in diff layer.
+            # This prevents cross-metric substitution (e.g., 2.0 B / 170.0 / year values) from fallback matchers.
+            # =====================================================================
+            try:
+                cur_resp_for_diff["_ph2b_strict_ckey_v24"] = True
+            except Exception:
+                pass
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
@@ -26199,5 +26208,156 @@ except Exception:
 # PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 try:
     CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'
+except Exception:
+    pass
+
+
+
+# =====================================================================
+# PATCH V24_STRICT_CANONICAL_KEY_MATCH (ADDITIVE)
+# Goal: When canonical-for-render is active, enforce strict canonical_key identity for current-side lookup.
+# This blocks all name/heuristic fallback matching that can substitute unrelated canon metrics (e.g., 2.0 B, 170.0, 2030.0).
+#
+# Activation: cur_response contains _ph2b_strict_ckey_v24 == True.
+#
+# Safety: render/diff-layer only. Does not touch fastpath/hashing/injection/snapshot attach.
+# =====================================================================
+try:
+    diff_metrics_by_name_V24_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_V24_BASE = None  # type: ignore
+
+def _v24_num(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip()
+        if not s:
+            return None
+        # remove common commas
+        s = s.replace(",", "")
+        return float(s)
+    except Exception:
+        return None
+
+def diff_metrics_by_name_FIX34_V24_STRICT(prev_response: dict, cur_response: dict):
+    """Strict diff: current metric is looked up ONLY by canonical_key when v24 strict flag is set."""
+    # If not in strict mode, fall back to existing diff implementation.
+    try:
+        if not (isinstance(cur_response, dict) and cur_response.get("_ph2b_strict_ckey_v24")):
+            if callable(diff_metrics_by_name_V24_BASE):
+                return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
+            return ([], 0, 0, 0, 0)
+    except Exception:
+        if callable(diff_metrics_by_name_V24_BASE):
+            return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
+        return ([], 0, 0, 0, 0)
+
+    prev_can = (prev_response or {}).get("primary_metrics_canonical") or {}
+    cur_can = (cur_response or {}).get("primary_metrics_canonical") or {}
+
+    metric_changes = []
+    unchanged = increased = decreased = found = 0
+
+    try:
+        if not isinstance(prev_can, dict):
+            prev_can = {}
+        if not isinstance(cur_can, dict):
+            cur_can = {}
+
+        # Use prev keys as the authoritative set for diffing (matches Analysis behavior).
+        for ckey in prev_can.keys():
+            pm = prev_can.get(ckey) if isinstance(prev_can.get(ckey), dict) else (prev_can.get(ckey) or {})
+            cm = cur_can.get(ckey) if isinstance(cur_can.get(ckey), dict) else (cur_can.get(ckey) or None)
+
+            row = {
+                "canonical_key": ckey,
+                "metric_name": (pm.get("name") if isinstance(pm, dict) else "") or ckey,
+                "previous_value": (pm.get("value_norm") if isinstance(pm, dict) else None),
+                "current_value": None,
+                "prev_unit_cmp": (pm.get("unit") if isinstance(pm, dict) else "") or "",
+                "cur_unit_cmp": "",
+                "prev_value_norm": (pm.get("value_norm") if isinstance(pm, dict) else None),
+                "cur_value_norm": None,
+                "unit_mismatch": False,
+                "change_type": "not_found",
+                "confidence": pm.get("confidence") if isinstance(pm, dict) else None,
+                "metric_definition": pm.get("metric_definition") if isinstance(pm, dict) else None,
+            }
+
+            if isinstance(cm, dict) and cm:
+                found += 1
+                cvn = cm.get("value_norm")
+                cunit = (cm.get("unit") or cm.get("unit_tag") or "").strip()
+                craw = (cm.get("raw") or "").strip()
+                if not craw:
+                    try:
+                        if cvn is not None and cunit:
+                            craw = f"{cvn} {cunit}".strip()
+                        elif cvn is not None:
+                            craw = str(cvn)
+                    except Exception:
+                        craw = ""
+                row["current_value"] = craw
+                row["cur_value_norm"] = cvn
+                row["current_value_norm"] = cvn
+                row["cur_unit_cmp"] = cunit
+                row["current_unit"] = cunit
+
+                pv = _v24_num(row.get("previous_value"))
+                cv = _v24_num(cvn)
+                if pv is not None and cv is not None:
+                    if abs(cv - pv) < 1e-9:
+                        row["change_type"] = "unchanged"
+                        unchanged += 1
+                    elif cv > pv:
+                        row["change_type"] = "increased"
+                        increased += 1
+                    else:
+                        row["change_type"] = "decreased"
+                        decreased += 1
+                else:
+                    # We found a row but cannot compare numerically
+                    row["change_type"] = "found"
+
+                # Attach v24 audit
+                row.setdefault("diag", {})
+                if isinstance(row.get("diag"), dict):
+                    row["diag"].setdefault("canonical_key_strict_v1", {})
+                    row["diag"]["canonical_key_strict_v1"]["enabled"] = True
+                    row["diag"]["canonical_key_strict_v1"]["used_key"] = ckey
+                    row["diag"]["canonical_key_strict_v1"]["fallback_blocked"] = True
+            else:
+                # Not found: keep blank. Still attach audit.
+                row.setdefault("diag", {})
+                if isinstance(row.get("diag"), dict):
+                    row["diag"].setdefault("canonical_key_strict_v1", {})
+                    row["diag"]["canonical_key_strict_v1"]["enabled"] = True
+                    row["diag"]["canonical_key_strict_v1"]["used_key"] = ckey
+                    row["diag"]["canonical_key_strict_v1"]["fallback_blocked"] = True
+                    row["diag"]["canonical_key_strict_v1"]["not_found"] = True
+
+            metric_changes.append(row)
+
+    except Exception:
+        # On failure, revert to existing diff
+        if callable(diff_metrics_by_name_V24_BASE):
+            return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
+        return ([], 0, 0, 0, 0)
+
+    return metric_changes, unchanged, increased, decreased, found
+
+# PATCH V24_WIRE (ADDITIVE): override diff_metrics_by_name entrypoint with v24 strict-aware wrapper.
+try:
+    if callable(diff_metrics_by_name_FIX34_V24_STRICT):
+        diff_metrics_by_name = diff_metrics_by_name_FIX34_V24_STRICT  # type: ignore
+except Exception:
+    pass
+
+# PATCH V24_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v24'
 except Exception:
     pass
