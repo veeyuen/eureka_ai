@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34b'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -27754,3 +27754,48 @@ except Exception:
 # =====================================================================
 # END PATCH V34_EVOLUTION_DIFF_ANCHOR_JOIN
 # =====================================================================
+
+
+# =====================================================================
+# PATCH V34_REBUILD_FN_ALIAS (ADDITIVE):
+# Evolution compute_source_anchored_diff expects these function names:
+#   - rebuild_metrics_from_snapshots_analysis_canonical_v1
+#   - rebuild_metrics_from_snapshots_schema_only_fix16
+# Some branches only define rebuild_metrics_from_snapshots_schema_only.
+# Provide safe aliases so display-rebuild can run and populate Current values,
+# without touching hashing/extraction/fastpath.
+# =====================================================================
+
+try:
+    _v34_base_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only")
+except Exception:
+    _v34_base_rebuild = None
+
+def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
+    """Alias wrapper for evolution display rebuild (FIX16 semantics live in base)."""
+    try:
+        fn = _v34_base_rebuild
+        if callable(fn):
+            try:
+                return fn(prev_response, snapshot_pool, web_context=web_context)
+            except TypeError:
+                return fn(prev_response, snapshot_pool)
+    except Exception:
+        pass
+    return {}
+
+def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
+    """Alias wrapper; prefer schema-only rebuild to preserve deterministic behavior."""
+    try:
+        fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+        if callable(fn):
+            return fn(prev_response, snapshot_pool, web_context=web_context)
+    except Exception:
+        pass
+    return {}
+
+# PATCH V34_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'
+except Exception:
+    pass
