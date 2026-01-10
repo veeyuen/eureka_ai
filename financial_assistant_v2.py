@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v1_fix2b_hardwire_v2"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -17428,6 +17428,58 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     # ============================================================
 
     output["metric_changes"] = metric_changes or []
+
+# =====================================================================
+# PATCH PH2B_S3 (ADDITIVE): Propagate selector breadcrumbs into metric_changes rows
+#
+# Goal:
+#   - Make the Phase 2B hard-wiring auditable from the evolution JSON without
+#     changing the diff logic itself.
+#
+# What:
+#   - For each diff row, attach:
+#       selector_used (from current_metrics[canonical_key])
+#       cur_source_url (normalized) if missing
+#       cur_value_norm, cur_unit_cmp when available
+#
+# This is additive-only and safe for dashboards.
+# =====================================================================
+try:
+    if isinstance(output.get("metric_changes"), list) and isinstance(current_metrics, dict):
+        for _row in output["metric_changes"]:
+            if not isinstance(_row, dict):
+                continue
+            _ck = _row.get("canonical_key") or _row.get("canonical_id") or ""
+            if not _ck:
+                continue
+            _cur = current_metrics.get(_ck)
+            if not isinstance(_cur, dict):
+                continue
+
+            # Breadcrumb
+            if "selector_used" not in _row:
+                if _cur.get("selector_used"):
+                    _row["selector_used"] = _cur.get("selector_used")
+                else:
+                    _row["selector_used"] = ""
+
+            # Normalize and attach current source URL if missing
+            if not _row.get("cur_source_url"):
+                _row["cur_source_url"] = _cur.get("source_url") or ""
+            try:
+                _row["cur_source_url_norm"] = _ph2b_norm_url(_row.get("cur_source_url") or "")
+            except Exception:
+                pass
+
+            # Current numeric fields (for fast triage / runbook)
+            if "cur_value_norm" not in _row and _cur.get("value_norm") is not None:
+                _row["cur_value_norm"] = _cur.get("value_norm")
+            if "cur_unit_cmp" not in _row:
+                _row["cur_unit_cmp"] = _cur.get("unit") or _cur.get("unit_tag") or ""
+            if "anchor_used" not in _row and isinstance(_cur.get("anchor_used"), bool):
+                _row["anchor_used"] = _cur.get("anchor_used")
+except Exception:
+    pass
     output["summary"]["total_metrics"] = len(output["metric_changes"])
     output["summary"]["metrics_found"] = int(found or 0)
     output["summary"]["metrics_increased"] = int(increased or 0)
@@ -18979,7 +19031,75 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["debug"]["fix41afc19"]["rebuilt_count"] = int(locals().get("_fix41afc19_rebuilt_count") or 0)
     except Exception:
         pass
-    # =====================================================================
+
+# =====================================================================
+# PATCH PH2B_S2 (ADDITIVE): Ensure Phase 2B canonical rebuild override actually runs
+#
+# Problem observed in 2026-01-10 run:
+#   - debug.fix41afc19.applied == false, fn empty
+#   - selector_used breadcrumbs absent from metric_changes
+#   - injected source candidates hijacked anchored canonicals (e.g., 2B, 170, 2030)
+#
+# Root cause:
+#   - In some execution paths, the snapshot pool is only available under
+#     output["results"]["baseline_sources_cache_current"], and the existing
+#     FIX41AFC19 pool resolution can miss it, preventing the canonical rebuild.
+#
+# Fix:
+#   - If FIX41AFC19 did not apply AND we are not in authoritative fastpath reuse,
+#     do a second, robust pool resolution and attempt the canonical rebuild again.
+#   - Completely downstream: does NOT touch fastpath/hashing/injection/snapshot attach.
+# =====================================================================
+try:
+    _ph2b_s2_applied = False
+    _ph2b_s2_reason = ""
+    _ph2b_s2_fn = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+    _ph2b_s2_rebuilt_count = 0
+
+    if (not bool(locals().get("_fix31_authoritative_reuse"))) and (not bool(locals().get("_fix41afc19_applied"))):
+        _ph2b_s2_pool = None
+
+        # Prefer the post-attach pool if present
+        if isinstance(output, dict) and isinstance(output.get("results"), dict):
+            _ph2b_s2_pool = (
+                output["results"].get("baseline_sources_cache_current")
+                or output["results"].get("baseline_sources_cache")
+            )
+
+        # Fallbacks (legacy shapes)
+        if _ph2b_s2_pool is None:
+            _ph2b_s2_pool = (
+                locals().get("baseline_sources_cache_current")
+                or locals().get("baseline_sources_cache")
+                or locals().get("baseline_sources_cache_prefetched")
+            )
+
+        _ph2b_s2_fn_obj = globals().get(_ph2b_s2_fn)
+        if callable(_ph2b_s2_fn_obj) and _ph2b_s2_pool is not None:
+            try:
+                _ph2b_s2_rebuilt = _ph2b_s2_fn_obj(prev_response, _ph2b_s2_pool, web_context=web_context)
+            except TypeError:
+                _ph2b_s2_rebuilt = _ph2b_s2_fn_obj(prev_response, _ph2b_s2_pool)
+
+            if isinstance(_ph2b_s2_rebuilt, dict) and _ph2b_s2_rebuilt:
+                current_metrics = dict(_ph2b_s2_rebuilt)
+                _ph2b_s2_applied = True
+                _ph2b_s2_rebuilt_count = int(len(current_metrics))
+                _ph2b_s2_reason = "ph2b_s2_force_apply_analysis_canonical_rebuild"
+except Exception:
+    pass
+
+# Emit debug for PH2B_S2 (non-breaking)
+try:
+    if isinstance(output, dict) and isinstance(output.get("debug"), dict):
+        output["debug"].setdefault("ph2b_s2", {})
+        output["debug"]["ph2b_s2"]["applied"] = bool(locals().get("_ph2b_s2_applied"))
+        output["debug"]["ph2b_s2"]["reason"] = locals().get("_ph2b_s2_reason") or ""
+        output["debug"]["ph2b_s2"]["fn"] = locals().get("_ph2b_s2_fn") or ""
+        output["debug"]["ph2b_s2"]["rebuilt_count"] = int(locals().get("_ph2b_s2_rebuilt_count") or 0)
+except Exception:
+    pass
+# =====================================================================
 # Diff using existing diff helper if present
     metric_changes = []
     try:
