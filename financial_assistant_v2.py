@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v13"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v14"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -13907,6 +13907,103 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     except Exception:
         pass
     # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX2B_RANGE4 (ADDITIVE): late override of snapshot_candidates range builder (schema-unit semantics)
+    #
+    # Location:
+    # - This runs AFTER the legacy "snapshot_candidates" range builder blocks above.
+    #
+    # Goal:
+    # - Ensure value_range is computed in *schema units* (treat candidate.value_norm as schema units),
+    #   avoiding any double-scaling/divide behavior.
+    # - Constrain range computation to the metric's chosen current source_url when present,
+    #   preventing cross-source range pollution.
+    #
+    # Notes:
+    # - Downstream-only post-processing. Does NOT affect selection, only range/min/max display.
+    # - Safe even when evidence is missing: it simply no-ops.
+    # =====================================================================
+    try:
+        _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
+        _pmc = _pr.get("primary_metrics_canonical") if isinstance(_pr, dict) else None
+        _schema = (
+            (analysis.get("metric_schema_frozen") if isinstance(analysis, dict) else None)
+            or (_pr.get("metric_schema_frozen") if isinstance(_pr, dict) else None)
+            or {}
+        )
+        _bsc = analysis.get("baseline_sources_cache") if isinstance(analysis, dict) else None
+
+        if isinstance(_pmc, dict) and isinstance(_schema, dict) and isinstance(_bsc, list) and _bsc:
+            # Flatten candidates once
+            _flat = []
+            for _src in _bsc:
+                if not isinstance(_src, dict):
+                    continue
+                _nums = _src.get("extracted_numbers")
+                if isinstance(_nums, list):
+                    _flat.extend([n for n in _nums if isinstance(n, dict)])
+
+            def _ph2b_unit_tag_norm(x: str) -> str:
+                return _safe_norm_unit_tag(str(x or ""))
+
+            for _ckey, _m in _pmc.items():
+                if not isinstance(_m, dict):
+                    continue
+
+                _mdef = _schema.get(_ckey) if isinstance(_schema, dict) else None
+                _mdef = _mdef if isinstance(_mdef, dict) else {}
+                _exp_unit = str(_mdef.get("unit") or _m.get("unit") or _m.get("unit_tag") or "")
+                _exp_tag = _ph2b_unit_tag_norm(_exp_unit)
+
+                # If the metric already has a source_url, treat that as the range scope
+                _scope_url = _m.get("cur_source_url") or _m.get("source_url") or ""
+                _scope_url_n = _norm_url(_scope_url) if _scope_url else ""
+
+                _vals = []
+                for _cand in _flat:
+                    if not isinstance(_cand, dict):
+                        continue
+                    # source scope (if known)
+                    if _scope_url_n:
+                        _c_url = _cand.get("source_url") or ""
+                        if _norm_url(_c_url) != _scope_url_n:
+                            continue
+                    # unit_tag scope (only enforce when schema declares a scaled magnitude tag)
+                    if _exp_tag:
+                        _cand_tag = _ph2b_unit_tag_norm(_cand.get("unit_tag") or _cand.get("unit") or _cand.get("raw") or "")
+                        if _exp_tag in ("K", "M", "B", "T") and _cand_tag != _exp_tag:
+                            continue
+                    _vn = _cand.get("value_norm")
+                    if _vn is None:
+                        continue
+                    if isinstance(_vn, (int, float)):
+                        try:
+                            _vals.append(float(_vn))
+                        except Exception:
+                            pass
+
+                if len(_vals) >= 2:
+                    _vmin = min(_vals); _vmax = max(_vals)
+                    if abs(_vmax - _vmin) > max(1e-9, abs(_vmin) * 0.02):
+                        _m["value_range"] = {
+                            "min": _vmin,
+                            "max": _vmax,
+                            "n": len(_vals),
+                            "method": "ph2b_schema_unit_range_v2|fix2b_range4",
+                            "scope_url": _scope_url_n or "",
+                            "scope_unit_tag": _exp_tag or ""
+                        }
+                        try:
+                            _unit_disp = _m.get("unit") or _m.get("unit_tag") or _exp_unit or ""
+                            _m["value_range_display"] = f"{_vmin:g}–{_vmax:g} {_unit_disp}".strip()
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    # =====================================================================
+
+
 
     # =====================================================================
     # PATCH V1 (ADDITIVE): analysis & schema version stamping
