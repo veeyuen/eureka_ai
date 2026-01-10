@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v9"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v11"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -1137,7 +1137,7 @@ def add_to_history(analysis: dict) -> bool:
                     "unit_family": best.get("unit_family"),
                     "base_unit": best.get("base_unit"),
                     "value": best.get("value"),
-                    "value_norm": best.get("value_norm"),
+                    "value_norm": (best.get("value") if best.get("value") is not None else best.get("value_norm")),
                     "measure_kind": best.get("measure_kind"),
                     "measure_assoc": best.get("measure_assoc"),
                     "context_snippet": (best.get("context_snippet") or "")[:220],
@@ -14961,6 +14961,10 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 "cur_value_norm": cur_val,
                 "prev_unit_cmp": prev_unit_cmp,
                 "cur_unit_cmp": cur_unit_cmp,
+                # PATCH FIX2B_TRACE_V1 (ADDITIVE): expose chosen URL + selector trace (no behavior change)
+                "cur_source_url": str((cur_can_obj or {}).get("source_url") or ""),
+                "selector_used": str((cur_can_obj or {}).get("selector_used") or ""),
+                "evo_selector_trace_v1": (dict((cur_can_obj or {}).get("analysis_selector_trace_v1")) if isinstance((cur_can_obj or {}).get("analysis_selector_trace_v1"), dict) else {}),
                 "unit_mismatch": bool(unit_mismatch),
                 "abs_eps_used": abs_eps,
                 "rel_eps_used": rel_eps,
@@ -22570,7 +22574,8 @@ def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = ""
         # Extra deterministic guard: unitless year-like numbers should never compete
         # for non-year metrics even if upstream tagging missed them.
         if not _fix16_metric_is_year_like(metric_spec, canonical_key=canonical_key):
-            v = c.get("value_norm")
+            # PATCH FIX2B_RANGE_SCHEMA_V1 (ADDITIVE): range uses schema-unit value when available
+            v = c.get("value") if c.get("value") is not None else c.get("value_norm")
             u = (c.get("base_unit") or c.get("unit") or "").strip()
             if u == "" and isinstance(v, (int, float)):
                 iv = int(v)
@@ -22915,6 +22920,11 @@ def _analysis_canonical_final_selector_v1(
 
     # Candidate filtering
     cands = [c for c in (candidates or []) if isinstance(c, dict)]
+    # PATCH FIX2B_TRACE_V1 (ADDITIVE): candidate counts for trace
+    try:
+        meta["candidate_count_in"] = int(len(cands))
+    except Exception:
+        pass
     # Enforce preferred source lock when available (prevents cross-source hijack)
     if meta["preferred_url"]:
         pref = meta["preferred_url"]
@@ -22925,6 +22935,11 @@ def _analysis_canonical_final_selector_v1(
                 cands_pref.append(c)
         # If preferred exists but yields zero candidates, we keep empty (hard lock).
         cands = cands_pref
+        # PATCH FIX2B_TRACE_V1 (ADDITIVE): preferred-locked candidate count
+        try:
+            meta["candidate_count_pref"] = int(len(cands))
+        except Exception:
+            pass
 
     eligible = []
     for c in cands:
@@ -23053,6 +23068,12 @@ def _analysis_canonical_final_selector_v1(
         eligible.append(c)
 
     meta["eligible_count"] = int(len(eligible) or 0)
+    # PATCH FIX2B_TRACE_V1 (ADDITIVE): eligible candidate count
+    try:
+        meta["candidate_count_eligible"] = int(len(eligible))
+    except Exception:
+        pass
+
     if not eligible:
         meta["blocked_reason"] = "no_eligible_candidates_in_preferred_source" if meta["preferred_url"] else "no_eligible_candidates"
         return None, meta
@@ -23145,6 +23166,23 @@ def _analysis_canonical_final_selector_v1(
 
     meta["anchor_used"] = bool(out.get("anchor_used"))
     meta["chosen_source_url"] = _ph2b_norm_url(out.get("source_url") or "")
+    # =====================================================================
+    # PATCH FIX2B_TRACE_V1 (ADDITIVE): emit selector trace payload
+    # - Does NOT change selection; purely diagnostic.
+    # =====================================================================
+    try:
+        meta["analysis_selector_trace_v1"] = {
+            "selector_used": meta.get("selector_used"),
+            "preferred_url": meta.get("preferred_url"),
+            "chosen_source_url": meta.get("chosen_source_url"),
+            "n_candidates_in": int(meta.get("candidate_count_in") or 0),
+            "n_candidates_pref": int(meta.get("candidate_count_pref") or 0),
+            "n_candidates_eligible": int(meta.get("candidate_count_eligible") or 0),
+            "blocked_reason": meta.get("blocked_reason") or "",
+            "anchor_used": bool(meta.get("anchor_used")),
+        }
+    except Exception:
+        pass
     return out, meta
 
 
@@ -23195,10 +23233,27 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
     rebuilt = {}
     debug_sel = {}
     for canonical_key, spec in metric_schema.items():
+        # =====================================================================
+        # PATCH FIX2B_PREFLOCK_V1 (ADDITIVE): per-metric preferred source lock
+        # - Keeps canonicals anchored to their preferred URL (anchor.source_url or schema.source_url).
+        # - Prevents cross-source hijack from injected/other sources during rebuild.
+        # =====================================================================
+        try:
+            _pref = ""
+            if isinstance(metric_anchors, dict) and isinstance(metric_anchors.get(canonical_key), dict):
+                _pref = metric_anchors.get(canonical_key).get("source_url") or ""
+            _pref = _pref or (spec.get("preferred_url") or spec.get("source_url") or "")
+            _pref_n = _ph2b_norm_url(_pref) if _pref else ""
+            if _pref_n:
+                candidates_for_metric = [c for c in candidates if _ph2b_norm_url(c.get("source_url") or "") == _pref_n]
+            else:
+                candidates_for_metric = candidates
+        except Exception:
+            candidates_for_metric = candidates
         best, meta = _analysis_canonical_final_selector_v1(
             canonical_key=canonical_key,
             schema_frozen=spec,
-            candidates=candidates,
+            candidates=candidates_for_metric,
             anchors=metric_anchors,
             prev_metric=(prev_response.get("primary_metrics_canonical") or {}).get(canonical_key) if isinstance(prev_response.get("primary_metrics_canonical"), dict) else None,
             web_context=web_context,
@@ -23214,6 +23269,12 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                     pass
             # Breadcrumb
             best["selector_used"] = meta.get("selector_used") if isinstance(meta, dict) else "analysis_canonical_v1"
+            # PATCH FIX2B_TRACE_V1 (ADDITIVE): attach trace to metric dict
+            try:
+                if isinstance(meta, dict) and isinstance(meta.get("analysis_selector_trace_v1"), dict):
+                    best["analysis_selector_trace_v1"] = dict(meta.get("analysis_selector_trace_v1"))
+            except Exception:
+                pass
             rebuilt[canonical_key] = best
         debug_sel[canonical_key] = meta
 
