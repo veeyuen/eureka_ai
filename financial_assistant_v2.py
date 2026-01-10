@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v32'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v33'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v30"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v33"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -14866,7 +14866,13 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
         """
         prev_resp = prev_resp if isinstance(prev_resp, dict) else {}
 
+        # =====================================================================
+        # PATCH V33_SCHEMA_PATH_TOLERANT (ADDITIVE)
+        # Support both legacy top-level and analysis-shape nested schema locations.
+        # =====================================================================
         schema = prev_resp.get("metric_schema_frozen")
+        if not isinstance(schema, dict) or not schema:
+            schema = _get_nested(prev_resp, "primary_response", "metric_schema_frozen")
         if isinstance(schema, dict):
             d = schema.get(ckey)
             if isinstance(d, dict) and d:
@@ -14875,6 +14881,8 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 return out
 
         prev_can = prev_resp.get("primary_metrics_canonical")
+        if not isinstance(prev_can, dict) or not prev_can:
+            prev_can = _get_nested(prev_resp, "primary_response", "primary_metrics_canonical")
         if isinstance(prev_can, dict):
             d = prev_can.get(ckey)
             if isinstance(d, dict) and d:
@@ -14947,6 +14955,93 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 
     prev_can = prev_response.get("primary_metrics_canonical")
     cur_can = cur_response.get("primary_metrics_canonical")
+
+    # =====================================================================
+    # PATCH V33_DIFF_CANONICAL_PATHS (ADDITIVE)
+    # Goal:
+    # - Evolution sometimes passes the "analysis-style" response shape where
+    #   canonical metrics + frozen schema live under primary_response.*
+    # - Our canonical-first diff (Path A) was reading ONLY top-level keys, so
+    #   cur_can frequently became {} (or missing), producing blank/N/A current.
+    #
+    # Fix:
+    # - Resolve canonical dict + schema using a tolerant, auditable path order:
+    #   1) explicit injected payloads (e.g., _canonical_for_render, canonical_for_render)
+    #   2) top-level primary_metrics_canonical / metric_schema_frozen (legacy)
+    #   3) nested primary_response.primary_metrics_canonical / metric_schema_frozen (analysis shape)
+    #
+    # Safety:
+    # - Purely affects diff-panel hydration (render-only), not fastpath/hashing/etc.
+    # Diagnostics:
+    # - debug.diff_panel_canonical_paths_v33 (selected paths + key counts)
+    # =====================================================================
+    _diff_panel_paths_v33 = {
+        "prev_can_path": None,
+        "cur_can_path": None,
+        "prev_schema_path": None,
+        "cur_schema_path": None,
+        "prev_can_n": 0,
+        "cur_can_n": 0,
+    }
+
+    def _get_nested(d: dict, *keys):
+        d = d if isinstance(d, dict) else {}
+        for k in keys:
+            if not isinstance(d, dict):
+                return None
+            d = d.get(k)
+        return d
+
+    # Prefer explicitly injected render-canonical dicts if present
+    _cur_injected = cur_response.get("_canonical_for_render") or cur_response.get("canonical_for_render")
+    if isinstance(_cur_injected, dict) and _cur_injected:
+        cur_can = _cur_injected
+        _diff_panel_paths_v33["cur_can_path"] = "_canonical_for_render|canonical_for_render"
+
+    _prev_injected = prev_response.get("_canonical_for_render") or prev_response.get("canonical_for_render")
+    if isinstance(_prev_injected, dict) and _prev_injected:
+        prev_can = _prev_injected
+        _diff_panel_paths_v33["prev_can_path"] = "_canonical_for_render|canonical_for_render"
+
+    # Fall back to nested analysis-shape payloads
+    if not isinstance(cur_can, dict) or not cur_can:
+        _nested_cur = _get_nested(cur_response, "primary_response", "primary_metrics_canonical")
+        if isinstance(_nested_cur, dict) and _nested_cur:
+            cur_can = _nested_cur
+            _diff_panel_paths_v33["cur_can_path"] = "primary_response.primary_metrics_canonical"
+
+    if not isinstance(prev_can, dict) or not prev_can:
+        _nested_prev = _get_nested(prev_response, "primary_response", "primary_metrics_canonical")
+        if isinstance(_nested_prev, dict) and _nested_prev:
+            prev_can = _nested_prev
+            _diff_panel_paths_v33["prev_can_path"] = "primary_response.primary_metrics_canonical"
+
+    # Schema paths (used for eps overrides + metric_definition)
+    _prev_schema = prev_response.get("metric_schema_frozen")
+    if isinstance(_prev_schema, dict) and _prev_schema:
+        _diff_panel_paths_v33["prev_schema_path"] = "metric_schema_frozen"
+    else:
+        _prev_schema = _get_nested(prev_response, "primary_response", "metric_schema_frozen")
+        if isinstance(_prev_schema, dict) and _prev_schema:
+            _diff_panel_paths_v33["prev_schema_path"] = "primary_response.metric_schema_frozen"
+
+    _cur_schema = cur_response.get("metric_schema_frozen")
+    if isinstance(_cur_schema, dict) and _cur_schema:
+        _diff_panel_paths_v33["cur_schema_path"] = "metric_schema_frozen"
+    else:
+        _cur_schema = _get_nested(cur_response, "primary_response", "metric_schema_frozen")
+        if isinstance(_cur_schema, dict) and _cur_schema:
+            _diff_panel_paths_v33["cur_schema_path"] = "primary_response.metric_schema_frozen"
+
+    _diff_panel_paths_v33["prev_can_n"] = len(prev_can) if isinstance(prev_can, dict) else 0
+    _diff_panel_paths_v33["cur_can_n"] = len(cur_can) if isinstance(cur_can, dict) else 0
+
+    try:
+        if isinstance(cur_response, dict):
+            cur_response["_diff_panel_canonical_paths_v33"] = dict(_diff_panel_paths_v33)
+    except Exception:
+        pass
+
 
     # =========================
     # Path A: canonical-first
@@ -21099,6 +21194,22 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 "rows_sample": _sample,
             }
             _dbg["canonical_for_render_present_v25"] = bool(_dbg.get("canonical_for_render_v1"))
+
+            # =====================================================================
+            # PATCH V33_DIFF_PANEL_CANONICAL_PATHS_EMIT (ADDITIVE)
+            # Surface which response-shape path diff used to hydrate "current".
+            # =====================================================================
+            try:
+                _paths = None
+                try:
+                    _paths = cur_response.get("_diff_panel_canonical_paths_v33") if isinstance(cur_response, dict) else None
+                except Exception:
+                    _paths = None
+                if isinstance(_paths, dict) and _paths:
+                    _dbg["diff_panel_canonical_paths_v33"] = _paths
+            except Exception:
+                pass
+
             output["debug"] = _dbg
     except Exception:
         pass
