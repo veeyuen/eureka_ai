@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34g'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34e"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34g"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -14658,6 +14658,18 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 
     Returns:
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+
+            # =====================================================================
+            # PATCH V34G5 (ADDITIVE): surface diff join summary into main debug payload
+            # =====================================================================
+            try:
+                if isinstance(output.get("debug"), dict) and isinstance(cur_resp_for_diff.get("debug"), dict):
+                    if isinstance(cur_resp_for_diff["debug"].get("diff_join_anchor_v34"), dict):
+                        output["debug"]["diff_join_anchor_v34"] = cur_resp_for_diff["debug"]["diff_join_anchor_v34"]
+            except Exception:
+                pass
+            # =====================================================================
     """
     import re
 
@@ -15050,10 +15062,21 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
         metric_changes = []
         unchanged = increased = decreased = found = 0
 
+        # =====================================================================
+        # PATCH V34G0 (ADDITIVE): join counters + sample collection for anchor-hash joins
+        # =====================================================================
+        joined_by_ckey = 0
+        joined_by_anchor_hash = 0
+        not_found_rows = 0
+        sample_anchor_joins = []
+        # =====================================================================
+
+
         for ckey, pm in prev_can.items():
             pm = pm if isinstance(pm, dict) else {}
             cm = cur_can.get(ckey)
             cm = cm if isinstance(cm, dict) else {}
+            joined_by_ckey += 1  # PATCH V34G2 (ADDITIVE): primary join counter
 
             display_name = get_display_name(prev_response, pm, cm, ckey)
             definition = get_metric_definition(prev_response, ckey)
@@ -15062,24 +15085,92 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 
             # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
             if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
-                # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
-                _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
 
-                metric_changes.append({
-                    "name": display_name,
-                    "previous_value": prev_raw,
-                    "current_value": "N/A",
-                    "change_pct": None,
-                    "change_type": "not_found",
-                    "match_confidence": 0.0,
-                    "context_snippet": _ctx,
-                    "source_url": _src,
-                    "anchor_used": False,  # not applicable when current metric missing
-                    "canonical_key": ckey,
-                    "metric_definition": definition,
-                    "anchor_confidence": _aconf,
-                })
-                continue
+                # =====================================================================
+                # PATCH V34G1 (ADDITIVE): secondary join by stable anchor_hash when canonical_key drifts
+                # Rules:
+                # - Primary join: exact canonical_key (unchanged)
+                # - Secondary join: anchor_hash equality only (no similarity, no inference)
+                # - Current value: ONLY from cur_response.primary_metrics_canonical[resolved_cur_ckey]
+                # =====================================================================
+                resolved_cur_ckey = None
+                prev_anchor_hash = None
+                cur_anchor_hash = None
+                try:
+                    prev_ma = prev_response.get("metric_anchors") if isinstance(prev_response, dict) else None
+                    cur_ma = cur_response.get("metric_anchors") if isinstance(cur_response, dict) else None
+
+                    if isinstance(prev_ma, dict) and isinstance(prev_ma.get(ckey), dict):
+                        prev_anchor_hash = prev_ma.get(ckey, {}).get("anchor_hash") or prev_ma.get(ckey, {}).get("hash")
+
+                    # Attempt anchor-hash join only if we have a previous anchor_hash and a current metric_anchors dict
+                    if prev_anchor_hash and isinstance(cur_ma, dict) and cur_ma:
+                        # Deterministic scan over sorted keys
+                        for _cur_ckey in sorted(cur_ma.keys()):
+                            _a = cur_ma.get(_cur_ckey)
+                            if not isinstance(_a, dict):
+                                continue
+                            _ah = _a.get("anchor_hash") or _a.get("hash")
+                            if _ah and str(_ah) == str(prev_anchor_hash):
+                                resolved_cur_ckey = str(_cur_ckey)
+                                cur_anchor_hash = str(_ah)
+                                break
+                except Exception:
+                    resolved_cur_ckey = None
+
+                # If anchor join succeeded, rebind cm; otherwise treat as not_found.
+                if resolved_cur_ckey and isinstance(cur_can.get(resolved_cur_ckey), dict):
+                    cm = cur_can.get(resolved_cur_ckey) if isinstance(cur_can, dict) else None
+                    cm = cm if isinstance(cm, dict) else {}
+                    joined_by_anchor_hash += 1
+                    if len(sample_anchor_joins) < 5:
+                        sample_anchor_joins.append({
+                            "prev_ckey": ckey,
+                            "resolved_cur_ckey": resolved_cur_ckey,
+                            "prev_anchor_hash": prev_anchor_hash,
+                            "cur_anchor_hash": cur_anchor_hash,
+                        })
+                else:
+                    # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
+                    _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
+
+                    not_found_rows += 1
+                    metric_changes.append({
+                        "name": display_name,
+                        "previous_value": prev_raw,
+                        "current_value": "N/A",
+                        "change_pct": None,
+                        "change_type": "not_found",
+                        "match_confidence": 0.0,
+                        "context_snippet": _ctx,
+                        "source_url": _src,
+                        "anchor_used": False,  # not applicable when current metric missing
+                        "canonical_key": ckey,
+                        "metric_definition": definition,
+                        "anchor_confidence": _aconf,
+
+                        # v34 join diagnostics (per-row)
+                        "diag": {
+                            "diff_join_trace_v1": {
+                                "prev_ckey": ckey,
+                                "resolved_cur_ckey": None,
+                                "method": "none",
+                                "prev_anchor_hash": prev_anchor_hash,
+                                "cur_anchor_hash": None,
+                            },
+                            "diff_current_source_trace_v1": {
+                                "current_source_path_used": "none",
+                                "current_value_norm": None,
+                                "current_unit_tag": None,
+                                "inference_disabled": True,
+                            },
+                        },
+                    })
+                    continue
+
+                # When anchor-join succeeded, we fall through and compute change using `cm`
+                # Update display_name/definition remain keyed on prev ckey by design.
+
 
             found += 1
 
@@ -15224,7 +15315,42 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 "unit_mismatch": bool(unit_mismatch),
                 "abs_eps_used": abs_eps,
                 "rel_eps_used": rel_eps,
+
+                # v34 join diagnostics (per-row)
+                "diag": {
+                    "diff_join_trace_v1": {
+                        "prev_ckey": ckey,
+                        "resolved_cur_ckey": (resolved_cur_ckey if "resolved_cur_ckey" in locals() and resolved_cur_ckey else ckey),
+                        "method": ("anchor_hash" if "resolved_cur_ckey" in locals() and resolved_cur_ckey and str(resolved_cur_ckey) != str(ckey) else "ckey"),
+                        "prev_anchor_hash": (prev_anchor_hash if "prev_anchor_hash" in locals() else None),
+                        "cur_anchor_hash": (cur_anchor_hash if "cur_anchor_hash" in locals() else None),
+                    },
+                    "diff_current_source_trace_v1": {
+                        "current_source_path_used": "primary_metrics_canonical",
+                        "current_value_norm": cur_val,
+                        "current_unit_tag": cm.get("unit_tag") if isinstance(cm, dict) else None,
+                        "inference_disabled": True,
+                    },
+                },
             })
+
+        # =====================================================================
+        # PATCH V34G3 (ADDITIVE): top-level debug summary for join methods
+        # =====================================================================
+        try:
+            if isinstance(cur_response, dict):
+                cur_response.setdefault("debug", {})
+                if isinstance(cur_response.get("debug"), dict):
+                    cur_response["debug"]["diff_join_anchor_v34"] = {
+                        "rows_total": len(metric_changes) if isinstance(metric_changes, list) else 0,
+                        "joined_by_ckey": joined_by_ckey,
+                        "joined_by_anchor_hash": joined_by_anchor_hash,
+                        "not_found": not_found_rows,
+                        "sample_anchor_joins": sample_anchor_joins,
+                    }
+        except Exception:
+            pass
+        # =====================================================================
 
         return metric_changes, unchanged, increased, decreased, found
 
@@ -15681,6 +15807,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             pm = pm if isinstance(pm, dict) else {}
             cm = cur_can.get(ckey)
             cm = cm if isinstance(cm, dict) else {}
+            joined_by_ckey += 1  # PATCH V34G2 (ADDITIVE): primary join counter
 
             display_name = get_display_name(prev_response, pm, cm, ckey)
             definition = get_metric_definition(prev_response, ckey)
@@ -16268,6 +16395,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             pm = pm if isinstance(pm, dict) else {}
             cm = cur_can.get(ckey)
             cm = cm if isinstance(cm, dict) else {}
+            joined_by_ckey += 1  # PATCH V34G2 (ADDITIVE): primary join counter
 
             display_name = get_display_name(prev_response, pm, cm, ckey)
             definition = get_metric_definition(prev_response, ckey)
@@ -17821,7 +17949,17 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             except Exception:
                 pass
 
-            cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
+            # =====================================================================
+            # PATCH V34G4 (ADDITIVE): pass metric_anchors + debug into diff join context
+            # Why: anchor-hash join requires access to current metric_anchors; previous patches
+            # passed only primary_metrics_canonical which makes anchor join impossible.
+            # =====================================================================
+            cur_resp_for_diff = {
+                "primary_metrics_canonical": current_metrics,
+                "metric_anchors": (output.get("metric_anchors") if isinstance(output, dict) else None),
+                "debug": {},
+            }
+            # =====================================================================
             # ============================================================
             # ============================================================
             # PATCH V34D (ADDITIVE): provide metric_anchors for current side so anchor_hash join can work
