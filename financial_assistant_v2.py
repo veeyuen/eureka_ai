@@ -19617,17 +19617,196 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
     # =====================================================================
-# Diff using existing diff helper if present
+    # =====================================================================
+    # PATCH V20_CANONICAL_FOR_RENDER (ADDITIVE): make Evolution dashboard derive
+    # "Current" from a canonical-for-render payload (analysis-aligned) WITHOUT
+    # touching fastpath/hashing/snapshot-attach.
+    #
+    # Why:
+    # - Evolution UI renders from diff rows (metric_changes), not analysis key-metrics.
+    # - If diff rows source "Current" from raw extracted pools, unitless survivors
+    #   (e.g., 170, 2) can win.
+    # - We compute a late, render-only canonical dict from the frozen snapshot pool
+    #   using the same rebuild semantics as analysis (best effort), then force the
+    #   diff + row hydration to use it.
+    #
+    # Safety:
+    # - Purely post-snapshot, post-hash: affects ONLY dashboard/diff rendering.
+    # - Does NOT alter source selection, hashing inputs, injection lifecycle, fastpath.
+    #
+    # Diagnostics:
+    # - output.debug.canonical_for_render_v1
+    # - output.debug.canonical_for_render_row_audit_v1
+    # =====================================================================
+    _canonical_for_render_applied = False
+    _canonical_for_render_reason = ""
+    _canonical_for_render_fn = ""
+    _canonical_for_render_count = 0
+    _canonical_for_render_keys_sample = []
+    _canonical_for_render_replaced_current_metrics = False
+
+    canonical_for_render = {}
+    try:
+        # Default: use whatever current_metrics we already have
+        canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
+
+        # Best-effort: rebuild canonical-for-render from frozen snapshots using analysis-aligned builder.
+        # Apply when current canonical is missing/suspiciously small.
+        _need_render_rebuild = (not isinstance(canonical_for_render, dict)) or (len(canonical_for_render) < 3)
+        if _need_render_rebuild and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            # Resolve schema/anchors/canon from prev_response (analysis baseline)
+            _schema = {}
+            _anchors = {}
+            _prev_canon = {}
+            try:
+                if isinstance(prev_response, dict):
+                    _schema = prev_response.get("metric_schema_frozen") or {}
+                    _anchors = prev_response.get("metric_anchors") or {}
+                    _prev_canon = prev_response.get("primary_metrics_canonical") or {}
+            except Exception:
+                _schema, _anchors, _prev_canon = {}, {}, {}
+
+            # Choose the best available analysis-aligned rebuild function
+            _fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+            if callable(_fn):
+                try:
+                    canonical_for_render = _fn(baseline_sources_cache, _schema, _anchors, _prev_canon)
+                    _canonical_for_render_fn = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+                except Exception:
+                    canonical_for_render = {}
+            if (not canonical_for_render) and callable(globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")):
+                try:
+                    _fn2 = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")
+                    canonical_for_render = _fn2(baseline_sources_cache, _schema, _anchors, _prev_canon)
+                    _canonical_for_render_fn = "rebuild_metrics_from_snapshots_with_anchors_fix16"
+                except Exception:
+                    canonical_for_render = {}
+            if (not canonical_for_render) and callable(globals().get("rebuild_metrics_from_snapshots_schema_only")):
+                try:
+                    _fn3 = globals().get("rebuild_metrics_from_snapshots_schema_only")
+                    canonical_for_render = _fn3(baseline_sources_cache, _schema)
+                    _canonical_for_render_fn = "rebuild_metrics_from_snapshots_schema_only"
+                except Exception:
+                    canonical_for_render = {}
+
+            if isinstance(canonical_for_render, dict) and canonical_for_render:
+                _canonical_for_render_applied = True
+                _canonical_for_render_reason = "applied_render_only_rebuild"
+                _canonical_for_render_count = int(len(canonical_for_render))
+                _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12]
+                _canonical_for_render_replaced_current_metrics = True
+            else:
+                _canonical_for_render_reason = "render_rebuild_failed_or_empty"
+        else:
+            _canonical_for_render_reason = "used_existing_current_metrics"
+            _canonical_for_render_count = int(len(canonical_for_render)) if isinstance(canonical_for_render, dict) else 0
+            _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12] if isinstance(canonical_for_render, dict) else []
+    except Exception:
+        canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
+        _canonical_for_render_reason = "exception_fallback_existing"
+
+    # Diff using existing diff helper if present, but FORCE cur_response to canonical-for-render.
     metric_changes = []
     try:
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
-            cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
+            cur_resp_for_diff = {"primary_metrics_canonical": canonical_for_render}
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
         metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+
+    # Post-process diff rows: ensure "Current" fields are derived from canonical-for-render.
+    _row_audit = {
+        "rows_total": int(len(metric_changes or [])),
+        "rows_hydrated": 0,
+        "rows_missing_canonical": 0,
+        "rows_with_prior_current_overridden": 0,
+    }
+    try:
+        if isinstance(metric_changes, list) and isinstance(canonical_for_render, dict):
+            for row in metric_changes:
+                if not isinstance(row, dict):
+                    continue
+                ckey = row.get("canonical_key") or row.get("canonical") or row.get("canonical_id") or ""
+                if not ckey:
+                    continue
+                cm = canonical_for_render.get(ckey)
+                if not isinstance(cm, dict):
+                    _row_audit["rows_missing_canonical"] += 1
+                    continue
+
+                # Capture prior values for audit if we are overriding
+                prior = {
+                    "current_value": row.get("current_value"),
+                    "current_value_norm": row.get("current_value_norm"),
+                    "cur_value_norm": row.get("cur_value_norm"),
+                    "cur_unit_cmp": row.get("cur_unit_cmp"),
+                    "current_unit": row.get("current_unit"),
+                }
+
+                # Hydrate from canonical metric
+                vnorm = cm.get("value_norm")
+                unit = (cm.get("unit") or cm.get("unit_tag") or "").strip()
+                raw = (cm.get("raw") or cm.get("value_raw") or cm.get("raw_value") or "").strip()
+                if not raw:
+                    # Build a lightweight display string when raw isn't available
+                    try:
+                        if vnorm is not None and unit:
+                            raw = f"{vnorm} {unit}".strip()
+                        elif vnorm is not None:
+                            raw = str(vnorm)
+                    except Exception:
+                        raw = row.get("current_value") or ""
+
+                # Apply canonical-for-render to diff row
+                row["current_value_norm"] = vnorm
+                row["cur_value_norm"] = vnorm
+                row["current_unit"] = unit
+                row["cur_unit_cmp"] = unit
+                row["current_value"] = raw
+
+                # Range fields (if present in canonical)
+                if isinstance(cm.get("value_range"), dict):
+                    row["current_value_range"] = cm.get("value_range")
+                if (cm.get("value_range_display") or "").strip():
+                    row["current_value_range_display"] = cm.get("value_range_display")
+
+                # Audit stamp
+                row.setdefault("diag", {})
+                if isinstance(row.get("diag"), dict):
+                    row["diag"].setdefault("canonical_for_render_v1", {})
+                    row["diag"]["canonical_for_render_v1"]["applied"] = True
+                    row["diag"]["canonical_for_render_v1"]["fn"] = _canonical_for_render_fn
+                    row["diag"]["canonical_for_render_v1"]["reason"] = _canonical_for_render_reason
+                    row["diag"]["canonical_for_render_v1"]["prior_current"] = prior
+
+                # Determine if we actually changed the row
+                if prior.get("cur_value_norm") != vnorm or str(prior.get("cur_unit_cmp") or "") != unit or str(prior.get("current_value") or "") != raw:
+                    _row_audit["rows_with_prior_current_overridden"] += 1
+                _row_audit["rows_hydrated"] += 1
+    except Exception:
+        pass
+
+    # Attach diagnostics for auditability
+    try:
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["canonical_for_render_v1"] = {
+                "applied": bool(_canonical_for_render_applied),
+                "reason": str(_canonical_for_render_reason or ""),
+                "fn": str(_canonical_for_render_fn or ""),
+                "rebuilt_count": int(_canonical_for_render_count or 0),
+                "keys_sample": list(_canonical_for_render_keys_sample or []),
+                "replaced_current_metrics_for_render": bool(_canonical_for_render_replaced_current_metrics),
+            }
+            output["debug"]["canonical_for_render_row_audit_v1"] = _row_audit
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V20_CANONICAL_FOR_RENDER
+    # =====================================================================
 
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
