@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34i'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34j'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34i"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34j"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -20210,6 +20210,39 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _canonical_for_render_fn = "rebuild_metrics_from_snapshots_schema_only"
                 except Exception:
                     canonical_for_render = {}
+
+            # =====================================================================
+            # PATCH V34J_SCHEMA_ONLY_CALLSIG_FIX (ADDITIVE)
+            # The canonical_for_render fallback incorrectly called
+            # rebuild_metrics_from_snapshots_schema_only(baseline_sources_cache, _schema),
+            # but the function signature is (prev_response, baseline_sources_cache, web_context=None).
+            # This patch retries schema-only rebuild with the correct call signature,
+            # using the best available prev_response (primary_response if nested).
+            # =====================================================================
+            try:
+                if (not canonical_for_render) and (_canonical_for_render_fn == "rebuild_metrics_from_snapshots_schema_only"):
+                    _fn3b = globals().get("rebuild_metrics_from_snapshots_schema_only")
+                    if callable(_fn3b):
+                        _prev_for_schema_only = prev_response
+                        try:
+                            if isinstance(previous_data, dict):
+                                _pr = previous_data.get("primary_response")
+                                if isinstance(_pr, dict) and isinstance(_pr.get("metric_schema_frozen"), dict) and _pr.get("metric_schema_frozen"):
+                                    _prev_for_schema_only = _pr
+                        except Exception:
+                            pass
+                        canonical_for_render = _fn3b(_prev_for_schema_only, baseline_sources_cache, web_context)
+                        if isinstance(canonical_for_render, dict) and canonical_for_render:
+                            _canonical_for_render_fn = "rebuild_metrics_from_snapshots_schema_only_v34j_callsig"
+                            try:
+                                _canonical_for_render_reason = "applied_schema_only_callsig_fix"
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH V34J_SCHEMA_ONLY_CALLSIG_FIX
+            # =====================================================================
 
             if isinstance(canonical_for_render, dict) and canonical_for_render:
                 _canonical_for_render_applied = True
