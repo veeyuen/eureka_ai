@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34j'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34h'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34j"
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34k"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -17443,6 +17443,76 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 
     # ---------- Use your existing deterministic metric diff helper ----------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
+    # =====================================================================
+    # PATCH v34k (ADDITIVE): robust prev_response hydration (restore row emission)
+    #
+    # Problem observed (v34g+):
+    #   The Diff Metrics panel renders from results.metric_changes, but metric_changes
+    #   can become [] if prev_response is the wrong shape (e.g. previous_data is already
+    #   a primary_response dict, or the primary_response is nested under results).
+    #
+    # Fix:
+    #   Deterministically pick a usable prev_response from a small ordered ladder,
+    #   without any heuristic matching or inference.
+    #   Also emit a debug breadcrumb so runs are auditable.
+    # =====================================================================
+    _v34k_prev_pick = {
+        "picked": "previous_data.primary_response",
+        "candidates_checked": [
+            "previous_data.primary_response",
+            "previous_data.results.primary_response",
+            "previous_data",
+        ],
+        "prev_nonempty": bool(isinstance(prev_response, dict) and len(prev_response) > 0),
+        "prev_has_pmc": bool(isinstance(prev_response, dict) and (prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics"))),
+        "prev_has_schema": bool(isinstance(prev_response, dict) and bool(prev_response.get("metric_schema_frozen"))),
+    }
+    try:
+        _pd = previous_data or {}
+        _cand1 = _pd.get("primary_response") if isinstance(_pd, dict) else None
+        _cand2 = ((_pd.get("results") or {}).get("primary_response")) if isinstance(_pd, dict) and isinstance(_pd.get("results"), dict) else None
+        _cand3 = _pd if isinstance(_pd, dict) else None
+
+        _ladder = [
+            ("previous_data.primary_response", _cand1),
+            ("previous_data.results.primary_response", _cand2),
+            ("previous_data", _cand3),
+        ]
+
+        for _label, _cand in _ladder:
+            if not isinstance(_cand, dict) or not _cand:
+                continue
+
+            # If it's explicitly a primary_response container, accept it.
+            if _label.endswith("primary_response"):
+                prev_response = _cand
+                _v34k_prev_pick["picked"] = _label
+                break
+
+            # Otherwise accept only if it already "looks like" a response payload.
+            if ("primary_metrics_canonical" in _cand) or ("primary_metrics" in _cand) or ("metric_schema_frozen" in _cand) or ("metric_anchors" in _cand):
+                prev_response = _cand
+                _v34k_prev_pick["picked"] = _label
+                break
+
+        _v34k_prev_pick["prev_nonempty"] = bool(isinstance(prev_response, dict) and len(prev_response) > 0)
+        _v34k_prev_pick["prev_has_pmc"] = bool(isinstance(prev_response, dict) and (prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics")))
+        _v34k_prev_pick["prev_has_schema"] = bool(isinstance(prev_response, dict) and bool(prev_response.get("metric_schema_frozen")))
+        _v34k_prev_pick["prev_keys_sample"] = sorted(list(prev_response.keys()))[:25] if isinstance(prev_response, dict) else []
+        if isinstance(prev_response, dict):
+            _pmc = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
+            _v34k_prev_pick["prev_metric_count"] = int(len(_pmc)) if isinstance(_pmc, dict) else 0
+        else:
+            _v34k_prev_pick["prev_metric_count"] = 0
+    except Exception as _e_v34k:
+        _v34k_prev_pick["error"] = str(_e_v34k)
+
+    try:
+        output.setdefault("debug", {})["diff_prev_response_pick_v34k"] = _v34k_prev_pick
+    except Exception:
+        pass
+    # =====================================================================
+
 
     # =====================================================================
     # PATCH V34H_PREV_RESPONSE_PICK_FALLBACK (ADDITIVE)
