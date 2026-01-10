@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v14"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v15"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -23100,6 +23100,21 @@ def _analysis_canonical_final_selector_v1(
                 _cand_family = str(c.get("unit_family") or "").strip().lower()
                 _cand_ucmp = str(c.get("unit_cmp") or c.get("unit_tag") or "").strip().lower()
                 _spec_family = str(spec.get("unit_family") or "").strip().lower()
+                # =====================================================================
+                # PATCH FIX2B_SCHEMAFAM_INFER_V1 (ADDITIVE):
+                # If schema.unit_family is missing/blank, infer expected family deterministically
+                # from schema.dimension / canonical_key suffixes using existing FIX17 helper.
+                # This prevents silent bypass of percent/currency hard-gates.
+                # =====================================================================
+                try:
+                    if not _spec_family:
+                        _fn_exp = globals().get("_fix17_expected_dimension")
+                        if callable(_fn_exp):
+                            _exp = str(_fn_exp(spec, canonical_key=canonical_key) or "").strip().lower()
+                            if _exp in ("percent", "currency", "magnitude", "rate", "ratio"):
+                                _spec_family = _exp
+                except Exception:
+                    pass
                 _spec_ut = str(spec.get("unit_tag") or spec.get("unit") or "").strip().lower()
 
                 # evidence flags
@@ -23184,6 +23199,37 @@ def _analysis_canonical_final_selector_v1(
                             str(c.get("context_snippet") or c.get("context") or ""),
                         ])).lower()
                         _has_scale_ev = any(tok in _blob for tok in ("million", "billion", "trillion", "thousand", "mn", "bn")) or bool(re.search(r"\b[mbkt]\b", _blob))
+                        # =================================================================
+                        # PATCH FIX2B_SCALE_MATCH_V1 (ADDITIVE):
+                        # For scaled schemas, require scale to *match* the schema (e.g., million vs billion).
+                        # Prevents wrong-scale candidates from surviving for 'million units' schemas.
+                        # =================================================================
+                        try:
+                            _schema_scale = ""
+                            if "million" in _spec_ut or _spec_ut == "m":
+                                _schema_scale = "m"
+                            elif "billion" in _spec_ut or _spec_ut == "b":
+                                _schema_scale = "b"
+                            elif "thousand" in _spec_ut or _spec_ut == "k":
+                                _schema_scale = "k"
+                            elif "trillion" in _spec_ut or _spec_ut == "t":
+                                _schema_scale = "t"
+
+                            _cand_scale = ""
+                            if any(t in _blob for t in ("million", "mn")) or bool(re.search(r"m", _blob)):
+                                _cand_scale = "m"
+                            elif any(t in _blob for t in ("billion", "bn")) or bool(re.search(r"b", _blob)):
+                                _cand_scale = "b"
+                            elif "thousand" in _blob or bool(re.search(r"k", _blob)):
+                                _cand_scale = "k"
+                            elif "trillion" in _blob or bool(re.search(r"t", _blob)):
+                                _cand_scale = "t"
+
+                            if _schema_scale and _cand_scale and _schema_scale != _cand_scale:
+                                meta["blocked_reason"] = "scale_mismatch_hard_block"
+                                continue
+                        except Exception:
+                            pass
                         if not _has_scale_ev:
                             meta["blocked_reason"] = "scale_evidence_missing_hard_block"
                             continue
@@ -23265,8 +23311,8 @@ def _analysis_canonical_final_selector_v1(
                 pass
         if len(vals) >= 2:
             vmin = min(vals); vmax = max(vals)
-            meta["value_range"] = {"min": vmin, "max": vmax, "n": len(vals), "method": "ph2b_schema_unit_range_v1"}
-            meta["range_method"] = "ph2b_schema_unit_range_v1"
+            meta["value_range"] = {"min": vmin, "max": vmax, "n": len(vals), "method": "ph2b_schema_unit_range_v2|fix2b_range4"}
+            meta["range_method"] = "ph2b_schema_unit_range_v2|fix2b_range4"
     except Exception:
         pass
 
