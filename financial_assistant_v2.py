@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34c'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34d'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -17821,8 +17821,49 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             except Exception:
                 pass
 
-            cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
-            metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+            cur_resp_for_diff = \{"primary_metrics_canonical": current_metrics\}
+# ============================================================
+# PATCH V34D (ADDITIVE): provide metric_anchors for current side so anchor_hash join can work
+# - compute_source_anchored_diff previously passed only primary_metrics_canonical to diff layer
+# - v34 join requires cur_response.metric_anchors[ckey].anchor_hash (secondary join)
+# - We synthesize metric_anchors from rebuilt canonical metrics when missing.
+# Safety:
+# - Deterministic, inference-free. Uses only anchor_hash already attached to rebuilt canonical metrics.
+# ============================================================
+try:
+    if isinstance(cur_resp_for_diff, dict) and "metric_anchors" not in cur_resp_for_diff:
+        _v34d_cur_anchors = {}
+        if isinstance(current_metrics, dict):
+            for _ck_v34d, _m_v34d in current_metrics.items():
+                if not isinstance(_ck_v34d, str) or not _ck_v34d:
+                    continue
+                if not isinstance(_m_v34d, dict):
+                    continue
+                _ah = _m_v34d.get("anchor_hash") or _m_v34d.get("anchor") or _m_v34d.get("anchor_id") or None
+                if isinstance(_ah, str) and _ah:
+                    _v34d_cur_anchors[_ck_v34d] = {"anchor_hash": _ah}
+        if _v34d_cur_anchors:
+            cur_resp_for_diff["metric_anchors"] = _v34d_cur_anchors
+except Exception:
+    pass
+# ============================================================
+
+            metric_changes, unchanged, increased, decreased, found = fn_diff\(prev_response, cur_resp_for_diff\)
+# ============================================================
+# PATCH V34D (ADDITIVE): merge diff join summary debug into evolution output debug
+# - v34 join emits debug.diff_join_anchor_v34 on the cur_response object passed to diff layer
+# - cur_resp_for_diff is local; we surface it to output.debug for auditability.
+# ============================================================
+try:
+    _v34d_dbg = None
+    if isinstance(cur_resp_for_diff, dict) and isinstance(cur_resp_for_diff.get("debug"), dict):
+        _v34d_dbg = cur_resp_for_diff["debug"].get("diff_join_anchor_v34")
+    if isinstance(_v34d_dbg, dict) and isinstance(output.get("debug"), dict):
+        output["debug"]["diff_join_anchor_v34"] = _v34d_dbg
+except Exception:
+    pass
+# ============================================================
+
 
             # ============================================================
             # PATCH FIX38 (ADDITIVE): populate schema_unit_family on diff rows (if missing)
