@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v5"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v7"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -13748,6 +13748,45 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     except Exception:
                         pass
     # =====================================================================
+    # PATCH FIX2B_RANGE2 (ADDITIVE): override legacy snapshot_candidates range with schema-unit evidence range
+    # =====================================================================
+    try:
+        _res = analysis.get("results") if isinstance(analysis, dict) else None
+        if isinstance(_res, dict):
+            for _ck, _m in _res.items():
+                if not isinstance(_m, dict):
+                    continue
+                _ev = _m.get("evidence")
+                if not isinstance(_ev, list) or len(_ev) < 2:
+                    continue
+                _vals = []
+                for _e in _ev:
+                    if not isinstance(_e, dict):
+                        continue
+                    _v = _e.get("value_norm")
+                    if _v is None:
+                        _v = _e.get("value")
+                    if isinstance(_v, (int, float)):
+                        try:
+                            _vals.append(float(_v))
+                        except Exception:
+                            pass
+                if len(_vals) < 2:
+                    continue
+                _vmin = min(_vals); _vmax = max(_vals)
+                if abs(_vmax - _vmin) <= max(1e-9, abs(_vmin) * 0.02):
+                    continue
+                _m["value_range"] = {"min": _vmin, "max": _vmax, "n": len(_vals), "method": "ph2b_schema_unit_range_v1|fix2b_range2"}
+                try:
+                    _unit_disp = _m.get("unit") or _m.get("unit_tag") or ""
+                    _m["value_range_display"] = f"{_vmin:g}–{_vmax:g} {_unit_disp}".strip()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # =====================================================================
+
+    # =====================================================================
     # PATCH V1 (ADDITIVE): analysis & schema version stamping
     # - Pure metadata, NO logic impact
     # - Allows downstream drift attribution:
@@ -22768,6 +22807,85 @@ def _analysis_canonical_final_selector_v1(
         try:
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
+
+            # =====================================================================
+            # PATCH FIX2B_SEL23 (ADDITIVE): unit-family hard gating + year suppression + scaled-magnitude unit evidence
+            # - Rejects percent/currency evidence when schema expects magnitude (prevents % hijacks).
+            # - Suppresses unitless bare years (e.g., 2030) as candidates.
+            # - Enforces unit evidence for scaled magnitude schemas (million/billion/etc.).
+            # =====================================================================
+            try:
+                _raw0 = str(c.get("raw") or "").strip()
+                _raw0_l = _raw0.lower()
+                _v0 = c.get("value_norm", None)
+                if _v0 is None:
+                    _v0 = c.get("value", None)
+
+                _cand_family = str(c.get("unit_family") or "").strip().lower()
+                _cand_ucmp = str(c.get("unit_cmp") or c.get("unit_tag") or "").strip().lower()
+                _spec_family = str(spec.get("unit_family") or "").strip().lower()
+                _spec_ut = str(spec.get("unit_tag") or spec.get("unit") or "").strip().lower()
+
+                # evidence flags
+                _has_pct = ("%" in _raw0) or ("percent" in _raw0_l) or ("%" in _cand_ucmp) or (_cand_family == "percent")
+                _has_ccy = any(sym in _raw0 for sym in ("$", "€", "£", "¥")) or any(tok in _raw0_l for tok in ("usd", "eur", "sgd", "gbp", "jpy")) or (_cand_family == "currency")
+
+                _has_unit_ev0 = False
+                try:
+                    for _k in ("base_unit", "unit", "unit_tag", "unit_family"):
+                        if str(c.get(_k) or "").strip():
+                            _has_unit_ev0 = True
+                            break
+                    if not _has_unit_ev0:
+                        if any(tok in _raw0_l for tok in ("million", "billion", "trillion", "mn", "bn", "thousand")):
+                            _has_unit_ev0 = True
+                        if _has_pct or _has_ccy:
+                            _has_unit_ev0 = True
+                except Exception:
+                    pass
+
+                # unit-family hard gating (schema-driven)
+                try:
+                    if _spec_family == "percent":
+                        if not _has_pct:
+                            meta["blocked_reason"] = "percent_evidence_missing_hard_block"
+                            continue
+                    elif _spec_family == "currency":
+                        if not _has_ccy:
+                            meta["blocked_reason"] = "currency_evidence_missing_hard_block"
+                            continue
+                    elif _spec_family == "magnitude":
+                        # reject percent/currency candidates outright
+                        if _has_pct or _has_ccy:
+                            meta["blocked_reason"] = "unit_mismatch_hard_block"
+                            continue
+                except Exception:
+                    pass
+
+                # year-only candidate suppression (strict): only when unit evidence is missing
+                try:
+                    if (not _has_unit_ev0) and isinstance(_v0, (int, float)):
+                        _iv0 = int(float(_v0))
+                        if 1900 <= _iv0 <= 2100:
+                            import re as _re
+                            if _re.fullmatch(r"(19\d{2}|20\d{2})", _raw0 or str(_iv0)):
+                                continue
+                except Exception:
+                    pass
+
+                # scaled magnitude requires unit evidence (schema implies million/billion/etc.)
+                try:
+                    _spec_nm = str(spec.get("name") or "").lower()
+                    _scaled = any(t in _spec_ut for t in ("million", "billion", "trillion", "thousand")) or (_spec_ut in ("m", "b", "t", "k"))
+                    _countish = any(t in _spec_nm for t in ("unit", "units", "sales", "deliveries", "shipments", "registrations", "volume"))
+                    if _spec_family == "magnitude" and _scaled and _countish and (not _has_unit_ev0):
+                        meta["blocked_reason"] = "unit_evidence_missing_hard_block"
+                        continue
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # =====================================================================
         except Exception:
             continue
         eligible.append(c)
