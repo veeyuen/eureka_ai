@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v17'  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v18'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -14967,37 +14967,37 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
             cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
 
 
-# =====================================================================
-# PATCH FIX2B_EVO_CURFIELDS_V1 (ADDITIVE): enrich evolution "Current" fields with unit + range (analysis semantics)
-#
-# Why:
-# - Evolution dashboard / sheet sanitizer (_fix39_has_unit_evidence) may blank rows when "current_value"
-#   lacks unit evidence even though the canonical metric has unit/value_norm.
-# - Also ensure any attached value_range is rendered in schema units (no scaling here).
-#
-# Notes:
-# - Purely additive: does not change change_pct logic (which uses value_norm via get_canonical_value_and_unit).
-# - Does NOT re-scale value_norm; assumes value_norm is already schema-normalized (FIX16/PH2B semantics).
-# =====================================================================
-_cur_unit_tag = (cm.get("unit") or cm.get("unit_tag") or "").strip()
-_cur_value_txt = "" if cur_raw is None else str(cur_raw).strip()
-_cur_raw_display = _cur_value_txt
-try:
-    if _cur_unit_tag and _cur_value_txt and (_cur_unit_tag not in _cur_value_txt):
-        _cur_raw_display = f"{_cur_value_txt} {_cur_unit_tag}".strip()
-except Exception:
-    pass
+            # =====================================================================
+            # PATCH FIX2B_EVO_CURFIELDS_V1 (ADDITIVE): enrich evolution "Current" fields with unit + range (analysis semantics)
+            #
+            # Why:
+            # - Evolution dashboard / sheet sanitizer (_fix39_has_unit_evidence) may blank rows when "current_value"
+            #   lacks unit evidence even though the canonical metric has unit/value_norm.
+            # - Also ensure any attached value_range is rendered in schema units (no scaling here).
+            #
+            # Notes:
+            # - Purely additive: does not change change_pct logic (which uses value_norm via get_canonical_value_and_unit).
+            # - Does NOT re-scale value_norm; assumes value_norm is already schema-normalized (FIX16/PH2B semantics).
+            # =====================================================================
+            _cur_unit_tag = (cm.get("unit") or cm.get("unit_tag") or "").strip()
+            _cur_value_txt = "" if cur_raw is None else str(cur_raw).strip()
+            _cur_raw_display = _cur_value_txt
+            try:
+                if _cur_unit_tag and _cur_value_txt and (_cur_unit_tag not in _cur_value_txt):
+                    _cur_raw_display = f"{_cur_value_txt} {_cur_unit_tag}".strip()
+            except Exception:
+                pass
 
-_cur_value_range = None
-_cur_value_range_display = ""
-try:
-    if isinstance(cm.get("value_range"), dict):
-        _cur_value_range = dict(cm.get("value_range"))
-        if _cur_unit_tag and ("min" in _cur_value_range) and ("max" in _cur_value_range):
-            _cur_value_range_display = f"{_cur_value_range['min']:g}–{_cur_value_range['max']:g} {_cur_unit_tag}".strip()
-except Exception:
-    pass
-# =====================================================================
+            _cur_value_range = None
+            _cur_value_range_display = ""
+            try:
+                if isinstance(cm.get("value_range"), dict):
+                    _cur_value_range = dict(cm.get("value_range"))
+                    if _cur_unit_tag and ("min" in _cur_value_range) and ("max" in _cur_value_range):
+                        _cur_value_range_display = f"{_cur_value_range['min']:g}–{_cur_value_range['max']:g} {_cur_unit_tag}".strip()
+            except Exception:
+                pass
+            # =====================================================================
 
             # =========================================================================
             # PATCH D0 (ADDITIVE): anchor identity (do NOT force unchanged)
@@ -25395,73 +25395,9 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
 
     metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_FIX31_BASE(prev_response, cur_response)
 
-# =====================================================================
-# PATCH FIX2B_EVO_CURFIELDS_V2 (ADDITIVE): backfill evolution "Current" display fields from canonical metrics
-#
-# Why:
-# - Some upstream diff implementations populate current_value without unit/range,
-#   causing downstream dashboards/sanitizers to treat it as unitless and blank it.
-# - Ensure evolution output carries analysis-consistent schema-unit semantics:
-#     * current_value includes unit evidence when available
-#     * current_value_norm carries value_norm
-#     * current_value_range(_display) carries schema-unit min/max when present
-#
-# Non-goals:
-# - Does not change match logic or change_pct computations.
-# - No scaling of value_norm; assumes FIX16/PH2B semantics (schema-normalized).
-# =====================================================================
-try:
-    _cur_canon = None
-    if isinstance(cur_response, dict) and isinstance(cur_response.get("primary_metrics_canonical"), dict):
-        _cur_canon = cur_response.get("primary_metrics_canonical")
-    if isinstance(metric_changes, list) and isinstance(_cur_canon, dict):
-        for _row in metric_changes:
-            if not isinstance(_row, dict):
-                continue
-            _ck = _row.get("canonical_key") or _row.get("canonical") or ""
-            if not _ck or _ck not in _cur_canon:
-                continue
-            _cm = _cur_canon.get(_ck) or {}
-            if not isinstance(_cm, dict):
-                continue
-
-            _u = (_cm.get("unit") or _cm.get("unit_tag") or _row.get("current_unit_tag") or _row.get("unit_tag") or "").strip()
-            _vtxt = str(_cm.get("raw") or _cm.get("value") or "").strip()
-            _disp = _vtxt
-            try:
-                if _u and _vtxt and (_u not in _vtxt):
-                    _disp = f"{_vtxt} {_u}".strip()
-            except Exception:
-                pass
-
-            # Only backfill when missing/blank/N/A to avoid changing any explicit upstream display choices
-            if not str(_row.get("current_value") or "").strip() or str(_row.get("current_value")).strip().upper() == "N/A":
-                _row["current_value"] = _disp or _row.get("current_value") or ""
-
-            if not str(_row.get("current_raw") or "").strip():
-                _row["current_raw"] = _disp or ""
-
-            if not str(_row.get("current_unit_tag") or "").strip() and _u:
-                _row["current_unit_tag"] = _u
-
-            if _row.get("current_value_norm") is None and _cm.get("value_norm") is not None:
-                _row["current_value_norm"] = _cm.get("value_norm")
-            if _row.get("cur_value_norm") is None and _cm.get("value_norm") is not None:
-                _row["cur_value_norm"] = _cm.get("value_norm")
-
-            # Range backfill
-            try:
-                _vr = _cm.get("value_range")
-                if isinstance(_vr, dict) and ("min" in _vr) and ("max" in _vr):
-                    if not isinstance(_row.get("current_value_range"), dict):
-                        _row["current_value_range"] = dict(_vr)
-                    if not str(_row.get("current_value_range_display") or "").strip() and _u:
-                        _row["current_value_range_display"] = f"{_vr['min']:g}–{_vr['max']:g} {_u}".strip()
-            except Exception:
-                pass
-except Exception:
-    pass
-# =====================================================================
+    # =====================================================================
+    # PATCH FIX2B_EVO_CURFIELDS_V2 (ADDITIVE): disabled due to indentation corruption; FIX2B_EVO_CURFIELDS_V1 handles canonical-first enrichment
+    # =====================================================================
 
 
     try:
