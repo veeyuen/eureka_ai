@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v24'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v25'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -20366,6 +20366,56 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =====================================================================
 
+
+    # =====================================================================
+    # PATCH FIX41AFC19_V25 (ADDITIVE): Dashboard "Current" source audit + row sample
+    #
+    # Why:
+    # - Conclusively identify which structure the Evolution dashboard reads for
+    #   the "Current" column, and whether upstream patches are modifying that
+    #   exact structure.
+    #
+    # What:
+    # - Emit a compact debug payload that:
+    #     * states the dashboard read-path ("results.metric_changes[].current_value")
+    #     * samples the first N metric_changes rows (canonical_key, current_value, unit hints, diag keys)
+    # - Purely additive: no selection, hashing, or fastpath behavior changes.
+    # =====================================================================
+    try:
+        if isinstance(output, dict):
+            _dbg = output.get("debug") if isinstance(output.get("debug"), dict) else {}
+            if not isinstance(_dbg, dict):
+                _dbg = {}
+            rows = output.get("metric_changes") or []
+            _sample = []
+            if isinstance(rows, list):
+                for _r in rows[:25]:
+                    if not isinstance(_r, dict):
+                        continue
+                    _diag = _r.get("diag") if isinstance(_r.get("diag"), dict) else {}
+                    _sample.append({
+                        "canonical_key": _r.get("canonical_key"),
+                        "name": _r.get("metric") or _r.get("name"),
+                        "current_value": _r.get("current_value"),
+                        "current_value_norm": (_r.get("current_value_norm") if _r.get("current_value_norm") is not None else _r.get("cur_value_norm")),
+                        "cur_unit_cmp": (_r.get("cur_unit_cmp") if _r.get("cur_unit_cmp") is not None else _r.get("current_unit")),
+                        "anchor_used": _r.get("anchor_used"),
+                        "unit_mismatch": _r.get("unit_mismatch"),
+                        "diag_keys": (list(_diag.keys()) if isinstance(_diag, dict) else []),
+                    })
+            _dbg["dashboard_current_source_v25"] = {
+                "dashboard_reads": "results.metric_changes[].current_value",
+                "rows_sample_n": len(_sample),
+                "rows_sample": _sample,
+            }
+            _dbg["canonical_for_render_present_v25"] = bool(_dbg.get("canonical_for_render_v1"))
+            output["debug"] = _dbg
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX41AFC19_V25
+    # =====================================================================
+
     return output
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
@@ -26361,3 +26411,15 @@ try:
     CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v24'
 except Exception:
     pass
+
+
+# =====================================================================
+# PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
+# =====================================================================
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v25"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX41AFC19_V25
+# =====================================================================
