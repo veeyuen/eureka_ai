@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34g'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34h'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -15315,7 +15315,7 @@ metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, 
 "unit_mismatch": bool(unit_mismatch),
                 "abs_eps_used": abs_eps,
                 "rel_eps_used": rel_eps,
-
+            
                 # v34 join diagnostics (per-row)
                 "diag": {
                     "diff_join_trace_v1": {
@@ -17443,6 +17443,62 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 
     # ---------- Use your existing deterministic metric diff helper ----------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
+
+    # =====================================================================
+    # PATCH V34H_PREV_RESPONSE_PICK_FALLBACK (ADDITIVE)
+    # Problem observed in v34g:
+    # - Some callers pass previous_data as the *analysis primary_response itself*
+    #   (i.e., it already contains primary_metrics_canonical / metric_schema_frozen),
+    #   not wrapped under {"primary_response": {...}}.
+    # - The prior line would then set prev_response={}, causing diff rows=0
+    #   ("No metrics to display") and breaking anchor-hash join progress.
+    # Fix:
+    # - Deterministically pick prev_response from the first populated container:
+    #     1) previous_data.primary_response
+    #     2) previous_data.results.primary_response
+    #     3) previous_data itself if it already looks like a primary_response
+    # Safety:
+    # - Render/diff layer only. No hashing, no fetch, no inference.
+    # =====================================================================
+    try:
+        _v34h_src = "previous_data.primary_response"
+        if (not isinstance(prev_response, dict)) or (not prev_response):
+            _cand = None
+            if isinstance(previous_data, dict):
+                _cand = previous_data.get("primary_response")
+                if isinstance(_cand, dict) and _cand:
+                    prev_response = _cand
+                else:
+                    _cand = (previous_data.get("results") or {}).get("primary_response") if isinstance(previous_data.get("results"), dict) else None
+                    if isinstance(_cand, dict) and _cand:
+                        prev_response = _cand
+                        _v34h_src = "previous_data.results.primary_response"
+                    else:
+                        # If previous_data already has canonical/schema keys, treat it as the primary_response itself
+                        if isinstance(previous_data.get("primary_metrics_canonical"), dict) or isinstance(previous_data.get("metric_schema_frozen"), dict):
+                            prev_response = previous_data
+                            _v34h_src = "previous_data.self_primary_response"
+        # Emit debug for auditability
+        try:
+            output.setdefault("debug", {})
+            if isinstance(output.get("debug"), dict):
+                output["debug"].setdefault("diff_prev_response_pick_v34h", {})
+                if isinstance(output["debug"].get("diff_prev_response_pick_v34h"), dict):
+                    output["debug"]["diff_prev_response_pick_v34h"] = {
+                        "picked_source": str(_v34h_src),
+                        "prev_response_nonempty": bool(isinstance(prev_response, dict) and bool(prev_response)),
+                        "has_primary_metrics_canonical": bool(isinstance((prev_response or {}).get("primary_metrics_canonical"), dict) and (prev_response or {}).get("primary_metrics_canonical")),
+                        "has_metric_anchors": bool(isinstance((prev_response or {}).get("metric_anchors"), dict) and (prev_response or {}).get("metric_anchors")),
+                        "has_metric_schema_frozen": bool(isinstance((prev_response or {}).get("metric_schema_frozen"), dict) and (prev_response or {}).get("metric_schema_frozen")),
+                    }
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V34H_PREV_RESPONSE_PICK_FALLBACK
+    # =====================================================================
+
 
     # =====================================================================
     # PATCH HF6 (ADDITIVE): tolerate previous_data being the primary_response itself
