@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v25'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v26'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -19965,6 +19965,37 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     row["diag"]["canonical_for_render_v1"]["reason"] = _canonical_for_render_reason
                     row["diag"]["canonical_for_render_v1"]["prior_current"] = prior
 
+                # =====================================================================
+                # PATCH V26_LOCK_CANONICAL_CURRENT_FIELDS (ADDITIVE)
+                # Goal: Once a row is hydrated from canonical-for-render, lock the "Current" fields
+                #       so later post-processing (heuristics/sanitizers) cannot overwrite them.
+                # This is render-only and does NOT affect hashing/fastpath/snapshot attach.
+                # =====================================================================
+                try:
+                    row["_lock_current_v26"] = True
+                    # ensure nested dict exists
+                    row.setdefault("diag", {})
+                    if isinstance(row.get("diag"), dict):
+                        row["diag"].setdefault("canonical_for_render_v1", {})
+                        if isinstance(row["diag"].get("canonical_for_render_v1"), dict):
+                            row["diag"]["canonical_for_render_v1"]["locked_current_v26"] = {
+                                "current_value": row.get("current_value"),
+                                "current_value_norm": row.get("current_value_norm"),
+                                "cur_value_norm": row.get("cur_value_norm"),
+                                "cur_unit_cmp": row.get("cur_unit_cmp"),
+                                "current_unit": row.get("current_unit"),
+                                "current_value_range": row.get("current_value_range"),
+                                "current_value_range_display": row.get("current_value_range_display"),
+                            }
+                except Exception:
+                    pass
+                # =====================================================================
+                # END PATCH V26_LOCK_CANONICAL_CURRENT_FIELDS
+                # =====================================================================
+
+
+
+
                 # Determine if we actually changed the row
                 if prior.get("cur_value_norm") != vnorm or str(prior.get("cur_unit_cmp") or "") != unit or str(prior.get("current_value") or "") != raw:
                     _row_audit["rows_with_prior_current_overridden"] += 1
@@ -20415,6 +20446,55 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # =====================================================================
     # END PATCH FIX41AFC19_V25
     # =====================================================================
+
+
+    # =====================================================================
+    # PATCH V26_RESTORE_LOCKED_CURRENT_FIELDS (ADDITIVE)
+    # If any later code overwrote current_* fields, restore the locked canonical-for-render
+    # fields right before returning the evolution output.
+    # =====================================================================
+    try:
+        _lock_dbg = {"rows_total": 0, "rows_locked": 0, "rows_restored": 0, "rows_missing_lock": 0, "restored_keys_sample": []}
+        for _r in (output.get("metric_changes") or []):
+            if not isinstance(_r, dict):
+                continue
+            _lock_dbg["rows_total"] += 1
+            if not _r.get("_lock_current_v26"):
+                continue
+            _lock_dbg["rows_locked"] += 1
+            _d = _r.get("diag") if isinstance(_r.get("diag"), dict) else {}
+            _lc = None
+            try:
+                if isinstance(_d, dict):
+                    _cfr = _d.get("canonical_for_render_v1") if isinstance(_d.get("canonical_for_render_v1"), dict) else {}
+                    _lc = _cfr.get("locked_current_v26") if isinstance(_cfr, dict) else None
+            except Exception:
+                _lc = None
+            if not isinstance(_lc, dict):
+                _lock_dbg["rows_missing_lock"] += 1
+                continue
+            # If current fields differ from locked, restore
+            _changed = False
+            for _k in ("current_value", "current_value_norm", "cur_value_norm", "cur_unit_cmp", "current_unit",
+                       "current_value_range", "current_value_range_display"):
+                if _k in _lc:
+                    if _r.get(_k) != _lc.get(_k):
+                        _r[_k] = _lc.get(_k)
+                        _changed = True
+            if _changed:
+                _lock_dbg["rows_restored"] += 1
+                ck = _r.get("canonical_key") or _r.get("canonical") or ""
+                if ck and len(_lock_dbg["restored_keys_sample"]) < 20:
+                    _lock_dbg["restored_keys_sample"].append(str(ck))
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["lock_current_v26"] = _lock_dbg
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V26_RESTORE_LOCKED_CURRENT_FIELDS
+    # =====================================================================
+
 
     return output
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
@@ -26422,4 +26502,13 @@ except Exception:
     pass
 # =====================================================================
 # END PATCH FIX41AFC19_V25
+# =====================================================================
+
+
+# =====================================================================
+# PATCH CODE_VERSION_V26 (ADDITIVE)
+# =====================================================================
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v26'
+# =====================================================================
+# END PATCH CODE_VERSION_V26
 # =====================================================================
