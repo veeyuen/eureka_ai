@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34d'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34d_fix1'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -17821,7 +17821,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             except Exception:
                 pass
 
-            cur_resp_for_diff = \{"primary_metrics_canonical": current_metrics\}
+            cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
 # ============================================================
 # PATCH V34D (ADDITIVE): provide metric_anchors for current side so anchor_hash join can work
 # - compute_source_anchored_diff previously passed only primary_metrics_canonical to diff layer
