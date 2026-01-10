@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v12"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v13"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -23060,6 +23060,36 @@ def _analysis_canonical_final_selector_v1(
                     if _spec_family == "magnitude" and _scaled and _countish and (not _has_unit_ev0):
                         meta["blocked_reason"] = "unit_evidence_missing_hard_block"
                         continue
+                except Exception:
+                    pass
+
+                # =====================================================================
+                # PATCH FIX2B_SCALE_EV_V1 (ADDITIVE): require *scale* evidence for scaled magnitude schemas
+                # Why:
+                # - Earlier gating treated inferred unit_family='magnitude' as "unit evidence", allowing unitless
+                #   integers (e.g., 170) to pass for schemas like "million units".
+                # - For scaled schemas, we require explicit scale evidence in raw/unit_tag/unit_cmp (million/billion/etc.).
+                # Safety:
+                # - Only applies when schema implies a scale (million/billion/thousand/trillion or M/B/K/T).
+                # - Does NOT change fastpath/hashing/injection/snapshot attach.
+                # =====================================================================
+                try:
+                    _scaled2 = False
+                    try:
+                        _scaled2 = any(t in _spec_ut for t in ("million", "billion", "trillion", "thousand")) or (_spec_ut in ("m", "b", "t", "k"))
+                    except Exception:
+                        _scaled2 = False
+                    if _spec_family == "magnitude" and _scaled2:
+                        _blob = (" ".join([
+                            str(c.get("raw") or ""),
+                            str(c.get("unit_cmp") or ""),
+                            str(c.get("unit_tag") or c.get("unit") or ""),
+                            str(c.get("context_snippet") or c.get("context") or ""),
+                        ])).lower()
+                        _has_scale_ev = any(tok in _blob for tok in ("million", "billion", "trillion", "thousand", "mn", "bn")) or bool(re.search(r"\b[mbkt]\b", _blob))
+                        if not _has_scale_ev:
+                            meta["blocked_reason"] = "scale_evidence_missing_hard_block"
+                            continue
                 except Exception:
                     pass
             except Exception:
