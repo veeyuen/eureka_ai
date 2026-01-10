@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v15"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v16"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -23174,6 +23174,79 @@ def _analysis_canonical_final_selector_v1(
                         continue
                 except Exception:
                     pass
+
+                # =====================================================================
+                # PATCH FIX2B_SCALE_EV_V2 (2026-01-10)
+                # Purpose: Fix broken scale/countish gating where earlier patch strings were truncated
+                #          (e.g., "milli..." / "uni...") and therefore never matched.
+                #          Enforce: if schema implies scaled magnitude (million/billion/etc.), unit evidence
+                #          must exist in the candidate (unit_tag/unit_cmp/raw/context), else hard-block.
+                # Safety: additive-only; does not change fastpath/hashing/injection/snapshot attach.
+                # =====================================================================
+                try:
+                    _spec_nm2 = str(spec.get("name") or spec.get("label") or "").lower()
+                    _spec_ut2 = str(_spec_ut or "").lower()
+
+                    def _ph2b_has_scale_token(_s: str) -> bool:
+                        try:
+                            _s = str(_s or "").lower()
+                        except Exception:
+                            _s = ""
+                        if not _s:
+                            return False
+                        toks = [
+                            "million", "mn", "m", "millions",
+                            "billion", "bn", "b", "billions",
+                            "trillion", "tn", "t", "trillions",
+                            "thousand", "k", "000",
+                        ]
+                        # require word-boundary-ish for single-letter tokens
+                        if "million" in _s or "millions" in _s or "billion" in _s or "billions" in _s or "trillion" in _s or "trillions" in _s or "thousand" in _s:
+                            return True
+                        import re as _re2
+                        if _re2.search(r"\b(mn|bn|tn|k)\b", _s):
+                            return True
+                        # "m" / "b" / "t" are too ambiguous; only accept when adjacent to "usd/units/sales" etc.
+                        if _re2.search(r"\b(m|b|t)\b", _s) and _re2.search(r"(units?|sales|deliveries|shipments|vehicles|usd|eur|sgd|gbp|jpy|cny|aud|cad)", _s):
+                            return True
+                        return False
+
+                    def _ph2b_has_unit_evidence_candidate(_c: dict) -> bool:
+                        if not isinstance(_c, dict):
+                            return False
+                        if str(_c.get("unit_tag") or "").strip():
+                            return True
+                        if str(_c.get("unit_cmp") or "").strip():
+                            return True
+                        if str(_c.get("unit_family") or "").strip():
+                            return True
+                        # raw/context tokens
+                        if _ph2b_has_scale_token(_c.get("raw")):
+                            return True
+                        if _ph2b_has_scale_token(_c.get("context_snippet") or _c.get("context")):
+                            return True
+                        return False
+
+                    _schema_scaled = _ph2b_has_scale_token(_spec_ut2)
+                    # If schema is scaled, we hard-require candidate unit evidence regardless of name.
+                    if _spec_family == "magnitude" and _schema_scaled and (not _ph2b_has_unit_evidence_candidate(c0)):
+                        meta["blocked_reason"] = "unit_evidence_missing_hard_block"
+                        continue
+
+                    # Extra guard: suppress obvious document-structure numbers (pages/figures) when schema is scaled.
+                    try:
+                        if _spec_family == "magnitude" and _schema_scaled:
+                            _ctx = str((c0 or {}).get("context_snippet") or (c0 or {}).get("context") or "").lower()
+                            if ("pages" in _ctx) or ("figures" in _ctx) or ("page " in _ctx):
+                                # treat as ineligible rather than junking globally
+                                continue
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                # =====================================================================
+                # PATCH FIX2B_SCALE_EV_V2 END
+                # =====================================================================
 
                 # =====================================================================
                 # PATCH FIX2B_SCALE_EV_V1 (ADDITIVE): require *scale* evidence for scaled magnitude schemas
