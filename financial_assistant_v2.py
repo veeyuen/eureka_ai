@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v28'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v29'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -19806,7 +19806,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
         _canonical_for_render_reason = "exception_fallback_existing"
 
-
+    
     # =====================================================================
     # PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER (ADDITIVE)
     # Problem observed:
@@ -19970,6 +19970,357 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # =====================================================================
     # END PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER
     # =====================================================================
+
+    # =====================================================================
+    # PATCH V29_CANONICAL_FOR_RENDER_SCHEMA_GATE_AND_JUNK_REJECT (ADDITIVE)
+    # =====================================================================
+    # Problem:
+    # - canonical_for_render can still select "junk" numerics (e.g., footer phone
+    #   fragments like -6441 or marketing magnitudes like 2B) as Current, because
+    #   the frozen extracted_numbers pool is noisy and some late selection paths
+    #   lack strict schema gating.
+    #
+    # Fix (render-only):
+    # - Apply a strict schema-compatibility gate for canonical_for_render values.
+    # - Hard-reject phone/contact/email/footer-like contexts.
+    # - If the existing canonical_for_render metric is suspicious (unitless for
+    #   unit-required dimensions, or unit-incompatible like "B" for percent),
+    #   attempt to replace it with the best compatible candidate from the frozen
+    #   extracted_numbers pool.
+    #
+    # Safety:
+    # - Render-only: affects ONLY canonical_for_render (dashboard Current).
+    # - Does NOT touch fastpath replay, hashing universe, injection lifecycle,
+    #   snapshot attach, or extraction.
+    #
+    # Diagnostics:
+    # - output.debug.canonical_for_render_schema_gate_v29 (summary)
+    # - per-metric cm["diag"]["v29_schema_gate_*"] flags (when applied)
+    # =====================================================================
+    _v29_schema_gate = {
+        "attempted": False,
+        "canonical_keys": 0,
+        "suspicious": 0,
+        "replaced": 0,
+        "kept": 0,
+        "candidates_checked": 0,
+        "replaced_keys_sample": [],
+        "suspicious_keys_sample": [],
+        "note": "render-only schema gate + junk reject on canonical_for_render",
+    }
+
+    def _v29_s(_x):
+        try:
+            return str(_x or "")
+        except Exception:
+            return ""
+
+    def _v29_lower(_x):
+        try:
+            return _v29_s(_x).lower()
+        except Exception:
+            return ""
+
+    def _v29_get_text_blob(*parts):
+        try:
+            out = []
+            for p in parts:
+                if not p:
+                    continue
+                if isinstance(p, (list, tuple)):
+                    out.extend([_v29_s(z) for z in p if z])
+                else:
+                    out.append(_v29_s(p))
+            return " ".join([z for z in out if z]).strip()
+        except Exception:
+            return ""
+
+    def _v29_phoneish(text):
+        # Catch common phone patterns including "+1-888-600-6441" and fragments.
+        try:
+            import re
+            t = _v29_s(text)
+            if not t:
+                return False
+            if re.search(r"\+\d[\d\-\s]{7,}\d", t):
+                return True
+            if re.search(r"\b\d{3}[-\s]\d{3}[-\s]\d{4}\b", t):
+                return True
+            if re.search(r"\bext\.?\s*\d+\b", t, re.I):
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _v29_junk_context(text):
+        try:
+            t = _v29_lower(text)
+            if not t:
+                return False
+            junk_terms = [
+                "contact", "email", "phone", "tel", "telephone", "fax", "call us",
+                "press release", "copyright", "all rights reserved", "subscribe",
+                "unsubscribe", "privacy policy", "terms of use", "cookie", "newsletter",
+                "about us", "follow us", "for media", "media contact"
+            ]
+            if any(w in t for w in junk_terms):
+                return True
+            if _v29_phoneish(text):
+                return True
+            # Many PR footers include an email address
+            if "@" in t and "." in t:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _v29_unit_str(obj):
+        try:
+            if isinstance(obj, dict):
+                return _v29_s(obj.get("unit") or obj.get("unit_tag") or obj.get("unit_cmp") or obj.get("cur_unit_cmp") or "")
+            return ""
+        except Exception:
+            return ""
+
+    def _v29_value_norm(obj):
+        try:
+            if isinstance(obj, dict):
+                v = obj.get("value_norm")
+                if v is None:
+                    v = obj.get("cur_value_norm")
+                if v is None:
+                    v = obj.get("value")
+                return v
+            return None
+        except Exception:
+            return None
+
+    def _v29_has_unit_evidence(obj):
+        try:
+            # Conservative: unit evidence if unit string non-empty OR raw contains %/$/€ etc.
+            if not isinstance(obj, dict):
+                return False
+            u = _v29_unit_str(obj).strip()
+            if u:
+                return True
+            raw = _v29_s(obj.get("raw") or "")
+            if "%" in raw or "$" in raw or "€" in raw or "£" in raw:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _v29_expected_dimension(schema_row):
+        try:
+            if isinstance(schema_row, dict):
+                # Prefer FIX16 helper if present
+                if "_fix16_expected_dimension" in globals():
+                    return _fix16_expected_dimension(schema_row)
+                return schema_row.get("dimension") or schema_row.get("unit_family") or ""
+            return ""
+        except Exception:
+            return ""
+
+    def _v29_schema_requires_unit(schema_row):
+        try:
+            dim = _v29_lower(_v29_expected_dimension(schema_row))
+            if dim in ("currency", "percent", "rate", "ratio"):
+                return True
+            uf = _v29_lower(_v29_s(schema_row.get("unit_family") if isinstance(schema_row, dict) else ""))
+            if uf in ("currency", "percent", "rate", "ratio"):
+                return True
+            # unit_sales / unit counts should have some "unit-ness"
+            if "unit" in dim or "unit" in uf:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _v29_unit_compatible(schema_row, cand_obj):
+        try:
+            if isinstance(schema_row, dict) and isinstance(cand_obj, dict):
+                if "_fix16_unit_compatible" in globals():
+                    return bool(_fix16_unit_compatible(schema_row, cand_obj))
+            # fallback heuristic
+            dim = _v29_lower(_v29_expected_dimension(schema_row))
+            u = _v29_lower(_v29_unit_str(cand_obj))
+            raw = _v29_lower(_v29_s(cand_obj.get("raw") or ""))
+            if dim == "percent":
+                return ("%"
+                        in u) or ("percent" in u) or ("%" in raw)
+            if dim == "currency":
+                return any(sym in raw for sym in ["$", "€", "£"]) or ("usd" in u) or ("eur" in u) or ("sgd" in u) or ("currency" in u)
+            if "unit" in dim:
+                # must not be percent/currency-like
+                if "%" in raw or "%" in u:
+                    return False
+                if any(sym in raw for sym in ["$", "€", "£"]):
+                    return False
+                # prefer explicit unit words
+                if "unit" in u or "vehicle" in u or "car" in u or "sales" in u:
+                    return True
+                # allow million/billion with implied units only if raw/context says units/sales
+                ctx = _v29_lower(_v29_get_text_blob(cand_obj.get("context_snippet"), cand_obj.get("context")))
+                if ("unit" in ctx) or ("sales" in ctx) or ("vehicle" in ctx):
+                    return True
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _v29_is_suspicious_current(schema_row, cm):
+        try:
+            if not isinstance(cm, dict):
+                return True
+            dim = _v29_lower(_v29_expected_dimension(schema_row))
+            requires_unit = _v29_schema_requires_unit(schema_row)
+            u = _v29_lower(_v29_unit_str(cm))
+            v = _v29_value_norm(cm)
+            blob = _v29_get_text_blob(cm.get("raw"), cm.get("context_snippet"), cm.get("source_url"))
+            if _v29_junk_context(blob):
+                return True
+            if requires_unit and not _v29_has_unit_evidence(cm):
+                return True
+            # Percent metrics must not carry magnitude units like B/M
+            if dim == "percent" and ("b" in u or "m" in u) and "%" not in u:
+                return True
+            if dim == "percent" and isinstance(v, (int, float)) and abs(float(v)) > 1000:
+                return True
+            # Unit sales must not be negative (phone fragments, ids)
+            if "unit" in dim and isinstance(v, (int, float)) and float(v) < 0:
+                return True
+            return not _v29_unit_compatible(schema_row, cm)
+        except Exception:
+            return True
+
+    def _v29_keywords(schema_row):
+        try:
+            import re
+            if not isinstance(schema_row, dict):
+                return []
+            nm = _v29_lower(schema_row.get("name") or schema_row.get("label") or schema_row.get("display_name") or "")
+            toks = [t for t in re.split(r"[^a-z0-9]+", nm) if t and len(t) >= 4]
+            # prune common filler
+            bad = set(["global", "projected", "market", "share", "sales", "volume", "units", "unit", "year"])
+            toks = [t for t in toks if t not in bad]
+            return toks[:10]
+        except Exception:
+            return []
+
+    def _v29_score_candidate(schema_row, cand_obj):
+        try:
+            score = 0
+            u = _v29_lower(_v29_unit_str(cand_obj))
+            raw = _v29_lower(_v29_s(cand_obj.get("raw") or ""))
+            ctx = _v29_lower(_v29_get_text_blob(cand_obj.get("context_snippet"), cand_obj.get("context")))
+            dim = _v29_lower(_v29_expected_dimension(schema_row))
+            if dim == "percent":
+                if "%" in raw or "%" in u or "percent" in u:
+                    score += 5
+                if "b" in u or "m" in u:
+                    score -= 4
+            if "unit" in dim:
+                if "unit" in ctx or "sales" in ctx or "vehicle" in ctx:
+                    score += 3
+                if "%" in raw or "$" in raw:
+                    score -= 3
+            if not _v29_junk_context(ctx + " " + raw):
+                score += 1
+            for kw in _v29_keywords(schema_row):
+                if kw and kw in ctx:
+                    score += 1
+            return score
+        except Exception:
+            return 0
+
+    try:
+        if isinstance(canonical_for_render, dict) and isinstance(prev_response, dict) and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            _v29_schema_gate["attempted"] = True
+            _schema = prev_response.get("metric_schema_frozen") or {}
+            _v29_schema_gate["canonical_keys"] = int(len(canonical_for_render)) if isinstance(canonical_for_render, dict) else 0
+
+            for _ckey, _cm in list(canonical_for_render.items()):
+                try:
+                    if not _ckey:
+                        continue
+                    srow = _schema.get(_ckey) if isinstance(_schema, dict) else None
+                    if not isinstance(srow, dict):
+                        # without schema, we cannot safely gate; keep
+                        _v29_schema_gate["kept"] += 1
+                        continue
+
+                    if _v29_is_suspicious_current(srow, _cm):
+                        _v29_schema_gate["suspicious"] += 1
+                        if len(_v29_schema_gate["suspicious_keys_sample"]) < 12:
+                            _v29_schema_gate["suspicious_keys_sample"].append(str(_ckey))
+
+                        best = None
+                        best_score = -10**9
+                        # search frozen pool for compatible candidates
+                        for cand in _v28_iter_numbers_from_sources_cache(baseline_sources_cache):
+                            _v29_schema_gate["candidates_checked"] += 1
+                            if not isinstance(cand, dict):
+                                continue
+                            blob = _v29_get_text_blob(cand.get("raw"), cand.get("context_snippet"), cand.get("context"), cand.get("source_url") or cand.get("url"))
+                            if _v29_junk_context(blob):
+                                continue
+                            # normalize candidate
+                            cobj = dict(cand)
+                            # ensure value_norm present if possible
+                            if cobj.get("value_norm") is None and cobj.get("value") is not None:
+                                cobj["value_norm"] = cobj.get("value")
+                            if not _v29_unit_compatible(srow, cobj):
+                                continue
+                            if _v29_schema_requires_unit(srow) and not _v29_has_unit_evidence(cobj):
+                                continue
+                            sc = _v29_score_candidate(srow, cobj)
+                            if sc > best_score:
+                                best_score = sc
+                                best = cobj
+                        if isinstance(best, dict):
+                            prior_v = _v29_value_norm(_cm if isinstance(_cm, dict) else {})
+                            prior_u = _v29_unit_str(_cm if isinstance(_cm, dict) else {})
+                            # overwrite with best candidate
+                            if not isinstance(_cm, dict):
+                                _cm = {}
+                            _cm["value_norm"] = best.get("value_norm")
+                            _cm["unit"] = _v28_schema_unit_label(srow) or (_v29_unit_str(best) or _v28_schema_unit_label(srow))
+                            _cm["unit_tag"] = _cm.get("unit")
+                            if best.get("raw"):
+                                _cm["raw"] = best.get("raw")
+                            _cm["source_url"] = best.get("source_url") or best.get("url") or _cm.get("source_url") or ""
+                            _cm["context_snippet"] = best.get("context_snippet") or best.get("context") or _cm.get("context_snippet") or ""
+                            _cm["evidence"] = [best]
+                            _cm.setdefault("diag", {})
+                            if isinstance(_cm.get("diag"), dict):
+                                _cm["diag"]["v29_schema_gate_replaced"] = True
+                                _cm["diag"]["v29_schema_gate_prior_value_norm"] = prior_v
+                                _cm["diag"]["v29_schema_gate_prior_unit"] = prior_u
+                                _cm["diag"]["v29_schema_gate_best_score"] = best_score
+                                _cm["diag"]["v29_schema_gate_best_raw"] = best.get("raw")
+                                _cm["diag"]["v29_schema_gate_best_unit"] = best.get("unit") or best.get("unit_tag") or ""
+                            canonical_for_render[_ckey] = _cm
+                            _v29_schema_gate["replaced"] += 1
+                            if len(_v29_schema_gate["replaced_keys_sample"]) < 12:
+                                _v29_schema_gate["replaced_keys_sample"].append(str(_ckey))
+                        else:
+                            _v29_schema_gate["kept"] += 1
+                    else:
+                        _v29_schema_gate["kept"] += 1
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["canonical_for_render_schema_gate_v29"] = _v29_schema_gate
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V29_CANONICAL_FOR_RENDER_SCHEMA_GATE_AND_JUNK_REJECT
+    # =====================================================================
+
 
 # PATCH V22_CANONICAL_FOR_RENDER_NORMALIZE (ADDITIVE): normalize canonical_for_render metric dicts so that
     # downstream row hydration does not overwrite Current with blanks when the rebuilt dict uses alternate fields.
@@ -26755,4 +27106,13 @@ except Exception:
     pass
 # =====================================================================
 # END PATCH V28_VERSION_BUMP
+# =====================================================================
+
+
+# =====================================================================
+# PATCH V29_CODE_VERSION_BUMP (ADDITIVE)
+# =====================================================================
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v29'
+# =====================================================================
+# END PATCH V29_CODE_VERSION_BUMP
 # =====================================================================
