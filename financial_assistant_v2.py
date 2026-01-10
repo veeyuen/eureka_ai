@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v18'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v19'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -19355,6 +19355,265 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["debug"]["fix41afc19"]["reason"] = locals().get("_fix41afc19_reason") or ""
             output["debug"]["fix41afc19"]["fn"] = locals().get("_fix41afc19_fn_name") or ""
             output["debug"]["fix41afc19"]["rebuilt_count"] = int(locals().get("_fix41afc19_rebuilt_count") or 0)
+    except Exception:
+        pass
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH V19_HARDWIRE_EVO_CANONICAL (ADDITIVE)
+    # Objective:
+    # - Ensure Evolution diff "current" side is built from the same canonical semantics as Analysis
+    #   by forcing a best-effort canonical rebuild for DISPLAY/DIFF, even when earlier logic
+    #   skipped due to authoritative reuse or pool-resolution drift.
+    # - Adds two minimal diagnostics:
+    #   (2) debug.fix41afc19 truth table (attempted/applied/skip_reason + keys_sample + pool_count)
+    #   (3) debug.evo_winner_trace_v1 for key EV metrics (winner provenance + top3 candidate glimpse)
+    # Safety:
+    # - Additive-only. Does not modify hashing inputs or snapshot attach. Affects only what diff renders.
+    # =====================================================================
+    _fix41afc19_attempted_v19 = False
+    _fix41afc19_skip_reason_v19 = ""
+    _fix41afc19_pool_count_v19 = 0
+    _fix41afc19_keys_sample_v19 = []
+    _fix41afc19_winner_trace_v19 = {}
+
+    try:
+        # Start with whatever earlier stage produced
+        current_metrics_for_display = locals().get("current_metrics") if isinstance(locals().get("current_metrics"), dict) else {}
+
+        # Force a display rebuild if earlier FIX41AFC19 did not apply or rebuilt_count==0
+        _already_applied = bool(locals().get("_fix41afc19_applied"))
+        _already_count = int(locals().get("_fix41afc19_rebuilt_count") or 0)
+
+        if (not _already_applied) or (_already_count <= 0):
+            _fix41afc19_attempted_v19 = True
+
+            # Resolve the best available snapshot pool (post-attach merged universe)
+            _pool = (
+                locals().get("baseline_sources_cache_current")
+                or (output.get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+                or (output.get("results", {}).get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+                or locals().get("baseline_sources_cache")
+                or locals().get("baseline_sources_cache_prefetched")
+                or None
+            )
+
+            if _pool is None:
+                try:
+                    _cand_pools = []
+                    for _k, _v in (locals() or {}).items():
+                        if not isinstance(_k, str):
+                            continue
+                        if "baseline_sources_cache" in _k and isinstance(_v, list) and _v:
+                            _cand_pools.append((_k, _v))
+                    if _cand_pools:
+                        _cand_pools.sort(key=lambda kv: len(kv[1] or []), reverse=True)
+                        _pool = _cand_pools[0][1]
+                except Exception:
+                    _pool = None
+
+            if isinstance(_pool, list):
+                _fix41afc19_pool_count_v19 = len(_pool or [])
+
+            # Pick best available rebuild fn
+            _fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+            _fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+            if not callable(_fn):
+                _fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+                _fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+
+            if not callable(_fn):
+                _fix41afc19_skip_reason_v19 = "fn_missing"
+            elif _pool is None:
+                _fix41afc19_skip_reason_v19 = "pool_missing"
+            elif not isinstance(_pool, list) or not _pool:
+                _fix41afc19_skip_reason_v19 = "pool_empty"
+            else:
+                try:
+                    try:
+                        _rebuilt = _fn(prev_response, _pool, web_context=web_context)
+                    except TypeError:
+                        _rebuilt = _fn(prev_response, _pool)
+                except Exception as _e:
+                    _rebuilt = None
+                    _fix41afc19_skip_reason_v19 = "rebuild_exception:" + str(type(_e).__name__)
+
+                if isinstance(_rebuilt, dict) and _rebuilt:
+                    current_metrics_for_display = dict(_rebuilt)
+                    _fix41afc19_skip_reason_v19 = "applied_v19_display_rebuild:" + str(_fn_name)
+                    try:
+                        _fix41afc19_keys_sample_v19 = list(current_metrics_for_display.keys())[:10]
+                    except Exception:
+                        _fix41afc19_keys_sample_v19 = []
+                else:
+                    _fix41afc19_skip_reason_v19 = _fix41afc19_skip_reason_v19 or "rebuilt_empty_or_non_dict"
+
+        # Apply display override (used by diff below)
+        locals()["current_metrics"] = current_metrics_for_display  # keep variable name used by downstream diff
+        try:
+            _fix41afc19_keys_sample_v19 = _fix41afc19_keys_sample_v19 or (list(current_metrics_for_display.keys())[:10] if isinstance(current_metrics_for_display, dict) else [])
+        except Exception:
+            pass
+
+        # ---------------- Diagnostic (3): winner provenance trace for key EV metrics ----------------
+        # Heuristic: pick the known canonical keys if present, else infer from schema/keys.
+        _key_candidates = [
+            "units_sold_2024__unit_sales",
+            "market_share_2024__percent",
+            "projected_market_share_2026__percent",
+            "projected_market_share_2030__percent",
+            "yoy_growth_rate_2024__percent",
+            "cagr_2024__percent",
+        ]
+
+        try:
+            prev_canon = (prev_response or {}).get("primary_metrics_canonical") if isinstance(prev_response, dict) else {}
+            if not isinstance(prev_canon, dict):
+                prev_canon = {}
+
+            cur_canon = current_metrics_for_display if isinstance(current_metrics_for_display, dict) else {}
+
+            # Infer projected-share keys if the exact ones are not present
+            if isinstance(prev_canon, dict) and isinstance(cur_canon, dict):
+                all_keys = set(list(prev_canon.keys()) + list(cur_canon.keys()))
+                for k in sorted(all_keys):
+                    lk = k.lower()
+                    if ("project" in lk or "proj" in lk) and ("share" in lk or "market_share" in lk) and ("2026" in lk or "2030" in lk) and k not in _key_candidates:
+                        _key_candidates.append(k)
+
+            # Flatten snapshot candidates once (for top3 glimpse)
+            flat = []
+            try:
+                _pool_for_flat = locals().get("baseline_sources_cache") if isinstance(locals().get("baseline_sources_cache"), list) else []
+                for sr in _pool_for_flat or []:
+                    if isinstance(sr, dict):
+                        for c in (sr.get("extracted_numbers") or []):
+                            if isinstance(c, dict):
+                                flat.append(c)
+            except Exception:
+                flat = []
+
+            def _cand_has_unit_evidence(c: dict) -> bool:
+                try:
+                    if (c.get("unit_tag") or c.get("unit") or c.get("unit_norm") or c.get("unit_raw") or "").strip():
+                        return True
+                    if (c.get("currency") or c.get("currency_symbol") or "").strip():
+                        return True
+                    if c.get("is_percent") or c.get("has_percent"):
+                        return True
+                    if (c.get("base_unit") or "").strip():
+                        return True
+                    if (c.get("unit_family") or "").strip():
+                        return True
+                    if isinstance(c.get("unit_tokens"), list) and c.get("unit_tokens"):
+                        return True
+                except Exception:
+                    return False
+                return False
+
+            # Schema lookup (if available)
+            schema = {}
+            try:
+                if isinstance(previous_data, dict):
+                    pr = previous_data.get("primary_response") if isinstance(previous_data.get("primary_response"), dict) else previous_data
+                    schema = (pr.get("metric_schema_frozen") or {}) if isinstance(pr, dict) else {}
+            except Exception:
+                schema = {}
+
+            def _score_candidate_for_key(c: dict, ckey: str) -> int:
+                try:
+                    md = schema.get(ckey) if isinstance(schema, dict) else {}
+                    kws = []
+                    if isinstance(md, dict):
+                        kws = md.get("keywords") or md.get("keyword_hints") or []
+                    kws = [str(k).lower() for k in kws if str(k).strip()]
+                    ctx = (c.get("context") or c.get("window") or c.get("context_window") or "").lower()
+                    s = 0
+                    for k in kws[:25]:
+                        if k and k in ctx:
+                            s += 1
+                    if _cand_has_unit_evidence(c):
+                        s += 5
+                    # Prefer anchor-matching if both present
+                    try:
+                        if (c.get("anchor_hash") or "") and isinstance(md, dict) and (md.get("anchor_hash") or ""):
+                            if str(c.get("anchor_hash")) == str(md.get("anchor_hash")):
+                                s += 10
+                    except Exception:
+                        pass
+                    return int(s)
+                except Exception:
+                    return 0
+
+            # Build traces for up to 5 keys that exist in either prev/cur
+            _keys_for_trace = []
+            for k in _key_candidates:
+                if k in (prev_canon or {}) or k in (cur_canon or {}):
+                    _keys_for_trace.append(k)
+                if len(_keys_for_trace) >= 5:
+                    break
+            if not _keys_for_trace:
+                # fallback: first 5 keys from prev canonical
+                _keys_for_trace = list(prev_canon.keys())[:5]
+
+            for k in _keys_for_trace:
+                pv = (prev_canon.get(k) or {}) if isinstance(prev_canon, dict) else {}
+                cv = (cur_canon.get(k) or {}) if isinstance(cur_canon, dict) else {}
+
+                winner_src = "unknown"
+                if _fix41afc19_attempted_v19 and "applied_v19_display_rebuild" in (_fix41afc19_skip_reason_v19 or ""):
+                    winner_src = "analysis_canonical_rebuild_v19"
+                elif bool(locals().get("_fix41afc19_applied")):
+                    winner_src = "analysis_canonical_rebuild"
+                else:
+                    winner_src = "fallback_snapshot_selector"
+
+                # Top3 glimpse from flat pool
+                top3 = []
+                try:
+                    scored = sorted(flat, key=lambda c: _score_candidate_for_key(c, k), reverse=True)[:3]
+                    for t in scored:
+                        top3.append({
+                            "raw": t.get("raw"),
+                            "value_norm": t.get("value_norm"),
+                            "unit_tag": t.get("unit_tag") or t.get("unit") or "",
+                            "has_unit_evidence": bool(_cand_has_unit_evidence(t)),
+                            "anchor_hash": t.get("anchor_hash"),
+                        })
+                except Exception:
+                    top3 = []
+
+                _fix41afc19_winner_trace_v19[k] = {
+                    "winner_source": winner_src,
+                    "prev_value_norm": pv.get("value_norm"),
+                    "prev_unit": pv.get("unit") or pv.get("unit_tag") or "",
+                    "cur_value_norm": cv.get("value_norm"),
+                    "cur_unit": cv.get("unit") or cv.get("unit_tag") or "",
+                    "cur_has_unit_evidence": bool((cv.get("unit") or cv.get("unit_tag") or "").strip()),
+                    "top3_candidates_glimpse": top3,
+                }
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    # ---------------- Diagnostic (2): FIX41AFC19 truth table ----------------
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"].setdefault("fix41afc19", {})
+            output["debug"]["fix41afc19"]["attempted"] = bool(_fix41afc19_attempted_v19)
+            # Keep the pre-existing 'applied' field as-is, but add applied_v19_display_override
+            output["debug"]["fix41afc19"]["applied_v19_display_override"] = bool(_fix41afc19_attempted_v19 and ("applied_v19_display_rebuild" in (_fix41afc19_skip_reason_v19 or "")))
+            # Never allow blank reason: prefer v19 skip_reason when earlier reason is empty
+            _prev_reason = str(output["debug"]["fix41afc19"].get("reason") or "")
+            if (not _prev_reason.strip()) and (_fix41afc19_skip_reason_v19 or "").strip():
+                output["debug"]["fix41afc19"]["reason"] = str(_fix41afc19_skip_reason_v19)
+            output["debug"]["fix41afc19"]["skip_reason_v19"] = str(_fix41afc19_skip_reason_v19 or "")
+            output["debug"]["fix41afc19"]["pool_count_v19"] = int(_fix41afc19_pool_count_v19 or 0)
+            output["debug"]["fix41afc19"]["rebuilt_keys_sample_v19"] = list(_fix41afc19_keys_sample_v19 or [])
+            if _fix41afc19_winner_trace_v19:
+                output["debug"]["evo_winner_trace_v1"] = _fix41afc19_winner_trace_v19
     except Exception:
         pass
     # =====================================================================
