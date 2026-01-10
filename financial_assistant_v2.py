@@ -79,7 +79,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v19'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v19'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# =====================================================================
+# PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
+# =====================================================================
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v21'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -19649,10 +19653,51 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         # Default: use whatever current_metrics we already have
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
+        # PATCH V21_CANONICAL_FOR_RENDER_SUSPICION (ADDITIVE):
+        # Even when current_metrics has "enough" keys, it can still be junk (year-like/unitless winners).
+        # Detect suspicious existing canonical dict and force a render-only rebuild in that case.
+        def _v21_yearlike(x):
+            try:
+                if x is None:
+                    return False
+                fx = float(x)
+                if abs(fx - round(fx)) < 1e-9:
+                    ix = int(round(fx))
+                    return 1900 <= ix <= 2105
+                return False
+            except Exception:
+                return False
+
+        def _v21_metric_suspicious(m):
+            try:
+                if not isinstance(m, dict):
+                    return True
+                u = (m.get("unit") or m.get("unit_tag") or "").strip()
+                vn = m.get("value_norm")
+                if (not u) and (_v21_yearlike(vn) or vn is None):
+                    return True
+                return False
+            except Exception:
+                return True
+
+        _suspicious_existing = False
+        try:
+            if isinstance(canonical_for_render, dict) and canonical_for_render:
+                _keys_sample_chk = list(sorted(list(canonical_for_render.keys())))[:25]
+                _sus = 0
+                _tot = 0
+                for _k in _keys_sample_chk:
+                    _tot += 1
+                    if _v21_metric_suspicious(canonical_for_render.get(_k)):
+                        _sus += 1
+                if _tot > 0:
+                    _suspicious_existing = (_sus / float(_tot)) >= 0.30
+        except Exception:
+            _suspicious_existing = False
 
         # Best-effort: rebuild canonical-for-render from frozen snapshots using analysis-aligned builder.
         # Apply when current canonical is missing/suspiciously small.
-        _need_render_rebuild = (not isinstance(canonical_for_render, dict)) or (len(canonical_for_render) < 3)
+        _need_render_rebuild = (not isinstance(canonical_for_render, dict)) or (len(canonical_for_render) < 3) or bool(_suspicious_existing)
         if _need_render_rebuild and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
             # Resolve schema/anchors/canon from prev_response (analysis baseline)
             _schema = {}
@@ -19691,14 +19736,14 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
             if isinstance(canonical_for_render, dict) and canonical_for_render:
                 _canonical_for_render_applied = True
-                _canonical_for_render_reason = "applied_render_only_rebuild"
+                _canonical_for_render_reason = "applied_render_only_rebuild" if not bool(_suspicious_existing) else "applied_render_only_rebuild_forced_suspicious"
                 _canonical_for_render_count = int(len(canonical_for_render))
                 _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12]
                 _canonical_for_render_replaced_current_metrics = True
             else:
                 _canonical_for_render_reason = "render_rebuild_failed_or_empty"
         else:
-            _canonical_for_render_reason = "used_existing_current_metrics"
+            _canonical_for_render_reason = "used_existing_current_metrics" if not bool(_suspicious_existing) else "forced_render_rebuild_due_to_suspicious_existing_failed"
             _canonical_for_render_count = int(len(canonical_for_render)) if isinstance(canonical_for_render, dict) else 0
             _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12] if isinstance(canonical_for_render, dict) else []
     except Exception:
