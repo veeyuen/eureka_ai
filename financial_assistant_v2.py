@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v11"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v12"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -14964,8 +14964,10 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 # PATCH FIX2B_TRACE_V1 (ADDITIVE): expose chosen URL + selector trace (no behavior change)
                 "cur_source_url": str((cur_can_obj or {}).get("source_url") or ""),
                 "selector_used": str((cur_can_obj or {}).get("selector_used") or ""),
-                "evo_selector_trace_v1": (dict((cur_can_obj or {}).get("analysis_selector_trace_v1")) if isinstance((cur_can_obj or {}).get("analysis_selector_trace_v1"), dict) else {}),
-                "unit_mismatch": bool(unit_mismatch),
+                "evo_selector_trace_v1": (dict((cur_can_obj or {}).get("analysis_selector_trace_v1") or {}) if isinstance((cur_can_obj or {}).get("analysis_selector_trace_v1"), dict) else {}),
+                "winner_candidate_debug": (dict((cur_can_obj or {}).get("winner_candidate_debug") or {}) if isinstance((cur_can_obj or {}).get("winner_candidate_debug"), dict) else {}),
+                "would_block_reason": str((cur_can_obj or {}).get("would_block_reason") or ""),
+"unit_mismatch": bool(unit_mismatch),
                 "abs_eps_used": abs_eps,
                 "rel_eps_used": rel_eps,
             })
@@ -23167,6 +23169,41 @@ def _analysis_canonical_final_selector_v1(
     meta["anchor_used"] = bool(out.get("anchor_used"))
     meta["chosen_source_url"] = _ph2b_norm_url(out.get("source_url") or "")
     # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX2B_TRACE_V2 (ADDITIVE): richer trace fields (NO behavior change)
+    # - Adds winner_candidate_debug + would_block_reason for scaled schemas.
+    # =====================================================================
+    try:
+        _winner = out if isinstance(out, dict) else {}
+        meta["winner_candidate_debug"] = {
+        "canonical_key": str(canonical_key),
+        "source_url": str(_winner.get("source_url") or ""),
+        "source_url_norm": _ph2b_norm_url(_winner.get("source_url") or ""),
+        "candidate_id": str(_winner.get("candidate_id") or _winner.get("id") or _winner.get("anchor_hash") or ""),
+        "value_norm": _winner.get("value_norm"),
+        "raw": str(_winner.get("raw") or _winner.get("value") or ""),
+        "unit_cmp": str(_winner.get("unit_cmp") or ""),
+        "unit_family": str(_winner.get("unit_family") or ""),
+        "unit_tag": str(_winner.get("unit_tag") or ""),
+        "context_snippet": str(_winner.get("context_snippet") or _winner.get("context") or ""),
+        }
+
+    # "Would block" diagnostic: scaled magnitude schema but chosen candidate lacks unit evidence.
+        _spec_unit = str((schema_frozen or {}).get("unit_tag") or (schema_frozen or {}).get("unit") or "")
+        _spec_unit_l = _spec_unit.lower()
+        _is_scaled = any(tok in _spec_unit_l for tok in ["million", "billion", "trillion", "thousand", "mn", "bn", "m ", "b ", "k "]) or (_spec_unit.strip() in ["M", "B", "K", "T"])
+        _winner_unit_cmp = str(_winner.get("unit_cmp") or "")
+        _winner_unit_tag = str(_winner.get("unit_tag") or "")
+        _winner_raw = str(_winner.get("raw") or _winner.get("value") or "")
+        _winner_has_scale = any(tok in (_winner_raw.lower()) for tok in ["million", "billion", "trillion", "thousand"]) or (_winner_unit_tag.strip().upper() in ["M", "B", "K", "T"]) or (_winner_unit_cmp.strip().upper() in ["M", "B", "K", "T", "%"])
+        if _is_scaled and not _winner_has_scale and not _winner_unit_cmp:
+            meta["would_block_reason"] = "unit_evidence_missing_for_scaled_schema"
+        else:
+            meta["would_block_reason"] = ""
+    except Exception:
+        pass
+
     # PATCH FIX2B_TRACE_V1 (ADDITIVE): emit selector trace payload
     # - Does NOT change selection; purely diagnostic.
     # =====================================================================
@@ -23180,6 +23217,8 @@ def _analysis_canonical_final_selector_v1(
             "n_candidates_eligible": int(meta.get("candidate_count_eligible") or 0),
             "blocked_reason": meta.get("blocked_reason") or "",
             "anchor_used": bool(meta.get("anchor_used")),
+            "would_block_reason": meta.get("would_block_reason") or "",
+            "winner_candidate_debug": dict(meta.get("winner_candidate_debug") or {}) if isinstance(meta.get("winner_candidate_debug"), dict) else {},
         }
     except Exception:
         pass
@@ -23273,6 +23312,14 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             try:
                 if isinstance(meta, dict) and isinstance(meta.get("analysis_selector_trace_v1"), dict):
                     best["analysis_selector_trace_v1"] = dict(meta.get("analysis_selector_trace_v1"))
+            except Exception:
+                pass
+            # PATCH FIX2B_TRACE_V2 (ADDITIVE): attach richer trace fields (NO behavior change)
+            try:
+                if isinstance(meta, dict) and isinstance(meta.get("winner_candidate_debug"), dict):
+                    best["winner_candidate_debug"] = dict(meta.get("winner_candidate_debug"))
+                if isinstance(meta, dict) and isinstance(meta.get("would_block_reason"), str):
+                    best["would_block_reason"] = meta.get("would_block_reason") or ""
             except Exception:
                 pass
             rebuilt[canonical_key] = best
