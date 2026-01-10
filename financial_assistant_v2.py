@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34b'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34c'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -27799,3 +27799,145 @@ try:
     CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'
 except Exception:
     pass
+
+# =====================================================================
+# PATCH V34C_DIFF_RESPONSE_UNWRAP (ADDITIVE)
+# Purpose:
+#   Evolution diff panel sometimes receives wrapper objects rather than the
+#   direct payload containing primary_metrics_canonical / metric_anchors.
+#   This patch adds a deterministic unwrapping shim and wires a v34c wrapper
+#   that runs the existing v34 anchor-hash join logic against the unwrapped
+#   payloads, while preserving strict no-fallback semantics.
+# Non-negotiables:
+#   - Evolution render/diff layer only
+#   - No changes to fastpath, hashing, injection, snapshot attach, extraction, Analysis
+# =====================================================================
+
+def _v34c_unwrap_for_diff(resp):
+    """
+    Deterministically unwrap common wrapper shapes to obtain the payload dict that
+    actually contains 'primary_metrics_canonical' and 'metric_anchors'.
+
+    Returns: (payload_dict, path_str)
+      - payload_dict is always a dict (may be the original dict)
+      - path_str indicates the unwrap path used (for debugging only)
+    """
+    try:
+        if not isinstance(resp, dict):
+            return ({}, "non_dict")
+
+        # If it already looks like the payload, stop.
+        if isinstance(resp.get("primary_metrics_canonical"), dict) or isinstance(resp.get("metric_anchors"), dict):
+            return (resp, "self")
+
+        # Candidate unwrap paths (ordered, deterministic)
+        candidates = [
+            ("primary_response", ["primary_response"]),
+            ("results.primary_response", ["results", "primary_response"]),
+            ("results.response", ["results", "response"]),
+            ("results.payload", ["results", "payload"]),
+            ("payload", ["payload"]),
+            ("response", ["response"]),
+            ("data", ["data"]),
+            ("result", ["result"]),
+        ]
+
+        for label, path in candidates:
+            cur = resp
+            ok = True
+            for k in path:
+                if isinstance(cur, dict) and (k in cur):
+                    cur = cur.get(k)
+                else:
+                    ok = False
+                    break
+            if not ok:
+                continue
+            if isinstance(cur, dict):
+                if isinstance(cur.get("primary_metrics_canonical"), dict) or isinstance(cur.get("metric_anchors"), dict):
+                    return (cur, label)
+
+        # Last resort: one-level scan for a dict that looks like a payload
+        try:
+            for k, v in list(resp.items()):
+                if isinstance(v, dict) and (isinstance(v.get("primary_metrics_canonical"), dict) or isinstance(v.get("metric_anchors"), dict)):
+                    return (v, f"scan.{k}")
+        except Exception:
+            pass
+
+        return (resp, "self_no_payload_keys")
+    except Exception:
+        return ({}, "error")
+
+
+def diff_metrics_by_name_FIX41_V34C_UNWRAP(prev_response: dict, cur_response: dict):
+    """
+    v34c wrapper:
+      - unwrap prev/cur to the canonical payload dicts
+      - run the existing v34 anchor-hash join wrapper logic against unwrapped payloads
+      - write top-level debug summary onto the *outer* cur_response (and inner payload too, if different)
+    """
+    # Ensure we can call the v34 wrapper (wired in v34).
+    if not callable(diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN):
+        # Fallback to base if present (keeps prior behavior)
+        if callable(diff_metrics_by_name_V34_BASE):
+            return diff_metrics_by_name_V34_BASE(prev_response, cur_response)
+        return ([], 0, 0, 0, 0)
+
+    prev_payload, prev_path = _v34c_unwrap_for_diff(prev_response)
+    cur_payload, cur_path = _v34c_unwrap_for_diff(cur_response)
+
+    # Run v34 join on the unwrapped payloads.
+    out = diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN(prev_payload, cur_payload)
+
+    # Attach an additional small debug note on the outer response (does not alter required v34 key)
+    try:
+        if isinstance(cur_response, dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"]["diff_join_anchor_v34c_unwrap"] = {
+                    "prev_unwrap_path": prev_path,
+                    "cur_unwrap_path": cur_path,
+                    "prev_payload_has_pmc": bool(isinstance(prev_payload, dict) and isinstance(prev_payload.get("primary_metrics_canonical"), dict)),
+                    "cur_payload_has_pmc": bool(isinstance(cur_payload, dict) and isinstance(cur_payload.get("primary_metrics_canonical"), dict)),
+                    "prev_payload_has_metric_anchors": bool(isinstance(prev_payload, dict) and isinstance(prev_payload.get("metric_anchors"), dict)),
+                    "cur_payload_has_metric_anchors": bool(isinstance(cur_payload, dict) and isinstance(cur_payload.get("metric_anchors"), dict)),
+                }
+    except Exception:
+        pass
+
+    # If payload is a different dict, mirror the same note for convenience (no harm if same).
+    try:
+        if isinstance(cur_payload, dict) and (cur_payload is not cur_response):
+            cur_payload.setdefault("debug", {})
+            if isinstance(cur_payload.get("debug"), dict):
+                cur_payload["debug"]["diff_join_anchor_v34c_unwrap"] = {
+                    "prev_unwrap_path": prev_path,
+                    "cur_unwrap_path": cur_path,
+                    "prev_payload_has_pmc": bool(isinstance(prev_payload, dict) and isinstance(prev_payload.get("primary_metrics_canonical"), dict)),
+                    "cur_payload_has_pmc": bool(isinstance(cur_payload, dict) and isinstance(cur_payload.get("primary_metrics_canonical"), dict)),
+                    "prev_payload_has_metric_anchors": bool(isinstance(prev_payload, dict) and isinstance(prev_payload.get("metric_anchors"), dict)),
+                    "cur_payload_has_metric_anchors": bool(isinstance(cur_payload, dict) and isinstance(cur_payload.get("metric_anchors"), dict)),
+                }
+    except Exception:
+        pass
+
+    return out
+
+
+# PATCH V34C_WIRE (ADDITIVE): override diff_metrics_by_name entrypoint with v34c unwrap wrapper.
+try:
+    if callable(diff_metrics_by_name_FIX41_V34C_UNWRAP):
+        diff_metrics_by_name = diff_metrics_by_name_FIX41_V34C_UNWRAP  # type: ignore
+except Exception:
+    pass
+
+# PATCH V34C_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34c'
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH V34C_DIFF_RESPONSE_UNWRAP
+# =====================================================================
