@@ -83,7 +83,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v21'
+#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v21'
+
+# =====================================================================
+# PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
+# =====================================================================
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -19740,6 +19745,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _canonical_for_render_count = int(len(canonical_for_render))
                 _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12]
                 _canonical_for_render_replaced_current_metrics = True
+                # PATCH V22_CANONICAL_FOR_RENDER_FN_GUARD (ADDITIVE): ensure fn label is never empty when rebuild succeeded
+                try:
+                    if not str(_canonical_for_render_fn or "").strip():
+                        _canonical_for_render_fn = "unknown_rebuild_fn"
+                except Exception:
+                    pass
             else:
                 _canonical_for_render_reason = "render_rebuild_failed_or_empty"
         else:
@@ -19749,6 +19760,87 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
         _canonical_for_render_reason = "exception_fallback_existing"
+
+    # PATCH V22_CANONICAL_FOR_RENDER_NORMALIZE (ADDITIVE): normalize canonical_for_render metric dicts so that
+    # downstream row hydration does not overwrite Current with blanks when the rebuilt dict uses alternate fields.
+    # - Derives value_norm/unit/raw from common alternate keys and evidence entries.
+    # - Purely render-layer enrichment; does NOT alter selection/hashing.
+    def _v22_extract_numeric(v):
+        try:
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            s = str(v).strip()
+            if not s:
+                return None
+            # strip commas
+            s2 = s.replace(",", "")
+            return float(s2)
+        except Exception:
+            return None
+
+    def _v22_norm_metric(cm: dict) -> dict:
+        try:
+            if not isinstance(cm, dict):
+                return cm
+            # value_norm
+            vn = cm.get("value_norm")
+            if vn is None:
+                for k in ("value", "value_num", "value_float", "norm_value", "canonical_value_norm"):
+                    if k in cm and cm.get(k) is not None:
+                        vn = cm.get(k)
+                        break
+            # evidence-derived
+            if vn is None and isinstance(cm.get("evidence"), list) and cm.get("evidence"):
+                try:
+                    ev0 = cm.get("evidence")[0]
+                    if isinstance(ev0, dict):
+                        vn = ev0.get("value_norm") if ev0.get("value_norm") is not None else ev0.get("value")
+                except Exception:
+                    pass
+            vn_f = _v22_extract_numeric(vn)
+            if vn_f is not None:
+                cm["value_norm"] = vn_f
+
+            # unit
+            unit = (cm.get("unit") or cm.get("unit_tag") or cm.get("unit_label") or "").strip()
+            if (not unit) and isinstance(cm.get("evidence"), list) and cm.get("evidence"):
+                try:
+                    ev0 = cm.get("evidence")[0]
+                    if isinstance(ev0, dict):
+                        unit = (ev0.get("unit") or ev0.get("unit_tag") or "").strip()
+                except Exception:
+                    pass
+            if unit:
+                cm["unit"] = unit
+
+            # raw/display
+            raw = (cm.get("raw") or cm.get("value_raw") or cm.get("raw_value") or cm.get("display") or "").strip()
+            if not raw:
+                try:
+                    if cm.get("value_norm") is not None and (cm.get("unit") or ""):
+                        raw = f"{cm.get('value_norm')} {cm.get('unit')}".strip()
+                    elif cm.get("value_norm") is not None:
+                        raw = str(cm.get("value_norm"))
+                except Exception:
+                    raw = ""
+            if raw:
+                cm["raw"] = raw
+            cm.setdefault("diag", {})
+            if isinstance(cm.get("diag"), dict):
+                cm["diag"].setdefault("v22_norm", True)
+            return cm
+        except Exception:
+            return cm
+
+    try:
+        if isinstance(canonical_for_render, dict) and canonical_for_render:
+            for _k, _m in list(canonical_for_render.items()):
+                if isinstance(_m, dict):
+                    canonical_for_render[_k] = _v22_norm_metric(_m)
+    except Exception:
+        pass
 
     # Diff using existing diff helper if present, but FORCE cur_response to canonical-for-render.
     metric_changes = []
@@ -19767,6 +19859,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         "rows_total": int(len(metric_changes or [])),
         "rows_hydrated": 0,
         "rows_missing_canonical": 0,
+        "rows_skipped_missing_fields": 0,
         "rows_with_prior_current_overridden": 0,
     }
     try:
@@ -19780,6 +19873,22 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 cm = canonical_for_render.get(ckey)
                 if not isinstance(cm, dict):
                     _row_audit["rows_missing_canonical"] += 1
+                    continue
+
+                # PATCH V22_ROW_HYDRATE_GUARD (ADDITIVE): only override if canonical metric has usable fields
+                # Prevents overwriting a previously non-empty current with blanks when canon metric is sparse.
+                _cm_vn = cm.get("value_norm")
+                _cm_unit = (cm.get("unit") or cm.get("unit_tag") or "").strip()
+                _cm_raw = (cm.get("raw") or cm.get("value_raw") or cm.get("raw_value") or "").strip()
+                if _cm_vn is None and (not _cm_raw):
+                    # no usable canonical payload to hydrate from
+                    _row_audit["rows_skipped_missing_fields"] += 1
+                    row.setdefault("diag", {})
+                    if isinstance(row.get("diag"), dict):
+                        row["diag"].setdefault("canonical_for_render_v1", {})
+                        row["diag"]["canonical_for_render_v1"]["applied"] = False
+                        row["diag"]["canonical_for_render_v1"]["reason"] = "skipped_missing_canonical_fields"
+                        row["diag"]["canonical_for_render_v1"]["fn"] = _canonical_for_render_fn
                     continue
 
                 # Capture prior values for audit if we are overriding
@@ -19811,6 +19920,26 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 row["current_unit"] = unit
                 row["cur_unit_cmp"] = unit
                 row["current_value"] = raw
+
+                # PATCH V22_CLEAR_UNIT_MISMATCH_ON_CANON (ADDITIVE): if canonical-for-render provides
+                # a schema-aligned unit+value, clear any prior unit_mismatch that came from raw/fallback.
+                try:
+                    if (vnorm is not None) and str(unit or "").strip():
+                        if row.get("unit_mismatch") is True:
+                            row["unit_mismatch"] = False
+                        if row.get("change_type") in ("unit_mismatch", "invalid_current"):
+                            pv = row.get("previous_value")
+                            pvf = _v22_extract_numeric(pv)
+                            cvf = _v22_extract_numeric(vnorm)
+                            if pvf is not None and cvf is not None:
+                                if abs(cvf - pvf) < 1e-9:
+                                    row["change_type"] = "unchanged"
+                                elif cvf > pvf:
+                                    row["change_type"] = "increased"
+                                else:
+                                    row["change_type"] = "decreased"
+                except Exception:
+                    pass
 
                 # Range fields (if present in canonical)
                 if isinstance(cm.get("value_range"), dict):
