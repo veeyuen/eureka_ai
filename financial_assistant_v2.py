@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34d_fix5'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34e'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v33"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34e"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -20631,6 +20631,38 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         if callable(fn_diff):
             cur_resp_for_diff = {"primary_metrics_canonical": canonical_for_render}
             # =====================================================================
+            # PATCH V34E_DIFF_METRIC_CHANGES_ANCHOR_INPUT (ADDITIVE)
+            # Ensure the diff layer receives metric_anchors for CURRENT so that
+            # v34 anchor-hash secondary join can resolve drifting canonical_keys.
+            # - Deterministic, inference-free: only uses anchor_hash already present
+            #   on canonical_for_render entries (if any).
+            # =====================================================================
+            try:
+                _cur_metric_anchors = {}
+                if isinstance(canonical_for_render, dict):
+                    for _ckey, _m in canonical_for_render.items():
+                        if not isinstance(_ckey, str):
+                            continue
+                        if not isinstance(_m, dict):
+                            continue
+                        _ah = _m.get("anchor_hash")
+                        if not _ah and isinstance(_m.get("anchor"), dict):
+                            _ah = _m.get("anchor", {}).get("anchor_hash")
+                        if not _ah and isinstance(_m.get("anchor_meta"), dict):
+                            _ah = _m.get("anchor_meta", {}).get("anchor_hash")
+                        # Only emit when present and non-null-ish
+                        if _ah and str(_ah).lower() not in ("none", "null", ""):
+                            _cur_metric_anchors[_ckey] = {"anchor_hash": str(_ah)}
+                if _cur_metric_anchors:
+                    cur_resp_for_diff["metric_anchors"] = _cur_metric_anchors
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH V34E_DIFF_METRIC_CHANGES_ANCHOR_INPUT
+            # =====================================================================
+
+
+            # =====================================================================
             # PATCH V27_DISABLE_NUMERIC_INFERENCE_FLAG (ADDITIVE)
             # Signal to diff layer: when canonical-for-render is active, do NOT
             # infer/parse numeric values for CURRENT from free-form strings.
@@ -20652,6 +20684,32 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             except Exception:
                 pass
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+            # =====================================================================
+            # PATCH V34E_DIFF_JOIN_SUMMARY_SURFACE (ADDITIVE)
+            # Surface v34 join summary (if produced by diff layer) into top-level debug
+            # so it appears in the Evolution JSON for audit.
+            # =====================================================================
+            try:
+                _dj = None
+                if isinstance(cur_resp_for_diff, dict):
+                    _dj = (cur_resp_for_diff.get("debug") or {}).get("diff_join_anchor_v34")
+                if isinstance(_dj, dict):
+                    try:
+                        if "debug" not in output or not isinstance(output.get("debug"), dict):
+                            output["debug"] = {}
+                    except Exception:
+                        output["debug"] = {}
+                    try:
+                        output["debug"]["diff_join_anchor_v34"] = _dj
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH V34E_DIFF_JOIN_SUMMARY_SURFACE
+            # =====================================================================
+
+
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
