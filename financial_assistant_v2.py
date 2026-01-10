@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v27'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v28'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -19806,7 +19806,172 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
         _canonical_for_render_reason = "exception_fallback_existing"
 
-    # PATCH V22_CANONICAL_FOR_RENDER_NORMALIZE (ADDITIVE): normalize canonical_for_render metric dicts so that
+
+    # =====================================================================
+    # PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER (ADDITIVE)
+    # Problem observed:
+    # - canonical_for_render rebuild may select junk numbers from the frozen pool
+    #   (e.g., GlobeNewswire footer "2B" or email fragments "-6441") when anchors
+    #   are not strictly enforced.
+    #
+    # Fix:
+    # - If prev_response provides metric_anchors for a canonical_key, forcibly
+    #   resolve the exact anchored candidate from baseline_sources_cache by matching
+    #   anchor_hash and use that to populate canonical_for_render for that key.
+    #
+    # Scope / Safety:
+    # - Render-only: affects ONLY canonical_for_render (dashboard "Current")
+    # - Does NOT touch hashing, fastpath, injection lifecycle, or snapshot attach.
+    #
+    # Diagnostics:
+    # - output.debug.canonical_for_render_anchor_enforce_v28 (summary)
+    # - per-metric cm["diag"]["v28_anchor_enforced"] (when applied)
+    # =====================================================================
+    _v28_anchor_enforce = {
+        "attempted": False,
+        "schema_keys": 0,
+        "anchors_keys": 0,
+        "hits": 0,
+        "misses": 0,
+        "hit_keys_sample": [],
+        "miss_keys_sample": [],
+        "note": "render-only anchor enforcement by anchor_hash against frozen extracted_numbers pool",
+    }
+
+    def _v28_iter_numbers_from_sources_cache(_sources_cache):
+        try:
+            for _src in (_sources_cache or []):
+                if not isinstance(_src, dict):
+                    continue
+                _url = _src.get("url") or _src.get("source_url") or ""
+                nums = _src.get("extracted_numbers") or []
+                if isinstance(nums, list):
+                    for _n in nums:
+                        if isinstance(_n, dict):
+                            yield _url, _n
+        except Exception:
+            return
+
+    def _v28_pick_by_anchor_hash(_sources_cache, _anchor_hash: str):
+        try:
+            ah = str(_anchor_hash or "").strip()
+            if not ah or ah == "None":
+                return None
+            for _url, _n in _v28_iter_numbers_from_sources_cache(_sources_cache):
+                try:
+                    if str(_n.get("anchor_hash") or "").strip() == ah:
+                        out = dict(_n)
+                        if _url and (not out.get("source_url")):
+                            out["source_url"] = _url
+                        return out
+                except Exception:
+                    continue
+            return None
+        except Exception:
+            return None
+
+    def _v28_schema_unit_label(_schema_row: dict) -> str:
+        try:
+            if not isinstance(_schema_row, dict):
+                return ""
+            # Prefer schema unit_tag (human-friendly) then unit
+            u = (_schema_row.get("unit_tag") or _schema_row.get("unit") or "").strip()
+            # Small convenience mapping
+            if u == "M":
+                return "million units"
+            if u == "B":
+                return "billion"
+            return u
+        except Exception:
+            return ""
+
+    try:
+        if isinstance(canonical_for_render, dict) and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            _v28_anchor_enforce["attempted"] = True
+            _schema = {}
+            _anchors = {}
+            try:
+                if isinstance(prev_response, dict):
+                    _schema = prev_response.get("metric_schema_frozen") or {}
+                    _anchors = prev_response.get("metric_anchors") or {}
+            except Exception:
+                _schema, _anchors = {}, {}
+            _v28_anchor_enforce["schema_keys"] = int(len(_schema)) if isinstance(_schema, dict) else 0
+            _v28_anchor_enforce["anchors_keys"] = int(len(_anchors)) if isinstance(_anchors, dict) else 0
+
+            if isinstance(_anchors, dict) and _anchors:
+                for _ckey, _ainfo in list(_anchors.items()):
+                    try:
+                        if not _ckey:
+                            continue
+                        if not isinstance(_ainfo, dict):
+                            continue
+                        _ah = _ainfo.get("anchor_hash") or _ainfo.get("anchor") or ""
+                        if not str(_ah or "").strip() or str(_ah) == "None":
+                            continue
+
+                        cand = _v28_pick_by_anchor_hash(baseline_sources_cache, _ah)
+                        if not isinstance(cand, dict):
+                            _v28_anchor_enforce["misses"] += 1
+                            if len(_v28_anchor_enforce["miss_keys_sample"]) < 12:
+                                _v28_anchor_enforce["miss_keys_sample"].append(str(_ckey))
+                            continue
+
+                        # Build minimal schema-aligned canonical metric
+                        srow = _schema.get(_ckey) if isinstance(_schema, dict) else None
+                        unit_lbl = _v28_schema_unit_label(srow if isinstance(srow, dict) else {})
+                        vnorm = cand.get("value_norm")
+                        if vnorm is None:
+                            vnorm = cand.get("value")
+                        raw = (cand.get("raw") or "").strip()
+                        if not raw:
+                            try:
+                                if vnorm is not None and unit_lbl:
+                                    raw = f"{vnorm} {unit_lbl}".strip()
+                                elif vnorm is not None:
+                                    raw = str(vnorm)
+                            except Exception:
+                                raw = ""
+
+                        cm = canonical_for_render.get(_ckey) if isinstance(canonical_for_render, dict) else None
+                        if not isinstance(cm, dict):
+                            cm = {}
+                        cm["value_norm"] = vnorm
+                        cm["unit"] = unit_lbl
+                        cm["unit_tag"] = unit_lbl
+                        if raw:
+                            cm["raw"] = raw
+                        # Provide evidence and source hint
+                        cm["source_url"] = cand.get("source_url") or cand.get("url") or _ainfo.get("source_url") or ""
+                        cm["context_snippet"] = cand.get("context_snippet") or cand.get("context") or _ainfo.get("context_snippet") or ""
+                        cm["evidence"] = [cand]
+                        cm.setdefault("diag", {})
+                        if isinstance(cm.get("diag"), dict):
+                            cm["diag"]["v28_anchor_enforced"] = True
+                            cm["diag"]["v28_anchor_hash"] = str(_ah)
+                            cm["diag"]["v28_anchor_candidate_raw"] = cand.get("raw")
+                            cm["diag"]["v28_anchor_candidate_unit"] = cand.get("unit") or cand.get("unit_tag") or ""
+                            cm["diag"]["v28_anchor_candidate_value_norm"] = cand.get("value_norm")
+
+                        canonical_for_render[_ckey] = cm
+                        _v28_anchor_enforce["hits"] += 1
+                        if len(_v28_anchor_enforce["hit_keys_sample"]) < 12:
+                            _v28_anchor_enforce["hit_keys_sample"].append(str(_ckey))
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["canonical_for_render_anchor_enforce_v28"] = _v28_anchor_enforce
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER
+    # =====================================================================
+
+# PATCH V22_CANONICAL_FOR_RENDER_NORMALIZE (ADDITIVE): normalize canonical_for_render metric dicts so that
     # downstream row hydration does not overwrite Current with blanks when the rebuilt dict uses alternate fields.
     # - Derives value_norm/unit/raw from common alternate keys and evidence entries.
     # - Purely render-layer enrichment; does NOT alter selection/hashing.
@@ -26579,4 +26744,15 @@ except Exception:
     pass
 # =====================================================================
 # END PATCH V27_VERSION_BUMP
+# =====================================================================
+
+# =====================================================================
+# PATCH V28_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
+# =====================================================================
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v28'
+except Exception:
+    pass
+# =====================================================================
+# END PATCH V28_VERSION_BUMP
 # =====================================================================
