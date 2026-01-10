@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v30'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v32'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -27201,4 +27201,186 @@ except Exception:
 CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v29'
 # =====================================================================
 # END PATCH V29_CODE_VERSION_BUMP
+# =====================================================================
+
+
+# =====================================================================
+# PATCH V32_PREFER_CUR_PRIMARY_METRICS_CANONICAL (ADDITIVE)
+# Goal: For Evolution diff panel, prefer cur_response['primary_metrics_canonical'][canonical_key] as the source of CURRENT
+#       when present. This avoids render-only snapshot rebuild empties and eliminates raw numeric pool fallbacks.
+# Safety: diff/render-layer only. Does not touch fastpath replay / hashing universe / injection lifecycle / snapshot attach / extraction.
+#
+# Adds per-row audit:
+#   row['diag']['v32_current_source_v1'] = {
+#       'cur_has_pmc': bool,
+#       'used_current_source': 'cur_primary_metrics_canonical' | 'base_diff' | 'none',
+#       'ckey': canonical_key,
+#   }
+# Also adds a tiny debug counter into cur_response (harmless):
+#   cur_response['_debug_v32_pmc_used_count'] (int)
+# =====================================================================
+
+try:
+    diff_metrics_by_name_V32_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_V32_BASE = None  # type: ignore
+
+def _v32_safe_str(x):
+    try:
+        if x is None:
+            return ""
+        return str(x)
+    except Exception:
+        return ""
+
+def _v32_pick_canon_metric(cur_pmc: dict, ckey: str):
+    try:
+        if not isinstance(cur_pmc, dict):
+            return None
+        m = cur_pmc.get(ckey)
+        return m if isinstance(m, dict) else None
+    except Exception:
+        return None
+
+def _v32_extract_value_unit_raw(cm: dict):
+    '''
+    Extract (value_norm, unit, raw_display) without numeric inference.
+    Uses a few known canonical fields and then evidence[0] as a last resort.
+    '''
+    try:
+        if not isinstance(cm, dict):
+            return (None, "", "")
+        cvn = cm.get("value_norm", None)
+        unit = (cm.get("unit") or cm.get("unit_tag") or cm.get("unit_cmp") or "").strip()
+        raw = (cm.get("value_display") or cm.get("value_range_display") or cm.get("raw") or "").strip()
+        if (cvn is None or unit == "") and isinstance(cm.get("evidence"), list) and cm["evidence"]:
+            ev0 = cm["evidence"][0] if isinstance(cm["evidence"][0], dict) else None
+            if isinstance(ev0, dict):
+                if cvn is None:
+                    cvn = ev0.get("value_norm", ev0.get("value", None))
+                if unit == "":
+                    unit = (ev0.get("unit") or ev0.get("unit_tag") or ev0.get("unit_cmp") or "").strip()
+                if not raw:
+                    raw = (ev0.get("raw") or "").strip()
+        if not raw:
+            try:
+                if cvn is not None and unit:
+                    raw = f"{cvn} {unit}".strip()
+                elif cvn is not None:
+                    raw = str(cvn)
+            except Exception:
+                raw = ""
+        return (cvn, unit, raw)
+    except Exception:
+        return (None, "", "")
+
+def diff_metrics_by_name_FIX40_V32_PREFER_PMC(prev_response: dict, cur_response: dict):
+    '''
+    Wrapper around existing diff_metrics_by_name:
+      - Computes base metric_changes using existing logic
+      - Then, if cur_response['primary_metrics_canonical'] contains an entry for the same canonical_key,
+        overwrites CURRENT fields from that canonical metric (NO numeric inference).
+      - Emits per-row audit under row['diag']['v32_current_source_v1'].
+    '''
+    # Run base implementation first
+    if callable(diff_metrics_by_name_V32_BASE):
+        metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_V32_BASE(prev_response, cur_response)
+    else:
+        return ([], 0, 0, 0, 0)
+
+    try:
+        cur_pmc = (cur_response or {}).get("primary_metrics_canonical") if isinstance(cur_response, dict) else None
+        cur_has_pmc = isinstance(cur_pmc, dict) and len(cur_pmc) > 0
+        used_count = 0
+
+        if isinstance(metric_changes, list):
+            for row in metric_changes:
+                try:
+                    if not isinstance(row, dict):
+                        continue
+                    ckey = row.get("canonical_key") or row.get("ckey") or ""
+                    ckey = _v32_safe_str(ckey).strip()
+                    row.setdefault("diag", {})
+                    if isinstance(row.get("diag"), dict):
+                        row["diag"].setdefault("v32_current_source_v1", {})
+                        row["diag"]["v32_current_source_v1"]["cur_has_pmc"] = bool(cur_has_pmc)
+                        row["diag"]["v32_current_source_v1"]["ckey"] = ckey
+
+                    if not (cur_has_pmc and ckey):
+                        if isinstance(row.get("diag"), dict):
+                            row["diag"]["v32_current_source_v1"]["used_current_source"] = "base_diff"
+                        continue
+
+                    cm = _v32_pick_canon_metric(cur_pmc, ckey)
+                    if not isinstance(cm, dict) or not cm:
+                        if isinstance(row.get("diag"), dict):
+                            row["diag"]["v32_current_source_v1"]["used_current_source"] = "base_diff"
+                        continue
+
+                    cvn, unit, raw = _v32_extract_value_unit_raw(cm)
+                    if cvn is None and not raw:
+                        if isinstance(row.get("diag"), dict):
+                            row["diag"]["v32_current_source_v1"]["used_current_source"] = "base_diff"
+                        continue
+
+                    # Override CURRENT fields
+                    row["current_value"] = raw
+                    row["cur_value_norm"] = cvn
+                    row["current_value_norm"] = cvn
+                    if unit:
+                        row["cur_unit_cmp"] = unit
+                        row["current_unit"] = unit
+
+                    # Soft-clear unit_mismatch if both indicate percent
+                    if unit and isinstance(row.get("prev_unit_cmp"), str) and row.get("prev_unit_cmp").strip() == "%" and unit.strip() == "%":
+                        row["unit_mismatch"] = False
+
+                    # Update change_type if numeric comparable (no inference)
+                    try:
+                        pv = row.get("prev_value_norm", row.get("previous_value", None))
+                        pv_num = float(pv) if isinstance(pv, (int, float)) else None
+                        cv_num = float(cvn) if isinstance(cvn, (int, float)) else None
+                        if pv_num is not None and cv_num is not None:
+                            if abs(cv_num - pv_num) < 1e-9:
+                                row["change_type"] = "unchanged"
+                            elif cv_num > pv_num:
+                                row["change_type"] = "increased"
+                            else:
+                                row["change_type"] = "decreased"
+                    except Exception:
+                        pass
+
+                    if isinstance(row.get("diag"), dict):
+                        row["diag"]["v32_current_source_v1"]["used_current_source"] = "cur_primary_metrics_canonical"
+                    used_count += 1
+                except Exception:
+                    continue
+
+        # attach a tiny debug counter into cur_response for audit (harmless)
+        try:
+            if isinstance(cur_response, dict):
+                cur_response["_debug_v32_pmc_used_count"] = used_count
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    return metric_changes, unchanged, increased, decreased, found
+
+# PATCH V32_WIRE (ADDITIVE): override diff_metrics_by_name entrypoint with v32 wrapper.
+try:
+    if callable(diff_metrics_by_name_FIX40_V32_PREFER_PMC):
+        diff_metrics_by_name = diff_metrics_by_name_FIX40_V32_PREFER_PMC  # type: ignore
+except Exception:
+    pass
+
+# PATCH V32_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v32'
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH V32_PREFER_CUR_PRIMARY_METRICS_CANONICAL
 # =====================================================================
