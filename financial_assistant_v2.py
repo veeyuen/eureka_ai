@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34h'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34k"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34e"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -14658,18 +14658,6 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 
     Returns:
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
-metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
-
-            # =====================================================================
-            # PATCH V34G5 (ADDITIVE): surface diff join summary into main debug payload
-            # =====================================================================
-            try:
-                if isinstance(output.get("debug"), dict) and isinstance(cur_resp_for_diff.get("debug"), dict):
-                    if isinstance(cur_resp_for_diff["debug"].get("diff_join_anchor_v34"), dict):
-                        output["debug"]["diff_join_anchor_v34"] = cur_resp_for_diff["debug"]["diff_join_anchor_v34"]
-            except Exception:
-                pass
-            # =====================================================================
     """
     import re
 
@@ -15062,21 +15050,10 @@ metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, 
         metric_changes = []
         unchanged = increased = decreased = found = 0
 
-        # =====================================================================
-        # PATCH V34G0 (ADDITIVE): join counters + sample collection for anchor-hash joins
-        # =====================================================================
-        joined_by_ckey = 0
-        joined_by_anchor_hash = 0
-        not_found_rows = 0
-        sample_anchor_joins = []
-        # =====================================================================
-
-
         for ckey, pm in prev_can.items():
             pm = pm if isinstance(pm, dict) else {}
             cm = cur_can.get(ckey)
             cm = cm if isinstance(cm, dict) else {}
-            joined_by_ckey += 1  # PATCH V34G2 (ADDITIVE): primary join counter
 
             display_name = get_display_name(prev_response, pm, cm, ckey)
             definition = get_metric_definition(prev_response, ckey)
@@ -15085,92 +15062,24 @@ metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, 
 
             # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
             if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
+                # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
+                _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
 
-                # =====================================================================
-                # PATCH V34G1 (ADDITIVE): secondary join by stable anchor_hash when canonical_key drifts
-                # Rules:
-                # - Primary join: exact canonical_key (unchanged)
-                # - Secondary join: anchor_hash equality only (no similarity, no inference)
-                # - Current value: ONLY from cur_response.primary_metrics_canonical[resolved_cur_ckey]
-                # =====================================================================
-                resolved_cur_ckey = None
-                prev_anchor_hash = None
-                cur_anchor_hash = None
-                try:
-                    prev_ma = prev_response.get("metric_anchors") if isinstance(prev_response, dict) else None
-                    cur_ma = cur_response.get("metric_anchors") if isinstance(cur_response, dict) else None
-
-                    if isinstance(prev_ma, dict) and isinstance(prev_ma.get(ckey), dict):
-                        prev_anchor_hash = prev_ma.get(ckey, {}).get("anchor_hash") or prev_ma.get(ckey, {}).get("hash")
-
-                    # Attempt anchor-hash join only if we have a previous anchor_hash and a current metric_anchors dict
-                    if prev_anchor_hash and isinstance(cur_ma, dict) and cur_ma:
-                        # Deterministic scan over sorted keys
-                        for _cur_ckey in sorted(cur_ma.keys()):
-                            _a = cur_ma.get(_cur_ckey)
-                            if not isinstance(_a, dict):
-                                continue
-                            _ah = _a.get("anchor_hash") or _a.get("hash")
-                            if _ah and str(_ah) == str(prev_anchor_hash):
-                                resolved_cur_ckey = str(_cur_ckey)
-                                cur_anchor_hash = str(_ah)
-                                break
-                except Exception:
-                    resolved_cur_ckey = None
-
-                # If anchor join succeeded, rebind cm; otherwise treat as not_found.
-                if resolved_cur_ckey and isinstance(cur_can.get(resolved_cur_ckey), dict):
-                    cm = cur_can.get(resolved_cur_ckey) if isinstance(cur_can, dict) else None
-                    cm = cm if isinstance(cm, dict) else {}
-                    joined_by_anchor_hash += 1
-                    if len(sample_anchor_joins) < 5:
-                        sample_anchor_joins.append({
-                            "prev_ckey": ckey,
-                            "resolved_cur_ckey": resolved_cur_ckey,
-                            "prev_anchor_hash": prev_anchor_hash,
-                            "cur_anchor_hash": cur_anchor_hash,
-                        })
-                else:
-                    # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
-                    _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
-
-                    not_found_rows += 1
-                    metric_changes.append({
-                        "name": display_name,
-                        "previous_value": prev_raw,
-                        "current_value": "N/A",
-                        "change_pct": None,
-                        "change_type": "not_found",
-                        "match_confidence": 0.0,
-                        "context_snippet": _ctx,
-                        "source_url": _src,
-                        "anchor_used": False,  # not applicable when current metric missing
-                        "canonical_key": ckey,
-                        "metric_definition": definition,
-                        "anchor_confidence": _aconf,
-
-                        # v34 join diagnostics (per-row)
-                        "diag": {
-                            "diff_join_trace_v1": {
-                                "prev_ckey": ckey,
-                                "resolved_cur_ckey": None,
-                                "method": "none",
-                                "prev_anchor_hash": prev_anchor_hash,
-                                "cur_anchor_hash": None,
-                            },
-                            "diff_current_source_trace_v1": {
-                                "current_source_path_used": "none",
-                                "current_value_norm": None,
-                                "current_unit_tag": None,
-                                "inference_disabled": True,
-                            },
-                        },
-                    })
-                    continue
-
-                # When anchor-join succeeded, we fall through and compute change using `cm`
-                # Update display_name/definition remain keyed on prev ckey by design.
-
+                metric_changes.append({
+                    "name": display_name,
+                    "previous_value": prev_raw,
+                    "current_value": "N/A",
+                    "change_pct": None,
+                    "change_type": "not_found",
+                    "match_confidence": 0.0,
+                    "context_snippet": _ctx,
+                    "source_url": _src,
+                    "anchor_used": False,  # not applicable when current metric missing
+                    "canonical_key": ckey,
+                    "metric_definition": definition,
+                    "anchor_confidence": _aconf,
+                })
+                continue
 
             found += 1
 
@@ -15315,42 +15224,7 @@ metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, 
 "unit_mismatch": bool(unit_mismatch),
                 "abs_eps_used": abs_eps,
                 "rel_eps_used": rel_eps,
-
-                # v34 join diagnostics (per-row)
-                "diag": {
-                    "diff_join_trace_v1": {
-                        "prev_ckey": ckey,
-                        "resolved_cur_ckey": (resolved_cur_ckey if "resolved_cur_ckey" in locals() and resolved_cur_ckey else ckey),
-                        "method": ("anchor_hash" if "resolved_cur_ckey" in locals() and resolved_cur_ckey and str(resolved_cur_ckey) != str(ckey) else "ckey"),
-                        "prev_anchor_hash": (prev_anchor_hash if "prev_anchor_hash" in locals() else None),
-                        "cur_anchor_hash": (cur_anchor_hash if "cur_anchor_hash" in locals() else None),
-                    },
-                    "diff_current_source_trace_v1": {
-                        "current_source_path_used": "primary_metrics_canonical",
-                        "current_value_norm": cur_val,
-                        "current_unit_tag": cm.get("unit_tag") if isinstance(cm, dict) else None,
-                        "inference_disabled": True,
-                    },
-                },
             })
-
-        # =====================================================================
-        # PATCH V34G3 (ADDITIVE): top-level debug summary for join methods
-        # =====================================================================
-        try:
-            if isinstance(cur_response, dict):
-                cur_response.setdefault("debug", {})
-                if isinstance(cur_response.get("debug"), dict):
-                    cur_response["debug"]["diff_join_anchor_v34"] = {
-                        "rows_total": len(metric_changes) if isinstance(metric_changes, list) else 0,
-                        "joined_by_ckey": joined_by_ckey,
-                        "joined_by_anchor_hash": joined_by_anchor_hash,
-                        "not_found": not_found_rows,
-                        "sample_anchor_joins": sample_anchor_joins,
-                    }
-        except Exception:
-            pass
-        # =====================================================================
 
         return metric_changes, unchanged, increased, decreased, found
 
@@ -15807,7 +15681,6 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             pm = pm if isinstance(pm, dict) else {}
             cm = cur_can.get(ckey)
             cm = cm if isinstance(cm, dict) else {}
-            joined_by_ckey += 1  # PATCH V34G2 (ADDITIVE): primary join counter
 
             display_name = get_display_name(prev_response, pm, cm, ckey)
             definition = get_metric_definition(prev_response, ckey)
@@ -16395,7 +16268,6 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             pm = pm if isinstance(pm, dict) else {}
             cm = cur_can.get(ckey)
             cm = cm if isinstance(cm, dict) else {}
-            joined_by_ckey += 1  # PATCH V34G2 (ADDITIVE): primary join counter
 
             display_name = get_display_name(prev_response, pm, cm, ckey)
             definition = get_metric_definition(prev_response, ckey)
@@ -17443,132 +17315,6 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 
     # ---------- Use your existing deterministic metric diff helper ----------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
-    # =====================================================================
-    # PATCH v34k (ADDITIVE): robust prev_response hydration (restore row emission)
-    #
-    # Problem observed (v34g+):
-    #   The Diff Metrics panel renders from results.metric_changes, but metric_changes
-    #   can become [] if prev_response is the wrong shape (e.g. previous_data is already
-    #   a primary_response dict, or the primary_response is nested under results).
-    #
-    # Fix:
-    #   Deterministically pick a usable prev_response from a small ordered ladder,
-    #   without any heuristic matching or inference.
-    #   Also emit a debug breadcrumb so runs are auditable.
-    # =====================================================================
-    _v34k_prev_pick = {
-        "picked": "previous_data.primary_response",
-        "candidates_checked": [
-            "previous_data.primary_response",
-            "previous_data.results.primary_response",
-            "previous_data",
-        ],
-        "prev_nonempty": bool(isinstance(prev_response, dict) and len(prev_response) > 0),
-        "prev_has_pmc": bool(isinstance(prev_response, dict) and (prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics"))),
-        "prev_has_schema": bool(isinstance(prev_response, dict) and bool(prev_response.get("metric_schema_frozen"))),
-    }
-    try:
-        _pd = previous_data or {}
-        _cand1 = _pd.get("primary_response") if isinstance(_pd, dict) else None
-        _cand2 = ((_pd.get("results") or {}).get("primary_response")) if isinstance(_pd, dict) and isinstance(_pd.get("results"), dict) else None
-        _cand3 = _pd if isinstance(_pd, dict) else None
-
-        _ladder = [
-            ("previous_data.primary_response", _cand1),
-            ("previous_data.results.primary_response", _cand2),
-            ("previous_data", _cand3),
-        ]
-
-        for _label, _cand in _ladder:
-            if not isinstance(_cand, dict) or not _cand:
-                continue
-
-            # If it's explicitly a primary_response container, accept it.
-            if _label.endswith("primary_response"):
-                prev_response = _cand
-                _v34k_prev_pick["picked"] = _label
-                break
-
-            # Otherwise accept only if it already "looks like" a response payload.
-            if ("primary_metrics_canonical" in _cand) or ("primary_metrics" in _cand) or ("metric_schema_frozen" in _cand) or ("metric_anchors" in _cand):
-                prev_response = _cand
-                _v34k_prev_pick["picked"] = _label
-                break
-
-        _v34k_prev_pick["prev_nonempty"] = bool(isinstance(prev_response, dict) and len(prev_response) > 0)
-        _v34k_prev_pick["prev_has_pmc"] = bool(isinstance(prev_response, dict) and (prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics")))
-        _v34k_prev_pick["prev_has_schema"] = bool(isinstance(prev_response, dict) and bool(prev_response.get("metric_schema_frozen")))
-        _v34k_prev_pick["prev_keys_sample"] = sorted(list(prev_response.keys()))[:25] if isinstance(prev_response, dict) else []
-        if isinstance(prev_response, dict):
-            _pmc = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
-            _v34k_prev_pick["prev_metric_count"] = int(len(_pmc)) if isinstance(_pmc, dict) else 0
-        else:
-            _v34k_prev_pick["prev_metric_count"] = 0
-    except Exception as _e_v34k:
-        _v34k_prev_pick["error"] = str(_e_v34k)
-
-    try:
-        output.setdefault("debug", {})["diff_prev_response_pick_v34k"] = _v34k_prev_pick
-    except Exception:
-        pass
-    # =====================================================================
-
-
-    # =====================================================================
-    # PATCH V34H_PREV_RESPONSE_PICK_FALLBACK (ADDITIVE)
-    # Problem observed in v34g:
-    # - Some callers pass previous_data as the *analysis primary_response itself*
-    #   (i.e., it already contains primary_metrics_canonical / metric_schema_frozen),
-    #   not wrapped under {"primary_response": {...}}.
-    # - The prior line would then set prev_response={}, causing diff rows=0
-    #   ("No metrics to display") and breaking anchor-hash join progress.
-    # Fix:
-    # - Deterministically pick prev_response from the first populated container:
-    #     1) previous_data.primary_response
-    #     2) previous_data.results.primary_response
-    #     3) previous_data itself if it already looks like a primary_response
-    # Safety:
-    # - Render/diff layer only. No hashing, no fetch, no inference.
-    # =====================================================================
-    try:
-        _v34h_src = "previous_data.primary_response"
-        if (not isinstance(prev_response, dict)) or (not prev_response):
-            _cand = None
-            if isinstance(previous_data, dict):
-                _cand = previous_data.get("primary_response")
-                if isinstance(_cand, dict) and _cand:
-                    prev_response = _cand
-                else:
-                    _cand = (previous_data.get("results") or {}).get("primary_response") if isinstance(previous_data.get("results"), dict) else None
-                    if isinstance(_cand, dict) and _cand:
-                        prev_response = _cand
-                        _v34h_src = "previous_data.results.primary_response"
-                    else:
-                        # If previous_data already has canonical/schema keys, treat it as the primary_response itself
-                        if isinstance(previous_data.get("primary_metrics_canonical"), dict) or isinstance(previous_data.get("metric_schema_frozen"), dict):
-                            prev_response = previous_data
-                            _v34h_src = "previous_data.self_primary_response"
-        # Emit debug for auditability
-        try:
-            output.setdefault("debug", {})
-            if isinstance(output.get("debug"), dict):
-                output["debug"].setdefault("diff_prev_response_pick_v34h", {})
-                if isinstance(output["debug"].get("diff_prev_response_pick_v34h"), dict):
-                    output["debug"]["diff_prev_response_pick_v34h"] = {
-                        "picked_source": str(_v34h_src),
-                        "prev_response_nonempty": bool(isinstance(prev_response, dict) and bool(prev_response)),
-                        "has_primary_metrics_canonical": bool(isinstance((prev_response or {}).get("primary_metrics_canonical"), dict) and (prev_response or {}).get("primary_metrics_canonical")),
-                        "has_metric_anchors": bool(isinstance((prev_response or {}).get("metric_anchors"), dict) and (prev_response or {}).get("metric_anchors")),
-                        "has_metric_schema_frozen": bool(isinstance((prev_response or {}).get("metric_schema_frozen"), dict) and (prev_response or {}).get("metric_schema_frozen")),
-                    }
-        except Exception:
-            pass
-    except Exception:
-        pass
-    # =====================================================================
-    # END PATCH V34H_PREV_RESPONSE_PICK_FALLBACK
-    # =====================================================================
-
 
     # =====================================================================
     # PATCH HF6 (ADDITIVE): tolerate previous_data being the primary_response itself
@@ -18075,17 +17821,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             except Exception:
                 pass
 
-            # =====================================================================
-            # PATCH V34G4 (ADDITIVE): pass metric_anchors + debug into diff join context
-            # Why: anchor-hash join requires access to current metric_anchors; previous patches
-            # passed only primary_metrics_canonical which makes anchor join impossible.
-            # =====================================================================
-            cur_resp_for_diff = {
-                "primary_metrics_canonical": current_metrics,
-                "metric_anchors": (output.get("metric_anchors") if isinstance(output, dict) else None),
-                "debug": {},
-            }
-            # =====================================================================
+            cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
             # ============================================================
             # ============================================================
             # PATCH V34D (ADDITIVE): provide metric_anchors for current side so anchor_hash join can work
@@ -19872,21 +19608,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     _fix41afc19_keys_sample_v19 = []
     _fix41afc19_winner_trace_v19 = {}
 
-    # =====================================================================
-    # PATCH V34I (ADDITIVE): protect downstream diff from accidental clobbering
-    # If the forced display rebuild produces an empty dict, do NOT overwrite the
-    # existing current_metrics (which may already contain a valid canonical pool).
-    # This fixes the v34g/v34h regression where metric_changes became [] and UI showed
-    # 'No metrics to display' despite pool_count_v19 > 0.
-    # =====================================================================
-    _fix34i_orig_current_metrics_v1 = (
-        dict(locals().get("current_metrics"))
-        if isinstance(locals().get("current_metrics"), dict)
-        else {}
-    )
-    # =====================================================================
-
-
     try:
         # Start with whatever earlier stage produced
         current_metrics_for_display = locals().get("current_metrics") if isinstance(locals().get("current_metrics"), dict) else {}
@@ -19960,25 +19681,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         # Apply display override (used by diff below)
         locals()["current_metrics"] = current_metrics_for_display  # keep variable name used by downstream diff
-
-        # =====================================================================
-        # PATCH V34I_GUARD (ADDITIVE): if display rebuild is empty, restore original
-        # =====================================================================
-        try:
-            _cm_now = locals().get("current_metrics")
-            if isinstance(_cm_now, dict) and (len(_cm_now) == 0) and isinstance(_fix34i_orig_current_metrics_v1, dict) and _fix34i_orig_current_metrics_v1:
-                locals()["current_metrics"] = _fix34i_orig_current_metrics_v1
-                # tiny breadcrumb for JSON debug (safe if output exists)
-                try:
-                    if isinstance(output, dict):
-                        output.setdefault("debug", {}).setdefault("fix34i", {})["restored_current_metrics_after_empty_rebuild"] = True
-                        output["debug"]["fix34i"]["restored_count"] = len(_fix34i_orig_current_metrics_v1)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # =====================================================================
-
         try:
             _fix41afc19_keys_sample_v19 = _fix41afc19_keys_sample_v19 or (list(current_metrics_for_display.keys())[:10] if isinstance(current_metrics_for_display, dict) else [])
         except Exception:
@@ -20280,39 +19982,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _canonical_for_render_fn = "rebuild_metrics_from_snapshots_schema_only"
                 except Exception:
                     canonical_for_render = {}
-
-            # =====================================================================
-            # PATCH V34J_SCHEMA_ONLY_CALLSIG_FIX (ADDITIVE)
-            # The canonical_for_render fallback incorrectly called
-            # rebuild_metrics_from_snapshots_schema_only(baseline_sources_cache, _schema),
-            # but the function signature is (prev_response, baseline_sources_cache, web_context=None).
-            # This patch retries schema-only rebuild with the correct call signature,
-            # using the best available prev_response (primary_response if nested).
-            # =====================================================================
-            try:
-                if (not canonical_for_render) and (_canonical_for_render_fn == "rebuild_metrics_from_snapshots_schema_only"):
-                    _fn3b = globals().get("rebuild_metrics_from_snapshots_schema_only")
-                    if callable(_fn3b):
-                        _prev_for_schema_only = prev_response
-                        try:
-                            if isinstance(previous_data, dict):
-                                _pr = previous_data.get("primary_response")
-                                if isinstance(_pr, dict) and isinstance(_pr.get("metric_schema_frozen"), dict) and _pr.get("metric_schema_frozen"):
-                                    _prev_for_schema_only = _pr
-                        except Exception:
-                            pass
-                        canonical_for_render = _fn3b(_prev_for_schema_only, baseline_sources_cache, web_context)
-                        if isinstance(canonical_for_render, dict) and canonical_for_render:
-                            _canonical_for_render_fn = "rebuild_metrics_from_snapshots_schema_only_v34j_callsig"
-                            try:
-                                _canonical_for_render_reason = "applied_schema_only_callsig_fix"
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-            # =====================================================================
-            # END PATCH V34J_SCHEMA_ONLY_CALLSIG_FIX
-            # =====================================================================
 
             if isinstance(canonical_for_render, dict) and canonical_for_render:
                 _canonical_for_render_applied = True
