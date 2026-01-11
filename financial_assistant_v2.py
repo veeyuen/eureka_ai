@@ -22082,7 +22082,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             # =====================================================================
             try:
                 if isinstance(output, dict):
-                                        _sr = output.get("source_results")
+                    _sr = output.get("source_results")
                     # FIX2Q (ADDITIVE): at this point in the evolution builder, output["source_results"]
                     # may not be populated yet (it is attached later). Prefer the in-scope baseline cache,
                     # which already contains extracted_numbers, so FIX2N can promote observed rows.
