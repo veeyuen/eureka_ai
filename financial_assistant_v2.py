@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2u_ev_chargers_canon_schema_unit_count'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2v_ev_chargers_binding_cagr_unit_count"  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -8758,6 +8758,45 @@ def _fix2u_extend_metric_schema_ev_chargers(metric_schema_frozen: dict) -> dict:
 # =====================================================================
 
     return frozen
+
+# =====================================================================
+# PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_V1 (ADDITIVE)
+#   - Adds a canonical slot for charger infrastructure CAGR (2026->2040)
+#   - Keeps semantics single-sourced under metric_schema_frozen
+# =====================================================================
+def _fix2v_extend_metric_schema_ev_chargers_cagr(metric_schema_frozen: dict) -> dict:
+    """Add charger CAGR schema key additively (safe no-op if already present)."""
+    try:
+        if not isinstance(metric_schema_frozen, dict):
+            return metric_schema_frozen
+        # Do not override if exists
+        if "global_ev_chargers_cagr_2026_2040__percent" in metric_schema_frozen:
+            return metric_schema_frozen
+
+        metric_schema_frozen = dict(metric_schema_frozen)
+
+        metric_schema_frozen["global_ev_chargers_cagr_2026_2040__percent"] = dict(
+            metric_id="global_ev_chargers_cagr_2026_2040",
+            canonical_id="global_ev_chargers_cagr_2026_2040",
+            metric_name="Global EV charging infrastructure CAGR (2026–2040)",
+            dimension="percent",
+            unit_family="percent",
+            unit_tag="percent",
+            # Deterministic keyword allowlist (no fuzzy matching)
+            keywords=[
+                "global", "worldwide",
+                "ev", "charging", "charging infrastructure",
+                "cagr", "compound annual growth rate",
+                "2026", "2040",
+            ],
+        )
+        return metric_schema_frozen
+    except Exception:
+        return metric_schema_frozen
+# =====================================================================
+# END PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_V1
+# =====================================================================
+
 
 
 # =========================================================
@@ -18796,7 +18835,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-
+    
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -22158,7 +22197,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-
+    
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -22187,7 +22226,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-
+            
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -24970,6 +25009,18 @@ def main():
                     pass
                 # END PATCH FIX2U_EV_CHARGERS_SCHEMA_APPLY_V1
 
+                # =========================================================
+                # PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_APPLY_V1 (ADDITIVE)
+                try:
+                    fn_fix2v = globals().get("_fix2v_extend_metric_schema_ev_chargers_cagr")
+                    if callable(fn_fix2v):
+                        primary_data["metric_schema_frozen"] = fn_fix2v(primary_data.get("metric_schema_frozen") or {})
+                except Exception:
+                    pass
+                # END PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_APPLY_V1
+                # =========================================================
+
+
                 # 3) attribution using frozen schema ✅
                 if primary_data.get("primary_metrics_canonical"):
                     primary_data["primary_metrics_canonical"] = add_range_and_source_attribution_to_canonical_metrics(
@@ -26084,6 +26135,93 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 c2.setdefault("source_url", url)
                 candidates.append(c2)
 
+    # =========================================================
+    # PATCH FIX2V_INJECTED_CANDIDATE_BINDING_V1 (ADDITIVE)
+    #   - Only binds candidates originating from injected URLs (admitted/ui list)
+    #   - Uses exact substring + explicit year guards (no fuzzy matching)
+    #   - Adds a per-candidate force key so only the intended schema slot competes
+    # =========================================================
+    _fix2v_injected_norm_set = set()
+    try:
+        if isinstance(web_context, dict):
+            _d = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
+            if isinstance(_d, dict):
+                _ad = _inj_diag_norm_url_list(_d.get("admitted") or _d.get("extra_urls_admitted") or [])
+                _ui = _inj_diag_norm_url_list(_d.get("ui_norm") or _d.get("extra_urls_ui_norm") or _d.get("extra_urls_normalized") or [])
+                _fix2v_injected_norm_set = set(_ad or _ui or [])
+    except Exception:
+        _fix2v_injected_norm_set = set()
+
+    def _fix2v_norm_url(u: str) -> str:
+        try:
+            cu = _canonicalize_injected_url(u) if callable(globals().get("_canonicalize_injected_url")) else None
+            return (cu or str(u or "")).strip()
+        except Exception:
+            return str(u or "").strip()
+
+    def _fix2v_extract_years_from_blob(blob: str) -> set:
+        try:
+            ys = set()
+            for mm in re.findall(r"\b(19\d{2}|20\d{2})\b", str(blob or "")):
+                try:
+                    ys.add(int(mm))
+                except Exception:
+                    pass
+            return ys
+        except Exception:
+            return set()
+
+    _fix2v_bind_hits = []
+    for _c in candidates:
+        try:
+            if not isinstance(_c, dict):
+                continue
+            _u = _fix2v_norm_url(_c.get("source_url") or "")
+            _c["_fix2v_source_is_injected"] = bool(_u and (_u in _fix2v_injected_norm_set))
+            if not _c.get("_fix2v_source_is_injected"):
+                continue
+
+            _blob = " ".join([
+                str(_c.get("context_snippet") or ""),
+                str(_c.get("label") or ""),
+                str(_c.get("raw") or ""),
+            ])
+            _blob_n = _norm(_blob)
+            _years = _fix2v_extract_years_from_blob(_blob)
+
+            # --- Bind: 2040 charger infrastructure count (e.g., 206.6 million worldwide) ---
+            if (2040 in _years) and (("charging infrastructure" in _blob_n) or ("ev charging" in _blob_n) or ("chargers" in _blob_n) or ("charger" in _blob_n)):
+                if ("worldwide" in _blob_n) or ("global" in _blob_n):
+                    # If upstream left unit empty but raw contains 'million', use unit_tag M for magnitude
+                    if (not str(_c.get("unit_tag") or _c.get("unit") or "").strip()) and ("million" in str(_c.get("raw") or "").lower()):
+                        _c["unit_tag"] = "M"
+                    _c["fix2v_force_canonical_key"] = "global_ev_chargers_2040__unit_count"
+                    _fix2v_bind_hits.append(dict(kind="count_2040", anchor_hash=_c.get("anchor_hash"), value=_c.get("value_norm") or _c.get("value"), source_url=_c.get("source_url")))
+                    continue
+
+            # --- Bind: CAGR 12.3% from 2026 to 2040 ---
+            if (2026 in _years) and (2040 in _years):
+                if ("cagr" in _blob_n) or ("compound annual growth rate" in _blob_n):
+                    raw_l = str(_c.get("raw") or "").lower()
+                    u_l = str(_c.get("unit") or _c.get("unit_tag") or "").lower()
+                    if ("%" in raw_l) or ("%" in u_l) or ("percent" in u_l) or ("percent" in raw_l):
+                        _c["fix2v_force_canonical_key"] = "global_ev_chargers_cagr_2026_2040__percent"
+                        _fix2v_bind_hits.append(dict(kind="cagr_2026_2040", anchor_hash=_c.get("anchor_hash"), value=_c.get("value_norm") or _c.get("value"), source_url=_c.get("source_url")))
+                        continue
+        except Exception:
+            continue
+
+    try:
+        if isinstance(web_context, dict):
+            web_context.setdefault("fix2v_candidate_binding_v1", {})
+            web_context["fix2v_candidate_binding_v1"]["injected_norm_set_size"] = int(len(_fix2v_injected_norm_set))
+            web_context["fix2v_candidate_binding_v1"]["binding_hits"] = _fix2v_bind_hits[:200]
+            web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
+    except Exception:
+        pass
+    # END PATCH FIX2V_INJECTED_CANDIDATE_BINDING_V1
+    # =========================================================
+
     def _norm(s: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
@@ -26127,6 +26265,11 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         best_tie = None
 
         for c in candidates:
+            # FIX2V: if candidate is force-bound to a specific canonical slot, only allow it to compete there
+            _fk = c.get("fix2v_force_canonical_key")
+            if _fk and _fk != canonical_key:
+                continue
+
             # FIX16 hard eligibility gates
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
@@ -29934,14 +30077,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-#
+# 
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -29951,7 +30094,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-#
+# 
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -30308,7 +30451,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
