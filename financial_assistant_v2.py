@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2d_hardwire_v34f_diffpanel_v2c'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2e_diffpanel_v2_lastmile'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -28499,3 +28499,309 @@ try:
     CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f'
 except Exception:
     pass
+
+
+
+# ==============================================================================
+# PATCH FIX2E_DIFFPANEL_V2_LASTMILE (ADDITIVE)
+#
+# Objective:
+# - Close the final gap by ensuring the Evolution "metrics change" table feed
+#   (results.metric_changes) is deterministically built from canonical outputs.
+# - Implement Option B: if V2 rows exist, override the returned metric_changes list,
+#   while preserving legacy output for audit (metric_changes_legacy).
+#
+# Safety:
+# - Additive only. No refactors. No changes to fastpath/hashing/snapshots/extraction.
+# - No fuzzy matching or inference. Only canonical_key then anchor_hash.
+# ==============================================================================
+
+def _diffpanel_v2__unwrap_primary_metrics_canonical(_resp):
+    """Best-effort unwrap of a response-like dict to {canonical_key: metric_dict}."""
+    try:
+        if isinstance(_resp, dict):
+            pmc = _resp.get("primary_metrics_canonical")
+            if isinstance(pmc, dict):
+                return pmc
+            # common nestings
+            pr = _resp.get("primary_response")
+            if isinstance(pr, dict) and isinstance(pr.get("primary_metrics_canonical"), dict):
+                return pr.get("primary_metrics_canonical")
+            res = _resp.get("results")
+            if isinstance(res, dict) and isinstance(res.get("primary_metrics_canonical"), dict):
+                return res.get("primary_metrics_canonical")
+        return {}
+    except Exception:
+        return {}
+
+
+def _diffpanel_v2__extract_anchor_hash(_m: dict):
+    try:
+        if not isinstance(_m, dict):
+            return None
+        for k in ("anchor_hash", "metric_anchor_hash", "anchor"):
+            v = _m.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        # sometimes nested
+        a = _m.get("metric_anchor")
+        if isinstance(a, dict):
+            v = a.get("anchor_hash")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _diffpanel_v2__extract_value_norm_and_unit(_m: dict):
+    """Strict canonical sourcing only (no inference)."""
+    try:
+        if not isinstance(_m, dict):
+            return (None, None)
+        v = _m.get("value_norm")
+        if v is None:
+            v = _m.get("value")  # still canonical field in some payloads
+        unit = _m.get("base_unit") or _m.get("unit_tag") or _m.get("unit")
+        return (v, unit)
+    except Exception:
+        return (None, None)
+
+
+def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
+    """Return (rows, summary_dict). Deterministic, inference-free."""
+    prev_can = _diffpanel_v2__unwrap_primary_metrics_canonical(prev_response)
+    cur_can = _diffpanel_v2__unwrap_primary_metrics_canonical(cur_response)
+
+    rows = []
+    summary = {
+        "rows_total": 0,
+        "joined_by_ckey": 0,
+        "joined_by_anchor_hash": 0,
+        "not_found": 0,
+        "sample_anchor_joins": [],
+    }
+
+    if not isinstance(prev_can, dict):
+        prev_can = {}
+    if not isinstance(cur_can, dict):
+        cur_can = {}
+
+    prev_keys = sorted(prev_can.keys())
+    summary["rows_total"] = len(prev_keys)
+
+    # Sentinel row if prev empty
+    if not prev_keys:
+        rows.append({
+            "canonical_key": "__no_prev_primary_metrics_canonical__",
+            "name": "No previous canonical metrics",
+            "previous_value": None,
+            "current_value": None,
+            "previous_unit": None,
+            "current_unit": None,
+            "change_type": "no_prev_metrics",
+            "confidence": 0.0,
+            "diag": {
+                "diff_join_trace_v1": {
+                    "prev_ckey": None,
+                    "resolved_cur_ckey": None,
+                    "method": "none",
+                    "prev_anchor_hash": None,
+                    "cur_anchor_hash": None,
+                },
+                "diff_current_source_trace_v1": {
+                    "current_source_path_used": "none",
+                    "current_value_norm": None,
+                    "current_unit_tag": None,
+                    "inference_disabled": True,
+                },
+            },
+        })
+        summary["not_found"] = 1
+        return rows, summary
+
+    # Build cur index by anchor_hash
+    cur_by_anchor = {}
+    try:
+        for ck in cur_can.keys():
+            m = cur_can.get(ck)
+            if not isinstance(m, dict):
+                continue
+            ah = _diffpanel_v2__extract_anchor_hash(m)
+            if not ah:
+                continue
+            cur_by_anchor.setdefault(ah, [])
+            cur_by_anchor[ah].append(ck)
+        # deterministic tie-break
+        for ah in list(cur_by_anchor.keys()):
+            cur_by_anchor[ah] = sorted([c for c in cur_by_anchor[ah] if isinstance(c, str)])
+    except Exception:
+        cur_by_anchor = {}
+
+    for prev_ckey in prev_keys:
+        pm = prev_can.get(prev_ckey)
+        pm = pm if isinstance(pm, dict) else {}
+        prev_name = str(pm.get("name") or pm.get("metric_name") or prev_ckey)
+        prev_anchor = _diffpanel_v2__extract_anchor_hash(pm)
+
+        resolved_cur_ckey = None
+        method = "none"
+        cur_anchor = None
+
+        # Primary join: exact canonical key
+        if prev_ckey in cur_can:
+            resolved_cur_ckey = prev_ckey
+            method = "ckey"
+            summary["joined_by_ckey"] += 1
+        else:
+            # Secondary join: anchor hash
+            if prev_anchor and prev_anchor in cur_by_anchor and cur_by_anchor.get(prev_anchor):
+                resolved_cur_ckey = cur_by_anchor[prev_anchor][0]  # lexicographic min
+                method = "anchor_hash"
+                summary["joined_by_anchor_hash"] += 1
+                if len(summary["sample_anchor_joins"]) < 5:
+                    summary["sample_anchor_joins"].append({
+                        "prev_ckey": prev_ckey,
+                        "resolved_cur_ckey": resolved_cur_ckey,
+                    })
+
+        prev_v, prev_unit = _diffpanel_v2__extract_value_norm_and_unit(pm)
+
+        cur_v = None
+        cur_unit = None
+        if resolved_cur_ckey and resolved_cur_ckey in cur_can and isinstance(cur_can.get(resolved_cur_ckey), dict):
+            cm = cur_can.get(resolved_cur_ckey)
+            cur_anchor = _diffpanel_v2__extract_anchor_hash(cm)
+            cur_v, cur_unit = _diffpanel_v2__extract_value_norm_and_unit(cm)
+
+        if resolved_cur_ckey is None:
+            summary["not_found"] += 1
+
+        # Basic change classification (no inference)
+        change_type = "not_found" if resolved_cur_ckey is None else "unknown"
+        try:
+            if resolved_cur_ckey is not None:
+                if prev_v is None or cur_v is None:
+                    change_type = "unknown"
+                else:
+                    if float(cur_v) > float(prev_v):
+                        change_type = "increased"
+                    elif float(cur_v) < float(prev_v):
+                        change_type = "decreased"
+                    else:
+                        change_type = "unchanged"
+        except Exception:
+            change_type = "unknown" if resolved_cur_ckey is not None else "not_found"
+
+        rows.append({
+            "canonical_key": prev_ckey,
+            "name": prev_name,
+            "previous_value": prev_v,
+            "current_value": (cur_v if resolved_cur_ckey is not None else "N/A"),
+            "previous_unit": prev_unit,
+            "current_unit": cur_unit,
+            "change_type": change_type,
+            "confidence": 1.0 if method in ("ckey", "anchor_hash") else 0.0,
+            "diag": {
+                "diff_join_trace_v1": {
+                    "prev_ckey": prev_ckey,
+                    "resolved_cur_ckey": resolved_cur_ckey,
+                    "method": method,
+                    "prev_anchor_hash": prev_anchor,
+                    "cur_anchor_hash": cur_anchor,
+                },
+                "diff_current_source_trace_v1": {
+                    "current_source_path_used": "primary_metrics_canonical" if resolved_cur_ckey is not None else "none",
+                    "current_value_norm": cur_v if resolved_cur_ckey is not None else None,
+                    "current_unit_tag": cur_unit if resolved_cur_ckey is not None else None,
+                    "inference_disabled": True,
+                },
+            },
+        })
+
+    return rows, summary
+
+
+# Option B: last-mile override of diff_metrics_by_name output
+try:
+    _LEGACY_DIFF_METRICS_BY_NAME = diff_metrics_by_name  # capture current entrypoint
+except Exception:
+    _LEGACY_DIFF_METRICS_BY_NAME = None
+
+def diff_metrics_by_name_FIX2E_DIFFPANEL_V2(prev_response: dict, cur_response: dict):  # noqa: F811
+    """Last-mile Option B override: return V2 rows when prev canonical exists."""
+    legacy_tuple = None
+    try:
+        if callable(_LEGACY_DIFF_METRICS_BY_NAME):
+            legacy_tuple = _LEGACY_DIFF_METRICS_BY_NAME(prev_response, cur_response)
+    except Exception:
+        legacy_tuple = None
+
+    # normalize legacy return shape
+    legacy_rows = []
+    legacy_stats = (0, 0, 0, 0)
+    try:
+        if isinstance(legacy_tuple, tuple) and len(legacy_tuple) == 5:
+            legacy_rows = legacy_tuple[0] if isinstance(legacy_tuple[0], list) else []
+            legacy_stats = tuple(int(x) for x in legacy_tuple[1:5])
+        elif isinstance(legacy_tuple, list):
+            legacy_rows = legacy_tuple
+    except Exception:
+        legacy_rows = []
+
+    # Build V2
+    v2_rows, v2_summary = ([], {})
+    try:
+        v2_rows, v2_summary = build_diff_metrics_panel_v2__rows(prev_response, cur_response)
+    except Exception as _e:
+        v2_rows, v2_summary = ([], {"error": str(_e)})
+
+    # Attach debug summary (prefer cur_response.debug, but tolerate nesting)
+    try:
+        if isinstance(cur_response, dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"]["diff_panel_v2_summary"] = v2_summary
+                cur_response["debug"]["diff_panel_v2_inference_disabled"] = True
+                cur_response["debug"]["diff_panel_v2_rows_total"] = int(v2_summary.get("rows_total") or 0) if isinstance(v2_summary, dict) else 0
+    except Exception:
+        pass
+
+    # Option B override: if V2 rows exist, return them, else fall back to legacy
+    if isinstance(v2_rows, list) and len(v2_rows) > 0:
+        # compute simple stats
+        inc = dec = unch = 0
+        try:
+            for r in v2_rows:
+                if not isinstance(r, dict):
+                    continue
+                ct = r.get("change_type")
+                if ct == "increased":
+                    inc += 1
+                elif ct == "decreased":
+                    dec += 1
+                elif ct == "unchanged":
+                    unch += 1
+        except Exception:
+            pass
+        found = int(len(v2_rows) - int(v2_summary.get("not_found") or 0)) if isinstance(v2_summary, dict) else 0
+        return (v2_rows, unch, inc, dec, found)
+
+    return (legacy_rows, legacy_stats[0], legacy_stats[1], legacy_stats[2], legacy_stats[3])
+
+
+# Wire override
+try:
+    diff_metrics_by_name = diff_metrics_by_name_FIX2E_DIFFPANEL_V2  # type: ignore
+except Exception:
+    pass
+
+# Version bump (additive)
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2e_diffpanel_v2_lastmile"
+except Exception:
+    pass
+
+# ==============================================================================
+# END PATCH FIX2E_DIFFPANEL_V2_LASTMILE
+# ==============================================================================
