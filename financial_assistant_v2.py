@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2g_diffpanel_v2_option_b_proof_injhashdiag'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2h_canon_index_debug_blocks'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -28956,9 +28956,310 @@ except Exception:
 # ==============================================================================
 
 
+
+
+# =====================================================================
+# PATCH FIX2H_CANON_INDEX_DEBUG_BLOCKS (ADDITIVE)
+# Goal: Emit three debug blocks to confirm canonicalisation identity and detect
+#       whether any current-only metrics are truly new vs reworded variants.
+#       This patch DOES NOT touch extraction, hashing, or legacy diff internals.
+# =====================================================================
+
+def _diffv2_norm_url__fix2h(u):
+    try:
+        if not isinstance(u, str):
+            return None
+        s = u.strip().lower()
+        if not s:
+            return None
+        # strip fragment
+        if '#' in s:
+            s = s.split('#', 1)[0]
+        # strip trailing slash
+        while s.endswith('/') and len(s) > 8:
+            s = s[:-1]
+        return s
+    except Exception:
+        return None
+
+
+def _diffv2_collect_urls__fix2h(obj):
+    """Best-effort extraction of URLs from a canonical metric entry."""
+    urls = []
+    try:
+        if not isinstance(obj, dict):
+            return []
+        # common fields
+        for k in ("source_url", "url", "source", "primary_source_url"):
+            v = obj.get(k)
+            if isinstance(v, str):
+                urls.append(v)
+        for k in ("source_urls", "urls", "sources", "source_url_list"):
+            v = obj.get(k)
+            if isinstance(v, list):
+                for it in v:
+                    if isinstance(it, str):
+                        urls.append(it)
+                    elif isinstance(it, dict):
+                        su = it.get("url") or it.get("source_url")
+                        if isinstance(su, str):
+                            urls.append(su)
+    except Exception:
+        pass
+    # normalize + dedupe
+    out = []
+    seen = set()
+    for u in urls:
+        nu = _diffv2_norm_url__fix2h(u)
+        if nu and nu not in seen:
+            out.append(nu)
+            seen.add(nu)
+    return out
+
+
+def _diffv2_unwrap_primary_metrics_canonical__fix2h(resp):
+    """Try multiple stable locations to find primary_metrics_canonical."""
+    if not isinstance(resp, dict):
+        return {}
+
+    # direct
+    pmc = resp.get("primary_metrics_canonical")
+    if isinstance(pmc, dict):
+        return pmc
+
+    # common wrappers
+    for k in ("primary_response", "response", "results", "payload", "analysis"):
+        v = resp.get(k)
+        if isinstance(v, dict):
+            pmc = v.get("primary_metrics_canonical")
+            if isinstance(pmc, dict):
+                return pmc
+
+    # shallow recursive search (bounded)
+    try:
+        for k, v in resp.items():
+            if isinstance(v, dict):
+                pmc = v.get("primary_metrics_canonical")
+                if isinstance(pmc, dict):
+                    return pmc
+    except Exception:
+        pass
+
+    return {}
+
+
+def _diffv2_build_canon_index_v1__fix2h(resp, admitted_norm_set=None):
+    """Return list of index entries for debugging identity + injection attribution."""
+    admitted_norm_set = admitted_norm_set or set()
+    pmc = _diffv2_unwrap_primary_metrics_canonical__fix2h(resp)
+    out = []
+    try:
+        for ckey, entry in (pmc or {}).items():
+            if not isinstance(ckey, str):
+                continue
+            if not isinstance(entry, dict):
+                entry = {} if entry is None else {"raw": entry}
+
+            # identity
+            anchor = (
+                entry.get("anchor_hash")
+                or entry.get("metric_anchor_hash")
+                or entry.get("anchor")
+            )
+            if not isinstance(anchor, str):
+                anchor = None
+
+            # labels
+            mname = (
+                entry.get("metric_name")
+                or entry.get("name")
+                or entry.get("label")
+                or entry.get("display_name")
+            )
+            if not isinstance(mname, str):
+                mname = None
+
+            # value/unit
+            vnorm = entry.get("value_norm")
+            if not isinstance(vnorm, (int, float)):
+                vnorm = entry.get("value") if isinstance(entry.get("value"), (int, float)) else None
+
+            unit_tag = (
+                entry.get("unit_tag")
+                or entry.get("base_unit")
+                or entry.get("unit")
+                or entry.get("units")
+            )
+            if not isinstance(unit_tag, str):
+                unit_tag = None
+
+            urls_norm = _diffv2_collect_urls__fix2h(entry)
+            from_inj = any((u in admitted_norm_set) for u in urls_norm)
+
+            out.append({
+                "canonical_key": ckey,
+                "anchor_hash": anchor,
+                "metric_name": mname,
+                "value_norm": vnorm,
+                "unit_tag": unit_tag,
+                "source_urls_norm": urls_norm,
+                "from_injected_url": bool(from_inj),
+            })
+    except Exception:
+        pass
+
+    # deterministic ordering for audit
+    try:
+        out.sort(key=lambda d: (d.get("canonical_key") or "", d.get("anchor_hash") or ""))
+    except Exception:
+        pass
+    return out
+
+
+def _diffv2_compute_overlap_v1__fix2h(prev_index, cur_index):
+    """Compute overlap stats using canonical_key + anchor_hash."""
+    try:
+        prev_by_anchor = {}
+        prev_by_ckey = {}
+        for e in prev_index or []:
+            if not isinstance(e, dict):
+                continue
+            ckey = e.get("canonical_key")
+            anch = e.get("anchor_hash")
+            if isinstance(ckey, str):
+                prev_by_ckey[ckey] = e
+            if isinstance(anch, str):
+                prev_by_anchor.setdefault(anch, []).append(e)
+
+        cur_by_anchor = {}
+        cur_by_ckey = {}
+        for e in cur_index or []:
+            if not isinstance(e, dict):
+                continue
+            ckey = e.get("canonical_key")
+            anch = e.get("anchor_hash")
+            if isinstance(ckey, str):
+                cur_by_ckey[ckey] = e
+            if isinstance(anch, str):
+                cur_by_anchor.setdefault(anch, []).append(e)
+
+        anchor_overlap = sorted(set(prev_by_anchor.keys()) & set(cur_by_anchor.keys()))
+        ckey_overlap = sorted(set(prev_by_ckey.keys()) & set(cur_by_ckey.keys()))
+
+        sample_anchor = []
+        for a in anchor_overlap[:10]:
+            pe = prev_by_anchor.get(a, [])
+            ce = cur_by_anchor.get(a, [])
+            sample_anchor.append({
+                "anchor_hash": a,
+                "prev_ckeys": sorted({x.get("canonical_key") for x in pe if isinstance(x.get("canonical_key"), str)})[:5],
+                "cur_ckeys": sorted({x.get("canonical_key") for x in ce if isinstance(x.get("canonical_key"), str)})[:5],
+                "cur_from_injected_any": any(bool(x.get("from_injected_url")) for x in ce),
+            })
+
+        sample_ckey = []
+        for ck in ckey_overlap[:10]:
+            pe = prev_by_ckey.get(ck, {})
+            ce = cur_by_ckey.get(ck, {})
+            sample_ckey.append({
+                "canonical_key": ck,
+                "anchor_prev": pe.get("anchor_hash"),
+                "anchor_cur": ce.get("anchor_hash"),
+                "cur_from_injected": bool(ce.get("from_injected_url")),
+            })
+
+        return {
+            "anchor_hash_overlap_count": int(len(anchor_overlap)),
+            "canonical_key_overlap_count": int(len(ckey_overlap)),
+            "anchor_hash_prev_total": int(len(prev_by_anchor)),
+            "anchor_hash_cur_total": int(len(cur_by_anchor)),
+            "canonical_key_prev_total": int(len(prev_by_ckey)),
+            "canonical_key_cur_total": int(len(cur_by_ckey)),
+            "sample_anchor_overlaps": sample_anchor,
+            "sample_canonical_key_overlaps": sample_ckey,
+        }
+    except Exception as _e:
+        return {"error": str(_e)}
+
+
+# Attach debug blocks opportunistically inside the Option B diff entrypoint.
+# This does not alter diff row semantics; it only emits additional debug fields.
+try:
+    _DIFFV2_ORIG_FIX2E = diff_metrics_by_name_FIX2E_DIFFPANEL_V2
+except Exception:
+    _DIFFV2_ORIG_FIX2E = None
+
+
+def diff_metrics_by_name_FIX2H_CANON_DEBUG(prev_response: dict, cur_response: dict):  # noqa: F811
+    """Wrapper: emit canonical indexes + overlap stats into cur_response.debug."""
+    # Run the existing Option B diff first.
+    out = None
+    try:
+        if callable(_DIFFV2_ORIG_FIX2E):
+            out = _DIFFV2_ORIG_FIX2E(prev_response, cur_response)
+    except Exception:
+        out = None
+
+    # Build admitted_norm set from cur_response.debug.inj_trace_v1 if present.
+    admitted = set()
+    try:
+        if isinstance(cur_response, dict):
+            dbg = cur_response.get("debug")
+            if isinstance(dbg, dict):
+                inj = dbg.get("inj_trace_v1")
+                if isinstance(inj, dict):
+                    for u in (inj.get("admitted_norm") or []):
+                        nu = _diffv2_norm_url__fix2h(u)
+                        if nu:
+                            admitted.add(nu)
+    except Exception:
+        pass
+
+    # Emit indexes + overlap.
+    try:
+        if isinstance(cur_response, dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                prev_index = _diffv2_build_canon_index_v1__fix2h(prev_response, admitted_norm_set=set())
+                cur_index = _diffv2_build_canon_index_v1__fix2h(cur_response, admitted_norm_set=admitted)
+                cur_response["debug"]["prev_primary_metrics_canonical_index_v1"] = prev_index
+                cur_response["debug"]["cur_primary_metrics_canonical_index_v1"] = cur_index
+                cur_response["debug"]["canonical_identity_overlap_v1"] = _diffv2_compute_overlap_v1__fix2h(prev_index, cur_index)
+    except Exception:
+        pass
+
+    return out
+
+
+# Wire wrapper (last-mile)
+try:
+    diff_metrics_by_name = diff_metrics_by_name_FIX2H_CANON_DEBUG  # type: ignore
+except Exception:
+    pass
+
+# Final version bump (additive) — ensure this is the last CODE_VERSION assignment.
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2h_canon_index_debug_blocks'
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2H_CANON_INDEX_DEBUG_BLOCKS
+# =====================================================================
 # =====================================================================
 # PATCH FIX2F_CODE_VERSION_BUMP (ADDITIVE)
 try:
     CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2f_diffpanel_v2_option_b_lastmile'
 except Exception:
     pass
+
+# =====================================================================
+# PATCH FIX2H_CODE_VERSION_FINAL (ADDITIVE)
+# Ensure CODE_VERSION reflects this build for audit/debug.
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2h_canon_index_debug_blocks'
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX2H_CODE_VERSION_FINAL
+# =====================================================================
