@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2j_diffpanel_v2_unit_mismatch_split_and_raw_current_rows'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2k_diffpanel_v2_broader_current_only_and_nojoin_unit_mismatch'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -30866,3 +30866,339 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2J
 # =====================================================================
+
+
+
+# =====================================================================
+# PATCH FIX2K (additive): Diff Panel V2 — stop "unit mismatch" when no join,
+# broaden "current-only" emission from metric_anchors + injected raw pool.
+#
+# Goals:
+# 1) If a row has no resolved_cur_ckey, it must NOT present as unit_mismatch.
+#    Instead: change_type=not_found, unit_mismatch=False, current_value="N/A".
+# 2) If current-only canonical metrics are absent, still surface injected
+#    "new perspective" signals as separate appended rows derived from:
+#    - cur.metric_anchors (identity + source context)
+#    - injected baseline_sources_cache_current extracted_numbers (raw, render-only)
+#
+# Constraints:
+# - No changes to extraction, hashing, snapshot attach, legacy diff join internals.
+# - Purely render-layer additive behavior.
+# =====================================================================
+
+try:
+    _CV = str(globals().get('CODE_VERSION') or '')
+    if _CV and 'fix2k' not in _CV:
+        CODE_VERSION = f"{_CV}_fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only"
+    elif not _CV:
+        CODE_VERSION = 'fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only'
+except Exception:
+    pass
+
+
+def build_diff_metrics_panel_v2_fix2k(prev_response: dict, cur_response: dict):
+    """Wrap Fix2J with: (a) no unit_mismatch when no join, (b) broader current-only rows."""
+    # Prefer Fix2J if present, else base V2.
+    _impl = globals().get('build_diff_metrics_panel_v2_fix2j')
+    if not callable(_impl):
+        _impl = globals().get('build_diff_metrics_panel_v2')
+    if not callable(_impl):
+        return ([], {'rows_total': 0, 'joined_by_ckey': 0, 'joined_by_anchor_hash': 0, 'not_found': 0})
+
+    rows, summary = _impl(prev_response, cur_response)
+
+    # -------------------------------
+    # Helpers
+    # -------------------------------
+    def _safe_dict(x):
+        return x if isinstance(x, dict) else {}
+
+    def _unwrap_metric_anchors(resp: dict):
+        if not isinstance(resp, dict):
+            return {}
+        ma = resp.get('metric_anchors')
+        if isinstance(ma, dict) and ma:
+            return ma
+        pr = resp.get('primary_response')
+        if isinstance(pr, dict) and isinstance(pr.get('metric_anchors'), dict) and pr.get('metric_anchors'):
+            return pr.get('metric_anchors') or {}
+        res = resp.get('results')
+        if isinstance(res, dict) and isinstance(res.get('metric_anchors'), dict) and res.get('metric_anchors'):
+            return res.get('metric_anchors') or {}
+        return {}
+
+    def _unwrap_primary_metrics_canonical(resp: dict):
+        if not isinstance(resp, dict):
+            return {}
+        pmc = resp.get('primary_metrics_canonical')
+        if isinstance(pmc, dict) and pmc:
+            return pmc
+        pr = resp.get('primary_response')
+        if isinstance(pr, dict) and isinstance(pr.get('primary_metrics_canonical'), dict) and pr.get('primary_metrics_canonical'):
+            return pr.get('primary_metrics_canonical') or {}
+        res = resp.get('results')
+        if isinstance(res, dict) and isinstance(res.get('primary_metrics_canonical'), dict) and res.get('primary_metrics_canonical'):
+            return res.get('primary_metrics_canonical') or {}
+        return {}
+
+    def _unwrap_inj_admitted_norm(resp: dict):
+        dbg = _safe_dict(_safe_dict(resp).get('debug'))
+        it = _safe_dict(dbg.get('inj_trace_v1'))
+        admitted = it.get('admitted_norm')
+        if isinstance(admitted, list):
+            return [str(u) for u in admitted if u]
+        return []
+
+    def _unwrap_baseline_sources_cache_current(resp: dict):
+        if not isinstance(resp, dict):
+            return []
+        b = resp.get('baseline_sources_cache_current')
+        if isinstance(b, list) and b:
+            return b
+        # sometimes under results
+        res = resp.get('results')
+        if isinstance(res, dict) and isinstance(res.get('baseline_sources_cache_current'), list):
+            return res.get('baseline_sources_cache_current') or []
+        return []
+
+    def _norm_url(u: str):
+        try:
+            return str(u).strip()
+        except Exception:
+            return ''
+
+    # -------------------------------
+    # (1) No unit_mismatch when no join
+    # -------------------------------
+    nojoin_demoted = 0
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        diag = r.get('diag') if isinstance(r.get('diag'), dict) else {}
+        jt = diag.get('diff_join_trace_v1') if isinstance(diag.get('diff_join_trace_v1'), dict) else {}
+        resolved = jt.get('resolved_cur_ckey')
+        if not resolved:
+            # If upstream labeled as unit_mismatch without a join, demote to not_found.
+            if r.get('change_type') == 'unit_mismatch' or r.get('unit_mismatch') is True:
+                r['unit_mismatch'] = False
+                r['change_type'] = 'not_found'
+                r['current_value'] = 'N/A'
+                r['cur_value_norm'] = None
+                r['cur_anchor_hash'] = None
+                r['change_pct'] = None
+                nojoin_demoted += 1
+                try:
+                    diag['diff_nojoin_unit_mismatch_demote_v1'] = {
+                        'reason': 'resolved_cur_ckey_null',
+                        'action': 'demote_to_not_found',
+                    }
+                    r['diag'] = diag
+                except Exception:
+                    pass
+
+    # -------------------------------
+    # (2) Broader current-only rows
+    # -------------------------------
+    # Determine which current keys are already represented.
+    represented_cur_ckeys = set()
+    represented_cur_anchors = set()
+
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        diag = r.get('diag') if isinstance(r.get('diag'), dict) else {}
+        jt = diag.get('diff_join_trace_v1') if isinstance(diag.get('diff_join_trace_v1'), dict) else {}
+        rc = jt.get('resolved_cur_ckey')
+        if isinstance(rc, str) and rc:
+            represented_cur_ckeys.add(rc)
+        # prefer explicit cur_anchor_hash fields if present
+        cah = r.get('cur_anchor_hash') or jt.get('cur_anchor_hash')
+        if cah:
+            represented_cur_anchors.add(str(cah))
+
+    # If we already have current_only rows, don't duplicate.
+    already_has_current_only = any(isinstance(r, dict) and str(r.get('change_type','')).startswith('current_only') for r in (rows or []))
+
+    cur_can = _unwrap_primary_metrics_canonical(cur_response)
+    cur_ma = _unwrap_metric_anchors(cur_response)
+    inj_norm = set(_unwrap_inj_admitted_norm(cur_response))
+
+    appended_from_metric_anchors = 0
+    appended_from_injected_raw = 0
+    appended_rows = []
+
+    # 2a) Append from metric_anchors when they represent additional identities not in prev-anchored table.
+    # We only append if:
+    # - canonical_key isn't already represented, AND
+    # - anchor_hash isn't already represented (strong identity), AND
+    # - it has a source_url (for traceability)
+    if isinstance(cur_ma, dict) and cur_ma and not already_has_current_only:
+        for ck, a in cur_ma.items():
+            if not ck or not isinstance(a, dict):
+                continue
+            if ck in represented_cur_ckeys:
+                continue
+            ah = a.get('anchor_hash') or a.get('anchor') or a.get('anchorHash')
+            ah = str(ah) if ah else None
+            if ah and ah in represented_cur_anchors:
+                continue
+            src = a.get('source_url')
+            srcn = _norm_url(src)
+            from_inj = bool(srcn and srcn in inj_norm)
+            # Prefer a canonical metric object if present, else fall back to anchor record.
+            cm = cur_can.get(ck) if isinstance(cur_can, dict) else None
+            name = None
+            cur_val = None
+            cur_vn = None
+            unit_tag = None
+            if isinstance(cm, dict):
+                name = cm.get('name') or cm.get('metric_name') or ck
+                cur_val = cm.get('display_value') or cm.get('value') or cm.get('raw_value')
+                cur_vn = cm.get('value_norm')
+                unit_tag = cm.get('base_unit') or cm.get('unit_tag')
+                srcn = _norm_url(cm.get('source_url') or srcn)
+                from_inj = bool(srcn and srcn in inj_norm)
+            else:
+                name = ck
+                cur_val = None
+
+            appended_rows.append({
+                'name': name or ck,
+                'canonical_key': ck,
+                'previous_value': 'N/A',
+                'current_value': cur_val if cur_val is not None else 'N/A',
+                'change_pct': None,
+                'change_type': 'current_only_anchor',
+                'match_confidence': 0.0,
+                'context_snippet': a.get('context_snippet') if isinstance(a.get('context_snippet'), str) else None,
+                'source_url': srcn or None,
+                'anchor_used': False,
+                'prev_anchor_hash': None,
+                'cur_anchor_hash': ah,
+                'prev_value_norm': None,
+                'cur_value_norm': cur_vn,
+                'unit_mismatch': False,
+                'diag': {
+                    'diff_join_trace_v1': {
+                        'prev_ckey': None,
+                        'resolved_cur_ckey': ck,
+                        'method': 'current_only_from_metric_anchors',
+                        'prev_anchor_hash': None,
+                        'cur_anchor_hash': ah,
+                    },
+                    'diff_current_source_trace_v1': {
+                        'current_source_path_used': 'metric_anchors' if not isinstance(cm, dict) else 'primary_metrics_canonical',
+                        'current_value_norm': float(cur_vn) if cur_vn is not None and str(cur_vn).replace('.','',1).isdigit() else None,
+                        'current_unit_tag': unit_tag,
+                        'inference_disabled': True,
+                    },
+                    'diff_current_only_trace_v1': {
+                        'from_injected_url': from_inj,
+                        'source_url_norm': srcn or None,
+                        'reason': 'cur_metric_anchor_not_represented_in_prev_anchored_rows',
+                    }
+                }
+            })
+            appended_from_metric_anchors += 1
+
+    # 2b) If still no current-only rows, append injected raw rows from baseline_sources_cache_current extracted_numbers.
+    if not already_has_current_only and appended_from_metric_anchors == 0:
+        bsc = _unwrap_baseline_sources_cache_current(cur_response)
+        # Deterministically scan injected sources first.
+        for s in (bsc or []):
+            if not isinstance(s, dict):
+                continue
+            srcn = _norm_url(s.get('source_url') or s.get('url') or '')
+            if not srcn or srcn not in inj_norm:
+                continue
+            nums = s.get('extracted_numbers')
+            if not isinstance(nums, list) or not nums:
+                continue
+            # Take up to 5 entries deterministically (given source order), skipping obvious years.
+            taken = 0
+            for n in nums:
+                if taken >= 5:
+                    break
+                if not isinstance(n, dict):
+                    continue
+                v = n.get('value')
+                try:
+                    fv = float(v)
+                except Exception:
+                    continue
+                # skip year-ish
+                if 1900 <= fv <= 2100:
+                    continue
+                disp = n.get('display') or n.get('raw') or str(v)
+                appended_rows.append({
+                    'name': n.get('label') or 'Injected source metric (raw)',
+                    'canonical_key': None,
+                    'previous_value': 'N/A',
+                    'current_value': disp,
+                    'change_pct': None,
+                    'change_type': 'current_only_raw',
+                    'match_confidence': 0.0,
+                    'context_snippet': n.get('context') if isinstance(n.get('context'), str) else (s.get('context_snippet') if isinstance(s.get('context_snippet'), str) else None),
+                    'source_url': srcn,
+                    'anchor_used': False,
+                    'prev_anchor_hash': None,
+                    'cur_anchor_hash': None,
+                    'prev_value_norm': None,
+                    'cur_value_norm': fv,
+                    'unit_mismatch': False,
+                    'diag': {
+                        'diff_join_trace_v1': {
+                            'prev_ckey': None,
+                            'resolved_cur_ckey': None,
+                            'method': 'current_only_raw_injected',
+                            'prev_anchor_hash': None,
+                            'cur_anchor_hash': None,
+                        },
+                        'diff_current_source_trace_v1': {
+                            'current_source_path_used': 'raw_extracted_numbers_pool',
+                            'current_value_norm': fv,
+                            'current_unit_tag': n.get('unit') or None,
+                            'inference_disabled': True,
+                        },
+                        'diff_current_only_trace_v1': {
+                            'from_injected_url': True,
+                            'source_url_norm': srcn,
+                            'reason': 'no_cur_primary_metrics_canonical_and_no_metric_anchor_extras',
+                        }
+                    }
+                })
+                taken += 1
+                appended_from_injected_raw += 1
+
+    # Append any new rows after base rows.
+    if appended_rows:
+        try:
+            rows = list(rows or []) + appended_rows
+        except Exception:
+            pass
+
+    # Update summary
+    try:
+        if not isinstance(summary, dict):
+            summary = {}
+        summary['nojoin_unit_mismatch_demoted_rows'] = int(nojoin_demoted)
+        summary['current_only_anchor_rows'] = int(appended_from_metric_anchors)
+        summary['current_only_raw_injected_rows'] = int(appended_from_injected_raw)
+        summary['rows_total'] = int(len(rows or []))
+    except Exception:
+        pass
+
+    return rows, summary
+
+
+# --- Wiring: prefer Fix2K ---
+try:
+    globals()['build_diff_metrics_panel_v2_fix2k'] = build_diff_metrics_panel_v2_fix2k
+except Exception:
+    pass
+
+try:
+    # Override the main V2 builder with Fix2K, but keep Fix2J available.
+    globals()['build_diff_metrics_panel_v2'] = build_diff_metrics_panel_v2_fix2k
+except Exception:
+    pass
