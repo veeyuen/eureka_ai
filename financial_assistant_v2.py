@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2s_observed_t
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2i_diffpanel_v2_current_only_rows_v34f"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2s1_observed_to_canonical_rules_v1_syntaxfix"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -18055,24 +18055,21 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             if isinstance(_dbg, dict):
                 _dbg["diff_panel_v2_summary"] = _mc_v2_summary
 
-# =====================================================================
-# PATCH FIX2S_MERGE_MAPPING_DIAG_INTO_V2_SUMMARY (ADDITIVE)
-# =====================================================================
-try:
-    if isinstance(web_context, dict) and isinstance(_mc_v2_summary, dict):
-        _md = web_context.get("_fix2s_mapping_diag")
-        if isinstance(_md, dict):
-            _mc_v2_summary.setdefault("mapping_rules_version", _md.get("mapping_rules_version"))
-            _mc_v2_summary.setdefault("mapping_hits", _md.get("mapping_hits"))
-            _mc_v2_summary.setdefault(
-                "observed_rows_canonicalized_by_mapping",
-                _md.get("observed_rows_canonicalized_by_mapping"),
-            )
-except Exception:
-    pass
-# =====================================================================
-# END PATCH FIX2S_MERGE_MAPPING_DIAG_INTO_V2_SUMMARY
-# =====================================================================
+        # =====================================================================
+        # PATCH FIX2S_MERGE_MAPPING_DIAG_INTO_V2_SUMMARY (ADDITIVE)
+        # =====================================================================
+        if isinstance(web_context, dict) and isinstance(_mc_v2_summary, dict):
+            _md = web_context.get("_fix2s_mapping_diag")
+            if isinstance(_md, dict):
+                _mc_v2_summary.setdefault("mapping_rules_version", _md.get("mapping_rules_version"))
+                _mc_v2_summary.setdefault("mapping_hits", _md.get("mapping_hits"))
+                _mc_v2_summary.setdefault(
+                    "observed_rows_canonicalized_by_mapping",
+                    _md.get("observed_rows_canonicalized_by_mapping"),
+                )
+        # =====================================================================
+        # END PATCH FIX2S_MERGE_MAPPING_DIAG_INTO_V2_SUMMARY
+        # =====================================================================
 
     except Exception:
         pass
