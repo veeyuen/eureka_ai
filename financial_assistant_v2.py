@@ -2895,6 +2895,19 @@ def rebuild_metrics_from_snapshots(
         pass
     # =====================================================================
 
+
+    # =====================================================================
+    # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE): attach autopsy to web_context
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            web_context["fix2y_candidate_autopsy_v1"] = _fix2y_autopsy
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX2Y_CANDIDATE_AUTOPSY_V1
+    # =====================================================================
+
     return rebuilt
 
 
@@ -3534,6 +3547,24 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
         )
         if not best:
             continue
+        # =====================================================================
+
+        # =====================================================================
+        # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE): record winner for targeted keys
+        # =====================================================================
+        try:
+            if canonical_key in _fix2y_targets and isinstance(_fix2y_autopsy, dict) and isinstance(_fix2y_autopsy.get(canonical_key), dict):
+                _fix2y_autopsy[canonical_key]["winner"] = {
+                    "value_norm": best.get("value_norm") if isinstance(best.get("value_norm"), (int, float)) else best.get("value"),
+                    "unit": best.get("unit") or best.get("unit_tag") or "",
+                    "source_url": best.get("source_url") or "",
+                    "anchor_hash": best.get("anchor_hash") or "",
+                    "raw_head": (str(best.get("raw") or "")[:200]),
+                }
+        except Exception:
+            pass
+        # =====================================================================
+        # END PATCH FIX2Y_CANDIDATE_AUTOPSY_V1
         # =====================================================================
 
         rebuilt[canonical_key] = {
@@ -26303,7 +26334,87 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
+    
     # =====================================================================
+    # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
+    # Purpose:
+    #   Provide a deterministic "why not canonical?" autopsy for targeted keys.
+    #   Records:
+    #     - candidate pool size
+    #     - eligible vs rejected counts + first-N reject reasons
+    #     - top-scoring candidates (pre-selection) + winner summary
+    # Non-negotiables:
+    #   - additive only; no behavior changes to selection
+    #   - uses existing FIX16 gates; does not bypass selector
+    # Scope:
+    #   Only for the new EV-charger keys introduced in FIX2U/FIX2V.
+    # =====================================================================
+    _fix2y_targets = set([
+        "global_ev_chargers_2040__unit_count",
+        "global_ev_chargers_cagr_2026_2040__percent",
+    ])
+    _fix2y_autopsy = {}
+    try:
+        # Make FIX2W eval sampler safe: some branches refer to extracted_candidates.
+        extracted_candidates = candidates  # noqa: F841
+    except Exception:
+        pass
+
+    def _fix2y_gate_reason(_c: dict, _spec: dict, _ck: str) -> str:
+        try:
+            if not isinstance(_c, dict):
+                return "non_dict_candidate"
+            # fix15 junk/year-only exclusion (if present)
+            _fn = globals().get("_candidate_disallowed_for_metric")
+            if callable(_fn):
+                try:
+                    if _fn(_c, dict(_spec or {}, canonical_key=_ck)):
+                        return "fix15_disallowed"
+                except Exception:
+                    return "fix15_disallowed_err"
+            try:
+                _expected_dim = _fix16_expected_dimension(_spec)
+            except Exception:
+                _expected_dim = ""
+            try:
+                if not _fix16_unit_compatible(_c, _expected_dim):
+                    return "unit_incompatible"
+            except Exception:
+                # if unit compatibility check fails, treat as incompatible for diagnosis only
+                return "unit_incompatible_err"
+            # year-token guard (unitless year-like numerics)
+            try:
+                if not _fix16_metric_is_year_like(_spec, canonical_key=_ck):
+                    _v = _c.get("value") if _c.get("value") is not None else _c.get("value_norm")
+                    _u = (str(_c.get("base_unit") or _c.get("unit") or "")).strip()
+                    if _u == "" and isinstance(_v, (int, float)):
+                        _iv = int(_v)
+                        if 1900 <= _iv <= 2100:
+                            return "unitless_year_guard"
+            except Exception:
+                pass
+            return "ok"
+        except Exception:
+            return "gate_reason_err"
+
+    def _fix2y_score_hits(_c: dict, _kw_norm: list) -> int:
+        try:
+            ctx = _norm(_c.get("context_snippet") or _c.get("context") or _c.get("context_window") or "")
+            raw = _norm(_c.get("raw") or "")
+            _hits = 0
+            for _k in (_kw_norm or []):
+                if _k and (_k in ctx or _k in raw):
+                    _hits += 1
+            return int(_hits)
+        except Exception:
+            return 0
+
+    # We'll populate _fix2y_autopsy inside the schema loop when the key matches.
+    # =====================================================================
+    # END PATCH FIX2Y_CANDIDATE_AUTOPSY_V1
+    # =====================================================================
+
+# =====================================================================
     # PATCH FIX2W_BINDING_RULE_EVAL_SAMPLES_V1 (ADDITIVE)
     # =====================================================================
     try:
@@ -26411,6 +26522,80 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         kw_norm = [_norm(k) for k in keywords if k]
 
         expected_dim = _fix16_expected_dimension(spec)
+
+
+        # =====================================================================
+        # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE): per-key autopsy snapshot
+        # =====================================================================
+        if canonical_key in _fix2y_targets:
+            try:
+                _a = {
+                    "canonical_key": canonical_key,
+                    "schema_expected_dim": expected_dim,
+                    "keywords": list(keywords) if isinstance(keywords, list) else [],
+                    "kw_norm_count": int(len(kw_norm)) if isinstance(kw_norm, list) else 0,
+                    "pool_total": int(len(candidates)) if isinstance(candidates, list) else 0,
+                    "pool_force_filtered": 0,
+                    "eligible_count": 0,
+                    "rejected_count": 0,
+                    "reject_reasons": {},
+                    "reject_samples": [],
+                    "top_candidates": [],
+                    "winner": {},
+                }
+
+                _force_pool = []
+                for _c0 in (candidates or []):
+                    if not isinstance(_c0, dict):
+                        continue
+                    _fk0 = _c0.get("fix2v_force_canonical_key")
+                    if _fk0 and _fk0 != canonical_key:
+                        continue
+                    _force_pool.append(_c0)
+                _a["pool_force_filtered"] = int(len(_force_pool))
+
+                _eligible = []
+                for _c1 in _force_pool:
+                    _gr = _fix2y_gate_reason(_c1, spec, canonical_key)
+                    if _gr == "ok" and _fix16_candidate_allowed(_c1, spec, canonical_key=canonical_key):
+                        _eligible.append(_c1)
+                    else:
+                        _a["rejected_count"] += 1
+                        _a["reject_reasons"][_gr] = int(_a["reject_reasons"].get(_gr, 0)) + 1
+                        if len(_a["reject_samples"]) < 25:
+                            _a["reject_samples"].append({
+                                "reason": _gr,
+                                "value_norm": _c1.get("value_norm") if isinstance(_c1.get("value_norm"), (int, float)) else _c1.get("value"),
+                                "unit": _c1.get("unit") or _c1.get("unit_tag") or "",
+                                "source_url": _c1.get("source_url") or "",
+                                "anchor_hash": _c1.get("anchor_hash") or "",
+                                "raw_head": (str(_c1.get("raw") or "")[:120]),
+                            })
+
+                _a["eligible_count"] = int(len(_eligible))
+
+                # Rank preview: top candidates by keyword hits then FIX16 sort key
+                _ranked = []
+                for _c2 in _eligible:
+                    _hits2 = _fix2y_score_hits(_c2, kw_norm)
+                    _ranked.append((_hits2, _cand_sort_key(_c2), _c2))
+                _ranked.sort(key=lambda t: (-int(t[0]), t[1]))
+                for _hits2, _sk2, _c2 in _ranked[:10]:
+                    _a["top_candidates"].append({
+                        "hits": int(_hits2),
+                        "value_norm": _c2.get("value_norm") if isinstance(_c2.get("value_norm"), (int, float)) else _c2.get("value"),
+                        "unit": _c2.get("unit") or _c2.get("unit_tag") or "",
+                        "source_url": _c2.get("source_url") or "",
+                        "anchor_hash": _c2.get("anchor_hash") or "",
+                        "raw_head": (str(_c2.get("raw") or "")[:160]),
+                    })
+
+                _fix2y_autopsy[canonical_key] = _a
+            except Exception:
+                pass
+        # =====================================================================
+        # END PATCH FIX2Y_CANDIDATE_AUTOPSY_V1
+        # =====================================================================
 
         best = None
         best_tie = None
@@ -32058,4 +32243,17 @@ try:
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
+# =====================================================================
+
+
+
+# =====================================================================
+# PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
+# =====================================================================
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2y_candidate_autopsy_v1"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX2Y_VERSION_BUMP
 # =====================================================================
