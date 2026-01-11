@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2w_logging_v1"  # PATCH FIX2W_LOGGING_V1  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2z_schema_binding_admission_v1"  # PATCH FIX2W_LOGGING_V1  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -26482,6 +26482,180 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         pass
     # END PATCH FIX2W_BINDING_RULE_EVAL_SAMPLES_V1
     # END PATCH FIX2V_INJECTED_CANDIDATE_BINDING_V1
+
+    # =========================================================
+    # PATCH FIX2Z_SCHEMA_BINDING_ADMISSION_V1 (ADDITIVE)
+    #   - Deterministically synthesize schema-bound candidates from extracted_numbers
+    #   - Injected-only (domain-agnostic): only candidates proven from injected URL set
+    #   - No fuzzy matching: exact substring keyword hits + unit-family compatibility
+    #   - Does NOT bypass the Analysis canonical selector; it only increases eligible pool
+    # =========================================================
+    try:
+        _fix2z_hits = []
+        _fix2z_added = 0
+        _fix2z_seen = 0
+
+        # Build list of schema keys grouped by unit_family for quick scan
+        _fix2z_schema_percent = []
+        _fix2z_schema_magnitude = []
+        for _k, _spec in (metric_schema or {}).items():
+            if not isinstance(_spec, dict):
+                continue
+            _uf = str(_spec.get("unit_family") or "").lower().strip()
+            if _uf == "percent":
+                _fix2z_schema_percent.append((_k, _spec))
+            elif _uf == "magnitude":
+                _fix2z_schema_magnitude.append((_k, _spec))
+
+        def _fix2z_blob(c: dict) -> str:
+            return " ".join([
+                str(c.get("context_snippet") or ""),
+                str(c.get("label") or ""),
+                str(c.get("raw") or ""),
+                str(c.get("context") or ""),
+            ]).strip()
+
+        def _fix2z_is_injected(c: dict) -> bool:
+            if bool(c.get("_fix2v_source_is_injected")):
+                return True
+            try:
+                u = str(c.get("source_url") or "")
+                u_norm = (_inj_diag_norm_url_list([u])[0] if u else "")
+                return (u_norm in _fix2v_injected_norm_set)
+            except Exception:
+                return False
+
+        def _fix2z_has_percent(c: dict, blob_l: str) -> bool:
+            u = str(c.get("unit_tag") or c.get("unit") or "").lower()
+            if ("%" in u) or ("percent" in u):
+                return True
+            if "%" in (str(c.get("raw") or "")):
+                return True
+            if ("%" in blob_l) or (" percent" in blob_l):
+                return True
+            mk = str(c.get("measure_kind") or "").lower()
+            if "pct" in mk or "percent" in mk:
+                return True
+            return False
+
+        def _fix2z_has_magnitude_m(c: dict, blob_l: str) -> bool:
+            u = str(c.get("unit_tag") or c.get("unit") or "").lower()
+            if u == "m" or "million" in u:
+                return True
+            if " million" in blob_l:
+                return True
+            if str(c.get("unit_tag") or "") == "M":
+                return True
+            return False
+
+        def _fix2z_money_context(blob_l: str) -> bool:
+            # Avoid contaminating count metrics with spend/currency context
+            money_terms = ["$", " usd", "usd ", "billion", "bn", "spend", "investment", "capex", "revenue", "worth"]
+            return any(t in blob_l for t in money_terms)
+
+        def _fix2z_keyword_hits(blob_l: str, keywords) -> int:
+            hits = 0
+            if not isinstance(keywords, list):
+                return 0
+            for kw in keywords:
+                kw_s = str(kw or "").strip().lower()
+                if not kw_s:
+                    continue
+                if kw_s.isdigit():
+                    # year tokens must be present literally
+                    if kw_s in blob_l:
+                        hits += 1
+                    continue
+                if kw_s in blob_l:
+                    hits += 1
+            return hits
+
+        # Scan unbound injected candidates and synthesize schema-bound copies
+        for _c in candidates:
+            if not isinstance(_c, dict):
+                continue
+            if _c.get("fix2v_force_canonical_key"):
+                continue  # already bound by FIX2V
+            if not _fix2z_is_injected(_c):
+                continue  # injected-only admission
+            _fix2z_seen += 1
+
+            _blob = _fix2z_blob(_c)
+            _blob_l = _blob.lower()
+
+            # Quick classify candidate type
+            _is_pct = _fix2z_has_percent(_c, _blob_l)
+            _is_mag = _fix2z_has_percent(_c, _blob_l) is False and _fix2z_has_magnitude_m(_c, _blob_l)
+
+            _best = None
+            _best_hits = -1
+            _best_spec = None
+
+            if _is_pct:
+                for _k, _spec in _fix2z_schema_percent:
+                    _hits = _fix2z_keyword_hits(_blob_l, _spec.get("keywords"))
+                    # Require both boundary years if schema implies a window
+                    if ("2026" in [str(x) for x in (_spec.get("keywords") or [])]) and ("2026" not in _blob_l):
+                        continue
+                    if ("2040" in [str(x) for x in (_spec.get("keywords") or [])]) and ("2040" not in _blob_l):
+                        continue
+                    if _hits > _best_hits:
+                        _best_hits = _hits
+                        _best = _k
+                        _best_spec = _spec
+            elif _is_mag:
+                for _k, _spec in _fix2z_schema_magnitude:
+                    # Do not bind magnitude count keys if money context detected
+                    if str(_spec.get("dimension") or "").lower().strip() == "count":
+                        if _fix2z_money_context(_blob_l):
+                            continue
+                    _hits = _fix2z_keyword_hits(_blob_l, _spec.get("keywords"))
+                    # Ensure 2040 is present if schema expects it
+                    if ("2040" in [str(x) for x in (_spec.get("keywords") or [])]) and ("2040" not in _blob_l):
+                        continue
+                    if _hits > _best_hits:
+                        _best_hits = _hits
+                        _best = _k
+                        _best_spec = _spec
+
+            # Deterministic threshold: require a minimum keyword-hit support
+            if _best and _best_spec and _best_hits >= 4:
+                _c2 = dict(_c)
+                _c2["fix2v_force_canonical_key"] = _best
+                _c2["fix2z_bound_by"] = "schema_keywords"
+                _c2["fix2z_keyword_hits"] = int(_best_hits)
+                # Encourage unit tagging consistency (do not overwrite existing unit tags)
+                try:
+                    if not str(_c2.get("unit_tag") or _c2.get("unit") or "").strip():
+                        if str(_best_spec.get("unit_tag") or "").strip():
+                            _c2["unit_tag"] = str(_best_spec.get("unit_tag"))
+                    if str(_best_spec.get("dimension") or "").strip() and not str(_c2.get("dimension") or "").strip():
+                        _c2["dimension"] = str(_best_spec.get("dimension"))
+                    if str(_best_spec.get("unit_family") or "").strip() and not str(_c2.get("unit_family") or "").strip():
+                        _c2["unit_family"] = str(_best_spec.get("unit_family"))
+                except Exception:
+                    pass
+                candidates.append(_c2)
+                _fix2z_added += 1
+                if len(_fix2z_hits) < 200:
+                    _fix2z_hits.append(dict(
+                        bound_key=_best,
+                        keyword_hits=int(_best_hits),
+                        value=_c.get("value_norm") or _c.get("value"),
+                        unit=_c.get("unit_tag") or _c.get("unit"),
+                        source_url=_c.get("source_url"),
+                        anchor_hash=_c.get("anchor_hash"),
+                    ))
+
+        if isinstance(web_context, dict):
+            web_context.setdefault("fix2z_schema_binding_admission_v1", {})
+            web_context["fix2z_schema_binding_admission_v1"]["seen_injected_unbound"] = int(_fix2z_seen)
+            web_context["fix2z_schema_binding_admission_v1"]["synth_candidates_added"] = int(_fix2z_added)
+            web_context["fix2z_schema_binding_admission_v1"]["hits"] = _fix2z_hits
+    except Exception:
+        pass
+    # END PATCH FIX2Z_SCHEMA_BINDING_ADMISSION_V1
+    # =========================================================
     # =========================================================
 
     def _norm(s: str) -> str:
