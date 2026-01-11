@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2k_diffpanel_v2_broader_current_only_and_nojoin_unit_mismatch'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2l_diffpanel_v2_observed_rows'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -18556,6 +18556,58 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         rows.append(row)
 
     # -------------------------------------------------------------
+    #
+    # -------------------------------------------------------------
+    # PATCH DIFF_PANEL_V2_OBSERVED_HELPERS (ADDITIVE)
+    # -------------------------------------------------------------
+    def _unwrap_inj_admitted_norm(resp: dict):
+        try:
+            dbg = resp.get("debug") if isinstance(resp, dict) else None
+            if isinstance(dbg, dict):
+                it = dbg.get("inj_trace_v1")
+                if isinstance(it, dict) and isinstance(it.get("admitted_norm"), list):
+                    return [x for x in it.get("admitted_norm") if isinstance(x, str)]
+            it = resp.get("inj_trace_v1") if isinstance(resp, dict) else None
+            if isinstance(it, dict) and isinstance(it.get("admitted_norm"), list):
+                return [x for x in it.get("admitted_norm") if isinstance(x, str)]
+        except Exception:
+            pass
+        return []
+
+    def _unwrap_baseline_sources_cache_current(resp: dict):
+        if not isinstance(resp, dict):
+            return []
+        # Prefer debug.baseline_sources_cache_current if present
+        dbg = resp.get("debug")
+        if isinstance(dbg, dict):
+            b = dbg.get("baseline_sources_cache_current")
+            if isinstance(b, list) and b:
+                return b
+        # Fallbacks (some runs attach at top-level or under results)
+        b = resp.get("baseline_sources_cache_current")
+        if isinstance(b, list) and b:
+            return b
+        res = resp.get("results")
+        if isinstance(res, dict):
+            b = res.get("baseline_sources_cache_current")
+            if isinstance(b, list) and b:
+                return b
+        pr = resp.get("primary_response")
+        if isinstance(pr, dict):
+            dbg2 = pr.get("debug")
+            if isinstance(dbg2, dict):
+                b = dbg2.get("baseline_sources_cache_current")
+                if isinstance(b, list) and b:
+                    return b
+        return []
+
+    def _is_plausible_year_only(val):
+        try:
+            v = float(val)
+        except Exception:
+            return False
+        return 1900.0 <= v <= 2100.0 and abs(v - int(v)) < 1e-9
+
     # NEW: Append current-only canonical metrics as additional rows.
     # These represent metrics present in current run but not matched
     # to any previous canonical metric (ckey/anchor). Deterministic,
@@ -18632,6 +18684,177 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
+    
+    # -------------------------------------------------------------
+    # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
+    #
+    # Emit "observed" current-only rows from deterministic, already-
+    # collected extracted_numbers pools (render-only). These rows are:
+    # - explicitly non-canonical (do NOT participate in joins/diff math)
+    # - labeled so UI/user can distinguish them from canonical metrics
+    # - de-duped and capped to avoid noise
+    # -------------------------------------------------------------
+    observed_rows_total = 0
+    observed_rows_injected = 0
+    try:
+        import hashlib
+
+        admitted_norm = set(_unwrap_inj_admitted_norm(cur_response))
+        bsc = _unwrap_baseline_sources_cache_current(cur_response)
+
+        # Build exclusion sets from canonical/anchor identities so we don't
+        # "double report" what is already present canonically.
+        prev_can = _unwrap_primary_metrics_canonical(prev_response) or {}
+        cur_can = _unwrap_primary_metrics_canonical(cur_response) or {}
+        prev_anchor_map = _unwrap_metric_anchors(prev_response) or {}
+        cur_anchor_map = _unwrap_metric_anchors(cur_response) or {}
+
+        existing_ckeys = set()
+        for d in (prev_can, cur_can):
+            if isinstance(d, dict):
+                existing_ckeys.update([k for k in d.keys() if isinstance(k, str)])
+
+        existing_anchor_hashes = set()
+        for amap in (prev_anchor_map, cur_anchor_map):
+            if isinstance(amap, dict):
+                for _k, _v in amap.items():
+                    if isinstance(_v, dict):
+                        ah = _v.get("anchor_hash") or _v.get("anchor")
+                        if isinstance(ah, str) and ah:
+                            existing_anchor_hashes.add(ah)
+
+        # Pull candidates from extracted_numbers lists
+        candidates = []
+        for src in bsc:
+            if not isinstance(src, dict):
+                continue
+            url_norm = src.get("url_norm") or src.get("source_url_norm") or src.get("url") or src.get("source_url")
+            url_norm = url_norm if isinstance(url_norm, str) else None
+            extracted = src.get("extracted_numbers") or src.get("numbers") or src.get("extractions")
+            if not isinstance(extracted, list) or not extracted:
+                continue
+            for item in extracted:
+                if not isinstance(item, dict):
+                    continue
+                val = item.get("value_norm")
+                if val is None:
+                    val = item.get("value")
+                if val is None:
+                    continue
+                # Skip pure years with no unit evidence
+                unit_tag = item.get("unit_tag") or item.get("unit") or item.get("unit_norm")
+                if (unit_tag is None or unit_tag == "" or unit_tag == "unknown") and _is_plausible_year_only(val):
+                    continue
+
+                year = item.get("year") or item.get("year_norm") or item.get("as_of_year")
+                year = int(year) if isinstance(year, (int, float)) and 1900 <= int(year) <= 2100 else (year if isinstance(year, str) else None)
+
+                label = item.get("metric_name") or item.get("name") or item.get("label") or item.get("context") or item.get("snippet")
+                label = label if isinstance(label, str) else None
+
+                ah = item.get("anchor_hash") or item.get("anchor")
+                if not isinstance(ah, str) or not ah:
+                    # Stable local fallback: hash(label|unit|year|url)
+                    basis = "|".join([
+                        label or "",
+                        str(unit_tag or ""),
+                        str(year or ""),
+                        url_norm or "",
+                    ])
+                    ah = "obs_" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+
+                # Exclude if already represented canonically
+                if ah in existing_anchor_hashes:
+                    continue
+
+                candidates.append({
+                    "value_norm": val,
+                    "unit_tag": unit_tag if isinstance(unit_tag, str) and unit_tag else None,
+                    "year": year,
+                    "label": label,
+                    "anchor_hash": ah,
+                    "url_norm": url_norm,
+                    "from_injected_url": bool(url_norm and url_norm in admitted_norm),
+                    "context_snippet": item.get("snippet") if isinstance(item.get("snippet"), str) else None,
+                })
+
+        # De-dupe by anchor_hash and cap to keep table readable
+        seen = set()
+        deduped = []
+        for c in candidates:
+            ah = c.get("anchor_hash")
+            if ah in seen:
+                continue
+            seen.add(ah)
+            deduped.append(c)
+        # deterministic order: injected first, then by (label,url,year,unit,value)
+        deduped.sort(key=lambda x: (
+            0 if x.get("from_injected_url") else 1,
+            (x.get("label") or ""),
+            (x.get("url_norm") or ""),
+            str(x.get("year") or ""),
+            (x.get("unit_tag") or ""),
+            str(x.get("value_norm") or ""),
+        ))
+
+        MAX_OBSERVED = 25
+        for c in deduped[:MAX_OBSERVED]:
+            observed_rows_total += 1
+            if c.get("from_injected_url"):
+                observed_rows_injected += 1
+
+            disp = c.get("label") or "Observed metric"
+            unit_tag = c.get("unit_tag")
+            year = c.get("year")
+            suffix = []
+            if year:
+                suffix.append(str(year))
+            if unit_tag:
+                suffix.append(unit_tag)
+            if suffix:
+                disp = f"{disp} ({', '.join(suffix)})"
+
+            rows.append({
+                "name": f"[Observed] {disp}",
+                "canonical_key": f"observed__{c.get('anchor_hash')}",
+                "previous_value": "N/A",
+                "current_value": c.get("value_norm"),
+                "change_pct": None,
+                "change_type": "current_only_observed",
+                "match_confidence": 0.0,
+                "context_snippet": c.get("context_snippet"),
+                "source_url": c.get("url_norm"),
+                "unit_mismatch": False,
+                "diag": {
+                    "diff_join_trace_v1": {
+                        "prev_ckey": None,
+                        "resolved_cur_ckey": None,
+                        "method": "current_only_observed",
+                        "prev_anchor_hash": None,
+                        "cur_anchor_hash": c.get("anchor_hash"),
+                    },
+                    "diff_current_source_trace_v1": {
+                        "current_source_path_used": "baseline_sources_cache_current.extracted_numbers",
+                        "current_value_norm": c.get("value_norm"),
+                        "current_unit_tag": unit_tag,
+                        "inference_disabled": True,
+                    },
+                    "diff_observed_trace_v1": {
+                        "from_injected_url": bool(c.get("from_injected_url")),
+                        "url_norm": c.get("url_norm"),
+                        "anchor_hash": c.get("anchor_hash"),
+                        "excluded_if_anchor_overlaps_canonical": True,
+                    },
+                }
+            })
+
+    except Exception as _e:
+        try:
+            summary.setdefault("diag_errors", [])
+            summary["diag_errors"].append({"observed_rows_error": str(_e)})
+        except Exception:
+            pass
+
     summary = {
         "rows_total": len(rows),
         "joined_by_ckey": int(joined_by_ckey),
@@ -18640,6 +18863,8 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         "sample_anchor_joins": sample_anchor_joins,
         "current_only_rows": current_only_total,
         "current_only_injected_rows": current_only_injected,
+        "observed_rows": int(observed_rows_total),
+        "observed_injected_rows": int(observed_rows_injected),
     }
 
     return rows, summary
@@ -21525,7 +21750,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-
+    
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -29381,14 +29606,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-#
+# 
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -29398,7 +29623,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-#
+# 
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -29755,7 +29980,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
