@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2e_diffpanel_v2_lastmile'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2f_diffpanel_v2_option_b_lastmile_fixindent'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -21325,6 +21325,69 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
+
+    # =====================================================================
+    # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
+    # Objective:
+    # - Ensure the Evolution "metrics change" table feed (results.metric_changes) is
+    #   deterministically produced by Diff Panel V2 when prev canonical metrics exist.
+    # - Preserve legacy output under metric_changes_legacy for audit.
+    # Safety:
+    # - Render-only. No inference. No changes to hashing/fastpath/snapshots/extraction.
+    # - If V2 fails for any reason, we fall back to legacy metric_changes.
+    # =====================================================================
+    _diff_v2_rows = []
+    _diff_v2_summary = None
+    try:
+        # Preserve legacy rows (as computed above by legacy diff path)
+        output["metric_changes_legacy"] = metric_changes or []
+    except Exception:
+        pass
+    try:
+        _fn_v2 = globals().get("build_diff_metrics_panel_v2")
+        if callable(_fn_v2):
+            # Prefer the same cur_resp_for_diff used by legacy diff; fallback to minimal wrapper from current_metrics.
+            _cur_for_v2 = cur_resp_for_diff if isinstance(cur_resp_for_diff, dict) else None
+            if not isinstance(_cur_for_v2, dict):
+                try:
+                    if isinstance(current_metrics, dict):
+                        _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
+                except Exception:
+                    _cur_for_v2 = None
+            _diff_v2_rows, _diff_v2_summary = _fn_v2(prev_response, _cur_for_v2 or {})
+    except Exception as _e:
+        try:
+            _dbg = output.setdefault("debug", {})
+            if isinstance(_dbg, dict):
+                _dbg["diff_panel_v2_error"] = f"{type(_e).__name__}: {_e}"
+        except Exception:
+            pass
+        _diff_v2_rows, _diff_v2_summary = ([], None)
+
+    # Persist V2 artifacts for auditability
+    try:
+        output["metric_changes_v2"] = _diff_v2_rows or []
+    except Exception:
+        pass
+    try:
+        if isinstance(_diff_v2_summary, dict):
+            _dbg = output.setdefault("debug", {})
+            if isinstance(_dbg, dict):
+                _dbg["diff_panel_v2_summary"] = _diff_v2_summary
+    except Exception:
+        pass
+
+    # Option B: override UI feed if V2 emitted any rows
+    try:
+        if isinstance(_diff_v2_rows, list) and _diff_v2_rows:
+            metric_changes = _diff_v2_rows
+            try:
+                found = int(_diff_v2_summary.get("rows_total", found)) if isinstance(_diff_v2_summary, dict) else found
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
     output["summary"]["metrics_found"] = int(found or 0)
@@ -28805,3 +28868,11 @@ except Exception:
 # ==============================================================================
 # END PATCH FIX2E_DIFFPANEL_V2_LASTMILE
 # ==============================================================================
+
+
+# =====================================================================
+# PATCH FIX2F_CODE_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2f_diffpanel_v2_option_b_lastmile'
+except Exception:
+    pass
