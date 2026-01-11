@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2t_injected_only_observed_v1'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2u_ev_chargers_canon_schema_unit_count'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -8675,6 +8675,87 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
 
             "keywords": kws[:30],
         }
+
+
+# =====================================================================
+# PATCH FIX2U_EV_CHARGERS_SCHEMA_V1 (ADDITIVE)
+# Purpose:
+#   Extend frozen schema with new canonical keys for EV charging infrastructure
+#   (e.g., global EV chargers by 2040) so injected charger content can be
+#   canonicalised + diffed deterministically under the shared Analysis selector.
+# Notes:
+#   - Purely additive: does not modify existing schema entries
+#   - Dimension uses "count" so existing unit-family logic treats it as magnitude
+#   - unit_tag uses "M" (million-scale counts) but unit_family remains "magnitude"
+# =====================================================================
+
+def _fix2u_extend_metric_schema_ev_chargers(metric_schema_frozen: dict) -> dict:
+    """Add EV charger infrastructure canonical keys to frozen schema (additive)."""
+    try:
+        if not isinstance(metric_schema_frozen, dict):
+            metric_schema_frozen = {}
+    except Exception:
+        metric_schema_frozen = {}
+
+    def _add_if_missing(ckey: str, entry: dict):
+        try:
+            if not ckey or not isinstance(entry, dict):
+                return
+            if ckey in metric_schema_frozen:
+                return
+            metric_schema_frozen[ckey] = entry
+        except Exception:
+            pass
+
+    # Minimal v1 keys (Global, high-signal, year-qualified)
+    # 1) Global EV chargers by 2040 (count)
+    _add_if_missing(
+        "global_ev_chargers_2040__unit_count",
+        {
+            "canonical_key": "global_ev_chargers_2040__unit_count",
+            "canonical_id": "global_ev_chargers_2040",
+            "dimension": "count",
+            "name": "Global EV chargers (2040)",
+            # Backward-compatible schema fields:
+            "unit": "M",
+            # Stable, non-breaking additions used by downstream gates:
+            "unit_tag": "M",
+            "unit_family": "magnitude",
+            "keywords": [
+                "ev", "electric", "vehicle",
+                "charger", "chargers", "charging", "infrastructure", "network",
+                "global", "worldwide",
+                "2040", "count", "magnitude",
+            ],
+        },
+    )
+
+    # 2) Global EV charging investment by 2040 (currency) — only used if extracted evidence exists
+    _add_if_missing(
+        "global_ev_charging_investment_2040__currency",
+        {
+            "canonical_key": "global_ev_charging_investment_2040__currency",
+            "canonical_id": "global_ev_charging_investment_2040",
+            "dimension": "currency",
+            "name": "Global EV charging investment (2040)",
+            "unit": "U",      # backward-compatible first-letter field (unit_tag holds the real tag)
+            "unit_tag": "USD",
+            "unit_family": "currency",
+            "keywords": [
+                "ev", "electric", "vehicle",
+                "charger", "chargers", "charging", "infrastructure", "network",
+                "investment", "spend", "spending", "capex", "expenditure",
+                "global", "worldwide",
+                "2040", "currency", "usd",
+            ],
+        },
+    )
+
+    return metric_schema_frozen
+
+# =====================================================================
+# END PATCH FIX2U_EV_CHARGERS_SCHEMA_V1
+# =====================================================================
 
     return frozen
 
@@ -18715,7 +18796,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-    
+
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -22077,7 +22158,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-    
+
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -22106,7 +22187,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-            
+
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -24878,6 +24959,16 @@ def main():
                     primary_data["metric_schema_frozen"] = freeze_metric_schema(
                         primary_data["primary_metrics_canonical"]
                     )
+
+
+                # PATCH FIX2U_EV_CHARGERS_SCHEMA_APPLY_V1 (ADDITIVE)
+                try:
+                    fn_fix2u = globals().get("_fix2u_extend_metric_schema_ev_chargers")
+                    if callable(fn_fix2u):
+                        primary_data["metric_schema_frozen"] = fn_fix2u(primary_data.get("metric_schema_frozen") or {})
+                except Exception:
+                    pass
+                # END PATCH FIX2U_EV_CHARGERS_SCHEMA_APPLY_V1
 
                 # 3) attribution using frozen schema ✅
                 if primary_data.get("primary_metrics_canonical"):
@@ -29843,14 +29934,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-# 
+#
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -29860,7 +29951,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-# 
+#
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -30217,7 +30308,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -31664,3 +31755,13 @@ try:
     globals()['build_diff_metrics_panel_v2'] = build_diff_metrics_panel_v2_fix2k
 except Exception:
     pass
+
+
+# =====================================================================
+# PATCH FIX2U_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2u_ev_chargers_canon_schema_unit_count"
+except Exception:
+    pass
+# END PATCH FIX2U_VERSION_BUMP
+# =====================================================================
