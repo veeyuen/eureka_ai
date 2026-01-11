@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2v_ev_chargers_binding_cagr_unit_count"  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2w_logging_v1"  # PATCH FIX2W_LOGGING_V1  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -18512,6 +18512,42 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 
     # Capture injected URL set for diagnostics/tagging only (no impact on hashing/extraction)
     inj_set = set()
+    # =====================================================================
+    # PATCH FIX2W_INJECTED_SET_BUILD_V2 (ADDITIVE): Robust injected URL set union
+    # =====================================================================
+    inj_set_sources = {"inj_trace_v1": [], "diag_injected_urls": [], "diag_injected_urls_ui": []}
+    try:
+        _dbg0 = (cur_response or {}).get("debug", {}) if isinstance((cur_response or {}).get("debug", {}), dict) else {}
+        _inj0 = _dbg0.get("inj_trace_v1", {}) if isinstance(_dbg0.get("inj_trace_v1", {}), dict) else {}
+        _ad0 = _inj0.get("admitted_norm") or _inj0.get("admitted") or _inj0.get("ui_norm") or []
+        if isinstance(_ad0, list):
+            inj_set_sources["inj_trace_v1"] = [u for u in _ad0 if isinstance(u, str) and u]
+    except Exception:
+        pass
+    try:
+        def _unwrap_diag_inj(resp: dict):
+            if not isinstance(resp, dict):
+                return {}
+            r = resp.get("results")
+            if isinstance(r, dict):
+                d = r.get("debug")
+                if isinstance(d, dict) and isinstance(d.get("diag_injected_urls"), dict):
+                    return d.get("diag_injected_urls") or {}
+            d0 = resp.get("debug")
+            if isinstance(d0, dict) and isinstance(d0.get("diag_injected_urls"), dict):
+                return d0.get("diag_injected_urls") or {}
+            return {}
+        _di = _unwrap_diag_inj(cur_response)
+        _ad = _di.get("admitted_norm") or _di.get("admitted") or []
+        _ui = _di.get("ui_norm") or []
+        if isinstance(_ad, list):
+            inj_set_sources["diag_injected_urls"] = [u for u in _ad if isinstance(u, str) and u]
+        if isinstance(_ui, list):
+            inj_set_sources["diag_injected_urls_ui"] = [u for u in _ui if isinstance(u, str) and u]
+    except Exception:
+        pass
+    # END PATCH FIX2W_INJECTED_SET_BUILD_V2
+
     try:
         _inj = (cur_response or {}).get("debug", {}).get("inj_trace_v1", {})
         _ad = _inj.get("admitted_norm") or _inj.get("admitted") or []
@@ -18572,7 +18608,24 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             "not_found": 1,
             "sample_anchor_joins": [],
         }
-        return rows, summary
+        # =====================================================================
+    # PATCH FIX2W_DIFF_PANEL_INJ_TRACE_ATTACH_V1 (ADDITIVE)
+    # =====================================================================
+    try:
+        summary.setdefault("diag", {})
+        if isinstance(summary.get("diag"), dict):
+            summary["diag"].setdefault("fix2w_injected_url_set_v2", {})
+            summary["diag"]["fix2w_injected_url_set_v2"]["inj_set_size"] = int(len(inj_set)) if isinstance(inj_set, set) else 0
+            summary["diag"]["fix2w_injected_url_set_v2"]["inj_set_sources"] = inj_set_sources if isinstance(locals().get("inj_set_sources"), dict) else {}
+            try:
+                _samp = list(sorted(list(inj_set)))[:50] if isinstance(inj_set, set) else []
+                summary["diag"]["fix2w_injected_url_set_v2"]["inj_set_sample"] = _samp
+            except Exception:
+                summary["diag"]["fix2w_injected_url_set_v2"]["inj_set_sample"] = []
+    except Exception:
+        pass
+    # END PATCH FIX2W_DIFF_PANEL_INJ_TRACE_ATTACH_V1
+    return rows, summary
 
     # Emit one row per prev key (deterministic ordering)
     prev_keys = sorted([k for k in prev_metrics.keys() if isinstance(k, str)])
@@ -19139,7 +19192,23 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     continue
 
                 src_url = _fix2n_best_source_url(sr, item)
+
+                # =====================================================================
+                # PATCH FIX2W_INJECTED_MEMBERSHIP_TRACE_V1 (ADDITIVE): raw vs normalized injected membership
+                # =====================================================================
+                src_url_norm = None
+                from_inj_norm = False
+                try:
+                    if isinstance(src_url, str) and src_url:
+                        _tmp = _inj_diag_norm_url_list([src_url])
+                        if isinstance(_tmp, list) and _tmp:
+                            src_url_norm = _tmp[0]
+                            from_inj_norm = bool(src_url_norm in admitted_norm)
+                except Exception:
+                    pass
+
                 from_inj = bool(src_url and (src_url in admitted_norm))
+                # END PATCH FIX2W_INJECTED_MEMBERSHIP_TRACE_V1
 
                 ah = item.get("anchor_hash") or item.get("anchor")
                 if not isinstance(ah, str) or not ah:
@@ -19162,6 +19231,8 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "source_url": src_url or None,
                     "context_snippet": item.get("context_snippet") or item.get("snippet") or item.get("context") or "",
                     "from_injected_url": from_inj,
+                    "url_norm": (src_url_norm if isinstance(src_url_norm, str) else None),
+                    "from_injected_url_norm": bool(from_inj_norm),
                 })
 
         seen_keys = set()
@@ -22188,6 +22259,19 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 "fn": str(_canonical_for_render_fn or ""),
                 "rebuilt_count": int(_canonical_for_render_count or 0),
                 "keys_sample": list(_canonical_for_render_keys_sample or []),
+                # =====================================================================
+                # PATCH FIX2W_CANONICAL_FOR_RENDER_DIAG_EXT_V1 (ADDITIVE)
+                # =====================================================================
+                "diag_ext": (lambda: {
+                    "current_metrics_count": int(len(current_metrics)) if isinstance(current_metrics, dict) else 0,
+                    "baseline_sources_cache_current_rows": int(len(baseline_sources_cache_current)) if isinstance(baseline_sources_cache_current, list) else 0,
+                    "baseline_sources_cache_prev_rows": int(len(baseline_sources_cache_prev)) if isinstance(baseline_sources_cache_prev, list) else 0,
+                    "has_web_context": bool(isinstance(web_context, dict)),
+                    "web_context_extra_urls_count": int(len(web_context.get("extra_urls") or [])) if isinstance(web_context, dict) and isinstance(web_context.get("extra_urls"), list) else 0,
+                    "web_context_fix2v_binding": (web_context.get("fix2v_candidate_binding_v1") or {}) if isinstance(web_context, dict) else {},
+                    "reason_is_empty_rebuild": bool(str(_canonical_for_render_reason or "") in ("render_rebuild_failed_or_empty", "forced_render_rebuild_due_to_suspicious_existing_failed")),
+                })(),
+                # END PATCH FIX2W_CANONICAL_FOR_RENDER_DIAG_EXT_V1
                 "replaced_current_metrics_for_render": bool(_canonical_for_render_replaced_current_metrics),
             }
             output["debug"]["canonical_for_render_row_audit_v1"] = _row_audit
@@ -26219,6 +26303,73 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
+    # =====================================================================
+    # PATCH FIX2W_BINDING_RULE_EVAL_SAMPLES_V1 (ADDITIVE)
+    # =====================================================================
+    try:
+        _eval_samples = []
+        _eligible_but_unbound = 0
+        if isinstance(extracted_candidates, list):
+            for _c in extracted_candidates:
+                if not isinstance(_c, dict):
+                    continue
+                _is_inj = False
+                try:
+                    _is_inj = bool(_ph2b_norm_url(_c.get("source_url") or "") in _fix2v_injected_norm_set)
+                except Exception:
+                    _is_inj = False
+                if not _is_inj:
+                    continue
+
+                _raw = str(_c.get("context_snippet") or _c.get("snippet") or _c.get("raw") or "")
+                _raw_l = _raw.lower()
+                if ("charg" not in _raw_l) and ("cagr" not in _raw_l) and ("compound annual" not in _raw_l) and ("2040" not in _raw_l):
+                    continue
+
+                has_charging = (("charging infrastructure" in _raw_l) or ("ev charging" in _raw_l) or ("charger" in _raw_l) or ("chargers" in _raw_l))
+                has_global = (("global" in _raw_l) or ("worldwide" in _raw_l))
+                has_2040 = ("2040" in _raw_l) or (str(_c.get("year") or "") == "2040")
+                has_2026 = ("2026" in _raw_l) or (str(_c.get("year") or "") == "2026")
+                has_cagr = (("cagr" in _raw_l) or ("compound annual growth rate" in _raw_l))
+                u_l = str(_c.get("unit") or _c.get("unit_tag") or _c.get("unit_norm") or "").lower()
+                has_percent = ("%" in _raw_l) or ("%" in u_l) or ("percent" in u_l) or ("percent" in _raw_l)
+                has_magnitude_m = (" million" in _raw_l) or (u_l.strip() in ("m", "mn", "million", "mio")) or (str(_c.get("unit") or "").strip() == "M")
+
+                predicted = "none"
+                if has_charging and has_global and has_2040 and (not has_percent) and has_magnitude_m:
+                    predicted = "count_2040"
+                if has_cagr and has_2026 and has_2040 and has_percent:
+                    predicted = "cagr_2026_2040"
+
+                bound_key = str(_c.get("fix2v_force_canonical_key") or "")
+                if predicted != "none" and not bound_key:
+                    _eligible_but_unbound += 1
+
+                _eval_samples.append({
+                    "source_url": _c.get("source_url"),
+                    "source_url_norm": _ph2b_norm_url(_c.get("source_url") or ""),
+                    "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                    "unit": _c.get("unit") or _c.get("unit_tag"),
+                    "has_charging": bool(has_charging),
+                    "has_global": bool(has_global),
+                    "has_2040": bool(has_2040),
+                    "has_2026": bool(has_2026),
+                    "has_cagr": bool(has_cagr),
+                    "has_percent": bool(has_percent),
+                    "has_magnitude_m": bool(has_magnitude_m),
+                    "predicted_rule": predicted,
+                    "bound_key": bound_key or None,
+                })
+                if len(_eval_samples) >= 200:
+                    break
+
+        if isinstance(web_context, dict):
+            web_context.setdefault("fix2v_candidate_binding_v1", {})
+            web_context["fix2v_candidate_binding_v1"]["rule_eval_samples"] = _eval_samples
+            web_context["fix2v_candidate_binding_v1"]["eligible_but_unbound_count"] = int(_eligible_but_unbound)
+    except Exception:
+        pass
+    # END PATCH FIX2W_BINDING_RULE_EVAL_SAMPLES_V1
     # END PATCH FIX2V_INJECTED_CANDIDATE_BINDING_V1
     # =========================================================
 
