@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ab_global_ev_sales_ytd_2025_schema_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ac_cfr_diagnosis_debug_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -22879,6 +22879,127 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 "rows_sample": _sample,
             }
             _dbg["canonical_for_render_present_v25"] = bool(_dbg.get("canonical_for_render_v1"))
+
+            # =====================================================================
+            # PATCH FIX2AC_CANONICAL_FOR_RENDER_DIAGNOSE_V1 (ADDITIVE)
+            # Why:
+            # - We sometimes observe canonical_for_render_present_v25 == False and/or
+            #   missing bound canonical entities in the dashboard, even when injection
+            #   extracted numbers exist.
+            #
+            # What:
+            # - Emit a single compact debug object that explains, deterministically,
+            #   why canonical_for_render did not run / did not apply / did not produce
+            #   candidates / did not change any rows.
+            # - Purely additive; does not change selection, hashing, or rendering.
+            # =====================================================================
+            try:
+                _cfr_dbg = _dbg.get("canonical_for_render_v1") if isinstance(_dbg.get("canonical_for_render_v1"), dict) else None
+
+                # Row-level diag aggregation (if present)
+                _rows = None
+                try:
+                    _rows = output.get("metric_changes") if isinstance(output, dict) else None
+                except Exception:
+                    _rows = None
+
+                _row_diag_present = 0
+                _row_diag_applied_true = 0
+                _row_diag_applied_false = 0
+                _row_diag_reasons = {}
+                _row_diag_reason_samples = []
+
+                if isinstance(_rows, list):
+                    for _r in _rows[:250]:
+                        if not isinstance(_r, dict):
+                            continue
+                        _d = _r.get("diag") if isinstance(_r.get("diag"), dict) else {}
+                        _c = _d.get("canonical_for_render_v1") if isinstance(_d.get("canonical_for_render_v1"), dict) else None
+                        if not isinstance(_c, dict):
+                            continue
+                        _row_diag_present += 1
+                        _ap = _c.get("applied")
+                        if _ap is True:
+                            _row_diag_applied_true += 1
+                        elif _ap is False:
+                            _row_diag_applied_false += 1
+                        _rsn = str(_c.get("reason") or "")
+                        if _rsn:
+                            _row_diag_reasons[_rsn] = int(_row_diag_reasons.get(_rsn, 0)) + 1
+                            if len(_row_diag_reason_samples) < 12:
+                                _row_diag_reason_samples.append({
+                                    "canonical_key": _r.get("canonical_key"),
+                                    "reason": _rsn,
+                                    "fn": str(_c.get("fn") or ""),
+                                })
+
+                # Determine the most precise reason we can provide
+                _reason = ""
+                _reason_detail = {}
+
+                if not isinstance(_cfr_dbg, dict):
+                    _reason = "missing_output_debug.canonical_for_render_v1"
+                    _reason_detail = {
+                        "has_output_debug": bool(isinstance(_dbg, dict)),
+                        "row_diag_present": int(_row_diag_present),
+                        "row_diag_applied_true": int(_row_diag_applied_true),
+                        "row_diag_applied_false": int(_row_diag_applied_false),
+                    }
+                else:
+                    _applied = bool(_cfr_dbg.get("applied"))
+                    _rb = int(_cfr_dbg.get("rebuilt_count") or 0)
+                    _rsn = str(_cfr_dbg.get("reason") or "")
+                    if not _applied:
+                        _reason = "canonical_for_render_not_applied"
+                        _reason_detail = {
+                            "canonical_for_render_reason": _rsn,
+                            "rebuilt_count": _rb,
+                        }
+                    elif _applied and _rb <= 0:
+                        _reason = "canonical_for_render_applied_but_empty"
+                        _reason_detail = {
+                            "canonical_for_render_reason": _rsn,
+                            "rebuilt_count": _rb,
+                        }
+                    elif _applied and _rb > 0 and _row_diag_applied_true == 0:
+                        _reason = "canonical_for_render_rebuilt_but_no_rows_hydrated"
+                        _reason_detail = {
+                            "canonical_for_render_reason": _rsn,
+                            "rebuilt_count": _rb,
+                        }
+                    else:
+                        _reason = "canonical_for_render_present"
+                        _reason_detail = {
+                            "canonical_for_render_reason": _rsn,
+                            "rebuilt_count": _rb,
+                        }
+
+                _dbg["canonical_for_render_diagnosis_fix2ac_v1"] = {
+                    "reason": _reason,
+                    "reason_detail": _reason_detail,
+                    "canonical_for_render_present_v25": bool(_dbg.get("canonical_for_render_v25") or _dbg.get("canonical_for_render_present_v25")),
+                    "row_diag_present": int(_row_diag_present),
+                    "row_diag_applied_true": int(_row_diag_applied_true),
+                    "row_diag_applied_false": int(_row_diag_applied_false),
+                    "row_diag_reason_counts": _row_diag_reasons,
+                    "row_diag_reason_samples": _row_diag_reason_samples,
+                    "has_canonical_for_render_v1": bool(isinstance(_cfr_dbg, dict)),
+                    "canonical_for_render_v1_summary": (
+                        {
+                            "applied": bool(_cfr_dbg.get("applied")),
+                            "reason": str(_cfr_dbg.get("reason") or ""),
+                            "fn": str(_cfr_dbg.get("fn") or ""),
+                            "rebuilt_count": int(_cfr_dbg.get("rebuilt_count") or 0),
+                            "keys_sample": list(_cfr_dbg.get("keys_sample") or [])[:10],
+                        }
+                        if isinstance(_cfr_dbg, dict) else {}
+                    ),
+                }
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH FIX2AC_CANONICAL_FOR_RENDER_DIAGNOSE_V1
+            # =====================================================================
 
             # =====================================================================
             # PATCH V33_DIFF_PANEL_CANONICAL_PATHS_EMIT (ADDITIVE)
