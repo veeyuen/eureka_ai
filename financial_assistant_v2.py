@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2f_diffpanel_v2_option_b_lastmile_fixindent'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2g_diffpanel_v2_option_b_proof_injhashdiag'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -18049,6 +18049,92 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             metric_changes = _mc_v2
     except Exception:
         pass
+    # =====================================================================
+    # PATCH FIX2G_OPTION_B_PROOF_AND_SENTINEL (ADDITIVE)
+    # Objective:
+    # - Make Option B activation unambiguous in serialized outputs.
+    # - Ensure V2 never yields an empty table when prev canonical metrics exist.
+    # - Add injection/hash diagnostics (read-only) to confirm injected URLs enter hash inputs.
+    # Safety: diagnostics only; no changes to hashing/fastpath/snapshots/extraction.
+    # =====================================================================
+    try:
+        _dbg = output.setdefault("debug", {})
+        if isinstance(_dbg, dict):
+            _dbg["diff_panel_v2_option_b_active"] = True
+            _dbg["diff_panel_v2_code_version"] = str(globals().get("CODE_VERSION") or "")
+    except Exception:
+        pass
+
+    # If prev canonical metrics exist but V2 produced zero rows, emit a sentinel row
+    # and still override the UI feed so the panel never goes silently empty.
+    try:
+        _prev_pmc = {}
+        if isinstance(prev_response, dict):
+            _prev_pmc = prev_response.get("primary_metrics_canonical") if isinstance(prev_response.get("primary_metrics_canonical"), dict) else {}
+        if isinstance(_prev_pmc, dict) and _prev_pmc and (not isinstance(_diff_v2_rows, list) or not _diff_v2_rows):
+            _sent = {
+                "metric_name": "Diff Panel V2 sentinel",
+                "canonical_key": "__diff_panel_v2_sentinel__",
+                "previous": None,
+                "current": "N/A",
+                "change_type": "v2_empty_unexpected",
+                "diag": {
+                    "diff_join_trace_v1": {
+                        "prev_ckey": None,
+                        "resolved_cur_ckey": None,
+                        "method": "none",
+                        "prev_anchor_hash": None,
+                        "cur_anchor_hash": None,
+                    },
+                    "diff_current_source_trace_v1": {
+                        "current_source_path_used": "none",
+                        "current_value_norm": None,
+                        "current_unit_tag": None,
+                        "inference_disabled": True,
+                    },
+                    "reason": "prev.primary_metrics_canonical non-empty but V2 emitted 0 rows; check diff_panel_v2_error and canonical inputs",
+                },
+            }
+            _diff_v2_rows = [_sent]
+            _diff_v2_summary = {"rows_total": 1, "joined_by_ckey": 0, "joined_by_anchor_hash": 0, "not_found": 1, "sentinel": True}
+            output["metric_changes_v2"] = _diff_v2_rows
+            _dbg = output.setdefault("debug", {})
+            if isinstance(_dbg, dict):
+                _dbg["diff_panel_v2_summary"] = _diff_v2_summary
+            metric_changes = _diff_v2_rows
+    except Exception:
+        pass
+
+    # Injection/hash diagnostics (read-only): mirror key facts from inj_trace_v1
+    try:
+        _dbg = output.setdefault("debug", {})
+        _inj = _dbg.get("inj_trace_v1") if isinstance(_dbg, dict) else None
+        if isinstance(_dbg, dict) and isinstance(_inj, dict):
+            admitted = _inj.get("admitted_norm") if isinstance(_inj.get("admitted_norm"), list) else []
+            hash_in = _inj.get("hash_inputs_norm") if isinstance(_inj.get("hash_inputs_norm"), list) else []
+            # Build a normalized URL set from current baseline cache (if present)
+            cur_cache = output.get("baseline_sources_cache_current") if isinstance(output.get("baseline_sources_cache_current"), list) else []
+            cur_urls = set()
+            for sr in cur_cache:
+                if isinstance(sr, dict):
+                    u = (sr.get("url") or sr.get("source_url") or sr.get("source") or "").strip()
+                    if u:
+                        cur_urls.add(u)
+            _dbg["inj_hash_diag_v1"] = {
+                "admitted_norm_count": len(admitted),
+                "hash_inputs_norm_count": len(hash_in),
+                "admitted_norm_sample": admitted[:5],
+                "hash_inputs_norm_sample": hash_in[:5],
+                "admitted_present_in_cache_current": any(u in cur_urls for u in admitted),
+                "hash_inputs_present_in_cache_current": any(u in cur_urls for u in hash_in),
+            }
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX2G_OPTION_B_PROOF_AND_SENTINEL
+    # =====================================================================
+
+
 
     output["metric_changes"] = metric_changes or []
 
@@ -28861,7 +28947,7 @@ except Exception:
 
 # Version bump (additive)
 try:
-    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2e_diffpanel_v2_lastmile"
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2g_option_b_proof_injhashdiag"
 except Exception:
     pass
 
