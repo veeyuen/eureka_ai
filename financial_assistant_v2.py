@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2l_diffpanel_v2_observed_rows'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2m_diffpanel_v2_observed_rows_wiring'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -18006,6 +18006,20 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                 and current_metrics
             ):
                 _cur_v2 = {"primary_metrics_canonical": current_metrics}
+                # -------------------------------------------------------------
+                # PATCH FIX2M_OBSERVED_ROWS_WIRING (ADDITIVE)
+                # Provide observed-number pools (already fetched/extracted) to
+                # the V2 diff builder so it can emit "observed" rows.
+                # This is render-layer only: does NOT alter extraction/hashing.
+                # -------------------------------------------------------------
+                try:
+                    _bsc_cur = output.get("baseline_sources_cache_current")
+                    if _bsc_cur is None:
+                        _bsc_cur = output.get("baseline_sources_cache")
+                    if isinstance(_bsc_cur, list) and _bsc_cur:
+                        _cur_v2["baseline_sources_cache_current"] = _bsc_cur
+                except Exception:
+                    pass
                 _mc_v2, _mc_v2_summary = _fn_v2(prev_response, _cur_v2)
         except Exception:
             pass
