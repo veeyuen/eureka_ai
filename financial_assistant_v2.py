@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2c_hardwire_v34f_diffpanel_v2b'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2d_hardwire_v34f_diffpanel_v2c'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -17987,36 +17987,37 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         _fn_v2 = globals().get("build_diff_metrics_panel_v2")
         if callable(_fn_v2):
             _mc_v2, _mc_v2_summary = _fn_v2(prev_response, cur_resp_for_diff)
-    # =================================================================
-    # PATCH DIFF_PANEL_V2_WIRING_FIX1 (ADDITIVE): Fallback cur_response wrapper
-    # Why:
-    # - Some evolution packaging paths do not preserve/shape cur_resp_for_diff as a
-    #   response-like dict containing primary_metrics_canonical.
-    # - We build a minimal, deterministic wrapper from current_metrics (already rebuilt)
-    #   so V2 always emits rows when prev metrics exist.
-    # Safety:
-    # - Render-only. No inference. No legacy diff edits.
-    # =================================================================
-    try:
-        if (not isinstance(_mc_v2, list) or not _mc_v2) and callable(_fn_v2) and isinstance(current_metrics, dict) and current_metrics:
-            _cur_v2 = {"primary_metrics_canonical": current_metrics}
-            # If we have an anchors map on cur_resp_for_diff, surface it for anchor joins (optional)
-            try:
-                if isinstance(cur_resp_for_diff, dict):
-                    _cur_anchors = cur_resp_for_diff.get("metric_anchors")
-                    if isinstance(_cur_anchors, dict) and _cur_anchors:
-                        _cur_v2["metric_anchors"] = _cur_anchors
-            except Exception:
-                pass
-            _mc_v2, _mc_v2_summary = _fn_v2(prev_response, _cur_v2)
-    except Exception:
-        pass
-    # =================================================================
+
+        # =================================================================
+        # PATCH DIFF_PANEL_V2_WIRING_FIX1 (ADDITIVE): Fallback cur_response wrapper
+        # Why:
+        # - Some evolution packaging paths do not preserve/shape cur_resp_for_diff as a
+        #   response-like dict containing primary_metrics_canonical.
+        # - We build a minimal, deterministic wrapper from current_metrics (already rebuilt)
+        #   so V2 always emits rows when prev metrics exist.
+        # Safety:
+        # - Render-only. No inference. No legacy diff edits.
+        # =================================================================
+        try:
+            if (
+                (not isinstance(_mc_v2, list) or not _mc_v2)
+                and callable(_fn_v2)
+                and isinstance(current_metrics, dict)
+                and current_metrics
+            ):
+                _cur_v2 = {"primary_metrics_canonical": current_metrics}
+                _mc_v2, _mc_v2_summary = _fn_v2(prev_response, _cur_v2)
+        except Exception:
+            pass
     except Exception:
         _mc_v2, _mc_v2_summary = ([], None)
 
+    # Write V2 rows to output for UI/debug visibility
     try:
         output["metric_changes_v2"] = _mc_v2 or []
+    except Exception:
+        pass
+
     # =================================================================
     # PATCH DIFF_PANEL_V2_WIRING_FIX2 (ADDITIVE): Persist V2 artifacts under output["results"]
     # - Some serializers/callers only retain a curated subset of top-level keys.
@@ -18032,15 +18033,13 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                     _r["diff_panel_v2"]["summary"] = _mc_v2_summary
     except Exception:
         pass
-    # =================================================================
-    except Exception:
-        pass
 
     # Surface top-level summary under output.debug for auditability
     try:
         if isinstance(_mc_v2_summary, dict):
-            output.setdefault("debug", {}).setdefault("diff_panel_v2_summary", {})
-            output["debug"]["diff_panel_v2_summary"].update(_mc_v2_summary)
+            _dbg = output.setdefault("debug", {})
+            if isinstance(_dbg, dict):
+                _dbg["diff_panel_v2_summary"] = _mc_v2_summary
     except Exception:
         pass
 
@@ -18050,8 +18049,9 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             metric_changes = _mc_v2
     except Exception:
         pass
-    # =================================================================
+
     output["metric_changes"] = metric_changes or []
+
     # =====================================================================
     # PATCH PH2B_S3 (ADDITIVE): Attach selector breadcrumb + current fields per diff row
     # - Makes Phase 2B runbook checks (#3/#7/#9) a fast scan.
