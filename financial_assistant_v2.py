@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2s_observed_to_canonical_rules_v1'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2t_injected_only_observed_v1'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -18829,8 +18829,30 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         ))
 
         MAX_OBSERVED = 25
+        # =====================================================================
+        # PATCH FIX2T_FILTER_OBSERVED_TO_INJECTED_ONLY (ADDITIVE)
+        # ---------------------------------------------------------------------
+        # Goal: Ensure Observed rows (and any downstream export derived from them)
+        # contain ONLY metrics sourced from the *actual injected URL set* for
+        # this run. This prevents baseline-source remainder extractions from
+        # polluting the Observed export set.
+        #
+        # Mechanism: We rely on the existing deterministic membership flag
+        # `from_injected_url`, which is computed as:
+        #   from_injected_url := (url_norm in admitted_norm)
+        # where `admitted_norm` is the normalized, de-duped injected URL list
+        # derived from the UI / web_context injection wiring.
+        #
+        # NOTE: This is intentionally domain-agnostic (works for any injected
+        # domain), and does not depend on heuristic domain checks.
+        ONLY_INJECTED_OBSERVED = True
+        observed_rows_filtered_noninjected = 0
+        # =====================================================================
         for c in deduped[:MAX_OBSERVED]:
             observed_rows_total += 1
+            if ONLY_INJECTED_OBSERVED and not c.get("from_injected_url"):
+                observed_rows_filtered_noninjected += 1
+                continue
             if c.get("from_injected_url"):
                 observed_rows_injected += 1
 
@@ -19167,6 +19189,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         "current_only_injected_rows": current_only_injected,
         "observed_rows": int(observed_rows_total),
         "observed_injected_rows": int(observed_rows_injected),
+        "observed_rows_filtered_noninjected": int(observed_rows_filtered_noninjected),
         "observed_rows_promoted_from_source_results": int(observed_rows_promoted_from_source_results),
         "canary_row_injected": bool(_fix2p_canary_injected),
     }
