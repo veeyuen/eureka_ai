@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2m_diffpanel_v2_observed_rows_wiring'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2n_diffpanel_v2_render_observed_adapter'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -18869,6 +18869,225 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         except Exception:
             pass
 
+
+    # -------------------------------------------------------------
+    # PATCH FIX2N_DIFF_PANEL_V2_RENDER_OBSERVED_ADAPTER (ADDITIVE)
+    #
+    # Promote extracted numbers into UI-renderable rows, sourced from:
+    #   cur_response.results.source_results[*].extracted_numbers
+    #
+    # Strict rules:
+    # - is_junk == False
+    # - not a pure year (e.g., 2024/2030) when unit_tag missing
+    # - numeric value present
+    # - has at least one of: unit / unit_tag / measure_kind
+    # - deterministic dedup by (anchor_hash, value_norm, unit_tag, source_url)
+    # - does NOT join / does NOT affect diff math
+    # -------------------------------------------------------------
+    observed_rows_promoted_from_source_results = 0
+    try:
+        import hashlib
+
+        admitted_norm = set(_unwrap_inj_admitted_norm(cur_response))
+
+        def _fix2n_unwrap_source_results(resp: dict):
+            if not isinstance(resp, dict):
+                return []
+            r = resp.get("results")
+            if isinstance(r, dict) and isinstance(r.get("source_results"), list) and r.get("source_results"):
+                return r.get("source_results") or []
+            pr = resp.get("primary_response")
+            if isinstance(pr, dict):
+                r2 = pr.get("results")
+                if isinstance(r2, dict) and isinstance(r2.get("source_results"), list) and r2.get("source_results"):
+                    return r2.get("source_results") or []
+            return []
+
+        def _fix2n_has_unit_evidence(item: dict) -> bool:
+            if not isinstance(item, dict):
+                return False
+            u = item.get("unit")
+            ut = item.get("unit_tag") or item.get("unit_norm") or item.get("base_unit")
+            mk = item.get("measure_kind")
+            if isinstance(u, str) and u.strip():
+                return True
+            if isinstance(ut, str) and ut.strip():
+                return True
+            if isinstance(mk, str) and mk.strip():
+                return True
+            return False
+
+        def _fix2n_best_value_norm(item: dict):
+            v = item.get("value_norm")
+            if v is None:
+                v = item.get("value")
+            return v
+
+        def _fix2n_best_unit_tag(item: dict):
+            ut = item.get("unit_tag") or item.get("unit_norm") or item.get("base_unit") or item.get("unit")
+            return ut.strip() if isinstance(ut, str) else ""
+
+        def _fix2n_best_source_url(sr: dict, item: dict):
+            su = item.get("source_url") if isinstance(item, dict) else None
+            if isinstance(su, str) and su:
+                return su
+            su = sr.get("source_url") or sr.get("url") or sr.get("source") or sr.get("url_norm")
+            return su if isinstance(su, str) else ""
+
+        # exclusion: anchor_hash already represented canonically
+        existing_anchor_hashes = set()
+        for amap in (_unwrap_metric_anchors(prev_response) or {}, _unwrap_metric_anchors(cur_response) or {}):
+            if isinstance(amap, dict):
+                for _k, _v in amap.items():
+                    if isinstance(_v, dict):
+                        ah = _v.get("anchor_hash") or _v.get("anchor")
+                        if isinstance(ah, str) and ah:
+                            existing_anchor_hashes.add(ah)
+
+        # dedup against any existing observed rows already appended earlier in this function
+        existing_row_keys = set()
+        try:
+            for rr in (rows or []):
+                if isinstance(rr, dict):
+                    existing_row_keys.add((
+                        str(rr.get("canonical_key") or ""),
+                        str(rr.get("current_value") or ""),
+                        str(rr.get("source_url") or ""),
+                    ))
+        except Exception:
+            existing_row_keys = set()
+
+        candidates = []
+        for sr in (_fix2n_unwrap_source_results(cur_response) or []):
+            if not isinstance(sr, dict):
+                continue
+            ex = sr.get("extracted_numbers")
+            if not isinstance(ex, list) or not ex:
+                continue
+            for item in ex:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("is_junk") is True:
+                    continue
+                v = _fix2n_best_value_norm(item)
+                if v is None:
+                    continue
+                if not _fix2n_has_unit_evidence(item):
+                    continue
+
+                unit_tag = _fix2n_best_unit_tag(item)
+                if (not unit_tag) and _is_plausible_year_only(v):
+                    continue
+
+                src_url = _fix2n_best_source_url(sr, item)
+                from_inj = bool(src_url and (src_url in admitted_norm))
+
+                ah = item.get("anchor_hash") or item.get("anchor")
+                if not isinstance(ah, str) or not ah:
+                    basis = "|".join([
+                        str(item.get("context_snippet") or item.get("snippet") or item.get("context") or ""),
+                        unit_tag or "",
+                        str(v),
+                        src_url or "",
+                    ])
+                    ah = "obs_" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+
+                if ah in existing_anchor_hashes:
+                    continue
+
+                candidates.append({
+                    "anchor_hash": ah,
+                    "value_norm": v,
+                    "unit_tag": unit_tag,
+                    "measure_kind": item.get("measure_kind") if isinstance(item.get("measure_kind"), str) else "",
+                    "source_url": src_url or None,
+                    "context_snippet": item.get("context_snippet") or item.get("snippet") or item.get("context") or "",
+                    "from_injected_url": from_inj,
+                })
+
+        seen_keys = set()
+        deduped = []
+        for c in candidates:
+            k = (
+                str(c.get("anchor_hash") or ""),
+                str(c.get("value_norm")),
+                str(c.get("unit_tag") or ""),
+                str(c.get("source_url") or ""),
+            )
+            if k in seen_keys:
+                continue
+            seen_keys.add(k)
+            deduped.append(c)
+
+        deduped.sort(key=lambda x: (
+            0 if x.get("from_injected_url") else 1,
+            str(x.get("source_url") or ""),
+            str(x.get("unit_tag") or ""),
+            str(x.get("value_norm") or ""),
+            str(x.get("anchor_hash") or ""),
+        ))
+
+        MAX_OBSERVED_SR = 50
+        for c in deduped[:MAX_OBSERVED_SR]:
+            # build row-key to avoid duplicates with any earlier observed rows
+            row_key = (
+                f"observed__{c.get('anchor_hash')}",
+                str(c.get("value_norm") or ""),
+                str(c.get("source_url") or ""),
+            )
+            if row_key in existing_row_keys:
+                continue
+            existing_row_keys.add(row_key)
+
+            observed_rows_total += 1
+            observed_rows_promoted_from_source_results += 1
+            if c.get("from_injected_url"):
+                observed_rows_injected += 1
+
+            unit_tag = c.get("unit_tag") or ""
+            mk = c.get("measure_kind") or ""
+            disp_bits = [b for b in [mk, unit_tag] if b]
+            disp_suffix = f" ({', '.join(disp_bits)})" if disp_bits else ""
+            snippet = str(c.get("context_snippet") or "").strip().replace("\n", " ")
+            snippet = snippet[:80] if snippet else "extracted_number"
+
+            rows.append({
+                "name": f"[Observed] {snippet}{disp_suffix}",
+                "canonical_key": f"observed__{c.get('anchor_hash')}",
+                "previous_value": "N/A",
+                "current_value": c.get("value_norm"),
+                "change_pct": None,
+                "change_type": "observed_new",
+                "match_confidence": 0.0,
+                "context_snippet": c.get("context_snippet"),
+                "source_url": c.get("source_url"),
+                "anchor_used": False,
+                "prev_anchor_hash": None,
+                "cur_anchor_hash": c.get("anchor_hash"),
+                "prev_value_norm": None,
+                "cur_value_norm": (float(c.get("value_norm")) if isinstance(c.get("value_norm"), (int, float)) else None),
+                "unit_mismatch": False,
+                "from_injected_url": bool(c.get("from_injected_url")),
+                "diag": {
+                    "observed_source": "source_results.extracted_numbers",
+                    "from_injected_url": bool(c.get("from_injected_url")),
+                    "anchor_hash": c.get("anchor_hash"),
+                    "promotion_reason": "no_canonical_match",
+                    "diff_current_source_trace_v1": {
+                        "current_source_path_used": "results.source_results[*].extracted_numbers",
+                        "current_value_norm": c.get("value_norm"),
+                        "current_unit_tag": unit_tag,
+                        "inference_disabled": True,
+                    },
+                },
+            })
+    except Exception as _e:
+        try:
+            summary.setdefault("diag_errors", [])
+            summary["diag_errors"].append({"fix2n_observed_adapter_error": str(_e)})
+        except Exception:
+            pass
+
     summary = {
         "rows_total": len(rows),
         "joined_by_ckey": int(joined_by_ckey),
@@ -18879,6 +19098,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         "current_only_injected_rows": current_only_injected,
         "observed_rows": int(observed_rows_total),
         "observed_injected_rows": int(observed_rows_injected),
+        "observed_rows_promoted_from_source_results": int(observed_rows_promoted_from_source_results),
     }
 
     return rows, summary
