@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2h_canon_index_debug_blocks'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2i_diffpanel_v2_current_only_rows_v34f'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -90,7 +90,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2h_canon_inde
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34e"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2i_diffpanel_v2_current_only_rows_v34f"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -18357,6 +18357,37 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     not_found = 0
     sample_anchor_joins = []
 
+    matched_cur_ckeys = set()
+
+    # Capture injected URL set for diagnostics/tagging only (no impact on hashing/extraction)
+    inj_set = set()
+    try:
+        _inj = (cur_response or {}).get("debug", {}).get("inj_trace_v1", {})
+        _ad = _inj.get("admitted_norm") or _inj.get("admitted") or []
+        if isinstance(_ad, list):
+            inj_set = set([u for u in _ad if isinstance(u, str) and u])
+    except Exception:
+        inj_set = set()
+
+    def _metric_source_urls(mdict: dict):
+        """Best-effort extract list of source/evidence URLs from a canonical metric dict."""
+        if not isinstance(mdict, dict):
+            return []
+        for k in ("source_urls", "sources", "evidence_urls", "urls", "source_url"):
+            v = mdict.get(k)
+            if isinstance(v, str) and v:
+                return [v]
+            if isinstance(v, list) and v:
+                return [x for x in v if isinstance(x, str) and x]
+        return []
+
+    def _is_from_injected_url(mdict: dict):
+        if not inj_set:
+            return False
+        urls = _metric_source_urls(mdict)
+        return any((u in inj_set) for u in urls)
+
+
     # Sentinel behavior if no prev metrics
     if not isinstance(prev_metrics, dict) or not prev_metrics:
         rows.append({
@@ -18433,6 +18464,10 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         cur_ah = None
 
         if resolved_cur_ckey and isinstance(cur_metrics, dict):
+            try:
+                matched_cur_ckeys.add(resolved_cur_ckey)
+            except Exception:
+                pass
             cm = cur_metrics.get(resolved_cur_ckey)
             cm = cm if isinstance(cm, dict) else {}
             _tmp_raw = _raw_display_value(cm)
@@ -18520,12 +18555,91 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 
         rows.append(row)
 
+    # -------------------------------------------------------------
+    # NEW: Append current-only canonical metrics as additional rows.
+    # These represent metrics present in current run but not matched
+    # to any previous canonical metric (ckey/anchor). Deterministic,
+    # inference-free, and auditable.
+    # -------------------------------------------------------------
+    current_only_total = 0
+    current_only_injected = 0
+    try:
+        if isinstance(cur_metrics, dict) and cur_metrics:
+            for ck, cm in cur_metrics.items():
+                if not isinstance(ck, str) or not ck:
+                    continue
+                if ck in matched_cur_ckeys:
+                    continue
+                if not isinstance(cm, dict):
+                    continue
+
+                cur_raw = _raw_display_value(cm) or "N/A"
+                cur_val_norm = _canon_value_norm(cm)
+                cur_unit = _canon_unit_tag(cm)
+                cur_ah = _anchor_hash_from_metric(cm) or None
+
+                row = {
+                    "name": cm.get("name") or cm.get("metric_name") or ck,
+                    "canonical_key": ck,
+                    "previous_value": "N/A",
+                    "current_value": cur_raw,
+                    "change_pct": None,
+                    "change_type": "current_only",
+                    "match_confidence": 0.0,
+                    "context_snippet": None,
+                    "source_url": (_metric_source_urls(cm) or [None])[0],
+                    "anchor_used": False,
+                    "prev_anchor_hash": None,
+                    "cur_anchor_hash": cur_ah,
+                    "prev_value_norm": None,
+                    "cur_value_norm": cur_val_norm,
+                    "unit_mismatch": False,
+                    "from_injected_url": _is_from_injected_url(cm),
+                    "diag": {
+                        "diff_join_trace_v1": {
+                            "prev_ckey": None,
+                            "resolved_cur_ckey": ck,
+                            "method": "current_only",
+                            "prev_anchor_hash": None,
+                            "cur_anchor_hash": cur_ah,
+                        },
+                        "diff_current_source_trace_v1": {
+                            "current_source_path_used": "primary_metrics_canonical",
+                            "current_value_norm": cur_val_norm,
+                            "current_unit_tag": cur_unit,
+                            "inference_disabled": True,
+                        },
+                        "diff_current_only_trace_v1": {
+                            "reason": "unmatched_current_metric",
+                            "matched_cur_ckeys_count": len(matched_cur_ckeys),
+                            "injected_url_match": _is_from_injected_url(cm),
+                        },
+                    },
+                }
+
+                # preserve selector breadcrumbs if present
+                try:
+                    if cm.get("selector_used"):
+                        row["selector_used"] = cm.get("selector_used")
+                except Exception:
+                    pass
+
+                rows.append(row)
+                current_only_total += 1
+                if row.get("from_injected_url"):
+                    current_only_injected += 1
+    except Exception:
+        pass
+
+
     summary = {
         "rows_total": len(rows),
         "joined_by_ckey": int(joined_by_ckey),
         "joined_by_anchor_hash": int(joined_by_anchor),
         "not_found": int(not_found),
         "sample_anchor_joins": sample_anchor_joins,
+        "current_only_rows": current_only_total,
+        "current_only_injected_rows": current_only_injected,
     }
 
     return rows, summary
