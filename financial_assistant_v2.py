@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f_diffpanel_v2'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -17960,6 +17960,56 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         pass
     # ============================================================
 
+
+
+    # =================================================================
+    # PATCH DIFF_PANEL_V2_WIRING (ADDITIVE): Build a self-contained, deterministic
+    # diff table feed from canonical outputs ONLY, and safely override render rows.
+    #
+    # Safety:
+    # - Render layer only.
+    # - No fetch, no inference, no hashing changes.
+    # - Legacy metric_changes preserved in output.metric_changes_legacy.
+    #
+    # Behavior:
+    # - Always emits one row per prev.primary_metrics_canonical key.
+    # - If prev empty, emits a sentinel row.
+    # - Join order: canonical_key -> anchor_hash -> none.
+    # =================================================================
+    try:
+        output["metric_changes_legacy"] = metric_changes or []
+    except Exception:
+        pass
+
+    _mc_v2 = []
+    _mc_v2_summary = None
+    try:
+        _fn_v2 = globals().get("build_diff_metrics_panel_v2")
+        if callable(_fn_v2):
+            _mc_v2, _mc_v2_summary = _fn_v2(prev_response, cur_resp_for_diff)
+    except Exception:
+        _mc_v2, _mc_v2_summary = ([], None)
+
+    try:
+        output["metric_changes_v2"] = _mc_v2 or []
+    except Exception:
+        pass
+
+    # Surface top-level summary under output.debug for auditability
+    try:
+        if isinstance(_mc_v2_summary, dict):
+            output.setdefault("debug", {}).setdefault("diff_panel_v2_summary", {})
+            output["debug"]["diff_panel_v2_summary"].update(_mc_v2_summary)
+    except Exception:
+        pass
+
+    # Option B: prefer v2 rows if non-empty; otherwise keep legacy output
+    try:
+        if isinstance(_mc_v2, list) and _mc_v2:
+            metric_changes = _mc_v2
+    except Exception:
+        pass
+    # =================================================================
     output["metric_changes"] = metric_changes or []
     # =====================================================================
     # PATCH PH2B_S3 (ADDITIVE): Attach selector breadcrumb + current fields per diff row
@@ -18038,6 +18088,324 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     return output
 
 
+
+
+# =====================================================================
+# PATCH DIFF_PANEL_V2 (ADDITIVE): Deterministic Diff Metrics Panel V2 table feed
+#
+# Goal:
+# - Rebuild the pipeline that feeds the Diff Metrics table WITHOUT touching legacy diff internals.
+# - Deterministic, auditable, inference-free.
+# - Emits one row per prev.primary_metrics_canonical key (or a single sentinel row if none).
+#
+# Inputs:
+# - prev_response, cur_response: each may be a raw response, or nested under {primary_response:...},
+#   or under {results:...}. We unwrap deterministically.
+#
+# Join (strict):
+#   1) canonical_key exact match
+#   2) anchor_hash match (deterministic lexicographic min if multiple)
+#   3) otherwise not_found
+#
+# Current value sourcing (strict):
+#   - ONLY from cur.primary_metrics_canonical[resolved_cur_ckey]
+#   - Never from any numeric inference / free-form pools
+#
+# Output:
+# - rows (list[dict]) suitable for UI table
+# - summary (dict) written into debug.diff_panel_v2_summary
+# =====================================================================
+
+def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
+    """Return (rows, summary) for Diff Metrics Panel V2."""
+
+    def _unwrap_primary_metrics_canonical(resp: dict):
+        if not isinstance(resp, dict):
+            return {}
+        # common containers
+        for k in ("primary_metrics_canonical",):
+            if isinstance(resp.get(k), dict) and resp.get(k):
+                return resp.get(k) or {}
+        pr = resp.get("primary_response")
+        if isinstance(pr, dict):
+            if isinstance(pr.get("primary_metrics_canonical"), dict) and pr.get("primary_metrics_canonical"):
+                return pr.get("primary_metrics_canonical") or {}
+            res = pr.get("results")
+            if isinstance(res, dict) and isinstance(res.get("primary_metrics_canonical"), dict) and res.get("primary_metrics_canonical"):
+                return res.get("primary_metrics_canonical") or {}
+        res = resp.get("results")
+        if isinstance(res, dict) and isinstance(res.get("primary_metrics_canonical"), dict) and res.get("primary_metrics_canonical"):
+            return res.get("primary_metrics_canonical") or {}
+        return {}
+
+    def _unwrap_metric_anchors(resp: dict):
+        if not isinstance(resp, dict):
+            return {}
+        for k in ("metric_anchors",):
+            if isinstance(resp.get(k), dict) and resp.get(k):
+                return resp.get(k) or {}
+        pr = resp.get("primary_response")
+        if isinstance(pr, dict) and isinstance(pr.get("metric_anchors"), dict) and pr.get("metric_anchors"):
+            return pr.get("metric_anchors") or {}
+        res = resp.get("results")
+        if isinstance(res, dict) and isinstance(res.get("metric_anchors"), dict) and res.get("metric_anchors"):
+            return res.get("metric_anchors") or {}
+        return {}
+
+    def _get_anchor_hash_for_ckey(ckey: str, m: dict, anchors: dict):
+        # 1) explicit on metric
+        try:
+            if isinstance(m, dict):
+                ah = m.get("anchor_hash") or m.get("anchor") or m.get("anchorHash")
+                if ah:
+                    return str(ah)
+        except Exception:
+            pass
+        # 2) anchors map
+        try:
+            a = anchors.get(ckey) if isinstance(anchors, dict) else None
+            if isinstance(a, dict):
+                ah = a.get("anchor_hash") or a.get("anchor") or a.get("anchorHash")
+                if ah:
+                    return str(ah)
+        except Exception:
+            pass
+        return None
+
+    def _raw_display_value(m: dict):
+        if not isinstance(m, dict):
+            return None
+        if m.get("raw") is not None:
+            return m.get("raw")
+        if m.get("value") is not None:
+            return m.get("value")
+        return None
+
+    def _canon_value_norm(m: dict):
+        if not isinstance(m, dict):
+            return None
+        if m.get("value_norm") is None:
+            return None
+        try:
+            return float(m.get("value_norm"))
+        except Exception:
+            return None
+
+    def _canon_unit_tag(m: dict):
+        if not isinstance(m, dict):
+            return ""
+        return str(m.get("base_unit") or m.get("unit") or m.get("unit_tag") or "").strip()
+
+    prev_metrics = _unwrap_primary_metrics_canonical(prev_response)
+    cur_metrics = _unwrap_primary_metrics_canonical(cur_response)
+
+    prev_anchors = _unwrap_metric_anchors(prev_response)
+    cur_anchors = _unwrap_metric_anchors(cur_response)
+
+    # Build reverse index: anchor_hash -> [ckeys]
+    cur_by_anchor = {}
+    try:
+        if isinstance(cur_metrics, dict):
+            for ck, m in cur_metrics.items():
+                if not isinstance(ck, str) or not ck:
+                    continue
+                if not isinstance(m, dict):
+                    continue
+                ah = _get_anchor_hash_for_ckey(ck, m, cur_anchors)
+                if ah:
+                    cur_by_anchor.setdefault(str(ah), []).append(ck)
+    except Exception:
+        cur_by_anchor = {}
+
+    # Deterministic resolution: lexicographic min on canonical_key
+    for ah, cks in list(cur_by_anchor.items()):
+        try:
+            cur_by_anchor[ah] = sorted([c for c in cks if isinstance(c, str)])
+        except Exception:
+            pass
+
+    rows = []
+    joined_by_ckey = 0
+    joined_by_anchor = 0
+    not_found = 0
+    sample_anchor_joins = []
+
+    # Sentinel behavior if no prev metrics
+    if not isinstance(prev_metrics, dict) or not prev_metrics:
+        rows.append({
+            "name": "No previous canonical metrics",
+            "canonical_key": None,
+            "previous_value": "N/A",
+            "current_value": "N/A",
+            "change_pct": None,
+            "change_type": "no_prev_metrics",
+            "match_confidence": 0.0,
+            "diag": {
+                "diff_join_trace_v1": {
+                    "prev_ckey": None,
+                    "resolved_cur_ckey": None,
+                    "method": "none",
+                    "prev_anchor_hash": None,
+                    "cur_anchor_hash": None,
+                },
+                "diff_current_source_trace_v1": {
+                    "current_source_path_used": "none",
+                    "current_value_norm": None,
+                    "current_unit_tag": None,
+                    "inference_disabled": True,
+                },
+            },
+        })
+        summary = {
+            "rows_total": 1,
+            "joined_by_ckey": 0,
+            "joined_by_anchor_hash": 0,
+            "not_found": 1,
+            "sample_anchor_joins": [],
+        }
+        return rows, summary
+
+    # Emit one row per prev key (deterministic ordering)
+    prev_keys = sorted([k for k in prev_metrics.keys() if isinstance(k, str)])
+
+    for prev_ckey in prev_keys:
+        pm = prev_metrics.get(prev_ckey) if isinstance(prev_metrics, dict) else None
+        pm = pm if isinstance(pm, dict) else {}
+
+        prev_raw = _raw_display_value(pm)
+        prev_val_norm = _canon_value_norm(pm)
+        prev_unit = _canon_unit_tag(pm)
+        prev_ah = _get_anchor_hash_for_ckey(prev_ckey, pm, prev_anchors)
+
+        resolved_cur_ckey = None
+        method = "none"
+
+        # 1) primary join by canonical_key
+        if isinstance(cur_metrics, dict) and prev_ckey in cur_metrics:
+            resolved_cur_ckey = prev_ckey
+            method = "ckey"
+            joined_by_ckey += 1
+        else:
+            # 2) secondary join by anchor_hash
+            if prev_ah and str(prev_ah) in cur_by_anchor and cur_by_anchor.get(str(prev_ah)):
+                resolved_cur_ckey = cur_by_anchor[str(prev_ah)][0]
+                method = "anchor_hash"
+                joined_by_anchor += 1
+                if len(sample_anchor_joins) < 10:
+                    sample_anchor_joins.append({
+                        "anchor_hash": str(prev_ah),
+                        "prev_ckey": prev_ckey,
+                        "resolved_cur_ckey": resolved_cur_ckey,
+                        "candidates": cur_by_anchor.get(str(prev_ah))[:5],
+                    })
+
+        cm = None
+        cur_raw = "N/A"
+        cur_val_norm = None
+        cur_unit = None
+        cur_ah = None
+
+        if resolved_cur_ckey and isinstance(cur_metrics, dict):
+            cm = cur_metrics.get(resolved_cur_ckey)
+            cm = cm if isinstance(cm, dict) else {}
+            _tmp_raw = _raw_display_value(cm)
+            if _tmp_raw is not None and _tmp_raw != "":
+                cur_raw = _tmp_raw
+            cur_val_norm = _canon_value_norm(cm)
+            cur_unit = _canon_unit_tag(cm)
+            cur_ah = _get_anchor_hash_for_ckey(resolved_cur_ckey, cm, cur_anchors)
+        else:
+            not_found += 1
+
+        # change_type + change_pct (purely numeric when both value_norm exist)
+        change_type = "unknown"
+        change_pct = None
+        match_conf = 0.0
+
+        if method == "ckey":
+            match_conf = 95.0
+        elif method == "anchor_hash":
+            match_conf = 85.0
+
+        if resolved_cur_ckey is None:
+            change_type = "not_found"
+        else:
+            if isinstance(prev_val_norm, (int, float)) and isinstance(cur_val_norm, (int, float)):
+                # classify without any unit family inference
+                if abs(prev_val_norm - cur_val_norm) <= max(1e-9, abs(prev_val_norm) * 0.0005):
+                    change_type = "unchanged"
+                    change_pct = 0.0
+                elif cur_val_norm > prev_val_norm:
+                    change_type = "increased"
+                    change_pct = ((cur_val_norm - prev_val_norm) / max(1e-9, abs(prev_val_norm))) * 100.0
+                else:
+                    change_type = "decreased"
+                    change_pct = ((cur_val_norm - prev_val_norm) / max(1e-9, abs(prev_val_norm))) * 100.0
+            else:
+                # we do not infer numeric; keep classification neutral
+                change_type = "unknown"
+
+        display_name = pm.get("name") or pm.get("display_name") or pm.get("original_name") or prev_ckey
+
+        row = {
+            "name": display_name or "Unknown Metric",
+            "canonical_key": prev_ckey,
+            "previous_value": prev_raw,
+            "current_value": cur_raw,
+            "change_pct": change_pct,
+            "change_type": change_type,
+            "match_confidence": match_conf,
+
+            # minimal context fields kept for UI compatibility
+            "context_snippet": None,
+            "source_url": None,
+
+            # anchor fields for debugging/inspection
+            "anchor_used": (method == "anchor_hash"),
+            "prev_anchor_hash": prev_ah,
+            "cur_anchor_hash": cur_ah,
+            "prev_value_norm": prev_val_norm,
+            "cur_value_norm": cur_val_norm,
+
+            "diag": {
+                "diff_join_trace_v1": {
+                    "prev_ckey": prev_ckey,
+                    "resolved_cur_ckey": resolved_cur_ckey,
+                    "method": method,
+                    "prev_anchor_hash": prev_ah,
+                    "cur_anchor_hash": cur_ah,
+                },
+                "diff_current_source_trace_v1": {
+                    "current_source_path_used": "primary_metrics_canonical" if resolved_cur_ckey else "none",
+                    "current_value_norm": cur_val_norm,
+                    "current_unit_tag": cur_unit,
+                    "inference_disabled": True,
+                },
+            },
+        }
+
+        # Keep any helpful selector breadcrumb if present on current metric
+        try:
+            if isinstance(cm, dict) and cm.get("selector_used") and not row.get("selector_used"):
+                row["selector_used"] = cm.get("selector_used")
+        except Exception:
+            pass
+
+        rows.append(row)
+
+    summary = {
+        "rows_total": len(rows),
+        "joined_by_ckey": int(joined_by_ckey),
+        "joined_by_anchor_hash": int(joined_by_anchor),
+        "not_found": int(not_found),
+        "sample_anchor_joins": sample_anchor_joins,
+    }
+
+    return rows, summary
+
+# =====================================================================
+# END PATCH DIFF_PANEL_V2
+# =====================================================================
 # ===================== PATCH RMS_CORE1 (ADDITIVE) =====================
 
 
