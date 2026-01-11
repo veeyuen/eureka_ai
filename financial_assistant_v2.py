@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2o_diffpanel_v2_pass_source_results'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2q_diffpanel_v2_pass_baseline_cache_to_observed'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -22082,7 +22082,20 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             # =====================================================================
             try:
                 if isinstance(output, dict):
-                    _sr = output.get("source_results")
+                                        _sr = output.get("source_results")
+                    # FIX2Q (ADDITIVE): at this point in the evolution builder, output["source_results"]
+                    # may not be populated yet (it is attached later). Prefer the in-scope baseline cache,
+                    # which already contains extracted_numbers, so FIX2N can promote observed rows.
+                    if (not isinstance(_sr, list) or not _sr):
+                        try:
+                            _sr = baseline_sources_cache if isinstance(baseline_sources_cache, list) else _sr
+                        except Exception:
+                            pass
+                    if (not isinstance(_sr, list) or not _sr):
+                        try:
+                            _sr = baseline_sources_cache_current if isinstance(baseline_sources_cache_current, list) else _sr
+                        except Exception:
+                            pass
                     if isinstance(_sr, list) and _sr:
                         if not isinstance(_cur_for_v2, dict):
                             _cur_for_v2 = {}
