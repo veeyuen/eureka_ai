@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2n_diffpanel_v2_render_observed_adapter'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2o_diffpanel_v2_pass_source_results'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -22013,6 +22013,38 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
+            
+
+            # =====================================================================
+            # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
+            # Why:
+            # - FIX2N promotes observed rows from cur_response.results.source_results[*].extracted_numbers.
+            # - In practice, cur_resp_for_diff often omits results.source_results; the only place
+            #   source_results exists is the final evolution output dict being built here.
+            # What:
+            # - If output has source_results and _cur_for_v2 lacks results.source_results,
+            #   attach it so FIX2N can see extracted_numbers and promote observed rows.
+            # Safety:
+            # - Render-only adapter wiring. Does NOT alter extraction, hashing, or joins.
+            # =====================================================================
+            try:
+                if isinstance(output, dict):
+                    _sr = output.get("source_results")
+                    if isinstance(_sr, list) and _sr:
+                        if not isinstance(_cur_for_v2, dict):
+                            _cur_for_v2 = {}
+                        _r = _cur_for_v2.get("results")
+                        if not isinstance(_r, dict):
+                            _r = {}
+                        # only attach if missing/empty
+                        if not isinstance(_r.get("source_results"), list) or not _r.get("source_results"):
+                            _r["source_results"] = _sr
+                        _cur_for_v2["results"] = _r
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS
+            # =====================================================================
             _diff_v2_rows, _diff_v2_summary = _fn_v2(prev_response, _cur_for_v2 or {})
     except Exception as _e:
         try:
