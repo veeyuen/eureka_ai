@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2z_schema_binding_admission_v1"  # PATCH FIX2W_LOGGING_V1  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2aa_injected_snapshot_admission_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -26235,6 +26235,96 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         sources = baseline_sources_cache
     else:
         sources = []
+
+    # =========================================================
+    # PATCH FIX2AA_INJECTED_SNAPSHOT_ADMISSION_V1 (ADDITIVE)
+    # Purpose:
+    #   The Analysis-parity rebuild consumes a "snapshot pool" shaped like:
+    #     [{source_url, extracted_numbers, ...}, ...]
+    #   In several evolution runs, injected URLs were fetched + extracted (source_results),
+    #   but their extracted_numbers were NOT present in baseline_sources_cache["snapshots"],
+    #   so rebuild never saw them.
+    #
+    # This patch additively admits injected fetched sources into the snapshot pool by:
+    #   - reading baseline_sources_cache["source_results"] when present
+    #   - filtering strictly to injected URLs (normalized membership)
+    #   - appending a snapshot-shaped dict into `sources`
+    # Non-negotiables:
+    #   - additive only; no behavior change for non-injected sources
+    #   - no domain hardcoding; uses diag_injected_urls admitted/ui list
+    # =========================================================
+    _fix2aa_diag = {
+        "enabled": True,
+        "source_results_seen": 0,
+        "injected_norm_set_size": 0,
+        "admitted_to_snapshot_pool": 0,
+        "admitted_urls": [],
+        "skipped_already_present": 0,
+        "skipped_not_injected": 0,
+        "skipped_no_extracted_numbers": 0,
+        "skipped_bad_shape": 0,
+    }
+    try:
+        if isinstance(web_context, dict) and isinstance(baseline_sources_cache, dict):
+            # Build injected normalized set
+            _d = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
+            _inj_norm = set()
+            if isinstance(_d, dict):
+                _ad = _inj_diag_norm_url_list(_d.get("admitted") or _d.get("extra_urls_admitted") or [])
+                _ui = _inj_diag_norm_url_list(_d.get("ui_norm") or _d.get("extra_urls_ui_norm") or _d.get("extra_urls_normalized") or [])
+                _inj_norm = set(_ad or _ui or [])
+            _fix2aa_diag["injected_norm_set_size"] = int(len(_inj_norm))
+
+            # Build set of already-present source URLs in snapshot pool (normalized)
+            _present = set()
+            try:
+                for _s in (sources or []):
+                    if not isinstance(_s, dict):
+                        continue
+                    _u0 = _s.get("source_url") or _s.get("url") or ""
+                    _present.add((_canonicalize_injected_url(_u0) if callable(globals().get("_canonicalize_injected_url")) else str(_u0 or "")).strip())
+            except Exception:
+                _present = set()
+
+            _sr_list = baseline_sources_cache.get("source_results")
+            if isinstance(_sr_list, list) and _sr_list:
+                _fix2aa_diag["source_results_seen"] = int(len(_sr_list))
+                for _sr in _sr_list:
+                    if not isinstance(_sr, dict):
+                        _fix2aa_diag["skipped_bad_shape"] += 1
+                        continue
+                    _u = _sr.get("source_url") or _sr.get("url") or ""
+                    _un = (_canonicalize_injected_url(_u) if callable(globals().get("_canonicalize_injected_url")) else str(_u or "")).strip()
+                    if not _un or (_un not in _inj_norm):
+                        _fix2aa_diag["skipped_not_injected"] += 1
+                        continue
+                    if _un in _present:
+                        _fix2aa_diag["skipped_already_present"] += 1
+                        continue
+                    _xs = _sr.get("extracted_numbers")
+                    if not isinstance(_xs, list) or not _xs:
+                        _fix2aa_diag["skipped_no_extracted_numbers"] += 1
+                        continue
+
+                    # Admit as snapshot-shaped dict
+                    sources.append({
+                        "source_url": _u,
+                        "extracted_numbers": _xs,
+                        "fix2aa_admitted_from": "source_results",
+                    })
+                    _present.add(_un)
+                    _fix2aa_diag["admitted_to_snapshot_pool"] += 1
+                    if len(_fix2aa_diag["admitted_urls"]) < 50:
+                        _fix2aa_diag["admitted_urls"].append(_u)
+    except Exception:
+        # diagnostics only; never block rebuild
+        pass
+    try:
+        if isinstance(web_context, dict):
+            web_context["fix2aa_injected_snapshot_admission_v1"] = _fix2aa_diag
+    except Exception:
+        pass
+    # END PATCH FIX2AA_INJECTED_SNAPSHOT_ADMISSION_V1
 
     candidates = []
     for s in sources:
