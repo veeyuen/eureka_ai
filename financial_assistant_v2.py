@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2aa_injected_snapshot_admission_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ab_global_ev_sales_ytd_2025_schema_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -8826,6 +8826,47 @@ def _fix2v_extend_metric_schema_ev_chargers_cagr(metric_schema_frozen: dict) -> 
         return metric_schema_frozen
 # =====================================================================
 # END PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_V1
+
+# =====================================================================
+# PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_V1 (ADDITIVE)
+#   - Adds a canonical slot for Global EV sales (YTD 2025) in unit_sales
+#   - Intended for deterministic diff testing using Rhomotion-style sources
+# =====================================================================
+def _fix2ab_extend_metric_schema_global_ev_sales_ytd_2025(metric_schema_frozen: dict) -> dict:
+    """Add Global EV Sales (YTD 2025) schema key additively (safe no-op if already present)."""
+    try:
+        if not isinstance(metric_schema_frozen, dict):
+            return metric_schema_frozen
+        if "global_ev_sales_ytd_2025__unit_sales" in metric_schema_frozen:
+            return metric_schema_frozen
+
+        metric_schema_frozen = dict(metric_schema_frozen)
+
+        metric_schema_frozen["global_ev_sales_ytd_2025__unit_sales"] = dict(
+            metric_id="global_ev_sales_ytd_2025",
+            canonical_id="global_ev_sales_ytd_2025",
+            metric_name="Global EV sales (YTD 2025)",
+            dimension="unit_sales",
+            unit_family="magnitude",
+            unit_tag="million units",
+            unit="M",
+            # Deterministic keyword allowlist (no fuzzy matching)
+            keywords=[
+                "global", "worldwide",
+                "ev", "sales",
+                "ytd", "year-to-date",
+                "2025",
+                "million", "units",
+            ],
+        )
+        return metric_schema_frozen
+    except Exception:
+        return metric_schema_frozen
+# =====================================================================
+# END PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_V1
+# =====================================================================
+
+
 # =====================================================================
 
 
@@ -25133,6 +25174,19 @@ def main():
                 except Exception:
                     pass
                 # END PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_APPLY_V1
+
+                # =========================================================
+                # PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_APPLY_V1 (ADDITIVE)
+                try:
+                    fn_fix2ab = globals().get("_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025")
+                    if callable(fn_fix2ab):
+                        primary_data["metric_schema_frozen"] = fn_fix2ab(primary_data.get("metric_schema_frozen") or {})
+                except Exception:
+                    pass
+                # END PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_APPLY_V1
+                # =========================================================
+
+
                 # =========================================================
 
 
