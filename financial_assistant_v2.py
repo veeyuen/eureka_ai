@@ -19088,6 +19088,58 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         except Exception:
             pass
 
+
+
+    # -------------------------------------------------------------
+    # PATCH FIX2P_DIFF_PANEL_V2_CANARY_ROW (ADDITIVE)
+    #
+    # Deterministic render-path probe:
+    # When enabled via cur_response.results.debug.force_canary_observed_row == True,
+    # inject a single obvious [Observed][CANARY] row to prove the Evolution
+    # dashboard is hydrating from results.metric_changes and that the
+    # Current column can display injected values.
+    #
+    # This does NOT touch extraction/hashing/canonicalisation.
+    # -------------------------------------------------------------
+    _fix2p_canary_injected = False
+    try:
+        _dbg = None
+        if isinstance(cur_response, dict):
+            _r = cur_response.get('results')
+            if isinstance(_r, dict):
+                _dbg = _r.get('debug')
+            if _dbg is None:
+                _dbg = cur_response.get('debug')
+        _force_canary = bool(isinstance(_dbg, dict) and _dbg.get('force_canary_observed_row') is True)
+        if _force_canary:
+            rows.append({
+                'name': '[Observed][CANARY] render-path probe',
+                'canonical_key': 'observed__canary_render_probe',
+                'previous_value': 'N/A',
+                'current_value': '12345.67',
+                'unit_tag': 'canary_unit',
+                'unit': 'canary_unit',
+                'change_pct': None,
+                'change_type': 'observed_new',
+                'match_confidence': 0.0,
+                'context_snippet': 'CANARY_ROW',
+                'source_url': 'canary://render_probe',
+                'anchor_used': False,
+                'prev_anchor_hash': None,
+                'cur_anchor_hash': 'canary_render_probe',
+                'prev_value_norm': None,
+                'cur_value_norm': 12345.67,
+                'unit_mismatch': False,
+                'from_injected_url': False,
+                'diag': {
+                    'observed_source': 'canary',
+                    'promotion_reason': 'render_path_probe',
+                    'note': 'If this row does not render, the UI is not reading results.metric_changes.',
+                },
+            })
+            _fix2p_canary_injected = True
+    except Exception:
+        _fix2p_canary_injected = False
     summary = {
         "rows_total": len(rows),
         "joined_by_ckey": int(joined_by_ckey),
@@ -19099,6 +19151,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         "observed_rows": int(observed_rows_total),
         "observed_injected_rows": int(observed_rows_injected),
         "observed_rows_promoted_from_source_results": int(observed_rows_promoted_from_source_results),
+        "canary_row_injected": bool(_fix2p_canary_injected),
     }
 
     return rows, summary
