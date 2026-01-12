@@ -2893,6 +2893,9 @@ def rebuild_metrics_from_snapshots(
                 rebuilt["_fix41afc5_debug"].update(dict(_fix41afc5_dbg))
 
     # =====================================================================
+    except Exception:
+        pass
+
     # PATCH FIX2AD_INJ_ATTEMPT_GATING_DEBUG_V1 (ADDITIVE)
     # Purpose: Explain precisely why an injected URL may be "admitted" (diag) but not "attempted" (fetch).
     # Emits a small deterministic debug object into web_context['diag_injected_urls'].
@@ -2962,10 +2965,6 @@ def rebuild_metrics_from_snapshots(
                 }
     except Exception:
         pass
-    # =====================================================================
-    except Exception:
-        pass
-    # =====================================================================
 
 
     # =====================================================================
@@ -3344,10 +3343,9 @@ def rebuild_metrics_from_snapshots_schema_only(
                             continue
                 except Exception:
                     pass
-                # =====================================================================
             except Exception:
                 pass
-            # =====================================================================
+
             ctx = _norm_text(c.get("context_snippet") or "")
             if not ctx:
                 continue
@@ -22903,13 +22901,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         output["results"]["debug"]["inj_trace_v2_postfetch"] = _trace2
                 except Exception:
                     pass
-                # =====================================================================
+
+
+    # =====================================================================
     except Exception:
         pass
-    # =====================================================================
 
-
-    # =====================================================================
     # PATCH FIX41AFC19_V25 (ADDITIVE): Dashboard "Current" source audit + row sample
     #
     # Why:
