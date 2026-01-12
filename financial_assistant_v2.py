@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2al_hardwired_feature_flags_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2am_flag_diag_emit_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -5800,6 +5800,26 @@ def _inj_trace_v1_build(
             }
         except Exception:
             policy = {}
+
+# === PATCH FIX2AM_FLAG_DIAG_EMIT_V1 START ===
+# Purpose: Emit resolved runtime flags + raw env values into inj_trace for both Analysis and Evolution.
+# Purely additive diagnostics; does not alter scraping/hashing/selection.
+try:
+    _flag_names = [
+        "YUREEKA_SEMANTIC_TAGGER_V1",
+        "YUREEKA_SEMANTIC_BINDING_V1",
+        "YUREEKA_DEMO_CANONICAL_SLOT_V1",
+        "YUREEKA_DEMO_PROMOTION_V1",
+        "YUREEKA_INJECTED_HIGH_SIGNAL_FILTER_V1",
+    ]
+    _flags_env_v1 = {k: str(_os.getenv(k) or "") for k in _flag_names}
+except Exception:
+    _flags_env_v1 = {}
+try:
+    _flags_resolved_v1 = _fix2al_runtime_flag_snapshot() if callable(globals().get("_fix2al_runtime_flag_snapshot")) else {}
+except Exception:
+    _flags_resolved_v1 = {}
+# === PATCH FIX2AM_FLAG_DIAG_EMIT_V1 END ===
         # === PATCH EVO_INJ_ADMISSION_REASON_CODES_V1 END ===
         return {
             "run_id": str(d.get("run_id") or ""),
@@ -5839,6 +5859,8 @@ def _inj_trace_v1_build(
                 "admitted_minus_attempted": attempted_rejection_reasons,
             },
             "policy": policy,
+            "flags_env_v1": _flags_env_v1,
+            "flags_resolved_v1": _flags_resolved_v1,
         }
     except Exception:
         return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
