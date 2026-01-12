@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ay_single_diagnostic_block_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2az_4key_anchor_probe_diagnostic_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -35986,4 +35986,276 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2AY_SINGLE_DIAGNOSTIC_BLOCK_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2AZ_4KEY_ANCHOR_PROBE_DIAGNOSTIC_V1 (ADDITIVE)
+#
+# Purpose:
+# - Emit a focused diagnostic for the exact canonical keys that fail
+#   canonical_for_render_anchor_enforce_v28 (hits:0 / misses:N).
+# - For each missed canonical_key:
+#     1) Attempt to recover the "expected" anchor_hash from nearby structures
+#        (metric_changes rows, diag blocks, or canonical entries).
+#     2) Check whether that anchor_hash exists in any extracted_numbers anchor_hash pool.
+#     3) If not found, provide a small "closest candidates" sample from extracted_numbers
+#        to show what anchor_hashes DO exist for likely matching values/units/urls.
+#
+# Safety:
+# - Diagnostic-only. No behavior changes to binding/selection/render.
+# - Additive wrapper around compute_source_anchored_diff.
+# =====================================================================
+
+try:
+    _compute_source_anchored_diff_BASE_FIX2AZ = compute_source_anchored_diff  # type: ignore
+except Exception:
+    _compute_source_anchored_diff_BASE_FIX2AZ = None
+
+def _fix2az_is_nonempty_str(x):
+    return isinstance(x, str) and x.strip() != ""
+
+def _fix2az_get_results(out: dict):
+    r = out.get("results")
+    return r if isinstance(r, dict) else {}
+
+def _fix2az_get_debug(results: dict):
+    d = results.get("debug")
+    if not isinstance(d, dict):
+        d = {}
+        results["debug"] = d
+    return d
+
+def _fix2az_collect_extracted_numbers(out: dict):
+    """
+    Collect extracted_numbers records from multiple plausible locations.
+    Returns:
+      recs: list[dict]
+      anchor_set: set[str]
+    """
+    recs = []
+    anchor_set = set()
+
+    bases = []
+    if isinstance(out, dict):
+        bases.append(("top", out))
+        res = out.get("results")
+        if isinstance(res, dict):
+            bases.append(("results", res))
+
+    def _ingest_pool(pool, pool_name):
+        if not isinstance(pool, list):
+            return
+        for srec in pool:
+            if not isinstance(srec, dict):
+                continue
+            url = str(srec.get("url") or srec.get("source_url") or "")
+            nums = srec.get("extracted_numbers")
+            if not isinstance(nums, list):
+                continue
+            for n in nums:
+                if not isinstance(n, dict):
+                    continue
+                ah = n.get("anchor_hash")
+                if _fix2az_is_nonempty_str(ah):
+                    anchor_set.add(ah.strip())
+                recs.append({
+                    "pool": pool_name,
+                    "source_url": str(n.get("source_url") or url),
+                    "value_norm": n.get("value_norm"),
+                    "raw": n.get("raw") if n.get("raw") is not None else n.get("value"),
+                    "unit_tag": n.get("unit_tag") or n.get("unit") or "",
+                    "unit_family": n.get("unit_family") or "",
+                    "anchor_hash": ah,
+                    "start_idx": n.get("start_idx"),
+                    "fix2v_force_canonical_key": n.get("fix2v_force_canonical_key"),
+                })
+
+    for label, base in bases:
+        # baseline caches
+        _ingest_pool(base.get("baseline_sources_cache_current"), f"{label}.baseline_sources_cache_current")
+        _ingest_pool(base.get("baseline_sources_cache"), f"{label}.baseline_sources_cache")
+
+        # some versions have source_results / sources
+        sr = base.get("source_results") or base.get("sources") or base.get("source_cache")
+        if isinstance(sr, list):
+            for srec in sr:
+                if not isinstance(srec, dict):
+                    continue
+                _ingest_pool([srec], f"{label}.source_results")
+
+    return recs, anchor_set
+
+def _fix2az_extract_expected_anchor_from_row(row: dict):
+    """
+    Best-effort: search common keys that might hold an expected anchor hash.
+    """
+    if not isinstance(row, dict):
+        return None, None
+    # candidate fields in priority order
+    for k in ("anchor_hash_expected", "expected_anchor_hash", "winner_anchor_hash", "anchor_hash", "cur_anchor_hash", "current_anchor_hash"):
+        v = row.get(k)
+        if _fix2az_is_nonempty_str(v):
+            return v.strip(), k
+    # sometimes nested in diag
+    diag = row.get("diag")
+    if isinstance(diag, dict):
+        for k in ("anchor_hash_expected", "expected_anchor_hash", "winner_anchor_hash", "anchor_hash"):
+            v = diag.get(k)
+            if _fix2az_is_nonempty_str(v):
+                return v.strip(), f"diag.{k}"
+        # B2 diag includes anchor_hash under injected_sources_v1
+        ins = row.get("injected_sources_v1")
+        if isinstance(ins, list) and ins:
+            v = ins[0].get("anchor_hash") if isinstance(ins[0], dict) else None
+            if _fix2az_is_nonempty_str(v):
+                return v.strip(), "injected_sources_v1[0].anchor_hash"
+    return None, None
+
+def _fix2az_best_candidates(recs: list, prefer_url: str = "", target_value_norm=None, target_unit_family: str = "", limit: int = 5):
+    """
+    Deterministic small sample of likely matching extracted_numbers.
+    If target_value_norm is available, pick nearest by abs diff.
+    Else, pick by (url match, unit_family match, then lexical).
+    """
+    prefer_url = (prefer_url or "").strip()
+    tuf = (target_unit_family or "").strip()
+
+    def safe_float(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    tv = safe_float(target_value_norm)
+
+    scored = []
+    for r in recs:
+        if not isinstance(r, dict):
+            continue
+        s = 0.0
+        if prefer_url and str(r.get("source_url") or "") == prefer_url:
+            s += 10.0
+        if tuf and str(r.get("unit_family") or "") == tuf:
+            s += 3.0
+        rv = safe_float(r.get("value_norm"))
+        if tv is not None and rv is not None:
+            # closer is better; cap influence
+            s += max(0.0, 5.0 - min(5.0, abs(tv - rv)))
+        scored.append((s, str(r.get("source_url") or ""), int(r.get("start_idx") or 0), str(r.get("raw") or ""), r))
+
+    scored.sort(key=lambda t: (-t[0], t[1], t[2], t[3]))
+    out = []
+    for _, _, _, _, r in scored[:limit]:
+        out.append({
+            "source_url": r.get("source_url"),
+            "value_norm": r.get("value_norm"),
+            "raw": r.get("raw"),
+            "unit_family": r.get("unit_family"),
+            "unit_tag": r.get("unit_tag"),
+            "anchor_hash": r.get("anchor_hash"),
+            "pool": r.get("pool"),
+            "fix2v_force_canonical_key": r.get("fix2v_force_canonical_key"),
+        })
+    return out
+
+def _fix2az_attach_anchor_probe(out: dict) -> dict:
+    try:
+        if not isinstance(out, dict):
+            return out
+
+        results = _fix2az_get_results(out)
+        dbg = _fix2az_get_debug(results)
+
+        # Identify misses list from existing diagnosis if present
+        misses = []
+        enforce = dbg.get("canonical_for_render_anchor_enforce_v28")
+        if isinstance(enforce, dict):
+            mk = enforce.get("misses")
+            if isinstance(mk, list):
+                misses = [str(x) for x in mk if x is not None]
+        # Fallback: use hardcoded 4 keys if absent
+        if not misses:
+            misses = [
+                "2024_global_ev_sales__unknown",
+                "2025_projected_sales__unknown",
+                "2030_projected_sales__unknown",
+                "market_share_2025__percent",
+            ]
+
+        recs, anchor_set = _fix2az_collect_extracted_numbers(out)
+
+        # metric_changes rows (legacy/v2) may carry expectations
+        rows = []
+        for k in ("metric_changes_v2", "metric_changes_legacy", "metric_changes"):
+            v = results.get(k)
+            if isinstance(v, list) and v:
+                rows.extend([r for r in v if isinstance(r, dict)])
+
+        probe = {"misses": [], "anchor_pool_size": int(len(anchor_set)), "records_scanned": int(len(recs))}
+        for ckey in misses:
+            row = None
+            for r in rows:
+                rk = r.get("canonical_key") or r.get("canonical") or r.get("canonical_id")
+                if str(rk or "").strip() == ckey:
+                    row = r
+                    break
+
+            expected_anchor, expected_from = (None, None)
+            prefer_url = ""
+            target_value_norm = None
+            target_unit_family = ""
+
+            if isinstance(row, dict):
+                expected_anchor, expected_from = _fix2az_extract_expected_anchor_from_row(row)
+                prefer_url = str(row.get("source_url") or row.get("cur_source_url") or "")
+                target_value_norm = row.get("cur_value_norm") or row.get("current_value_norm") or row.get("prev_value_norm") or row.get("analysis_value_norm")
+                target_unit_family = str(row.get("unit_family") or row.get("cur_unit_family") or "")
+
+            found = False
+            if _fix2az_is_nonempty_str(expected_anchor):
+                found = expected_anchor in anchor_set
+
+            candidates = []
+            if not found:
+                candidates = _fix2az_best_candidates(recs, prefer_url=prefer_url, target_value_norm=target_value_norm, target_unit_family=target_unit_family, limit=5)
+
+            probe["misses"].append({
+                "canonical_key": ckey,
+                "expected_anchor_hash": expected_anchor,
+                "expected_anchor_hash_from": expected_from,
+                "expected_anchor_present_in_extracted_numbers": bool(found),
+                "row_present_in_metric_changes": bool(isinstance(row, dict)),
+                "row_fields_sample": {
+                    "current_value": row.get("current_value") if isinstance(row, dict) else None,
+                    "change_type": row.get("change_type") if isinstance(row, dict) else None,
+                    "anchor_used": row.get("anchor_used") if isinstance(row, dict) else None,
+                    "cur_value_norm": row.get("cur_value_norm") if isinstance(row, dict) else None,
+                    "cur_unit_cmp": row.get("cur_unit_cmp") if isinstance(row, dict) else None,
+                    "source_url": prefer_url,
+                },
+                "closest_extracted_numbers_sample": candidates,
+            })
+
+        dbg["fix2az_anchor_probe_v1"] = probe
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"]["fix2az_anchor_probe_v1"] = probe
+
+    except Exception:
+        return out
+    return out
+
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    base = _compute_source_anchored_diff_BASE_FIX2AZ
+    out = base(previous_data, web_context) if callable(base) else {}
+    return _fix2az_attach_anchor_probe(out)
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2az_4key_anchor_probe_diagnostic_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AZ_4KEY_ANCHOR_PROBE_DIAGNOSTIC_V1
 # =====================================================================
