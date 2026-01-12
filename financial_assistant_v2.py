@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ag_semantic_tagger_v1"  # PATCH FIX2AG (ADD): bump CODE_VERSION for semantic tagger v1
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ah_semantic_binding_v1_demo_slot_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -122,6 +122,18 @@ def _fix2af_norm_url(u: str) -> str:
 # Feature flags (safe defaults)
 FIX2AG_SEMANTIC_TAGGER_ENABLED = bool(int(os.environ.get("YUREEKA_SEMANTIC_TAGGER_V1", "0") or "0"))
 FIX2AG_SEMANTIC_TAGGER_DEBUG_MAX = int(os.environ.get("YUREEKA_SEMANTIC_TAGGER_DEBUG_MAX", "50") or "50")
+
+
+# =====================================================================
+# PATCH FIX2AH_SEMANTIC_BINDING_FLAGS_V1 (ADDITIVE)
+# - Semantic-assisted binding is feature-flagged and OFF by default.
+# - Demo-only canonical slot is separately flaggable and OFF by default.
+# =====================================================================
+FIX2AH_SEMANTIC_BINDING_ENABLED = bool(int(os.environ.get("YUREEKA_SEMANTIC_BINDING_V1", "0") or "0"))
+FIX2AH_DEMO_CANONICAL_SLOT_ENABLED = bool(int(os.environ.get("YUREEKA_DEMO_CANONICAL_SLOT_V1", "0") or "0"))
+FIX2AH_DEMO_CANONICAL_KEY = "demo_injected_ev_sales_2025__unit_sales"
+# END PATCH FIX2AH_SEMANTIC_BINDING_FLAGS_V1
+
 
 # In-process cache (deterministic keys; values are structured dicts)
 _FIX2AG_SEM_CACHE_V1: Dict[str, dict] = {}
@@ -27235,6 +27247,213 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         pass
     # END PATCH FIX2W_BINDING_RULE_EVAL_SAMPLES_V1
     # END PATCH FIX2V_INJECTED_CANDIDATE_BINDING_V1
+
+    # =====================================================================
+    # PATCH FIX2AH_SEMANTIC_ASSISTED_BINDING_V1 (ADDITIVE)
+    # Purpose:
+    #   - Use FIX2AG semantic tags to help bind *injected* candidates to schema keys.
+    # Scope:
+    #   - Injected URLs only (admitted/ui list). Baseline sources unchanged.
+    # Authority:
+    #   - Selector remains unchanged; we only add optional per-candidate binding hints.
+    # Diagnostics:
+    #   - web_context["semantic_binding_v1"] summary + bounded promotion/rejection samples.
+    # Optional:
+    #   - Demo-only canonical slot (feature-flagged) with no incumbents.
+    # =====================================================================
+    _fix2ah_diag = {
+        "enabled": bool(FIX2AH_SEMANTIC_BINDING_ENABLED),
+        "demo_slot_enabled": bool(FIX2AH_DEMO_CANONICAL_SLOT_ENABLED),
+        "demo_canonical_key": str(FIX2AH_DEMO_CANONICAL_KEY),
+        "injected_norm_set_size": int(len(_fix2v_injected_norm_set)) if isinstance(_fix2v_injected_norm_set, set) else 0,
+        "candidates_seen": int(len(candidates)) if isinstance(candidates, list) else 0,
+        "injected_candidates_seen": 0,
+        "tagged_injected_candidates": 0,
+        "promotions": [],
+        "rejections": [],
+        "promoted_count": 0,
+        "rejected_count": 0,
+    }
+
+    def _fix2ah_safe_int(x):
+        try:
+            return int(x)
+        except Exception:
+            return None
+
+    def _fix2ah_metric_key_score(canonical_key: str, sch: dict, metric_type: str, year: int, horizon_year: int) -> int:
+        """Deterministic scoring of a schema key for semantic binding."""
+        try:
+            k = str(canonical_key or "").lower()
+            dim = str((sch or {}).get("dimension") or "").lower()
+            uf = str((sch or {}).get("unit_family") or "").lower()
+            score = 0
+
+            if metric_type == "market_share":
+                if ("share" in k) or ("market_share" in k):
+                    score += 2
+                if dim == "percent" or uf == "percent":
+                    score += 1
+
+            elif metric_type == "sales_volume":
+                if ("sales" in k) or ("unit_sales" in k) or ("registrations" in k):
+                    score += 2
+                if ("unit_sales" in dim) or ("count" in dim) or ("units" in uf) or ("magnitude" in uf):
+                    score += 1
+
+            elif metric_type == "revenue":
+                if ("revenue" in k) or ("market_size" in k):
+                    score += 2
+                if ("currency" in dim) or ("currency" in uf):
+                    score += 1
+
+            if isinstance(year, int) and year > 1900:
+                if str(year) in k:
+                    score += 1
+            if isinstance(horizon_year, int) and horizon_year > 1900:
+                if str(horizon_year) in k:
+                    score += 1
+
+            return int(score)
+        except Exception:
+            return 0
+
+    def _fix2ah_pick_schema_key(tags: dict, metric_schema: dict) -> str:
+        """Pick the best schema key for semantic tags. Returns '' if no confident match."""
+        try:
+            if not isinstance(tags, dict) or not isinstance(metric_schema, dict) or not metric_schema:
+                return ""
+            metric_type = str(tags.get("metric_type") or "").strip()
+            t = tags.get("time") or {}
+            year = _fix2ah_safe_int(t.get("year"))
+            horizon_year = _fix2ah_safe_int(t.get("horizon_year"))
+
+            if not metric_type:
+                return ""
+
+            best_key = ""
+            best_score = -1
+
+            for ck, sch in metric_schema.items():
+                if not isinstance(sch, dict):
+                    continue
+                sc = _fix2ah_metric_key_score(ck, sch, metric_type, year, horizon_year)
+                if sc > best_score:
+                    best_score = sc
+                    best_key = ck
+
+            if best_score >= 3 and best_key:
+                return str(best_key)
+            return ""
+        except Exception:
+            return ""
+
+    # Optional demo slot: only exists when flag enabled
+    try:
+        if FIX2AH_DEMO_CANONICAL_SLOT_ENABLED and isinstance(metric_schema, dict):
+            if FIX2AH_DEMO_CANONICAL_KEY not in metric_schema:
+                metric_schema[FIX2AH_DEMO_CANONICAL_KEY] = {
+                    "canonical_key": FIX2AH_DEMO_CANONICAL_KEY,
+                    "canonical_id": "demo_injected_ev_sales_2025",
+                    "dimension": "unit_sales",
+                    "unit_family": "magnitude",
+                    "unit_tag": "million units",
+                    "unit": "M",
+                    "name": "DEMO Injected EV sales (2025)",
+                    "keywords": ["demo_injected", "ev", "sales", "2025", "million", "units"],
+                }
+    except Exception:
+        pass
+
+    # Apply semantic-assisted binding to injected candidates only
+    try:
+        if FIX2AH_SEMANTIC_BINDING_ENABLED and isinstance(candidates, list) and candidates:
+            for _c in candidates:
+                if not isinstance(_c, dict):
+                    continue
+                if not _c.get("_fix2v_source_is_injected"):
+                    continue
+                _fix2ah_diag["injected_candidates_seen"] += 1
+
+                _tags = _c.get("semantic_tags_v1") or {}
+                if not isinstance(_tags, dict) or not _tags:
+                    _fix2ah_diag["rejected_count"] += 1
+                    if len(_fix2ah_diag["rejections"]) < 50:
+                        _fix2ah_diag["rejections"].append({
+                            "reason": "no_semantic_tags",
+                            "anchor_hash": _c.get("anchor_hash") or "",
+                            "raw_head": str(_c.get("raw") or "")[:120],
+                            "source_url": _c.get("source_url") or "",
+                        })
+                    continue
+
+                _fix2ah_diag["tagged_injected_candidates"] += 1
+
+                # Demo-only forced binding: sales_volume year=2025 → demo key
+                try:
+                    _mt = str(_tags.get("metric_type") or "")
+                    _t = _tags.get("time") or {}
+                    _yr = _fix2ah_safe_int(_t.get("year"))
+                    if FIX2AH_DEMO_CANONICAL_SLOT_ENABLED and (_mt == "sales_volume") and (_yr == 2025):
+                        _c["fix2v_force_canonical_key"] = str(FIX2AH_DEMO_CANONICAL_KEY)
+                        _ctx0 = str(_c.get("context_snippet") or _c.get("context") or "")
+                        if "demo_injected" not in _ctx0:
+                            _c["context_snippet"] = (_ctx0 + " demo_injected").strip()
+                        _fix2ah_diag["promoted_count"] += 1
+                        if len(_fix2ah_diag["promotions"]) < 50:
+                            _fix2ah_diag["promotions"].append({
+                                "reason": "demo_forced",
+                                "forced_key": str(FIX2AH_DEMO_CANONICAL_KEY),
+                                "metric_type": _mt,
+                                "year": _yr,
+                                "anchor_hash": _c.get("anchor_hash") or "",
+                                "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                                "unit": _c.get("unit") or _c.get("unit_tag") or "",
+                                "source_url": _c.get("source_url") or "",
+                            })
+                        continue
+                except Exception:
+                    pass
+
+                # Standard semantic-assisted binding: choose best schema key and force-bind
+                _picked = _fix2ah_pick_schema_key(_tags, metric_schema)
+                if _picked:
+                    _c["fix2v_force_canonical_key"] = str(_picked)
+                    _fix2ah_diag["promoted_count"] += 1
+                    if len(_fix2ah_diag["promotions"]) < 50:
+                        _t = _tags.get("time") or {}
+                        _fix2ah_diag["promotions"].append({
+                            "reason": "semantic_bind",
+                            "forced_key": str(_picked),
+                            "metric_type": str(_tags.get("metric_type") or ""),
+                            "year": _fix2ah_safe_int((_t or {}).get("year")),
+                            "horizon_year": _fix2ah_safe_int((_t or {}).get("horizon_year")),
+                            "anchor_hash": _c.get("anchor_hash") or "",
+                            "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                            "unit": _c.get("unit") or _c.get("unit_tag") or "",
+                            "source_url": _c.get("source_url") or "",
+                        })
+                else:
+                    _fix2ah_diag["rejected_count"] += 1
+                    if len(_fix2ah_diag["rejections"]) < 50:
+                        _fix2ah_diag["rejections"].append({
+                            "reason": "no_confident_schema_match",
+                            "metric_type": str(_tags.get("metric_type") or ""),
+                            "anchor_hash": _c.get("anchor_hash") or "",
+                            "raw_head": str(_c.get("raw") or "")[:120],
+                            "source_url": _c.get("source_url") or "",
+                        })
+    except Exception:
+        pass
+
+    try:
+        if isinstance(web_context, dict):
+            web_context["semantic_binding_v1"] = _fix2ah_diag
+    except Exception:
+        pass
+    # END PATCH FIX2AH_SEMANTIC_ASSISTED_BINDING_V1
+
+
 
     # =========================================================
     # PATCH FIX2Z_SCHEMA_BINDING_ADMISSION_V1 (ADDITIVE)
