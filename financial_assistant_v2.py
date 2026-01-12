@@ -34873,3 +34873,282 @@ try:
 except Exception:
     pass
 # END PATCH FIX2AK_CODE_VERSION_FORCE_V1
+
+
+# =====================================================================
+# PATCH FIX2AU_OPTION_B2_RENDER_VISIBILITY_V1 (ADDITIVE)
+#
+# Goal:
+# - Make semantically-bound injected metrics Diff-visible (Current column populated)
+#   WITHOUT changing selectors, hashing, snapshot attach, or extraction.
+#
+# Rationale:
+# - Diff UI reads: results.metric_changes[].current_value
+# - In FIX2AT runs, injected values could be bound internally but still not surfaced
+#   into metric_changes due to render emission gaps (canonical_for_render_v1 absent/empty).
+#
+# What this patch does (render-only):
+# - Post-process compute_source_anchored_diff() output:
+#   * Scan baseline_sources_cache_current (and baseline_sources_cache fallback) for extracted_numbers
+#     that already contain FIX2AT binding signal: fix2v_force_canonical_key
+#   * Promote those values into results.metric_changes rows that match canonical_key AND are N/A
+#   * Attach explicit provenance annotations:
+#       injected_source_contributed: true
+#       injected_sources_v1: [...]
+#       diag.b2_render_injected_visibility_v1: {...}
+#
+# Safety:
+# - Additive-only wrapper around compute_source_anchored_diff
+# - No selector changes, no eviction, no schema/unit gates relaxed
+# - Only fills Diff "Current" when it is currently N/A/blank and we have an explicit bound ckey
+# =====================================================================
+
+try:
+    _compute_source_anchored_diff_BASE_FIX2AT = compute_source_anchored_diff  # type: ignore
+except Exception:
+    _compute_source_anchored_diff_BASE_FIX2AT = None
+
+def _fix2au_is_na(v):
+    try:
+        if v is None:
+            return True
+        s = str(v).strip()
+        return (s == "" or s.upper() == "N/A" or s.lower() == "na")
+    except Exception:
+        return True
+
+def _fix2au_yearlike(x):
+    try:
+        fx = float(x)
+        if abs(fx - round(fx)) < 1e-9:
+            ix = int(round(fx))
+            return 1900 <= ix <= 2105
+        return False
+    except Exception:
+        return False
+
+def _fix2au_schema_unit_family(schema_frozen: dict, ckey: str):
+    try:
+        if not isinstance(schema_frozen, dict) or not ckey:
+            return ""
+        s = schema_frozen.get(ckey)
+        if not isinstance(s, dict):
+            return ""
+        # tolerate multiple schema shapes
+        uf = s.get("unit_family") or s.get("unitFamily") or s.get("unit_kind") or s.get("unitKind")
+        return str(uf or "").strip()
+    except Exception:
+        return ""
+
+def _fix2au_collect_bound_injected_candidates(out: dict):
+    """
+    Return deterministic best candidate per canonical_key based on FIX2AT signal:
+      extracted_numbers[*].fix2v_force_canonical_key
+    Candidate shape aligns with what metric_changes hydration expects.
+    """
+    cand = {}
+    try:
+        if not isinstance(out, dict):
+            return cand
+
+        # Prefer current pool, but fall back to prev pool if needed.
+        pools = []
+        bcc = out.get("baseline_sources_cache_current")
+        if isinstance(bcc, list) and bcc:
+            pools.append(("baseline_sources_cache_current", bcc))
+        bcp = out.get("baseline_sources_cache")
+        if isinstance(bcp, list) and bcp:
+            pools.append(("baseline_sources_cache", bcp))
+
+        # Gather candidates
+        tmp = []
+        for pool_name, pool in pools:
+            for srec in pool:
+                if not isinstance(srec, dict):
+                    continue
+                src_url = str(srec.get("url") or srec.get("source_url") or "")
+                nums = srec.get("extracted_numbers")
+                if not isinstance(nums, list) or not nums:
+                    continue
+                for n in nums:
+                    if not isinstance(n, dict):
+                        continue
+                    ckey = n.get("fix2v_force_canonical_key")
+                    if not ckey:
+                        continue
+                    ckey = str(ckey).strip()
+                    if not ckey:
+                        continue
+                    # filter obvious junk
+                    if n.get("is_junk") is True:
+                        continue
+                    vn = n.get("value_norm")
+                    if vn is None:
+                        continue
+                    if _fix2au_yearlike(vn):
+                        continue
+                    uf = str(n.get("unit_family") or "").strip()
+                    ut = str(n.get("unit_tag") or n.get("unit") or "").strip()
+                    # Require some unit signal; we do not relax unit gates here.
+                    if not uf and not ut:
+                        continue
+
+                    tmp.append({
+                        "canonical_key": ckey,
+                        "value_norm": vn,
+                        "raw": n.get("raw") if n.get("raw") is not None else n.get("value"),
+                        "unit_family": uf,
+                        "unit_tag": ut,
+                        "anchor_hash": n.get("anchor_hash"),
+                        "source_url": str(n.get("source_url") or src_url),
+                        "pool_name": pool_name,
+                        "start_idx": n.get("start_idx"),
+                    })
+
+        # Deterministic pick per canonical_key:
+        # sort by (ckey, source_url, start_idx, raw str) and take first
+        def _k(r):
+            return (
+                str(r.get("canonical_key") or ""),
+                str(r.get("source_url") or ""),
+                int(r.get("start_idx") or 0),
+                str(r.get("raw") or ""),
+            )
+
+        tmp_sorted = sorted(tmp, key=_k)
+        for r in tmp_sorted:
+            ck = r.get("canonical_key")
+            if ck and ck not in cand:
+                cand[ck] = r
+    except Exception:
+        return cand
+    return cand
+
+def _fix2au_apply_b2_render_promotions(out: dict) -> dict:
+    try:
+        if not isinstance(out, dict):
+            return out
+
+        results = out.get("results")
+        if not isinstance(results, dict):
+            results = {}
+            out["results"] = results
+
+        metric_changes = results.get("metric_changes")
+        if not isinstance(metric_changes, list) or not metric_changes:
+            return out
+
+        schema_frozen = out.get("metric_schema_frozen")
+        if not isinstance(schema_frozen, dict):
+            # sometimes lives on previous_data / embedded
+            schema_frozen = (out.get("primary_response") or {}).get("metric_schema_frozen") if isinstance(out.get("primary_response"), dict) else {}
+            schema_frozen = schema_frozen if isinstance(schema_frozen, dict) else {}
+
+        candidates = _fix2au_collect_bound_injected_candidates(out)
+
+        promoted = 0
+        skipped_schema_mismatch = 0
+        promoted_keys = []
+
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+            ck = row.get("canonical_key") or row.get("canonical") or row.get("canonical_id")
+            ck = str(ck or "").strip()
+            if not ck:
+                continue
+            if not _fix2au_is_na(row.get("current_value")):
+                continue
+            cand = candidates.get(ck)
+            if not isinstance(cand, dict):
+                continue
+
+            # Respect schema/unit family gates: if schema declares a unit_family, require match.
+            expected_uf = _fix2au_schema_unit_family(schema_frozen, ck)
+            cand_uf = str(cand.get("unit_family") or "").strip()
+            if expected_uf and cand_uf and expected_uf != cand_uf:
+                skipped_schema_mismatch += 1
+                continue
+
+            # Fill in current value
+            row["current_value"] = cand.get("raw")
+            try:
+                row["current_value_norm"] = float(cand.get("value_norm"))
+            except Exception:
+                row["current_value_norm"] = cand.get("value_norm")
+            # Best-effort: populate comparable unit field used by UI
+            row["cur_unit_cmp"] = cand.get("unit_tag") or cand.get("unit_family") or row.get("cur_unit_cmp")
+
+            # Annotate provenance (render-side only)
+            row["injected_source_contributed"] = True
+            row["injected_sources_v1"] = [{
+                "source_id": "injected",
+                "source_url": cand.get("source_url"),
+                "anchor_hash": cand.get("anchor_hash"),
+                "unit_family": cand.get("unit_family"),
+                "unit_tag": cand.get("unit_tag"),
+                "pool": cand.get("pool_name"),
+            }]
+
+            diag = row.get("diag")
+            if not isinstance(diag, dict):
+                diag = {}
+                row["diag"] = diag
+            diag["b2_render_injected_visibility_v1"] = {
+                "applied": True,
+                "reason": "promoted_from_fix2at_bound_extracted_numbers",
+                "canonical_key": ck,
+                "source_url": cand.get("source_url"),
+                "anchor_hash": cand.get("anchor_hash"),
+                "unit_family": cand.get("unit_family"),
+                "unit_tag": cand.get("unit_tag"),
+                "expected_unit_family": expected_uf,
+            }
+
+            promoted += 1
+            promoted_keys.append(ck)
+
+        # Attach a compact debug summary for auditability
+        try:
+            out.setdefault("debug", {})
+            if isinstance(out.get("debug"), dict):
+                out["debug"]["b2_render_visibility_v1"] = {
+                    "promoted_rows": int(promoted),
+                    "skipped_schema_unit_family_mismatch": int(skipped_schema_mismatch),
+                    "promoted_keys_sample": list(sorted(set(promoted_keys)))[:12],
+                    "candidates_total": int(len(candidates)),
+                }
+        except Exception:
+            pass
+
+    except Exception:
+        return out
+
+    return out
+
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    """
+    Wrapper: preserve base behavior, then apply FIX2AU Option B2 (render-only promotions).
+    """
+    base = _compute_source_anchored_diff_BASE_FIX2AT
+    if callable(base):
+        out = base(previous_data, web_context)
+    else:
+        # If base missing, fail safe to original name if present in globals (unlikely)
+        try:
+            out = globals().get("compute_source_anchored_diff")(previous_data, web_context)  # type: ignore
+        except Exception:
+            out = {}
+
+    return _fix2au_apply_b2_render_promotions(out)
+
+# Version bump (additive) — ensure this is the last CODE_VERSION assignment.
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2au_option_b2_render_visibility_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AU_OPTION_B2_RENDER_VISIBILITY_V1
+# =====================================================================
+
