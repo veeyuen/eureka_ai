@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ba_force_attach_canonical_for_render_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bb_final_export_audit_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36398,4 +36398,134 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2BA_FORCE_ATTACH_CANONICAL_FOR_RENDER_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2BB_FINAL_EXPORT_AUDIT_V1 (ADDITIVE)
+#
+# Purpose:
+# - "Final export audit" to prove what keys survive into the Evolution results
+#   object that gets serialized into the report JSON.
+# - Attaches a compact audit summary under:
+#     results.debug.fix2bb_final_export_audit_v1
+#   and mirrors under:
+#     debug.fix2bb_final_export_audit_v1
+#
+# Captures:
+# - top-level keys present on the returned results dict
+# - whether output_debug exists and where canonical_for_render_v1 exists
+# - which metric_changes structure is non-empty (v2/legacy) and how many
+#   rows have non-N/A current_value
+#
+# Safety:
+# - Diagnostic-only. No behavior changes.
+# =====================================================================
+
+try:
+    _run_source_anchored_evolution_BASE_FIX2BB = run_source_anchored_evolution  # type: ignore
+except Exception:
+    _run_source_anchored_evolution_BASE_FIX2BB = None
+
+def _fix2bb_is_na(v):
+    try:
+        if v is None:
+            return True
+        s = str(v).strip()
+        return s == "" or s.upper() == "N/A"
+    except Exception:
+        return True
+
+def _fix2bb_count_non_na_current(rows):
+    if not isinstance(rows, list):
+        return {"total": 0, "non_na_current": 0}
+    total = 0
+    non_na = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        total += 1
+        if not _fix2bb_is_na(r.get("current_value")):
+            non_na += 1
+    return {"total": int(total), "non_na_current": int(non_na)}
+
+def _fix2bb_attach_audit(out: dict) -> dict:
+    try:
+        if not isinstance(out, dict):
+            return out
+
+        out.setdefault("debug", {})
+        if not isinstance(out.get("debug"), dict):
+            out["debug"] = {}
+
+        # Determine metric_changes lane
+        lane = "none"
+        v2 = out.get("metric_changes_v2")
+        legacy = out.get("metric_changes_legacy")
+        mc = out.get("metric_changes")
+        if isinstance(v2, list) and v2:
+            lane = "metric_changes_v2"
+        elif isinstance(legacy, list) and legacy:
+            lane = "metric_changes_legacy"
+        elif isinstance(mc, list) and mc:
+            lane = "metric_changes"
+
+        # Presence checks for output_debug/canonical_for_render_v1
+        od = out.get("output_debug")
+        od_is_dict = isinstance(od, dict)
+        cfr_top = od.get("canonical_for_render_v1") if od_is_dict else None
+        cfr_top_present = cfr_top is not None
+
+        # Some builds tuck output_debug into out["debug"]["output_debug"]
+        dbg_od = out.get("debug", {}).get("output_debug") if isinstance(out.get("debug"), dict) else None
+        dbg_od_is_dict = isinstance(dbg_od, dict)
+        cfr_dbg = dbg_od.get("canonical_for_render_v1") if dbg_od_is_dict else None
+        cfr_dbg_present = cfr_dbg is not None
+
+        audit = {
+            "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "top_level_keys": sorted(list(out.keys()))[:200],
+            "metric_changes_lane": lane,
+            "metric_changes_counts": {
+                "metric_changes_v2": _fix2bb_count_non_na_current(v2),
+                "metric_changes_legacy": _fix2bb_count_non_na_current(legacy),
+                "metric_changes": _fix2bb_count_non_na_current(mc),
+            },
+            "output_debug_presence": {
+                "has_top_level_output_debug": bool(od_is_dict),
+                "has_canonical_for_render_v1_top_level": bool(cfr_top_present),
+                "canonical_for_render_v1_top_level_type": type(cfr_top).__name__ if cfr_top_present else None,
+                "has_debug_output_debug": bool(dbg_od_is_dict),
+                "has_canonical_for_render_v1_debug_output_debug": bool(cfr_dbg_present),
+            },
+            "code_version_observed": out.get("code_version") or out.get("CODE_VERSION") or None,
+        }
+
+        out["debug"]["fix2bb_final_export_audit_v1"] = audit
+
+        # Also mirror into out["summary"] if you want a quick glance without expanding debug
+        out.setdefault("summary", {})
+        if isinstance(out.get("summary"), dict):
+            out["summary"].setdefault("fix2bb_audit", {
+                "lane": lane,
+                "non_na_current": audit["metric_changes_counts"].get(lane, {}).get("non_na_current") if isinstance(audit.get("metric_changes_counts"), dict) else None,
+                "has_cfr": bool(cfr_top_present or cfr_dbg_present),
+            })
+
+    except Exception:
+        return out
+    return out
+
+def run_source_anchored_evolution(previous_data: dict, fn=None, web_context: dict = None) -> dict:
+    base = _run_source_anchored_evolution_BASE_FIX2BB
+    out = base(previous_data, fn=fn, web_context=web_context) if callable(base) else {}
+    return _fix2bb_attach_audit(out)
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bb_final_export_audit_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2BB_FINAL_EXPORT_AUDIT_V1
 # =====================================================================
