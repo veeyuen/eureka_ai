@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2aj_demo_promotion_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2al_hardwired_feature_flags_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -119,8 +119,54 @@ def _fix2af_norm_url(u: str) -> str:
 # - Single-sourced: called from the shared scrape/extract loop, thus used by Analysis + Evolution
 # =====================================================================
 
+
+# =====================================================================
+# PATCH FIX2AL_HARDWIRED_FEATURE_FLAGS_V1 (ADDITIVE)
+# Purpose:
+#   Hard-wire Phase-3 semantic/demo feature flags inside the codebase for reliability,
+#   while keeping the implementation auditable and reversible.
+#
+# Behavior:
+#   - For the listed flags, hard-wired values take precedence over environment variables.
+#   - For all other flags, behavior remains environment-driven as before.
+#   - This patch is strictly additive and does not change selector authority.
+# =====================================================================
+def _fix2al_flag_enabled(flag_name: str, default: bool = False) -> bool:
+    """Deterministic feature-flag resolver with optional hard-wiring."""
+    try:
+        # Hard-wired Phase-3 flags (override env).
+        _FIX2AL_HARDWIRED_FLAGS = {
+            "YUREEKA_SEMANTIC_TAGGER_V1": True,
+            "YUREEKA_SEMANTIC_BINDING_V1": True,
+            "YUREEKA_DEMO_CANONICAL_SLOT_V1": True,
+            "YUREEKA_DEMO_PROMOTION_V1": True,
+            "YUREEKA_INJECTED_HIGH_SIGNAL_FILTER_V1": True,
+        }
+        if flag_name in _FIX2AL_HARDWIRED_FLAGS:
+            return bool(_FIX2AL_HARDWIRED_FLAGS[flag_name])
+
+        v = os.environ.get(flag_name)
+        if v is None:
+            return bool(default)
+        return str(v).strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return bool(default)
+
+def _fix2al_runtime_flag_snapshot() -> dict:
+    """Emit the resolved Phase-3 flags for JSON diagnostics."""
+    return {
+        "YUREEKA_SEMANTIC_TAGGER_V1": _fix2al_flag_enabled("YUREEKA_SEMANTIC_TAGGER_V1", False),
+        "YUREEKA_SEMANTIC_BINDING_V1": _fix2al_flag_enabled("YUREEKA_SEMANTIC_BINDING_V1", False),
+        "YUREEKA_DEMO_CANONICAL_SLOT_V1": _fix2al_flag_enabled("YUREEKA_DEMO_CANONICAL_SLOT_V1", False),
+        "YUREEKA_DEMO_PROMOTION_V1": _fix2al_flag_enabled("YUREEKA_DEMO_PROMOTION_V1", False),
+        "YUREEKA_INJECTED_HIGH_SIGNAL_FILTER_V1": _fix2al_flag_enabled("YUREEKA_INJECTED_HIGH_SIGNAL_FILTER_V1", False),
+    }
+
+# END PATCH FIX2AL_HARDWIRED_FEATURE_FLAGS_V1
+# =====================================================================
+
 # Feature flags (safe defaults)
-FIX2AG_SEMANTIC_TAGGER_ENABLED = bool(int(os.environ.get("YUREEKA_SEMANTIC_TAGGER_V1", "0") or "0"))
+FIX2AG_SEMANTIC_TAGGER_ENABLED = bool(_fix2al_flag_enabled("YUREEKA_SEMANTIC_TAGGER_V1", False))
 FIX2AG_SEMANTIC_TAGGER_DEBUG_MAX = int(os.environ.get("YUREEKA_SEMANTIC_TAGGER_DEBUG_MAX", "50") or "50")
 
 
@@ -129,8 +175,8 @@ FIX2AG_SEMANTIC_TAGGER_DEBUG_MAX = int(os.environ.get("YUREEKA_SEMANTIC_TAGGER_D
 # - Semantic-assisted binding is feature-flagged and OFF by default.
 # - Demo-only canonical slot is separately flaggable and OFF by default.
 # =====================================================================
-FIX2AH_SEMANTIC_BINDING_ENABLED = bool(int(os.environ.get("YUREEKA_SEMANTIC_BINDING_V1", "0") or "0"))
-FIX2AH_DEMO_CANONICAL_SLOT_ENABLED = bool(int(os.environ.get("YUREEKA_DEMO_CANONICAL_SLOT_V1", "0") or "0"))
+FIX2AH_SEMANTIC_BINDING_ENABLED = bool(_fix2al_flag_enabled("YUREEKA_SEMANTIC_BINDING_V1", False))
+FIX2AH_DEMO_CANONICAL_SLOT_ENABLED = bool(_fix2al_flag_enabled("YUREEKA_DEMO_CANONICAL_SLOT_V1", False))
 FIX2AH_DEMO_CANONICAL_KEY = "demo_injected_ev_sales_2025__unit_sales"
 # END PATCH FIX2AH_SEMANTIC_BINDING_FLAGS_V1
 
@@ -138,7 +184,7 @@ FIX2AH_DEMO_CANONICAL_KEY = "demo_injected_ev_sales_2025__unit_sales"
 # PATCH FIX2AJ_DEMO_PROMOTION_FLAGS_V1 (ADDITIVE): explicit demo promotion is OFF by default.
 # Ensures at most one injected candidate is promoted into the demo canonical slot.
 # =====================================================================
-FIX2AJ_DEMO_PROMOTION_ENABLED = bool(int(os.environ.get("YUREEKA_DEMO_PROMOTION_V1", "0") or "0"))
+FIX2AJ_DEMO_PROMOTION_ENABLED = bool(_fix2al_flag_enabled("YUREEKA_DEMO_PROMOTION_V1", False))
 # END PATCH FIX2AJ_DEMO_PROMOTION_FLAGS_V1
 # =====================================================================
 # PATCH FIX2AK_HIGH_SIGNAL_FILTER_FLAGS_V1 (ADDITIVE)
@@ -149,10 +195,7 @@ FIX2AJ_DEMO_PROMOTION_ENABLED = bool(int(os.environ.get("YUREEKA_DEMO_PROMOTION_
 #   OFF by default. When ON, candidates failing the high-signal test are ignored by semantic binding
 #   and demo promotion, but are still present in extracted_numbers for audit.
 # =====================================================================
-try:
-    FIX2AK_HIGH_SIGNAL_FILTER_ENABLED = bool(int(os.environ.get("YUREEKA_INJECTED_HIGH_SIGNAL_FILTER_V1", "0") or "0"))
-except Exception:
-    FIX2AK_HIGH_SIGNAL_FILTER_ENABLED = False
+FIX2AK_HIGH_SIGNAL_FILTER_ENABLED = bool(_fix2al_flag_enabled("YUREEKA_INJECTED_HIGH_SIGNAL_FILTER_V1", False))
 # END PATCH FIX2AK_HIGH_SIGNAL_FILTER_FLAGS_V1
 
 
@@ -27422,6 +27465,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         "enabled": bool(FIX2AH_SEMANTIC_BINDING_ENABLED),
         "demo_slot_enabled": bool(FIX2AH_DEMO_CANONICAL_SLOT_ENABLED),
         "demo_canonical_key": str(FIX2AH_DEMO_CANONICAL_KEY),
+        "runtime_flags": _fix2al_runtime_flag_snapshot(),
         "injected_norm_set_size": int(len(_fix2v_injected_norm_set)) if isinstance(_fix2v_injected_norm_set, set) else 0,
         "candidates_seen": int(len(candidates)) if isinstance(candidates, list) else 0,
         "injected_candidates_seen": 0,
