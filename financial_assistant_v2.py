@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ao_injected_flow_diag_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2aq_final_intake_parity_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -26165,6 +26165,32 @@ def main():
                         extra_urls = []
 
 
+                    # PATCH START: FIX2AQ final intake-parity (TAB1 ↔ EVOLUTION) v1
+                    # Purpose:
+                    # - Ensure extra injected URLs entered in *either* UI tab are visible to both Analysis and Evolution runs.
+                    # - This addresses the recurring split-brain where Evolution sees injected URLs but Analysis intake is empty.
+                    # - Additive-only: does not change selection logic; only widens the *injected URL intake* source.
+                    try:
+                        if "yureeka_last_extra_urls_v1" not in st.session_state:
+                            st.session_state["yureeka_last_extra_urls_v1"] = []
+                        if "yureeka_last_extra_urls_raw_v1" not in st.session_state:
+                            st.session_state["yureeka_last_extra_urls_raw_v1"] = ""
+                        # Record current tab input (even if empty) for transparency
+                        if extra_urls:
+                            st.session_state["yureeka_last_extra_urls_v1"] = list(extra_urls)
+                            st.session_state["yureeka_last_extra_urls_raw_v1"] = str(extra_sources_text_tab1 or "")
+                        # Parity: if TAB1 input is empty, fall back to last known extra URLs from other tab/session
+                        _fix2aq_used_session_fallback = False
+                        if (not extra_urls) and st.session_state.get("yureeka_last_extra_urls_v1"):
+                            extra_urls = list(st.session_state.get("yureeka_last_extra_urls_v1") or [])
+                            _fix2aq_used_session_fallback = True
+                        # Emit a small marker into diag_injected_urls via web_context call below (as diag_extra_urls_ui_raw)
+                        if _fix2aq_used_session_fallback and (not (extra_sources_text_tab1 or "").strip()):
+                            extra_sources_text_tab1 = str(st.session_state.get("yureeka_last_extra_urls_raw_v1") or "")
+                    except Exception:
+                        pass
+                    # PATCH END: FIX2AQ final intake-parity (TAB1 ↔ EVOLUTION) v1
+
                     # ============================================================
                     # PATCH INJ_DIAG_TAB1_CALL (ADDITIVE): correlate UI extra-URL input into fetch_web_context diagnostics
                     # ============================================================
@@ -26499,6 +26525,28 @@ def main():
 
                             _extra_urls_evo = []
 
+
+                        # PATCH START: FIX2AQ final intake-parity (EVOLUTION ↔ TAB1) v1
+                        # Purpose:
+                        # - Persist extra injected URLs from Evolution tab into session_state so Analysis can reuse them if missing.
+                        # - If Evolution tab input is empty, reuse last-known injected URLs from TAB1/session for parity.
+                        try:
+                            if "yureeka_last_extra_urls_v1" not in st.session_state:
+                                st.session_state["yureeka_last_extra_urls_v1"] = []
+                            if "yureeka_last_extra_urls_raw_v1" not in st.session_state:
+                                st.session_state["yureeka_last_extra_urls_raw_v1"] = ""
+                            if _extra_urls_evo:
+                                st.session_state["yureeka_last_extra_urls_v1"] = list(_extra_urls_evo)
+                                st.session_state["yureeka_last_extra_urls_raw_v1"] = str(extra_sources_text or "")
+                            _fix2aq_used_session_fallback_evo = False
+                            if (not _extra_urls_evo) and st.session_state.get("yureeka_last_extra_urls_v1"):
+                                _extra_urls_evo = list(st.session_state.get("yureeka_last_extra_urls_v1") or [])
+                                _fix2aq_used_session_fallback_evo = True
+                            if _fix2aq_used_session_fallback_evo and (not (extra_sources_text or "").strip()):
+                                extra_sources_text = str(st.session_state.get("yureeka_last_extra_urls_raw_v1") or "")
+                        except Exception:
+                            pass
+                        # PATCH END: FIX2AQ final intake-parity (EVOLUTION ↔ TAB1) v1
 
                         results = run_source_anchored_evolution(
 
