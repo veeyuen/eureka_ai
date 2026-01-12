@@ -35525,3 +35525,137 @@ except Exception:
 # END PATCH FIX2AV_SEMANTIC_BINDER_PROD_V1
 # =====================================================================
 
+
+# =====================================================================
+# PATCH FIX2AW_UNIT_FAMILY_NORMALISER_V1 (ADDITIVE)
+#
+# Option A:
+# - Add a deterministic, pre-binder unit-family normalisation assist.
+# - Purpose: provide enough unit_family signal for FIX2AV to bind conservatively,
+#   without relaxing FIX39 or changing selectors.
+#
+# Scope / Safety:
+# - Applies ONLY to injected sources (same allowlist heuristic as FIX2AV: accio.com).
+# - Only adds/sets unit_family for already-extracted numbers; does not change values.
+# - Conservative: will not classify currency-like contexts as unit_sales.
+#
+# Normalisations:
+# - Percent: if unit/unit_tag indicates %, set unit_family="percent"
+# - Million shorthand: if unit_tag == "M" AND (measure_kind/assoc indicate units OR context indicates sales/units)
+#   AND NOT currency-like context, set unit_family="unit_sales"
+# =====================================================================
+
+try:
+    _compute_source_anchored_diff_BASE_FIX2AV = compute_source_anchored_diff  # type: ignore
+except Exception:
+    _compute_source_anchored_diff_BASE_FIX2AV = None
+
+def _fix2aw_is_currency_context(ctx: str) -> bool:
+    try:
+        c = (ctx or "").lower()
+        return ("usd" in c) or ("$" in c) or ("eur" in c) or ("gbp" in c) or ("trillion" in c) or ("billion" in c) or ("market valued" in c) or ("valuation" in c)
+    except Exception:
+        return False
+
+def _fix2aw_normalise_number_unit_family(n: dict):
+    if not isinstance(n, dict):
+        return False
+
+    # If unit_family already present, leave it.
+    uf = n.get("unit_family")
+    if isinstance(uf, str) and uf.strip():
+        return False
+
+    unit = str(n.get("unit") or "")
+    unit_tag = str(n.get("unit_tag") or n.get("base_unit") or "")
+    raw = str(n.get("raw") or "")
+    mk = str(n.get("measure_kind") or "").lower()
+    ma = str(n.get("measure_assoc") or "").lower()
+    ctx = str(n.get("context_snippet") or n.get("ctx_head") or n.get("context") or "")
+
+    changed = False
+
+    # Percent
+    if "%" in raw or unit.strip() == "%" or unit_tag.strip() == "%":
+        n["unit_family"] = "percent"
+        changed = True
+        return changed
+
+    # Million shorthand 'M' -> unit_sales (only when clearly count/units/sales context)
+    if unit_tag.strip() == "M" or unit.strip() == "M":
+        # Require units/sales signal
+        units_signal = (mk == "count_units") or (ma == "units") or ("million units" in ctx.lower()) or ("sales" in ctx.lower()) or ("units" in ctx.lower()) or ("vehicles" in ctx.lower())
+        if units_signal and not _fix2aw_is_currency_context(ctx):
+            n["unit_family"] = "unit_sales"
+            changed = True
+
+    return changed
+
+def _fix2aw_apply_unit_family_normaliser(out: dict) -> dict:
+    try:
+        if not isinstance(out, dict):
+            return out
+
+        pools = []
+        bcc = out.get("baseline_sources_cache_current")
+        if isinstance(bcc, list) and bcc:
+            pools.append(("baseline_sources_cache_current", bcc))
+        bcp = out.get("baseline_sources_cache")
+        if isinstance(bcp, list) and bcp:
+            pools.append(("baseline_sources_cache", bcp))
+
+        touched = 0
+        for pool_name, pool in pools:
+            for srec in pool:
+                if not isinstance(srec, dict):
+                    continue
+                url = str(srec.get("url") or srec.get("source_url") or "")
+                try:
+                    if not _fix2av_is_injected_url(url):  # reuse FIX2AV allowlist
+                        continue
+                except Exception:
+                    continue
+                nums = srec.get("extracted_numbers")
+                if not isinstance(nums, list) or not nums:
+                    continue
+                for n in nums:
+                    if _fix2aw_normalise_number_unit_family(n):
+                        touched += 1
+
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"]["fix2aw_unit_family_normaliser_v1"] = {
+                "touched_numbers": int(touched),
+                "scope": "injected_sources_only",
+            }
+    except Exception:
+        return out
+    return out
+
+# -----------------------------------------------------------------------------
+# Wrapper override:
+# Run FIX2AW normaliser -> FIX2AV binder -> FIX2AU B2 promotion
+# -----------------------------------------------------------------------------
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    base = _compute_source_anchored_diff_BASE_FIX2AV
+    out = base(previous_data, web_context) if callable(base) else {}
+    out = _fix2aw_apply_unit_family_normaliser(out)
+    try:
+        out = _fix2av_apply_semantic_binder(out)  # type: ignore
+    except Exception:
+        pass
+    try:
+        out = _fix2au_apply_b2_render_promotions(out)  # type: ignore
+    except Exception:
+        pass
+    return out
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2aw_unit_family_normaliser_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AW_UNIT_FAMILY_NORMALISER_V1
+# =====================================================================
+
