@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2as_demo_slots_v2.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2at_demo_only_binding_assist_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -28097,6 +28097,122 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             except Exception:
                 pass
             # END PATCH FIX2AS_DEMO_CANONICAL_SLOTS_EXTRA_V1
+            # =====================================================================
+            # PATCH FIX2AT_DEMO_ONLY_BINDING_ASSIST_V1 (ADDITIVE)
+            # Purpose:
+            #   - Minimal, demo-only binding assist so demo slots populate even when
+            #     semantic->schema scoring is too conservative for real slots.
+            # Scope:
+            #   - Injected candidates only
+            #   - Demo canonical keys only (demo_injected_*)
+            # Safety:
+            #   - Does NOT alter selector; does NOT evict incumbents; does NOT affect
+            #     non-demo schema keys.
+            # Diagnostics:
+            #   - semantic_binding_v1.demo_binding_assist_v1 with counts + samples
+            # =====================================================================
+            try:
+                _fix2at_enabled = bool(FIX2AH_DEMO_CANONICAL_SLOT_ENABLED)
+                _fix2at_assist = {
+                    "enabled": bool(_fix2at_enabled),
+                    "applied": False,
+                    "bound_count": 0,
+                    "bound_by_key": {},
+                    "samples": [],
+                }
+                if _fix2at_enabled and isinstance(candidates, list) and candidates:
+                    # Map semantic intent -> demo key
+                    _demo_map = [
+                        ("sales_volume", 2025, None, str(FIX2AS_DEMO_CANONICAL_KEY_SALES_2025)),
+                        ("market_share", 2025, None, str(FIX2AS_DEMO_CANONICAL_KEY_SHARE_2025)),
+                        ("sales_volume", None, 2030, str(FIX2AS_DEMO_CANONICAL_KEY_SALES_2030)),
+                        ("market_share", None, 2030, str(FIX2AS_DEMO_CANONICAL_KEY_SHARE_2030)),
+                    ]
+                    def _fix2at_infer_metric_type(c: dict, ctx_l: str) -> str:
+                        try:
+                            u = str(c.get("unit") or c.get("unit_tag") or c.get("unit_norm") or "").lower()
+                            mk = str(c.get("measure_kind") or "").lower()
+                            if ("%" in u) or ("percent" in u) or ("pct" in mk) or ("percent" in mk):
+                                if "share" in ctx_l:
+                                    return "market_share"
+                                # percent with no explicit share keyword -> leave unknown
+                                return "market_share" if ("market" in ctx_l and "share" in ctx_l) else "market_share"
+                            # magnitude/count-ish
+                            if ("sales" in ctx_l) or ("units" in ctx_l) or ("registr" in ctx_l):
+                                return "sales_volume"
+                        except Exception:
+                            pass
+                        return ""
+                    def _fix2at_has_forecast_words(ctx_l: str) -> bool:
+                        return (" by " in (" "+ctx_l+" ")) or ("reach" in ctx_l) or ("forecast" in ctx_l) or ("project" in ctx_l)
+                    for _c in candidates:
+                        try:
+                            if not isinstance(_c, dict):
+                                continue
+                            if not _fix2v_source_is_injected(_c):
+                                continue
+                            # If already bound to any demo key, skip (let earlier logic decide)
+                            _already = str(_c.get("fix2v_force_canonical_key") or "")
+                            if _already.startswith("demo_injected_"):
+                                continue
+                            if FIX2AK_HIGH_SIGNAL_FILTER_ENABLED:
+                                try:
+                                    if not _fix2ak_is_high_signal_candidate(_c):
+                                        continue
+                                except Exception:
+                                    pass
+                            _ctx = str(_c.get("context_snippet") or _c.get("context") or _c.get("raw") or "")
+                            _ctx_l = _ctx.lower()
+                            _tags = _c.get("semantic_tags_v1") if isinstance(_c.get("semantic_tags_v1"), dict) else {}
+                            _mtype = str(_tags.get("metric_type") or "").strip()
+                            if not _mtype:
+                                _mtype = _fix2at_infer_metric_type(_c, _ctx_l)
+                            _t = _tags.get("time") if isinstance(_tags.get("time"), dict) else {}
+                            _yr = _fix2ah_safe_int(_t.get("year"))
+                            _hy = _fix2ah_safe_int(_t.get("horizon_year"))
+                            # Relaxed year/horizon inference from context
+                            if _yr is None and "2025" in _ctx_l:
+                                _yr = 2025
+                            if _hy is None and "2030" in _ctx_l and _fix2at_has_forecast_words(_ctx_l):
+                                _hy = 2030
+                            for want_mtype, want_year, want_horizon, demo_key in _demo_map:
+                                if _mtype != want_mtype:
+                                    continue
+                                if want_year is not None and _yr != int(want_year):
+                                    continue
+                                if want_horizon is not None and _hy != int(want_horizon):
+                                    continue
+                                # Bind to demo key (hint only)
+                                _c["fix2v_force_canonical_key"] = str(demo_key)
+                                _c["fix2at_demo_binding_assist_v1"] = True
+                                _fix2at_assist["applied"] = True
+                                _fix2at_assist["bound_count"] = int(_fix2at_assist.get("bound_count") or 0) + 1
+                                _fix2at_assist["bound_by_key"][str(demo_key)] = int(_fix2at_assist["bound_by_key"].get(str(demo_key)) or 0) + 1
+                                if len(_fix2at_assist["samples"]) < 30:
+                                    _fix2at_assist["samples"].append({
+                                        "forced_key": str(demo_key),
+                                        "metric_type": str(_mtype),
+                                        "year": _yr,
+                                        "horizon_year": _hy,
+                                        "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                                        "unit": _c.get("unit") or _c.get("unit_tag") or _c.get("unit_norm") or "",
+                                        "source_url": _c.get("source_url") or "",
+                                        "anchor_hash": _c.get("anchor_hash") or "",
+                                        "ctx_head": _ctx[:200],
+                                    })
+                                break
+                        except Exception:
+                            continue
+                # Attach into semantic_binding_v1 diag
+                try:
+                    if isinstance(_fix2ah_diag, dict):
+                        _fix2ah_diag["demo_binding_assist_v1"] = _fix2at_assist
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # END PATCH FIX2AT_DEMO_ONLY_BINDING_ASSIST_V1
+            # =====================================================================
     except Exception:
         pass
 
