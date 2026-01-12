@@ -35152,3 +35152,376 @@ except Exception:
 # END PATCH FIX2AU_OPTION_B2_RENDER_VISIBILITY_V1
 # =====================================================================
 
+
+# =====================================================================
+# PATCH FIX2AV_SEMANTIC_BINDER_PROD_V1 (ADDITIVE)
+#
+# Goal:
+# - Production-grade successor to FIX2AT demo-only binding assist.
+# - Deterministically attach canonical identity to extracted numbers from injected sources
+#   by setting extracted_numbers[*].fix2v_force_canonical_key (plus tags/diag),
+#   so Option B2-Render can promote them into results.metric_changes[].current_value.
+#
+# Non-goals / Safety:
+# - NO selector changes (never touches primary_metrics_canonical selection/ranking).
+# - NO eviction or incumbent overrides.
+# - NO refactors: implemented as additive helpers + wrapper override.
+# - NO relaxation of FIX39 unit-required gate.
+# - Scope-limited: defaults to only bind injected sources (domain heuristic).
+#
+# Binding approach (deterministic, conservative):
+# - Use local context fields on extracted numbers: context_snippet / ctx_head / raw / unit / measure_kind.
+# - Infer a small semantic frame (role=sales/share, year/horizon_year, unit_family).
+# - Map frame to existing schema keys (metric_schema_frozen) via scoring (year + suffix + role term).
+# - Only bind when score is strong and unambiguous.
+#
+# Auditability:
+# - Adds semantic_tags_v1 + binding_diag_v1 to the number dict.
+# - Adds debug.fix2av_binder_v1 summary to the output dict.
+# =====================================================================
+
+try:
+    _compute_source_anchored_diff_BASE_FIX2AU = compute_source_anchored_diff  # type: ignore
+except Exception:
+    _compute_source_anchored_diff_BASE_FIX2AU = None
+
+def _fix2av_safe_str(x):
+    try:
+        return "" if x is None else str(x)
+    except Exception:
+        return ""
+
+def _fix2av_is_injected_url(url: str) -> bool:
+    """
+    Production-safe heuristic.
+    We avoid deep coupling to UI/web_context; instead default to domain detection.
+    You can extend allowlist deterministically later.
+    """
+    u = (url or "").strip().lower()
+    if not u:
+        return False
+    # Heuristic allowlist: Accio injection domain (can be extended)
+    if "accio.com" in u:
+        return True
+    return False
+
+def _fix2av_extract_context(n: dict) -> str:
+    if not isinstance(n, dict):
+        return ""
+    # tolerate multiple shapes
+    for k in ("context_snippet", "ctx_head", "context", "ctx", "snippet"):
+        v = n.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+    return ""
+
+def _fix2av_find_years(text: str):
+    if not isinstance(text, str) or not text:
+        return []
+    years = []
+    for m in re.finditer(r"\b(20\d{2})\b", text):
+        try:
+            y = int(m.group(1))
+            if 2000 <= y <= 2105:
+                years.append((y, m.start()))
+        except Exception:
+            continue
+    return years
+
+def _fix2av_semantic_frame(n: dict):
+    """
+    Returns dict with inferred:
+      role: 'sales'|'share'|'unknown'
+      year: int|None
+      horizon_year: int|None
+      unit_family: 'percent'|'unit_sales'|'unknown'
+    """
+    ctx = _fix2av_extract_context(n).lower()
+    raw = _fix2av_safe_str(n.get("raw") or n.get("value") or n.get("value_norm")).lower()
+    unit = _fix2av_safe_str(n.get("unit") or n.get("unit_tag") or n.get("base_unit")).strip()
+    mk = _fix2av_safe_str(n.get("measure_kind") or "").lower()
+    ma = _fix2av_safe_str(n.get("measure_assoc") or "").lower()
+
+    # unit_family
+    unit_family = "unknown"
+    if "%" in raw or unit.strip() == "%":
+        unit_family = "percent"
+    elif mk in ("count_units", "volume_units") or ma in ("units", "sales"):
+        unit_family = "unit_sales"
+    else:
+        # light keyword hint
+        if "units" in ctx or "sales" in ctx:
+            unit_family = "unit_sales"
+
+    # role
+    role = "unknown"
+    if "share" in ctx or "market share" in ctx or mk == "share_pct" or ma == "share":
+        role = "share"
+    if "sales" in ctx or "sold" in ctx or "units" in ctx or ma in ("sales", "units"):
+        # if both appear, let percent decide
+        if unit_family == "percent":
+            role = "share"
+        else:
+            role = "sales"
+
+    # time: year vs horizon
+    years = _fix2av_find_years(ctx)
+    year = years[0][0] if years else None
+
+    horizon_year = None
+    m = re.search(r"\bby\s+(20\d{2})\b", ctx)
+    if m:
+        try:
+            horizon_year = int(m.group(1))
+        except Exception:
+            horizon_year = None
+
+    # If horizon exists, treat year as horizon_year for matching preference
+    return {
+        "role": role,
+        "year": year,
+        "horizon_year": horizon_year,
+        "unit_family": unit_family,
+        "ctx": ctx,
+        "raw": raw,
+        "unit": unit,
+        "measure_kind": mk,
+        "measure_assoc": ma,
+    }
+
+def _fix2av_score_schema_key(ckey: str, frame: dict):
+    """
+    Deterministic scoring: prefer exact year match, suffix/unit family match, and role keyword match.
+    Conservative thresholding prevents accidental bindings.
+    """
+    if not ckey or not isinstance(frame, dict):
+        return 0.0, []
+
+    k = ckey.lower()
+    hits = []
+
+    score = 0.0
+
+    # year/horizon preference
+    target_year = frame.get("horizon_year") or frame.get("year")
+    if isinstance(target_year, int):
+        if str(target_year) in k:
+            score += 1.0
+            hits.append(f"year_{target_year}")
+
+    # unit family/suffix match
+    uf = _fix2av_safe_str(frame.get("unit_family")).lower()
+    if uf == "percent":
+        if k.endswith("__percent") or "__percent" in k:
+            score += 1.0
+            hits.append("suffix_percent")
+        if "share" in k:
+            score += 0.5
+            hits.append("kw_share")
+    elif uf == "unit_sales":
+        # allow a few common variants
+        if "__unit" in k or "unit_sales" in k or "ev_sales" in k or k.endswith("__units") or k.endswith("__unit_sales"):
+            score += 1.0
+            hits.append("suffix_units_like")
+        if "sales" in k or "units" in k:
+            score += 0.5
+            hits.append("kw_sales_units")
+
+    # role match
+    role = _fix2av_safe_str(frame.get("role")).lower()
+    if role == "share" and ("share" in k or "market_share" in k):
+        score += 0.5
+        hits.append("role_share")
+    if role == "sales" and ("sales" in k or "volume" in k or "units" in k):
+        score += 0.5
+        hits.append("role_sales")
+
+    # horizon hint
+    if isinstance(frame.get("horizon_year"), int):
+        if "projected" in k or "forecast" in k or "by_" in k or "projection" in k:
+            score += 0.25
+            hits.append("horizon_hint")
+
+    return score, hits
+
+def _fix2av_bind_one_number(n: dict, schema_keys: list):
+    """
+    Mutates n additively if binds. Returns (bound_bool, diag_dict).
+    """
+    if not isinstance(n, dict):
+        return False, {"applied": False, "reason": "not_dict"}
+
+    # If already bound (e.g., via other path), do nothing.
+    if n.get("fix2v_force_canonical_key"):
+        return False, {"applied": False, "reason": "already_bound"}
+
+    frame = _fix2av_semantic_frame(n)
+
+    # Conservative early exit: must have at least one of role/unit/year signals
+    if frame.get("role") == "unknown" and frame.get("unit_family") == "unknown":
+        return False, {"applied": False, "reason": "insufficient_semantic_signal"}
+
+    # Candidate scoring over schema keys
+    scored = []
+    for ck in schema_keys:
+        s, hits = _fix2av_score_schema_key(ck, frame)
+        if s > 0:
+            scored.append((s, ck, hits))
+
+    if not scored:
+        return False, {"applied": False, "reason": "no_schema_candidates"}
+
+    # Deterministic sort: highest score, then lexical canonical_key
+    scored.sort(key=lambda t: (-float(t[0]), str(t[1])))
+
+    best_s, best_ck, best_hits = scored[0]
+    runner_s = scored[1][0] if len(scored) > 1 else 0.0
+
+    # Threshold + margin (avoid ambiguous bindings)
+    if best_s < 2.0:
+        return False, {"applied": False, "reason": "score_below_threshold", "best_score": best_s, "best_ckey": best_ck}
+    if (best_s - float(runner_s)) < 0.5:
+        return False, {"applied": False, "reason": "ambiguous_top2", "best_score": best_s, "runner_score": runner_s, "best_ckey": best_ck}
+
+    # Apply binding
+    n["fix2v_force_canonical_key"] = best_ck
+    n["has_semantic_tags_v1"] = True
+    n["semantic_tags_v1"] = {
+        "role": frame.get("role"),
+        "unit_family": frame.get("unit_family"),
+        "year": frame.get("year"),
+        "horizon_year": frame.get("horizon_year"),
+    }
+    n["binding_diag_v1"] = {
+        "binder": "fix2av_semantic_binder_prod_v1",
+        "applied": True,
+        "score": float(best_s),
+        "runner_up_score": float(runner_s),
+        "rule_hits": best_hits,
+    }
+    return True, {"applied": True, "best_ckey": best_ck, "best_score": float(best_s), "rule_hits": best_hits}
+
+def _fix2av_apply_semantic_binder(out: dict) -> dict:
+    """
+    Bind injected extracted numbers in baseline_sources_cache_current and baseline_sources_cache.
+    """
+    try:
+        if not isinstance(out, dict):
+            return out
+
+        schema = out.get("metric_schema_frozen")
+        if not isinstance(schema, dict):
+            # tolerate alternative placement
+            pr = out.get("primary_response")
+            if isinstance(pr, dict) and isinstance(pr.get("metric_schema_frozen"), dict):
+                schema = pr.get("metric_schema_frozen")
+        schema = schema if isinstance(schema, dict) else {}
+        schema_keys = sorted([k for k in schema.keys() if isinstance(k, str) and k.strip()])
+
+        pools = []
+        bcc = out.get("baseline_sources_cache_current")
+        if isinstance(bcc, list) and bcc:
+            pools.append(("baseline_sources_cache_current", bcc))
+        bcp = out.get("baseline_sources_cache")
+        if isinstance(bcp, list) and bcp:
+            pools.append(("baseline_sources_cache", bcp))
+
+        attempted = 0
+        bound = 0
+        rejected = 0
+        bound_keys = []
+
+        for pool_name, pool in pools:
+            for srec in pool:
+                if not isinstance(srec, dict):
+                    continue
+                url = _fix2av_safe_str(srec.get("url") or srec.get("source_url") or "")
+                if not _fix2av_is_injected_url(url):
+                    continue
+                nums = srec.get("extracted_numbers")
+                if not isinstance(nums, list) or not nums:
+                    continue
+
+                for n in nums:
+                    if not isinstance(n, dict):
+                        continue
+                    attempted += 1
+                    ok, diag = _fix2av_bind_one_number(n, schema_keys)
+                    if ok:
+                        bound += 1
+                        try:
+                            bound_keys.append(_fix2av_safe_str(n.get("fix2v_force_canonical_key")))
+                        except Exception:
+                            pass
+                    else:
+                        # Only count as rejected if we had enough signal to try
+                        if isinstance(diag, dict) and diag.get("reason") not in ("not_dict", "already_bound"):
+                            rejected += 1
+                    # Attach per-number diag (additive, small)
+                    try:
+                        if isinstance(diag, dict):
+                            n.setdefault("binding_diag_v1", {})
+                            if isinstance(n.get("binding_diag_v1"), dict):
+                                n["binding_diag_v1"].setdefault("binder", "fix2av_semantic_binder_prod_v1")
+                                n["binding_diag_v1"].setdefault("applied", bool(ok))
+                                # include only compact reason when not applied
+                                if not ok:
+                                    n["binding_diag_v1"].setdefault("reason", diag.get("reason"))
+                    except Exception:
+                        pass
+
+        # Debug summary
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"]["fix2av_binder_v1"] = {
+                "attempted": int(attempted),
+                "bound": int(bound),
+                "rejected": int(rejected),
+                "bound_keys_sample": [k for k in sorted(set([bk for bk in bound_keys if bk]))][:12],
+                "pools_scanned": [p[0] for p in pools],
+                "scope": "injected_sources_only",
+                "allowlist_hint": ["accio.com"],
+            }
+
+    except Exception:
+        return out
+
+    return out
+
+# -----------------------------------------------------------------------------
+# Wrapper override:
+# Call base FIX2AT function (pre-FIX2AU promotion), then apply FIX2AV binder,
+# then apply FIX2AU B2-Render promotions.
+# -----------------------------------------------------------------------------
+try:
+    _compute_source_anchored_diff_BASE_FIX2AT  # noqa: F401
+except Exception:
+    _compute_source_anchored_diff_BASE_FIX2AT = None
+
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    base = _compute_source_anchored_diff_BASE_FIX2AT
+    if callable(base):
+        out = base(previous_data, web_context)
+    else:
+        # fallback to previous wrapper if needed
+        base2 = _compute_source_anchored_diff_BASE_FIX2AU
+        out = base2(previous_data, web_context) if callable(base2) else {}
+
+    out = _fix2av_apply_semantic_binder(out)
+    # Apply B2 promotions after binding (idempotent if already applied)
+    try:
+        out = _fix2au_apply_b2_render_promotions(out)  # type: ignore
+    except Exception:
+        pass
+    return out
+
+# Version bump (best-effort, additive)
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2av_semantic_binder_prod_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AV_SEMANTIC_BINDER_PROD_V1
+# =====================================================================
+
