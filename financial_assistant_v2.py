@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bc_binder_hook_proof_and_diffv2_sentinel_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bd_unit_family_backfill_export_and_diffv2_harden_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36698,4 +36698,219 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2BC_BINDER_HOOK_PROOF_AND_DIFFV2_SENTINEL_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2BD_UNIT_FAMILY_BACKFILL_EXPORT_AND_DIFFV2_HARDEN_V1 (ADDITIVE)
+#
+# One-shot patch to close the final-mile visibility gap by doing 3 things:
+#
+# (1) Unit-family backfill (deterministic, conservative):
+#     - Ensures extracted_numbers have unit_family for obvious percent cases,
+#       and for "M/million" count contexts (sales/units/vehicles) while avoiding currency contexts.
+#     - Applies to BOTH baseline_sources_cache_current and baseline_sources_cache (top-level results dict).
+#
+# (2) Guarantee canonical_for_render_v1 is present in the FINAL exported results dict:
+#     - Mirrors a minimal render-ready list derived from metric_changes_v2 / metric_changes_legacy / metric_changes
+#     - Attaches to:
+#         out["output_debug"]["canonical_for_render_v1"]
+#         out["debug"]["output_debug"]["canonical_for_render_v1"]
+#
+# (3) Diff v2 hardening:
+#     - If diff_panel_v2_error exists (esp. UnboundLocalError: summary...) and metric_changes_v2 is empty,
+#       emit a deterministic sentinel row so V2 never silently returns [].
+#
+# Safety:
+# - Additive only; no selector changes; no incumbent eviction.
+# - Does NOT fabricate values; canonical_for_render_v1 mirrors existing metric_changes rows.
+# - Unit-family backfill does not change numeric values; it only sets unit_family strings.
+# =====================================================================
+
+try:
+    _run_source_anchored_evolution_BASE_FIX2BD = run_source_anchored_evolution  # type: ignore
+except Exception:
+    _run_source_anchored_evolution_BASE_FIX2BD = None
+
+def _fix2bd_lc(x):
+    try:
+        return (x or "").lower()
+    except Exception:
+        return ""
+
+def _fix2bd_is_currency_context(ctx: str) -> bool:
+    c = _fix2bd_lc(ctx)
+    # Keep this conservative: we only want to avoid misclassifying money as unit_sales.
+    return any(t in c for t in ["usd", "$", "eur", "gbp", "valuation", "market valued", "market value", "revenue", "price", "cost", "trillion", "billion", "bn", "tn"])
+
+def _fix2bd_backfill_unit_family_for_number(n: dict) -> bool:
+    if not isinstance(n, dict):
+        return False
+    uf = n.get("unit_family")
+    if isinstance(uf, str) and uf.strip():
+        return False
+
+    raw = str(n.get("raw") or n.get("value") or "")
+    unit = str(n.get("unit") or "")
+    unit_tag = str(n.get("unit_tag") or n.get("base_unit") or "")
+    ctx = str(n.get("context_snippet") or n.get("ctx_head") or n.get("context") or "")
+
+    # Percent is safe and should be unambiguous.
+    if "%" in raw or unit.strip() == "%" or unit_tag.strip() == "%":
+        n["unit_family"] = "percent"
+        return True
+
+    # Million shorthand (M) -> unit_sales only when count/units/sales context is present.
+    ut = unit_tag.strip()
+    if ut == "M" or unit.strip() == "M" or "million" in _fix2bd_lc(raw):
+        c = _fix2bd_lc(ctx)
+        units_signal = any(t in c for t in [" sales", "sales ", "units", "vehicles", "deliveries", "registrations"]) or ("million units" in c)
+        if units_signal and not _fix2bd_is_currency_context(ctx):
+            n["unit_family"] = "unit_sales"
+            return True
+
+    return False
+
+def _fix2bd_apply_unit_family_backfill(out: dict) -> dict:
+    touched = 0
+    scanned = 0
+    for pool_key in ("baseline_sources_cache_current", "baseline_sources_cache"):
+        pool = out.get(pool_key)
+        if not isinstance(pool, list):
+            continue
+        for srec in pool:
+            if not isinstance(srec, dict):
+                continue
+            nums = srec.get("extracted_numbers")
+            if not isinstance(nums, list):
+                continue
+            for n in nums:
+                if not isinstance(n, dict):
+                    continue
+                scanned += 1
+                if _fix2bd_backfill_unit_family_for_number(n):
+                    touched += 1
+
+    out.setdefault("debug", {})
+    if isinstance(out.get("debug"), dict):
+        out["debug"]["fix2bd_unit_family_backfill_v1"] = {
+            "scanned_numbers": int(scanned),
+            "touched_numbers": int(touched),
+            "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        }
+    return out
+
+def _fix2bd_ensure_dict(parent: dict, key: str) -> dict:
+    if not isinstance(parent, dict):
+        return {}
+    v = parent.get(key)
+    if isinstance(v, dict):
+        return v
+    parent[key] = {}
+    return parent[key]
+
+def _fix2bd_pick_metric_changes(out: dict):
+    for k in ("metric_changes_v2", "metric_changes_legacy", "metric_changes"):
+        v = out.get(k)
+        if isinstance(v, list) and v:
+            return v, k
+    return [], "none"
+
+def _fix2bd_build_cfr(rows: list):
+    cfr = []
+    if not isinstance(rows, list):
+        return cfr
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        ck = str(r.get("canonical_key") or r.get("canonical") or r.get("canonical_id") or "").strip()
+        if not ck:
+            continue
+        e = {
+            "canonical_key": ck,
+            "current_value": r.get("current_value"),
+            "current_value_norm": r.get("current_value_norm") if r.get("current_value_norm") is not None else r.get("cur_value_norm"),
+            "unit_cmp": r.get("cur_unit_cmp") or r.get("unit_cmp") or r.get("unit_family") or None,
+            "change_type": r.get("change_type"),
+            "anchor_used": r.get("anchor_used"),
+        }
+        if r.get("injected_source_contributed") is True:
+            e["injected_source_contributed"] = True
+            e["injected_sources_v1"] = r.get("injected_sources_v1")
+        cfr.append(e)
+    return cfr
+
+def _fix2bd_force_attach_canonical_for_render(out: dict) -> dict:
+    rows, src = _fix2bd_pick_metric_changes(out)
+    cfr = _fix2bd_build_cfr(rows)
+    meta = {
+        "forced_attach": True,
+        "source_rows": src,
+        "entries": int(len(cfr)),
+        "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    }
+
+    od = _fix2bd_ensure_dict(out, "output_debug")
+    od["canonical_for_render_v1"] = cfr
+    od["canonical_for_render_v1_meta"] = meta
+
+    dbg = _fix2bd_ensure_dict(out, "debug")
+    dbg_od = _fix2bd_ensure_dict(dbg, "output_debug")
+    dbg_od["canonical_for_render_v1"] = cfr
+    dbg_od["canonical_for_render_v1_meta"] = meta
+
+    dbg["fix2bd_force_attach_canonical_for_render_v1"] = meta
+    return out
+
+def _fix2bd_harden_diff_v2(out: dict) -> dict:
+    dbg = out.get("debug")
+    if not isinstance(dbg, dict):
+        return out
+    err = str(dbg.get("diff_panel_v2_error") or "").strip()
+    if not err:
+        return out
+    v2 = out.get("metric_changes_v2")
+    if isinstance(v2, list) and len(v2) > 0:
+        return out
+    # Emit sentinel to avoid silent empty V2 output
+    sentinel = {
+        "canonical_key": "__diff_v2_error__",
+        "metric_name": "Diff V2 Error",
+        "analysis_value": "",
+        "current_value": "",
+        "change_type": "error",
+        "anchor_used": False,
+        "diag": {
+            "fix2bd_diff_v2_harden_v1": {
+                "error": err,
+                "note": "V2 builder errored; sentinel row emitted so UI can surface failure.",
+            }
+        },
+    }
+    out["metric_changes_v2"] = [sentinel]
+    dbg["fix2bd_diff_v2_harden_v1"] = {"applied": True, "error": err}
+    return out
+
+def run_source_anchored_evolution(previous_data: dict, fn=None, web_context: dict = None) -> dict:
+    base = _run_source_anchored_evolution_BASE_FIX2BD
+    out = base(previous_data, fn=fn, web_context=web_context) if callable(base) else {}
+
+    # (1) Unit-family backfill (on the FINAL exported results dict)
+    out = _fix2bd_apply_unit_family_backfill(out)
+
+    # (3) Diff v2 hardening (so it never silently returns [])
+    out = _fix2bd_harden_diff_v2(out)
+
+    # (2) Force-attach canonical_for_render_v1 into the FINAL exported dict
+    out = _fix2bd_force_attach_canonical_for_render(out)
+
+    return out
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bd_unit_family_backfill_export_and_diffv2_harden_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2BD_UNIT_FAMILY_BACKFILL_EXPORT_AND_DIFFV2_HARDEN_V1
 # =====================================================================
