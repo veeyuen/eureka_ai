@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ax_results_namespace_hook_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ay_single_diagnostic_block_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -35781,4 +35781,209 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2AX_RESULTS_NAMESPACE_HOOK_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2AY_SINGLE_DIAGNOSTIC_BLOCK_V1 (ADDITIVE)
+#
+# Purpose:
+# - Add a single, consolidated diagnostic block to pinpoint why Diff "Current"
+#   remains blank / N/A.
+#
+# Output:
+# - Writes into out["results"]["debug"]["fix2ay_diff_visibility_diag_v1"] (preferred),
+#   and also mirrors into out["debug"] if present.
+#
+# Captures:
+# 1) diff_current_source_path: which structure appears to drive the UI (v2 vs legacy)
+# 2) render_builder_presence: presence booleans for render artifacts + where they live
+# 3) canonical_for_render_attempted/abort_reason: derived from existing diagnosis if present
+# 4) injected_contribution_counts: counts for bound candidates and promoted rows
+#
+# Safety:
+# - Additive only; no behavior changes to selection/binding/promotion logic.
+# =====================================================================
+
+try:
+    _compute_source_anchored_diff_BASE_FIX2AY = compute_source_anchored_diff  # type: ignore
+except Exception:
+    _compute_source_anchored_diff_BASE_FIX2AY = None
+
+def _fix2ay_is_na(v):
+    try:
+        if v is None:
+            return True
+        s = str(v).strip()
+        return s == "" or s.upper() == "N/A"
+    except Exception:
+        return True
+
+def _fix2ay_get_nested(d, path):
+    cur = d
+    for p in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(p)
+    return cur
+
+def _fix2ay_count_non_na_current(rows):
+    if not isinstance(rows, list):
+        return 0, 0
+    total = 0
+    non_na = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        total += 1
+        if not _fix2ay_is_na(r.get("current_value")):
+            non_na += 1
+    return total, non_na
+
+def _fix2ay_scan_injected_binding(out):
+    """
+    Count:
+    - injected sources scanned (accio allowlist heuristic)
+    - extracted_numbers with fix2v_force_canonical_key present
+    - extracted_numbers with unit_family present
+    """
+    injected_sources = 0
+    bound_numbers = 0
+    unitfam_numbers = 0
+
+    # look in both top-level and results namespace
+    pools = []
+    for base in (out, out.get("results") if isinstance(out.get("results"), dict) else None):
+        if not isinstance(base, dict):
+            continue
+        bcc = base.get("baseline_sources_cache_current")
+        bcp = base.get("baseline_sources_cache")
+        if isinstance(bcc, list) and bcc:
+            pools.append(bcc)
+        if isinstance(bcp, list) and bcp:
+            pools.append(bcp)
+
+    for pool in pools:
+        for srec in pool:
+            if not isinstance(srec, dict):
+                continue
+            url = str(srec.get("url") or srec.get("source_url") or "").lower()
+            if "accio.com" not in url:
+                continue
+            injected_sources += 1
+            nums = srec.get("extracted_numbers")
+            if not isinstance(nums, list):
+                continue
+            for n in nums:
+                if not isinstance(n, dict):
+                    continue
+                if n.get("fix2v_force_canonical_key"):
+                    bound_numbers += 1
+                uf = n.get("unit_family")
+                if isinstance(uf, str) and uf.strip():
+                    unitfam_numbers += 1
+
+    return {
+        "injected_sources_detected": int(injected_sources),
+        "extracted_numbers_bound_with_fix2v_force_canonical_key": int(bound_numbers),
+        "extracted_numbers_with_unit_family": int(unitfam_numbers),
+    }
+
+def _fix2ay_attach_diag(out):
+    if not isinstance(out, dict):
+        return out
+
+    results = out.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        out["results"] = results
+
+    rdbg = results.get("debug")
+    if not isinstance(rdbg, dict):
+        rdbg = {}
+        results["debug"] = rdbg
+
+    # Figure out which metric_changes structure exists
+    legacy = results.get("metric_changes_legacy")
+    v2 = results.get("metric_changes_v2")
+
+    legacy_total, legacy_non_na = _fix2ay_count_non_na_current(legacy)
+    v2_total, v2_non_na = _fix2ay_count_non_na_current(v2)
+
+    if isinstance(v2, list) and v2_total > 0:
+        diff_path = "results.metric_changes_v2[].current_value"
+    elif isinstance(legacy, list) and legacy_total > 0:
+        diff_path = "results.metric_changes_legacy[].current_value"
+    else:
+        diff_path = "unknown"
+
+    # Render builder presence: check multiple plausible locations
+    # canonical_for_render_v1 is typically under output_debug (varies by version).
+    candidates = {
+        "has_results_debug": isinstance(results.get("debug"), dict),
+        "has_output_debug_top_level": isinstance(out.get("output_debug"), dict),
+        "has_output_debug_results_debug": isinstance(_fix2ay_get_nested(out, ["results", "debug", "output_debug"]), dict),
+        "has_output_debug_results": isinstance(_fix2ay_get_nested(out, ["results", "output_debug"]), dict),
+        "has_canonical_for_render_v1_top_level_output_debug": _fix2ay_get_nested(out, ["output_debug", "canonical_for_render_v1"]) is not None,
+        "has_canonical_for_render_v1_results_debug_output_debug": _fix2ay_get_nested(out, ["results", "debug", "output_debug", "canonical_for_render_v1"]) is not None,
+        "has_canonical_for_render_v1_results_output_debug": _fix2ay_get_nested(out, ["results", "output_debug", "canonical_for_render_v1"]) is not None,
+    }
+
+    # Existing canonical_for_render diagnosis (if present)
+    diag_fix2ac = rdbg.get("canonical_for_render_diagnosis_fix2ac_v1")
+    attempted = True if isinstance(diag_fix2ac, dict) else False
+    abort_reason = None
+    if isinstance(diag_fix2ac, dict):
+        abort_reason = diag_fix2ac.get("reason") or diag_fix2ac.get("notes") or diag_fix2ac.get("has_canonical_for_render_v1")
+
+    injected_counts = _fix2ay_scan_injected_binding(out)
+
+    # Promotions (if B2 ran and wrote its debug somewhere)
+    promoted = None
+    for pth in (
+        ["debug", "b2_render_visibility_v1", "promoted_rows"],
+        ["results", "debug", "b2_render_visibility_v1", "promoted_rows"],
+    ):
+        v = _fix2ay_get_nested(out, pth)
+        if v is not None:
+            promoted = v
+            break
+
+    fix2ay = {
+        "diff_current_source_path": diff_path,
+        "metric_changes_counts": {
+            "legacy_total": int(legacy_total),
+            "legacy_non_na_current": int(legacy_non_na),
+            "v2_total": int(v2_total),
+            "v2_non_na_current": int(v2_non_na),
+        },
+        "render_builder_presence": candidates,
+        "canonical_for_render_attempted": bool(attempted),
+        "canonical_for_render_abort_reason": abort_reason,
+        "injected_contribution_counts": injected_counts,
+        "b2_promoted_rows_observed": promoted,
+        "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    }
+
+    rdbg["fix2ay_diff_visibility_diag_v1"] = fix2ay
+
+    # Mirror to top-level debug if present for easier grepping
+    out.setdefault("debug", {})
+    if isinstance(out.get("debug"), dict):
+        out["debug"]["fix2ay_diff_visibility_diag_v1"] = fix2ay
+
+    return out
+
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    base = _compute_source_anchored_diff_BASE_FIX2AY
+    out = base(previous_data, web_context) if callable(base) else {}
+    return _fix2ay_attach_diag(out)
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ay_single_diagnostic_block_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AY_SINGLE_DIAGNOSTIC_BLOCK_V1
 # =====================================================================
