@@ -140,6 +140,22 @@ FIX2AH_DEMO_CANONICAL_KEY = "demo_injected_ev_sales_2025__unit_sales"
 # =====================================================================
 FIX2AJ_DEMO_PROMOTION_ENABLED = bool(int(os.environ.get("YUREEKA_DEMO_PROMOTION_V1", "0") or "0"))
 # END PATCH FIX2AJ_DEMO_PROMOTION_FLAGS_V1
+# =====================================================================
+# PATCH FIX2AK_HIGH_SIGNAL_FILTER_FLAGS_V1 (ADDITIVE)
+# Purpose:
+#   Feature-flagged filter to reduce noisy/ecommerce numeric candidates on injected pages.
+#   Applies ONLY to injected URLs and ONLY to *binding/promotion* stages (never alters Stage 1 extraction).
+# Safety:
+#   OFF by default. When ON, candidates failing the high-signal test are ignored by semantic binding
+#   and demo promotion, but are still present in extracted_numbers for audit.
+# =====================================================================
+try:
+    FIX2AK_HIGH_SIGNAL_FILTER_ENABLED = bool(int(os.environ.get("YUREEKA_INJECTED_HIGH_SIGNAL_FILTER_V1", "0") or "0"))
+except Exception:
+    FIX2AK_HIGH_SIGNAL_FILTER_ENABLED = False
+# END PATCH FIX2AK_HIGH_SIGNAL_FILTER_FLAGS_V1
+
+
 
 
 
@@ -27082,6 +27098,17 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     #   - Adds a per-candidate force key so only the intended schema slot competes
     # =========================================================
     _fix2v_injected_norm_set = set()
+
+    # =====================================================================
+    # PATCH FIX2AK_HIGH_SIGNAL_FILTER_DIAG_INIT_V1 (ADDITIVE)
+    _fix2ak_hsf_diag = {
+        "enabled": bool(FIX2AK_HIGH_SIGNAL_FILTER_ENABLED),
+        "filtered_count": 0,
+        "passed_count": 0,
+        "samples_filtered": [],
+    }
+    # END PATCH FIX2AK_HIGH_SIGNAL_FILTER_DIAG_INIT_V1
+
     try:
         if isinstance(web_context, dict):
             _d = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
@@ -27111,6 +27138,53 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         except Exception:
             return set()
 
+    # =====================================================================
+    # PATCH FIX2AK_HIGH_SIGNAL_FILTER_HELPER_V1 (ADDITIVE)
+    # High-signal heuristic for injected URLs:
+    #   Require at least one EV-metric keyword + a year token, and discourage obvious ecommerce noise.
+    #   This is used ONLY for binding/promotion decisions (Stage 2/3); Stage 1 extraction remains unchanged.
+    # =====================================================================
+    def _fix2ak_is_high_signal_candidate(c: dict) -> bool:
+        try:
+            blob = " ".join([
+                str(c.get("context_snippet") or ""),
+                str(c.get("label") or ""),
+                str(c.get("raw") or ""),
+                str(c.get("context") or ""),
+            ]).lower()
+
+            # must have a year token (helps exclude pricing tables and generic product listings)
+            has_year = bool(re.search(r"\b(19\d{2}|20\d{2})\b", blob))
+            if not has_year:
+                return False
+
+            # must have at least one EV/forecast metric cue
+            cues = [
+                "ev", "electric vehicle", "market share", "share", "sales", "units",
+                "million", "billion", "forecast", "project", "projected", "by 2030", "by 2040",
+                "reach", "growth", "increase", "cagr",
+            ]
+            has_cue = any(cue in blob for cue in cues)
+            if not has_cue:
+                return False
+
+            # obvious ecommerce / ordering noise (soft block)
+            noise = [
+                "min order", "minimum order", "moq", "pcs", "piece", "pieces", "wholesale",
+                "supplier", "price", "usd", "$", "shipping", "cart", "checkout", "discount",
+                "meter", "meters", "mm", "cm", "kg", "g/", "watt", "voltage",
+            ]
+            # If the snippet is dominated by noise AND lacks strong EV terms, reject.
+            if any(n in blob for n in noise) and (("electric vehicle" not in blob) and (" ev " not in (" " + blob + " ")) and ("ev " not in blob) and ("market share" not in blob) and ("ev sales" not in blob)):
+                return False
+
+            return True
+        except Exception:
+            return False
+    # END PATCH FIX2AK_HIGH_SIGNAL_FILTER_HELPER_V1
+
+
+
     _fix2v_bind_hits = []
     for _c in candidates:
         try:
@@ -27120,6 +27194,29 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             _c["_fix2v_source_is_injected"] = bool(_u and (_u in _fix2v_injected_norm_set))
             if not _c.get("_fix2v_source_is_injected"):
                 continue
+
+            # PATCH FIX2AK_HIGH_SIGNAL_FILTER_APPLY_BIND_V1 (ADDITIVE)
+            if FIX2AK_HIGH_SIGNAL_FILTER_ENABLED:
+                try:
+                    if not _fix2ak_is_high_signal_candidate(_c):
+                        _c["fix2ak_high_signal_filtered"] = True
+                        _fix2ak_hsf_diag["filtered_count"] += 1
+                        if len(_fix2ak_hsf_diag["samples_filtered"]) < 25:
+                            _fix2ak_hsf_diag["samples_filtered"].append({
+                                "anchor_hash": _c.get("anchor_hash") or "",
+                                "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                                "unit": _c.get("unit") or _c.get("unit_tag") or "",
+                                "raw_head": str(_c.get("raw") or "")[:120],
+                                "ctx_head": str(_c.get("context_snippet") or _c.get("context") or "")[:180],
+                                "source_url": _c.get("source_url") or "",
+                            })
+                        continue
+                    else:
+                        _fix2ak_hsf_diag["passed_count"] += 1
+                except Exception:
+                    pass
+            # END PATCH FIX2AK_HIGH_SIGNAL_FILTER_APPLY_BIND_V1
+
 
             _blob = " ".join([
                 str(_c.get("context_snippet") or ""),
@@ -27493,6 +27590,18 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                             "unit": _c.get("unit") or _c.get("unit_tag") or "",
                             "source_url": _c.get("source_url") or "",
                         })
+                        # PATCH FIX2AK_SEM_BIND_DIAG_ENRICH_V1 (ADDITIVE)
+                        try:
+                            _fix2ah_diag["promotions"][-1].update({
+                                "measure_kind": str(_c.get("measure_kind") or ""),
+                                "unit_family": str(_c.get("unit_family") or ""),
+                                "unit_tag": str(_c.get("unit_tag") or ""),
+                                "ctx_head": str(_c.get("context_snippet") or _c.get("context") or "")[:220],
+                                "semantic_tags_v1": _tags if isinstance(_tags, dict) else {},
+                            })
+                        except Exception:
+                            pass
+                        # END PATCH FIX2AK_SEM_BIND_DIAG_ENRICH_V1
                 else:
                     _fix2ah_diag["rejected_count"] += 1
                     if len(_fix2ah_diag["rejections"]) < 50:
@@ -27580,6 +27689,29 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                         if not _fix2v_source_is_injected(_c):
                             continue
 
+                        # PATCH FIX2AK_HIGH_SIGNAL_FILTER_APPLY_DEMO_PROMO_V1 (ADDITIVE)
+                        if FIX2AK_HIGH_SIGNAL_FILTER_ENABLED:
+                            try:
+                                if not _fix2ak_is_high_signal_candidate(_c):
+                                    _c["fix2ak_high_signal_filtered"] = True
+                                    _fix2ak_hsf_diag["filtered_count"] += 1
+                                    if len(_fix2ak_hsf_diag["samples_filtered"]) < 25:
+                                        _fix2ak_hsf_diag["samples_filtered"].append({
+                                            "anchor_hash": _c.get("anchor_hash") or "",
+                                            "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                                            "unit": _c.get("unit") or _c.get("unit_tag") or "",
+                                            "raw_head": str(_c.get("raw") or "")[:120],
+                                            "ctx_head": str(_c.get("context_snippet") or _c.get("context") or "")[:180],
+                                            "source_url": _c.get("source_url") or "",
+                                        })
+                                    continue
+                                else:
+                                    _fix2ak_hsf_diag["passed_count"] += 1
+                            except Exception:
+                                pass
+                        # END PATCH FIX2AK_HIGH_SIGNAL_FILTER_APPLY_DEMO_PROMO_V1
+
+
                         _tags = _c.get("semantic_tags_v1") or {}
                         if not isinstance(_tags, dict) or not _tags:
                             continue
@@ -27628,6 +27760,19 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                                 "value_norm": _pick.get("value_norm") if isinstance(_pick.get("value_norm"), (int, float)) else _pick.get("value"),
                                 "source_url": _pick.get("source_url") or "",
                             })
+                            # PATCH FIX2AK_DEMO_PROMO_DIAG_ENRICH_V1 (ADDITIVE)
+                            try:
+                                _fix2ah_diag["promotions"][-1].update({
+                                    "metric_type": str((_pick.get("semantic_tags_v1") or {}).get("metric_type") or ""),
+                                    "time": (_pick.get("semantic_tags_v1") or {}).get("time") if isinstance((_pick.get("semantic_tags_v1") or {}).get("time"), dict) else {},
+                                    "measure_kind": str(_pick.get("measure_kind") or ""),
+                                    "unit_family": str(_pick.get("unit_family") or ""),
+                                    "unit_tag": str(_pick.get("unit_tag") or ""),
+                                    "ctx_head": str(_pick.get("context_snippet") or _pick.get("context") or "")[:220],
+                                })
+                            except Exception:
+                                pass
+                            # END PATCH FIX2AK_DEMO_PROMO_DIAG_ENRICH_V1
                         _fix2ah_diag["demo_promotion_applied"] = True
                     except Exception:
                         pass
@@ -27637,6 +27782,18 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         pass
     # END PATCH FIX2AJ_DEMO_PROMOTION_V1
 
+
+    
+    # =====================================================================
+    # PATCH FIX2AK_HIGH_SIGNAL_FILTER_DIAG_ATTACH_V1 (ADDITIVE)
+    # Attach high-signal filter diagnostics into semantic_binding_v1 output.
+    # =====================================================================
+    try:
+        if isinstance(_fix2ah_diag, dict) and isinstance(_fix2ak_hsf_diag, dict):
+            _fix2ah_diag["high_signal_filter_v1"] = _fix2ak_hsf_diag
+    except Exception:
+        pass
+    # END PATCH FIX2AK_HIGH_SIGNAL_FILTER_DIAG_ATTACH_V1
 
     try:
         if isinstance(web_context, dict):
@@ -27742,6 +27899,29 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 continue  # already bound by FIX2V
             if not _fix2z_is_injected(_c):
                 continue  # injected-only admission
+
+            # PATCH FIX2AK_HIGH_SIGNAL_FILTER_APPLY_SCHEMA_ADMIT_V1 (ADDITIVE)
+            if FIX2AK_HIGH_SIGNAL_FILTER_ENABLED:
+                try:
+                    if not _fix2ak_is_high_signal_candidate(_c):
+                        _c["fix2ak_high_signal_filtered"] = True
+                        _fix2ak_hsf_diag["filtered_count"] += 1
+                        if len(_fix2ak_hsf_diag["samples_filtered"]) < 25:
+                            _fix2ak_hsf_diag["samples_filtered"].append({
+                                "anchor_hash": _c.get("anchor_hash") or "",
+                                "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                                "unit": _c.get("unit") or _c.get("unit_tag") or "",
+                                "raw_head": str(_c.get("raw") or "")[:120],
+                                "ctx_head": str(_c.get("context_snippet") or _c.get("context") or "")[:180],
+                                "source_url": _c.get("source_url") or "",
+                            })
+                        continue
+                    else:
+                        _fix2ak_hsf_diag["passed_count"] += 1
+                except Exception:
+                    pass
+            # END PATCH FIX2AK_HIGH_SIGNAL_FILTER_APPLY_SCHEMA_ADMIT_V1
+
             _fix2z_seen += 1
 
             _blob = _fix2z_blob(_c)
@@ -30084,6 +30264,66 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
                     out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
+            
+            # =====================================================================
+            # PATCH FIX2AK_DEMO_SLOT_FINAL_WINNER_EMIT_V1 (ADDITIVE)
+            # Emit explicit demo-slot final winner (if present) into web_context semantic_binding_v1
+            # so UI/debug can distinguish "promotion happened but lost later" vs "never promoted".
+            # =====================================================================
+            try:
+                _demo_key = str(FIX2AH_DEMO_CANONICAL_KEY) if 'FIX2AH_DEMO_CANONICAL_KEY' in globals() else "demo_injected_ev_sales_2025__unit_sales"
+
+                def _fix2ak_get_pmc(_out):
+                    try:
+                        if isinstance(_out.get("primary_metrics_canonical"), dict):
+                            return _out.get("primary_metrics_canonical")
+                        r = _out.get("results") if isinstance(_out.get("results"), dict) else {}
+                        for path in [
+                            ("primary_response",),
+                            ("response",),
+                            ("payload",),
+                        ]:
+                            try:
+                                d = r
+                                for p in path:
+                                    d = d.get(p) if isinstance(d, dict) else {}
+                                if isinstance(d, dict) and isinstance(d.get("primary_metrics_canonical"), dict):
+                                    return d.get("primary_metrics_canonical")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    return None
+
+                def _fix2ak_get_wc(_out):
+                    try:
+                        if isinstance(_out.get("web_context"), dict):
+                            return _out.get("web_context")
+                        r = _out.get("results") if isinstance(_out.get("results"), dict) else {}
+                        if isinstance(r.get("web_context"), dict):
+                            return r.get("web_context")
+                    except Exception:
+                        pass
+                    return None
+
+                _pmc = _fix2ak_get_pmc(out)
+                _wc2 = _fix2ak_get_wc(out)
+                if isinstance(_pmc, dict) and isinstance(_wc2, dict) and (_demo_key in _pmc):
+                    _sb = _wc2.get("semantic_binding_v1") if isinstance(_wc2.get("semantic_binding_v1"), dict) else {}
+                    _m = _pmc.get(_demo_key) if isinstance(_pmc.get(_demo_key), dict) else {}
+                    _sb["demo_slot_final_winner"] = {
+                        "canonical_key": _demo_key,
+                        "value": _m.get("value"),
+                        "value_norm": _m.get("value_norm") if isinstance(_m.get("value_norm"), (int, float)) else None,
+                        "unit": _m.get("unit") or _m.get("unit_norm") or "",
+                        "source_url": _m.get("source_url") or _m.get("url") or "",
+                        "anchor_hash": _m.get("anchor_hash") or "",
+                        "label": _m.get("label") or "",
+                    }
+                    _wc2["semantic_binding_v1"] = _sb
+            except Exception:
+                pass
+            # END PATCH FIX2AK_DEMO_SLOT_FINAL_WINNER_EMIT_V1
             return out
         except Exception as e:
             # Fall through to original behavior if anything unexpected
@@ -30108,6 +30348,62 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
             except Exception:
                 pass
+            
+            # =====================================================================
+            # PATCH FIX2AK_DEMO_SLOT_FINAL_WINNER_EMIT_FALLBACK_V1 (ADDITIVE)
+            # Same as above but for compute_source_anchored_diff fallback path.
+            # =====================================================================
+            try:
+                _demo_key = str(FIX2AH_DEMO_CANONICAL_KEY) if 'FIX2AH_DEMO_CANONICAL_KEY' in globals() else "demo_injected_ev_sales_2025__unit_sales"
+                _outx = out_changed
+
+                def _fix2ak_get_pmc2(_out):
+                    try:
+                        if isinstance(_out.get("primary_metrics_canonical"), dict):
+                            return _out.get("primary_metrics_canonical")
+                        r = _out.get("results") if isinstance(_out.get("results"), dict) else {}
+                        for path in [("primary_response",), ("response",), ("payload",)]:
+                            try:
+                                d = r
+                                for p in path:
+                                    d = d.get(p) if isinstance(d, dict) else {}
+                                if isinstance(d, dict) and isinstance(d.get("primary_metrics_canonical"), dict):
+                                    return d.get("primary_metrics_canonical")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    return None
+
+                def _fix2ak_get_wc2(_out):
+                    try:
+                        if isinstance(_out.get("web_context"), dict):
+                            return _out.get("web_context")
+                        r = _out.get("results") if isinstance(_out.get("results"), dict) else {}
+                        if isinstance(r.get("web_context"), dict):
+                            return r.get("web_context")
+                    except Exception:
+                        pass
+                    return None
+
+                _pmc = _fix2ak_get_pmc2(_outx)
+                _wc2 = _fix2ak_get_wc2(_outx)
+                if isinstance(_pmc, dict) and isinstance(_wc2, dict) and (_demo_key in _pmc):
+                    _sb = _wc2.get("semantic_binding_v1") if isinstance(_wc2.get("semantic_binding_v1"), dict) else {}
+                    _m = _pmc.get(_demo_key) if isinstance(_pmc.get(_demo_key), dict) else {}
+                    _sb["demo_slot_final_winner"] = {
+                        "canonical_key": _demo_key,
+                        "value": _m.get("value"),
+                        "value_norm": _m.get("value_norm") if isinstance(_m.get("value_norm"), (int, float)) else None,
+                        "unit": _m.get("unit") or _m.get("unit_norm") or "",
+                        "source_url": _m.get("source_url") or _m.get("url") or "",
+                        "anchor_hash": _m.get("anchor_hash") or "",
+                        "label": _m.get("label") or "",
+                    }
+                    _wc2["semantic_binding_v1"] = _sb
+            except Exception:
+                pass
+            # END PATCH FIX2AK_DEMO_SLOT_FINAL_WINNER_EMIT_FALLBACK_V1
             return out_changed
         except Exception:
             pass
@@ -33709,3 +34005,13 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2Y_VERSION_BUMP
 # =====================================================================
+
+# =====================================================================
+# PATCH FIX2AK_CODE_VERSION_FORCE_V1 (ADDITIVE)
+# Ensure the run outputs carry the latest patch label for auditability.
+# =====================================================================
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ak_injected_high_signal_filter_demo_diag_v1"
+except Exception:
+    pass
+# END PATCH FIX2AK_CODE_VERSION_FORCE_V1
