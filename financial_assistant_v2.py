@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2az_4key_anchor_probe_diagnostic_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ba_force_attach_canonical_for_render_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36258,4 +36258,144 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2AZ_4KEY_ANCHOR_PROBE_DIAGNOSTIC_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2BA_FORCE_ATTACH_CANONICAL_FOR_RENDER_V1 (ADDITIVE)
+#
+# Purpose:
+# - Ensure Evolution output ALWAYS includes output_debug.canonical_for_render_v1
+#   (or results.debug.output_debug.canonical_for_render_v1), even when upstream
+#   builder fails to attach it.
+#
+# Why:
+# - Diagnostics show: missing_output_debug.canonical_for_render_v1
+# - Diff/UI join often depends on canonical_for_render_v1 presence for hydration.
+#
+# Strategy (safe + deterministic):
+# - Post-process the final output dict from compute_source_anchored_diff.
+# - Build a minimal render-ready list using existing diff rows:
+#     results.metric_changes_v2 (preferred) else results.metric_changes_legacy else results.metric_changes
+# - Each entry includes canonical_key, current_value/current_value_norm, unit, and provenance flags
+#   if present (injected_source_contributed / injected_sources_v1).
+# - Attach to the most standard locations:
+#     out["output_debug"]["canonical_for_render_v1"]
+#     out["results"]["debug"]["output_debug"]["canonical_for_render_v1"]
+# - Also attach a tiny summary under output_debug["canonical_for_render_v1_meta"].
+#
+# Safety:
+# - Diagnostic/render attachment only. Does NOT change selectors or diff logic.
+# - Does not fabricate values: it only mirrors values already present on metric_changes rows.
+# =====================================================================
+
+try:
+    _compute_source_anchored_diff_BASE_FIX2BA = compute_source_anchored_diff  # type: ignore
+except Exception:
+    _compute_source_anchored_diff_BASE_FIX2BA = None
+
+def _fix2ba_ensure_dict(parent: dict, key: str) -> dict:
+    if not isinstance(parent, dict):
+        return {}
+    v = parent.get(key)
+    if isinstance(v, dict):
+        return v
+    parent[key] = {}
+    return parent[key]
+
+def _fix2ba_pick_metric_changes(results: dict):
+    if not isinstance(results, dict):
+        return None, "none"
+    for k in ("metric_changes_v2", "metric_changes_legacy", "metric_changes"):
+        v = results.get(k)
+        if isinstance(v, list) and v:
+            return v, k
+    return None, "none"
+
+def _fix2ba_build_canonical_for_render_v1(rows: list):
+    out = []
+    if not isinstance(rows, list):
+        return out
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        ck = r.get("canonical_key") or r.get("canonical") or r.get("canonical_id")
+        ck = str(ck or "").strip()
+        if not ck:
+            continue
+
+        entry = {
+            "canonical_key": ck,
+            "current_value": r.get("current_value"),
+            "current_value_norm": r.get("current_value_norm") if r.get("current_value_norm") is not None else r.get("cur_value_norm"),
+            "unit_cmp": r.get("cur_unit_cmp") or r.get("unit_cmp") or r.get("unit_family") or None,
+            "change_type": r.get("change_type"),
+            "anchor_used": r.get("anchor_used"),
+        }
+
+        # Preserve injected provenance if present
+        if r.get("injected_source_contributed") is True:
+            entry["injected_source_contributed"] = True
+            entry["injected_sources_v1"] = r.get("injected_sources_v1")
+
+        # Preserve diag snippets if present (small)
+        diag = r.get("diag")
+        if isinstance(diag, dict):
+            # include only the relevant sub-diag if present
+            if "b2_render_injected_visibility_v1" in diag:
+                entry["diag_b2"] = diag.get("b2_render_injected_visibility_v1")
+            if "b2_render_injected_visibility_v1" not in diag and diag:
+                # keep a tiny key list for audit, avoid bloat
+                entry["diag_keys"] = sorted(list(diag.keys()))[:12]
+
+        out.append(entry)
+    return out
+
+def _fix2ba_attach(out: dict) -> dict:
+    if not isinstance(out, dict):
+        return out
+
+    results = out.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        out["results"] = results
+
+    rows, rows_key = _fix2ba_pick_metric_changes(results)
+    cfr = _fix2ba_build_canonical_for_render_v1(rows or [])
+
+    # Attach at top-level output_debug
+    od_top = _fix2ba_ensure_dict(out, "output_debug")
+    od_top["canonical_for_render_v1"] = cfr
+    od_top["canonical_for_render_v1_meta"] = {
+        "forced_attach": True,
+        "source_rows": rows_key,
+        "entries": int(len(cfr)),
+        "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    }
+
+    # Attach under results.debug.output_debug as well (common expectation)
+    rdbg = _fix2ba_ensure_dict(results, "debug")
+    od_res = _fix2ba_ensure_dict(rdbg, "output_debug")
+    od_res["canonical_for_render_v1"] = cfr
+    od_res["canonical_for_render_v1_meta"] = od_top["canonical_for_render_v1_meta"]
+
+    # Add a small marker for grepping
+    out.setdefault("debug", {})
+    if isinstance(out.get("debug"), dict):
+        out["debug"]["fix2ba_force_attach_canonical_for_render_v1"] = od_top["canonical_for_render_v1_meta"]
+
+    return out
+
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    base = _compute_source_anchored_diff_BASE_FIX2BA
+    out = base(previous_data, web_context) if callable(base) else {}
+    return _fix2ba_attach(out)
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ba_force_attach_canonical_for_render_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2BA_FORCE_ATTACH_CANONICAL_FOR_RENDER_V1
 # =====================================================================
