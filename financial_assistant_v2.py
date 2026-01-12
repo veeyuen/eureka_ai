@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2aq_final_intake_parity_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ar_analysis_ui_injection_parity_content_probe_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -5751,6 +5751,34 @@ def _inj_trace_v1_build(
         # PATCH END: FIX2AP injection missing warning + parity shim v1
 
 
+        # PATCH START: FIX2AR_AUTHORITATIVE_INJECTED_UNIVERSE_V1 (ADDITIVE)
+        # Purpose:
+        # - Establish a single authoritative injected-universe for this run (diagnostics only).
+        # - Helps compare Analysis vs Evolution intake parity.
+        _fix2ar_authoritative_injected_source = ""
+        _fix2ar_authoritative_injected_norm = []
+        try:
+            if ui_norm:
+                _fix2ar_authoritative_injected_source = "ui_norm"
+                _fix2ar_authoritative_injected_norm = list(ui_norm)
+            elif intake_norm:
+                _fix2ar_authoritative_injected_source = "intake_norm"
+                _fix2ar_authoritative_injected_norm = list(intake_norm)
+            elif admitted_norm:
+                _fix2ar_authoritative_injected_source = "admitted_norm"
+                _fix2ar_authoritative_injected_norm = list(admitted_norm)
+            else:
+                _fix2ar_authoritative_injected_source = "empty"
+                _fix2ar_authoritative_injected_norm = []
+            # Keep stable ordering
+            _fix2ar_authoritative_injected_norm = _inj_diag_norm_url_list(_fix2ar_authoritative_injected_norm)
+        except Exception:
+            _fix2ar_authoritative_injected_source = "error"
+            _fix2ar_authoritative_injected_norm = []
+        # PATCH END: FIX2AR_AUTHORITATIVE_INJECTED_UNIVERSE_V1 (ADDITIVE)
+
+
+
         attempted = d.get("attempted") if isinstance(d.get("attempted"), list) else []
         # Keep attempted minimal and stable
         attempted_min = []
@@ -5953,6 +5981,8 @@ def _inj_trace_v1_build(
             "ui_norm": ui_norm,
             "intake_norm": intake_norm,
             "admitted_norm": admitted_norm,
+            "fix2ar_authoritative_injected_source": str(_fix2ar_authoritative_injected_source or ""),
+            "fix2ar_authoritative_injected_norm": list(_fix2ar_authoritative_injected_norm or []),
             "attempted": attempted_min,
             "persisted_norm": persisted_norm,
             "hash_inputs_norm": hash_inputs_norm,
@@ -6208,6 +6238,67 @@ def _inj_trace_v1_enrich_diag_from_bsc(diag: dict, baseline_sources_cache: list)
         return d
     except Exception:
         return diag if isinstance(diag, dict) else {}
+
+
+# =====================================================================
+# PATCH FIX2AR_INJECTED_CONTENT_SANITY_PROBE_V1 (ADDITIVE)
+# Purpose:
+# - Provide a post-fetch sanity probe for injected URLs:
+#     * fetch status + text length + text head
+#     * extracted mention counts by measure_kind
+# - Diagnostics only; does NOT alter selection, hashing, or scraping.
+# =====================================================================
+def _fix2ar_build_injected_content_probe_v1(injected_universe_norm: list, scraped_meta: dict) -> dict:
+    try:
+        inj = []
+        if isinstance(injected_universe_norm, list):
+            for u in injected_universe_norm:
+                if u and isinstance(u, str):
+                    inj.append(u)
+        inj = sorted(set(inj))
+        sm = scraped_meta if isinstance(scraped_meta, dict) else {}
+        out = {"injected_count": int(len(inj)), "per_url": []}
+        for u in inj[:25]:
+            m = sm.get(u) if isinstance(sm.get(u), dict) else None
+            # Best-effort match: sometimes scraped_meta keys are raw URLs, not normalized
+            if m is None:
+                # Try a slow scan only for the first few injected URLs (bounded)
+                for k, v in list(sm.items())[:2000]:
+                    if not isinstance(k, str) or not isinstance(v, dict):
+                        continue
+                    if k.strip() == u.strip():
+                        m = v
+                        break
+            if not isinstance(m, dict):
+                out["per_url"].append({"url_norm": u, "found_in_scraped_meta": False})
+                continue
+            txt = m.get("snapshot_text")
+            if not isinstance(txt, str):
+                txt = m.get("text") if isinstance(m.get("text"), str) else ""
+            tlen = int(len(txt or ""))
+            head = (txt or "").replace("\n", " ")[:220]
+            nums = m.get("extracted_numbers") if isinstance(m.get("extracted_numbers"), list) else []
+            mk_counts = {}
+            for n in nums:
+                if not isinstance(n, dict):
+                    continue
+                mk = n.get("measure_kind") or n.get("kind") or n.get("unit_family") or "unknown"
+                mk = str(mk)
+                mk_counts[mk] = int(mk_counts.get(mk, 0) + 1)
+            out["per_url"].append({
+                "url_norm": u,
+                "found_in_scraped_meta": True,
+                "fetch_status": m.get("status") or m.get("fetch_status") or m.get("stage") or "",
+                "status_detail": m.get("status_detail") or m.get("reason") or "",
+                "text_len": tlen,
+                "text_head": head,
+                "numbers_found": int(m.get("numbers_found") or len(nums)),
+                "measure_kind_counts": mk_counts,
+            })
+        return out
+    except Exception as e:
+        return {"error": str(e)}
+
 
 def _inj_trace_v1_enrich_diag_from_scraped_meta(diag: dict, scraped_meta: dict, extra_urls: list) -> dict:
     """Add attempted/persisted evidence into diag_injected_urls from scraped_meta (evolution-side)."""
@@ -23779,7 +23870,19 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         rebuild_pool=_hash_inputs,
                         rebuild_selected=_selected,
                         hash_exclusion_reasons=_evo_hash_reasons,
-                    )
+                    ) 
+                    # PATCH START: FIX2AR_INJECTED_CONTENT_PROBE_ATTACH_V1 (ADDITIVE)
+                    try:
+                        _sm2 = locals().get("scraped_meta")
+                        if isinstance(_sm2, dict) and isinstance(_trace2, dict):
+                            _inj_u = _trace2.get("fix2ar_authoritative_injected_norm") or _trace2.get("ui_norm") or []
+                            _trace2["fix2ar_injected_content_probe_v1"] = _fix2ar_build_injected_content_probe_v1(
+                                list(_inj_u) if isinstance(_inj_u, list) else [],
+                                _sm2
+                            )
+                    except Exception:
+                        pass
+                    # PATCH END: FIX2AR_INJECTED_CONTENT_PROBE_ATTACH_V1 (ADDITIVE)
                     output["debug"]["inj_trace_v2_postfetch"] = _trace2
                     if isinstance(output.get("results"), dict) and isinstance(output["results"].get("debug"), dict):
                         output["results"]["debug"]["inj_trace_v2_postfetch"] = _trace2
