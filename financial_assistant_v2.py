@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ar_analysis_ui_injection_parity_content_probe_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2as_demo_slots_v2.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -178,6 +178,16 @@ FIX2AG_SEMANTIC_TAGGER_DEBUG_MAX = int(os.environ.get("YUREEKA_SEMANTIC_TAGGER_D
 FIX2AH_SEMANTIC_BINDING_ENABLED = bool(_fix2al_flag_enabled("YUREEKA_SEMANTIC_BINDING_V1", False))
 FIX2AH_DEMO_CANONICAL_SLOT_ENABLED = bool(_fix2al_flag_enabled("YUREEKA_DEMO_CANONICAL_SLOT_V1", False))
 FIX2AH_DEMO_CANONICAL_KEY = "demo_injected_ev_sales_2025__unit_sales"
+
+# =====================================================================
+# PATCH FIX2AS_DEMO_CANONICAL_KEYS_V1 (ADDITIVE): Additional demo-only canonical slots
+# These keys are ONLY used when demo slot flag is enabled. They have no incumbents by design.
+# =====================================================================
+FIX2AS_DEMO_CANONICAL_KEY_SALES_2025 = "demo_injected_ev_sales_2025__unit_sales"
+FIX2AS_DEMO_CANONICAL_KEY_SHARE_2025 = "demo_injected_ev_market_share_2025__percent"
+FIX2AS_DEMO_CANONICAL_KEY_SALES_2030 = "demo_injected_ev_sales_2030__unit_sales"
+FIX2AS_DEMO_CANONICAL_KEY_SHARE_2030 = "demo_injected_ev_market_share_2030__percent"
+# END PATCH FIX2AS_DEMO_CANONICAL_KEYS_V1
 # END PATCH FIX2AH_SEMANTIC_BINDING_FLAGS_V1
 
 # =====================================================================
@@ -28048,6 +28058,45 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                     "name": "DEMO Injected EV sales (2025)",
                     "keywords": ["demo_injected", "ev", "sales", "2025", "million", "units"],
                 }
+
+            # PATCH FIX2AS_DEMO_CANONICAL_SLOTS_EXTRA_V1 (ADDITIVE): Additional demo-only slots (no incumbents)
+            try:
+                if FIX2AS_DEMO_CANONICAL_KEY_SHARE_2025 not in metric_schema:
+                    metric_schema[FIX2AS_DEMO_CANONICAL_KEY_SHARE_2025] = {
+                        "canonical_key": FIX2AS_DEMO_CANONICAL_KEY_SHARE_2025,
+                        "canonical_id": "demo_injected_ev_market_share_2025",
+                        "dimension": "percent",
+                        "unit_family": "percent",
+                        "unit_tag": "percent",
+                        "unit": "%",
+                        "name": "DEMO Injected EV market share (2025)",
+                        "keywords": ["demo_injected", "ev", "market", "share", "2025", "percent", "%"],
+                    }
+                if FIX2AS_DEMO_CANONICAL_KEY_SALES_2030 not in metric_schema:
+                    metric_schema[FIX2AS_DEMO_CANONICAL_KEY_SALES_2030] = {
+                        "canonical_key": FIX2AS_DEMO_CANONICAL_KEY_SALES_2030,
+                        "canonical_id": "demo_injected_ev_sales_2030",
+                        "dimension": "unit_sales",
+                        "unit_family": "magnitude",
+                        "unit_tag": "million units",
+                        "unit": "M",
+                        "name": "DEMO Injected EV sales (2030, forecast)",
+                        "keywords": ["demo_injected", "ev", "sales", "2030", "million", "units", "forecast", "by"],
+                    }
+                if FIX2AS_DEMO_CANONICAL_KEY_SHARE_2030 not in metric_schema:
+                    metric_schema[FIX2AS_DEMO_CANONICAL_KEY_SHARE_2030] = {
+                        "canonical_key": FIX2AS_DEMO_CANONICAL_KEY_SHARE_2030,
+                        "canonical_id": "demo_injected_ev_market_share_2030",
+                        "dimension": "percent",
+                        "unit_family": "percent",
+                        "unit_tag": "percent",
+                        "unit": "%",
+                        "name": "DEMO Injected EV market share (2030, forecast)",
+                        "keywords": ["demo_injected", "ev", "market", "share", "2030", "percent", "%", "forecast", "by"],
+                    }
+            except Exception:
+                pass
+            # END PATCH FIX2AS_DEMO_CANONICAL_SLOTS_EXTRA_V1
     except Exception:
         pass
 
@@ -28098,6 +28147,73 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                                 "source_url": _c.get("source_url") or "",
                             })
                         continue
+                
+                    # PATCH FIX2AS_DEMO_FORCED_EXTRA_SLOTS_V1 (ADDITIVE): additional demo-only forced bindings
+                    try:
+                        _mt2 = str(_tags.get("metric_type") or "")
+                        _t2 = _tags.get("time") or {}
+                        _yr2 = _fix2ah_safe_int(_t2.get("year"))
+                        _hy2 = _fix2ah_safe_int(_t2.get("horizon_year"))
+
+                        if FIX2AH_DEMO_CANONICAL_SLOT_ENABLED and (_mt2 == "market_share") and (_yr2 == 2025):
+                            _c["fix2v_force_canonical_key"] = str(FIX2AS_DEMO_CANONICAL_KEY_SHARE_2025)
+                            _ctx0 = str(_c.get("context_snippet") or _c.get("context") or "")
+                            if "demo_injected" not in _ctx0:
+                                _c["context_snippet"] = (_ctx0 + " demo_injected").strip()
+                            _fix2ah_diag["promoted_count"] += 1
+                            if len(_fix2ah_diag["promotions"]) < 50:
+                                _fix2ah_diag["promotions"].append({
+                                    "reason": "demo_forced",
+                                    "forced_key": str(FIX2AS_DEMO_CANONICAL_KEY_SHARE_2025),
+                                    "metric_type": _mt2,
+                                    "year": _yr2,
+                                    "anchor_hash": _c.get("anchor_hash") or "",
+                                    "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                                    "unit": _c.get("unit") or _c.get("unit_tag") or "",
+                                    "source_url": _c.get("source_url") or "",
+                                })
+                            continue
+
+                        if FIX2AH_DEMO_CANONICAL_SLOT_ENABLED and (_mt2 == "sales_volume") and (_hy2 == 2030):
+                            _c["fix2v_force_canonical_key"] = str(FIX2AS_DEMO_CANONICAL_KEY_SALES_2030)
+                            _ctx0 = str(_c.get("context_snippet") or _c.get("context") or "")
+                            if "demo_injected" not in _ctx0:
+                                _c["context_snippet"] = (_ctx0 + " demo_injected").strip()
+                            _fix2ah_diag["promoted_count"] += 1
+                            if len(_fix2ah_diag["promotions"]) < 50:
+                                _fix2ah_diag["promotions"].append({
+                                    "reason": "demo_forced",
+                                    "forced_key": str(FIX2AS_DEMO_CANONICAL_KEY_SALES_2030),
+                                    "metric_type": _mt2,
+                                    "horizon_year": _hy2,
+                                    "anchor_hash": _c.get("anchor_hash") or "",
+                                    "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                                    "unit": _c.get("unit") or _c.get("unit_tag") or "",
+                                    "source_url": _c.get("source_url") or "",
+                                })
+                            continue
+
+                        if FIX2AH_DEMO_CANONICAL_SLOT_ENABLED and (_mt2 == "market_share") and (_hy2 == 2030):
+                            _c["fix2v_force_canonical_key"] = str(FIX2AS_DEMO_CANONICAL_KEY_SHARE_2030)
+                            _ctx0 = str(_c.get("context_snippet") or _c.get("context") or "")
+                            if "demo_injected" not in _ctx0:
+                                _c["context_snippet"] = (_ctx0 + " demo_injected").strip()
+                            _fix2ah_diag["promoted_count"] += 1
+                            if len(_fix2ah_diag["promotions"]) < 50:
+                                _fix2ah_diag["promotions"].append({
+                                    "reason": "demo_forced",
+                                    "forced_key": str(FIX2AS_DEMO_CANONICAL_KEY_SHARE_2030),
+                                    "metric_type": _mt2,
+                                    "horizon_year": _hy2,
+                                    "anchor_hash": _c.get("anchor_hash") or "",
+                                    "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
+                                    "unit": _c.get("unit") or _c.get("unit_tag") or "",
+                                    "source_url": _c.get("source_url") or "",
+                                })
+                            continue
+                    except Exception:
+                        pass
+                    # END PATCH FIX2AS_DEMO_FORCED_EXTRA_SLOTS_V1
                 except Exception:
                     pass
 
@@ -28307,6 +28423,92 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                         pass
                 else:
                     _fix2ah_diag["demo_promotion_applied"] = False
+            # PATCH FIX2AS_DEMO_PROMOTION_EXTRA_SLOTS_V1 (ADDITIVE): promote additional demo slots (share_2025, sales/share_2030)
+            try:
+                # helper to see if any candidate already bound to key
+                def _fix2as_any_bound(_key: str) -> bool:
+                    try:
+                        for _c in candidates:
+                            if isinstance(_c, dict) and str(_c.get("fix2v_force_canonical_key") or "") == str(_key):
+                                return True
+                    except Exception:
+                        pass
+                    return False
+
+                def _fix2as_promote_one(_key: str, want_metric_type: str, want_year: int = None, want_horizon: int = None):
+                    if _fix2as_any_bound(_key):
+                        return False
+                    _eligible2 = []
+                    for _c in candidates:
+                        try:
+                            if not isinstance(_c, dict):
+                                continue
+                            if not _fix2v_source_is_injected(_c):
+                                continue
+                            if FIX2AK_HIGH_SIGNAL_FILTER_ENABLED:
+                                try:
+                                    if not _fix2ak_is_high_signal_candidate(_c):
+                                        continue
+                                except Exception:
+                                    pass
+                            _tags = _c.get("semantic_tags_v1") or {}
+                            if not isinstance(_tags, dict) or not _tags:
+                                continue
+                            if str(_tags.get("metric_type") or "") != str(want_metric_type):
+                                continue
+                            _t = _tags.get("time") or {}
+                            _yr = _fix2ah_safe_int(_t.get("year"))
+                            _hy = _fix2ah_safe_int(_t.get("horizon_year"))
+                            _ok = True
+                            if want_year is not None:
+                                _ok = (_yr == int(want_year))
+                                if not _ok:
+                                    _ctx = str(_c.get("context_snippet") or _c.get("context") or "")
+                                    if str(want_year) in _ctx:
+                                        _ok = True
+                            if _ok and want_horizon is not None:
+                                _ok = (_hy == int(want_horizon))
+                                if not _ok:
+                                    _ctx = str(_c.get("context_snippet") or _c.get("context") or "")
+                                    if str(want_horizon) in _ctx and ("by" in _ctx.lower() or "reach" in _ctx.lower() or "forecast" in _ctx.lower()):
+                                        _ok = True
+                            if not _ok:
+                                continue
+                            _eligible2.append(_c)
+                        except Exception:
+                            continue
+                    if not _eligible2:
+                        return False
+                    _eligible2_sorted = sorted(_eligible2, key=lambda _x: (-_fix2aj_ctx_score(_x), str(_x.get("anchor_hash") or "")))
+                    _pick2 = _eligible2_sorted[0]
+                    try:
+                        _pick2["fix2v_force_canonical_key"] = str(_key)
+                        _pick2["demo_promotion_v1"] = True
+                        _ctx0 = str(_pick2.get("context_snippet") or _pick2.get("context") or "")
+                        if "demo_injected" not in _ctx0:
+                            _pick2["context_snippet"] = (_ctx0 + " demo_injected").strip()
+                        _fix2ah_diag["promoted_count"] = int(_fix2ah_diag.get("promoted_count") or 0) + 1
+                        if len(_fix2ah_diag.get("promotions") or []) < 50:
+                            _fix2ah_diag["promotions"].append({
+                                "reason": "demo_promotion_v1",
+                                "forced_key": str(_key),
+                                "anchor_hash": _pick2.get("anchor_hash") or "",
+                                "value_norm": _pick2.get("value_norm") if isinstance(_pick2.get("value_norm"), (int, float)) else _pick2.get("value"),
+                                "source_url": _pick2.get("source_url") or "",
+                                "metric_type": str((_pick2.get("semantic_tags_v1") or {}).get("metric_type") or ""),
+                                "time": (_pick2.get("semantic_tags_v1") or {}).get("time") if isinstance((_pick2.get("semantic_tags_v1") or {}).get("time"), dict) else {},
+                            })
+                        return True
+                    except Exception:
+                        return False
+
+                _fix2as_promote_one(FIX2AS_DEMO_CANONICAL_KEY_SHARE_2025, "market_share", want_year=2025, want_horizon=None)
+                _fix2as_promote_one(FIX2AS_DEMO_CANONICAL_KEY_SALES_2030, "sales_volume", want_year=None, want_horizon=2030)
+                _fix2as_promote_one(FIX2AS_DEMO_CANONICAL_KEY_SHARE_2030, "market_share", want_year=None, want_horizon=2030)
+            except Exception:
+                pass
+            # END PATCH FIX2AS_DEMO_PROMOTION_EXTRA_SLOTS_V1
+
     except Exception:
         pass
     # END PATCH FIX2AJ_DEMO_PROMOTION_V1
