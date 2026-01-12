@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2am_flag_diag_emit_v2"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2an_injected_url_stage_probe_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -5735,6 +5735,80 @@ def _inj_trace_v1_build(
             "hash_inputs_minus_rebuild_pool": _delta(hash_inputs_norm, rebuild_pool_norm) if rebuild_pool is not None else [],
             "rebuild_pool_minus_selected": _delta(rebuild_pool_norm, rebuild_selected_norm) if rebuild_selected is not None else [],
         }
+        # === PATCH FIX2AN_INJ_STAGE_PROBE_V1 START ===
+        # Purpose: emit explicit per-URL stage presence probes so we can confirm whether a given injected URL
+        #          (e.g., Accio) survives UI→intake→admitted→attempted→persisted→hash_inputs→rebuild_pool→selected.
+        # Scope: diagnostics only; does not affect fetch, scrape, hashing, selection, or canonical outputs.
+        # Determinism: bounded samples, stable sorting.
+        stage_probe_v1 = {}
+        try:
+            # Normalized attempted URLs (minimal + stable)
+            _attempted_urls_norm = _inj_diag_norm_url_list([x.get("url") for x in attempted_min if isinstance(x, dict)])
+
+            # Pick up to 3 probe URLs: first UI, first intake (if different), and Accio if present anywhere.
+            _probe = []
+
+            def _push(u):
+                u = str(u or "").strip()
+                if not u:
+                    return
+                if u in _probe:
+                    return
+                _probe.append(u)
+
+            if ui_norm:
+                _push(ui_norm[0])
+            for _u in (intake_norm or [])[:3]:
+                if _u and (not _probe or _u != _probe[0]):
+                    _push(_u)
+                    break
+
+            # Prefer explicit Accio probe if present
+            _accio_hits = []
+            for _lst in (ui_norm, intake_norm, admitted_norm, persisted_norm, hash_inputs_norm, rebuild_pool_norm, rebuild_selected_norm, _attempted_urls_norm):
+                for _u in (_lst or []):
+                    if "accio.com/business/ev-sales-trend-projections" in str(_u):
+                        _accio_hits.append(str(_u))
+            if _accio_hits:
+                _push(sorted(_accio_hits)[0])
+
+            _probe = _probe[:3]
+
+            def _present(u, lst):
+                try:
+                    return bool(u) and (u in set(lst or []))
+                except Exception:
+                    return False
+
+            stage_probe_v1 = {
+                "probe_urls": list(_probe),
+                "probe_presence": [
+                    {
+                        "url_norm": u,
+                        "in_ui": _present(u, ui_norm),
+                        "in_intake": _present(u, intake_norm),
+                        "in_admitted": _present(u, admitted_norm),
+                        "in_attempted": _present(u, _attempted_urls_norm),
+                        "in_persisted": _present(u, persisted_norm),
+                        "in_hash_inputs": _present(u, hash_inputs_norm),
+                        "in_rebuild_pool": _present(u, rebuild_pool_norm),
+                        "in_rebuild_selected": _present(u, rebuild_selected_norm),
+                    } for u in _probe
+                ],
+                "samples": {
+                    "ui_norm": (ui_norm or [])[:10],
+                    "intake_norm": (intake_norm or [])[:10],
+                    "admitted_norm": (admitted_norm or [])[:10],
+                    "attempted_norm": (_attempted_urls_norm or [])[:10],
+                    "persisted_norm": (persisted_norm or [])[:10],
+                    "hash_inputs_norm": (hash_inputs_norm or [])[:10],
+                    "rebuild_pool_norm": (rebuild_pool_norm or [])[:10],
+                    "rebuild_selected_norm": (rebuild_selected_norm or [])[:10],
+                },
+            }
+        except Exception:
+            stage_probe_v1 = {"error": "stage_probe_exception"}
+        # === PATCH FIX2AN_INJ_STAGE_PROBE_V1 END ===
 
 
         # === PATCH EVO_INJ_ADMISSION_REASON_CODES_V1 START ===
@@ -5862,6 +5936,7 @@ def _inj_trace_v1_build(
             "policy": policy,
             "flags_env_v1": _flags_env_v1,
             "flags_resolved_v1": _flags_resolved_v1,
+        "stage_probe_v1": stage_probe_v1,
         }
     except Exception:
         return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
