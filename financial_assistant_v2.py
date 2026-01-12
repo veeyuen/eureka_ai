@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ai_injected_url_parity_bridge_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2aj_demo_promotion_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -133,6 +133,14 @@ FIX2AH_SEMANTIC_BINDING_ENABLED = bool(int(os.environ.get("YUREEKA_SEMANTIC_BIND
 FIX2AH_DEMO_CANONICAL_SLOT_ENABLED = bool(int(os.environ.get("YUREEKA_DEMO_CANONICAL_SLOT_V1", "0") or "0"))
 FIX2AH_DEMO_CANONICAL_KEY = "demo_injected_ev_sales_2025__unit_sales"
 # END PATCH FIX2AH_SEMANTIC_BINDING_FLAGS_V1
+
+# =====================================================================
+# PATCH FIX2AJ_DEMO_PROMOTION_FLAGS_V1 (ADDITIVE): explicit demo promotion is OFF by default.
+# Ensures at most one injected candidate is promoted into the demo canonical slot.
+# =====================================================================
+FIX2AJ_DEMO_PROMOTION_ENABLED = bool(int(os.environ.get("YUREEKA_DEMO_PROMOTION_V1", "0") or "0"))
+# END PATCH FIX2AJ_DEMO_PROMOTION_FLAGS_V1
+
 
 
 # In-process cache (deterministic keys; values are structured dicts)
@@ -27497,6 +27505,138 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                         })
     except Exception:
         pass
+    # =====================================================================
+    # PATCH FIX2AJ_DEMO_PROMOTION_V1 (ADDITIVE): Explicit demo promotion (feature-flagged)
+    #
+    # Goal:
+    #   - If demo slot is enabled and semantic binding didn't produce a demo-bound candidate,
+    #     deterministically promote EXACTLY ONE eligible injected candidate into the demo slot.
+    #   - If multiple demo-bound candidates exist (from earlier logic), deterministically keep
+    #     the best one and suppress the rest.
+    #
+    # Safety:
+    #   - Injected URLs only (scoped via _fix2v_source_is_injected)
+    #   - Selector remains unchanged: we only set fix2v_force_canonical_key on a candidate.
+    # =====================================================================
+    try:
+        if FIX2AJ_DEMO_PROMOTION_ENABLED and FIX2AH_DEMO_CANONICAL_SLOT_ENABLED and isinstance(candidates, list):
+            _fix2ah_diag["demo_promotion_enabled"] = True
+            _demo_key = str(FIX2AH_DEMO_CANONICAL_KEY)
+
+            def _fix2aj_ctx_score(_c):
+                try:
+                    cs = _c.get("context_score")
+                    if isinstance(cs, (int, float)):
+                        return float(cs)
+                except Exception:
+                    pass
+                # fallback: longer context tends to be better than short fragments
+                try:
+                    return float(len(str(_c.get("context_snippet") or _c.get("context") or "")))
+                except Exception:
+                    return 0.0
+
+            # 1) If multiple candidates are already demo-bound, keep only the best one.
+            _demo_bound = []
+            for _c in candidates:
+                try:
+                    if isinstance(_c, dict) and str(_c.get("fix2v_force_canonical_key") or "") == _demo_key:
+                        _demo_bound.append(_c)
+                except Exception:
+                    pass
+
+            if len(_demo_bound) > 1:
+                _demo_bound_sorted = sorted(_demo_bound, key=lambda _x: (-_fix2aj_ctx_score(_x), str(_x.get("anchor_hash") or "")))
+                _keep = _demo_bound_sorted[0]
+                _suppressed = 0
+                for _c in _demo_bound_sorted[1:]:
+                    try:
+                        # suppress extra demo promotions deterministically
+                        if "fix2v_force_canonical_key" in _c:
+                            del _c["fix2v_force_canonical_key"]
+                        _c["demo_promotion_v1_suppressed"] = True
+                        _suppressed += 1
+                    except Exception:
+                        pass
+                _fix2ah_diag["demo_promotion_suppressed_extra"] = int(_suppressed)
+                if len(_fix2ah_diag.get("rejections") or []) < 50:
+                    try:
+                        _fix2ah_diag["rejections"].append({
+                            "reason": "demo_multiple_suppressed",
+                            "kept_anchor_hash": _keep.get("anchor_hash") or "",
+                            "suppressed_count": int(_suppressed),
+                        })
+                    except Exception:
+                        pass
+
+            # 2) If none are demo-bound, promote exactly one eligible injected candidate.
+            if len(_demo_bound) == 0:
+                _eligible = []
+                for _c in candidates:
+                    try:
+                        if not isinstance(_c, dict):
+                            continue
+                        # injected-only scope
+                        if not _fix2v_source_is_injected(_c):
+                            continue
+
+                        _tags = _c.get("semantic_tags_v1") or {}
+                        if not isinstance(_tags, dict) or not _tags:
+                            continue
+                        if str(_tags.get("metric_type") or "") != "sales_volume":
+                            continue
+
+                        _t = _tags.get("time") or {}
+                        _yr = None
+                        try:
+                            _yr = int(_t.get("year")) if _t.get("year") is not None else None
+                        except Exception:
+                            _yr = None
+
+                        # Primary condition: semantic year=2025
+                        _year_ok = (_yr == 2025)
+
+                        # Secondary (demo-only) fallback: infer year=2025 from snippet
+                        if not _year_ok:
+                            _ctx = str(_c.get("context_snippet") or _c.get("context") or "")
+                            if "2025" in _ctx:
+                                _year_ok = True
+
+                        if not _year_ok:
+                            continue
+
+                        _eligible.append(_c)
+                    except Exception:
+                        continue
+
+                if _eligible:
+                    _eligible_sorted = sorted(_eligible, key=lambda _x: (-_fix2aj_ctx_score(_x), str(_x.get("anchor_hash") or "")))
+                    _pick = _eligible_sorted[0]
+                    try:
+                        _pick["fix2v_force_canonical_key"] = _demo_key
+                        _pick["demo_promotion_v1"] = True
+                        _ctx0 = str(_pick.get("context_snippet") or _pick.get("context") or "")
+                        if "demo_injected" not in _ctx0:
+                            _pick["context_snippet"] = (_ctx0 + " demo_injected").strip()
+
+                        _fix2ah_diag["promoted_count"] = int(_fix2ah_diag.get("promoted_count") or 0) + 1
+                        if len(_fix2ah_diag.get("promotions") or []) < 50:
+                            _fix2ah_diag["promotions"].append({
+                                "reason": "demo_promotion_v1",
+                                "forced_key": _demo_key,
+                                "anchor_hash": _pick.get("anchor_hash") or "",
+                                "value_norm": _pick.get("value_norm") if isinstance(_pick.get("value_norm"), (int, float)) else _pick.get("value"),
+                                "source_url": _pick.get("source_url") or "",
+                            })
+                        _fix2ah_diag["demo_promotion_applied"] = True
+                    except Exception:
+                        pass
+                else:
+                    _fix2ah_diag["demo_promotion_applied"] = False
+    except Exception:
+        pass
+    # END PATCH FIX2AJ_DEMO_PROMOTION_V1
+
 
     try:
         if isinstance(web_context, dict):
