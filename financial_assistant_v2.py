@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2aw_unit_family_normaliser_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ax_results_namespace_hook_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -35657,4 +35657,128 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2AW_UNIT_FAMILY_NORMALISER_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2AX_RESULTS_NAMESPACE_HOOK_V1 (ADDITIVE)
+#
+# Purpose:
+# - Ensure FIX2AW (unit-family normaliser), FIX2AV (semantic binder), and FIX2AU (B2 promotion)
+#   are applied to the *actual* Evolution diff/render namespaces used by the UI.
+#
+# Why needed:
+# - Many runs place baseline_sources_cache_current and metric_changes under output["results"][...],
+#   not at top-level. Earlier wrappers (FIX2AU/FIX2AV/FIX2AW) operate on top-level keys only,
+#   so they can appear to "do nothing" even though the data exists under results.
+#
+# What this patch does:
+# - Wrap compute_source_anchored_diff (additive override).
+# - After base run, construct a lightweight shim that points at:
+#     results.baseline_sources_cache_current / results.baseline_sources_cache
+#     results.metric_changes (and/or metric_changes_v2 if present)
+#   and then run:
+#     FIX2AW normaliser -> FIX2AV binder -> FIX2AU promotions
+#   on that shim.
+#
+# Safety:
+# - No selector changes.
+# - No refactors of existing functions.
+# - Operates only on injected sources (per FIX2AV/FIX2AW allowlist).
+# - Idempotent: safe to run even if upstream already applied.
+# =====================================================================
+
+try:
+    _compute_source_anchored_diff_BASE_FIX2AX = compute_source_anchored_diff  # type: ignore
+except Exception:
+    _compute_source_anchored_diff_BASE_FIX2AX = None
+
+def _fix2ax_get_results_dict(out: dict):
+    try:
+        r = out.get("results")
+        return r if isinstance(r, dict) else None
+    except Exception:
+        return None
+
+def _fix2ax_make_results_shim(out: dict):
+    """
+    Build a dict shaped like the earlier promotion/binder helpers expect, but pointing into out["results"].
+    Mutations will affect the underlying structures because lists/dicts are shared references.
+    """
+    try:
+        if not isinstance(out, dict):
+            return None
+        res = _fix2ax_get_results_dict(out)
+        if not isinstance(res, dict):
+            return None
+
+        shim = {"results": res}
+
+        # baseline caches (prefer results namespace)
+        if "baseline_sources_cache_current" in res:
+            shim["baseline_sources_cache_current"] = res.get("baseline_sources_cache_current")
+        if "baseline_sources_cache" in res:
+            shim["baseline_sources_cache"] = res.get("baseline_sources_cache")
+
+        # metric schema (prefer top-level, fallback to results)
+        msf = out.get("metric_schema_frozen")
+        if not isinstance(msf, dict):
+            msf = res.get("metric_schema_frozen")
+        if isinstance(msf, dict):
+            shim["metric_schema_frozen"] = msf
+
+        # ensure debug exists at top-level for auditability
+        if isinstance(out.get("debug"), dict):
+            shim["debug"] = out["debug"]
+        else:
+            out["debug"] = {}
+            shim["debug"] = out["debug"]
+
+        return shim
+    except Exception:
+        return None
+
+def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+    base = _compute_source_anchored_diff_BASE_FIX2AX
+    out = base(previous_data, web_context) if callable(base) else {}
+
+    try:
+        shim = _fix2ax_make_results_shim(out)
+        if isinstance(shim, dict):
+            # Apply in correct order
+            try:
+                shim = _fix2aw_apply_unit_family_normaliser(shim)  # type: ignore
+            except Exception:
+                pass
+            try:
+                shim = _fix2av_apply_semantic_binder(shim)  # type: ignore
+            except Exception:
+                pass
+            try:
+                shim = _fix2au_apply_b2_render_promotions(shim)  # type: ignore
+            except Exception:
+                pass
+
+            # Mark that the hook ran
+            try:
+                out.setdefault("debug", {})
+                if isinstance(out.get("debug"), dict):
+                    out["debug"]["fix2ax_results_namespace_hook_v1"] = {
+                        "applied": True,
+                        "operated_on": ["results.baseline_sources_cache_current", "results.metric_changes"],
+                    }
+            except Exception:
+                pass
+    except Exception:
+        return out
+
+    return out
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ax_results_namespace_hook_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AX_RESULTS_NAMESPACE_HOOK_V1
 # =====================================================================
