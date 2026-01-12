@@ -5702,6 +5702,55 @@ def _inj_trace_v1_build(
         admitted_norm = _inj_diag_norm_url_list(d.get("admitted") or d.get("extra_urls_admitted") or [])
         persisted_norm = _inj_diag_norm_url_list(d.get("persisted") or d.get("persisted_norm") or [])
 
+        # PATCH START: FIX2AP injection missing warning + parity shim v1
+        # Purpose:
+        # - Detect when UI/intake injection appears empty (especially in Analysis)
+        # - Provide a conservative parity shim for diagnostics (never changes selection)
+        _fix2ap_injection_diag_v1 = {}
+        try:
+            _ui_raw_nonempty = False
+            if isinstance(ui_raw, str):
+                _ui_raw_nonempty = bool(ui_raw.strip())
+            elif isinstance(ui_raw, list):
+                _ui_raw_nonempty = any(bool(str(x).strip()) for x in ui_raw)
+            _ui_present = bool(ui_norm) or _ui_raw_nonempty
+            _intake_present = bool(intake_norm)
+            _admitted_present = bool(admitted_norm)
+            _fix2ap_injection_diag_v1 = {
+                "stage": str(stage or ""),
+                "ui_present": bool(_ui_present),
+                "intake_present": bool(_intake_present),
+                "admitted_present": bool(_admitted_present),
+                "parity_ui_from_intake": False,
+                "parity_intake_from_admitted": False,
+                "warning": "",
+                "warning_reasons": [],
+            }
+            # Parity shim for diagnostics only: treat intake as UI if UI is empty
+            if (not ui_norm) and intake_norm:
+                ui_norm = list(intake_norm)
+                _fix2ap_injection_diag_v1["parity_ui_from_intake"] = True
+            # If intake is empty but admitted is non-empty, surface admitted as intake for diagnostics
+            if (not intake_norm) and admitted_norm:
+                intake_norm = list(admitted_norm)
+                _fix2ap_injection_diag_v1["parity_intake_from_admitted"] = True
+            _injected_universe_norm = sorted(set((ui_norm or []) + (intake_norm or []) + (admitted_norm or [])))
+            _fix2ap_injection_diag_v1["injected_universe_norm_count"] = int(len(_injected_universe_norm))
+            _fix2ap_injection_diag_v1["injected_universe_norm_sample"] = _injected_universe_norm[:20]
+            # Loud warning if Analysis has no UI/intake injection even though admitted sources exist
+            if str(stage or "") == "analysis" and (not _ui_present) and (not _intake_present):
+                _fix2ap_injection_diag_v1["warning"] = "injection_missing_at_analysis_intake"
+                _reasons = []
+                if admitted_norm:
+                    _reasons.append("admitted_norm_nonempty_but_ui_intake_empty")
+                else:
+                    _reasons.append("all_empty_ui_intake_admitted")
+                _fix2ap_injection_diag_v1["warning_reasons"] = _reasons
+        except Exception as _e_fix2ap:
+            _fix2ap_injection_diag_v1 = {"error": str(_e_fix2ap)}
+        # PATCH END: FIX2AP injection missing warning + parity shim v1
+
+
         attempted = d.get("attempted") if isinstance(d.get("attempted"), list) else []
         # Keep attempted minimal and stable
         attempted_min = []
@@ -5933,6 +5982,7 @@ def _inj_trace_v1_build(
                 "intake_minus_admitted": admission_rejection_reasons,
                 "admitted_minus_attempted": attempted_rejection_reasons,
             },
+            "fix2ap_injection_diag_v1": _fix2ap_injection_diag_v1,
             "policy": policy,
             "flags_env_v1": _flags_env_v1,
             "flags_resolved_v1": _flags_resolved_v1,
