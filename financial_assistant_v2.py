@@ -79,7 +79,177 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ae_injected_fetch_urls_merge_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ae_injected_fetch_urls_merge_v1_fix2af_fetch_visibility_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+
+# =====================================================================
+# PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
+# - URL shape normalizer (boundary before scraping)
+# - Scrape ledger keyed by url_norm w/ stage+reason
+# - Scraped text accessor to avoid meta-key drift
+# - Fetch-failure visibility (status/textlen/classification)
+# =====================================================================
+
+def _fix2af_norm_url(u: str) -> str:
+    try:
+        s = str(u or "").strip()
+        if not s:
+            return ""
+        _norm = globals().get("_inj_diag_norm_url_list")
+        if callable(_norm):
+            try:
+                out = _norm([s])
+                if out and isinstance(out, list):
+                    return str(out[0] or "")
+            except Exception:
+                pass
+        if s.startswith("http://"):
+            s = "https://" + s[len("http://"):]
+        if "#" in s:
+            s = s.split("#", 1)[0]
+        return s.rstrip("/")
+    except Exception:
+        return ""
+
+def _fix2af_normalize_url_items(urls):
+    diag = {
+        "input_type": type(urls).__name__,
+        "input_len": 0,
+        "flattened_len": 0,
+        "string_urls": 0,
+        "dict_urls": 0,
+        "dropped_non_url": 0,
+        "mixed_shape": False,
+        "nested_lists": 0,
+        "samples_dropped": [],
+    }
+    out = []
+    def _emit(u):
+        nu = _fix2af_norm_url(u)
+        if nu:
+            out.append(nu)
+        else:
+            diag["dropped_non_url"] += 1
+            if len(diag["samples_dropped"]) < 10:
+                diag["samples_dropped"].append(str(u)[:200])
+    def _walk(x):
+        if x is None:
+            return
+        if isinstance(x, (list, tuple)):
+            diag["nested_lists"] += 1
+            for y in x:
+                _walk(y)
+            return
+        if isinstance(x, dict):
+            diag["dict_urls"] += 1
+            for k in ("url", "href", "link"):
+                if k in x and x.get(k):
+                    _emit(x.get(k))
+                    return
+            diag["dropped_non_url"] += 1
+            if len(diag["samples_dropped"]) < 10:
+                diag["samples_dropped"].append(str(x)[:200])
+            return
+        diag["string_urls"] += 1
+        _emit(x)
+
+    try:
+        if urls is None:
+            diag["input_len"] = 0
+        elif isinstance(urls, (list, tuple)):
+            diag["input_len"] = len(urls)
+            for it in urls:
+                _walk(it)
+        else:
+            diag["input_len"] = 1
+            _walk(urls)
+    except Exception:
+        pass
+
+    diag["flattened_len"] = len(out)
+    diag["mixed_shape"] = (diag["dict_urls"] > 0 and diag["string_urls"] > 0)
+
+    seen = set()
+    dedup = []
+    for u in out:
+        if u in seen:
+            continue
+        seen.add(u)
+        dedup.append(u)
+    return dedup, diag
+
+def _fix2af_scraped_text_accessor(x):
+    try:
+        if x is None:
+            return ""
+        if isinstance(x, str):
+            return x
+        if isinstance(x, bytes):
+            try:
+                return x.decode("utf-8", errors="ignore")
+            except Exception:
+                return ""
+        if isinstance(x, dict):
+            for k in ("text", "clean_text", "content", "body", "html"):
+                v = x.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v
+                if isinstance(v, bytes):
+                    try:
+                        return v.decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+            if "data" in x and isinstance(x["data"], dict):
+                return _fix2af_scraped_text_accessor(x["data"])
+            return ""
+        return str(x)
+    except Exception:
+        return ""
+
+def _fix2af_classify_fetch_failure(status, txt):
+    try:
+        s = str(status or "").lower()
+        tlen = len(txt or "")
+        if (not s or s == "success_direct") and tlen > 0:
+            return "ok"
+        if "timeout" in s:
+            return "timeout"
+        if "captcha" in s or "forbidden" in s or "blocked" in s or "403" in s:
+            return "blocked"
+        if "paywall" in s:
+            return "paywall"
+        if "pdf" in s and (tlen == 0 or "no_text" in s):
+            return "pdf_no_text"
+        if "no_text" in s or tlen == 0 or "empty" in s:
+            return "no_text"
+        if "redirect" in s:
+            return "redirect"
+        if "error" in s or "exception" in s or "fail" in s:
+            return "error"
+        return "unknown"
+    except Exception:
+        return "unknown"
+
+def _fix2af_ledger_put(ledger: dict, url_raw: str, stage: str, reason: str = "", extra: dict = None):
+    try:
+        if ledger is None:
+            return
+        u = _fix2af_norm_url(url_raw)
+        if not u:
+            return
+        rec = ledger.get(u) or {"url_norm": u, "stages": []}
+        rec["stages"].append({
+            "stage": str(stage or ""),
+            "reason": str(reason or ""),
+            "extra": extra if isinstance(extra, dict) else {},
+        })
+        ledger[u] = rec
+    except Exception:
+        pass
+
+_fix2af_last_scrape_ledger = {}
+# END PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1
+# =====================================================================
+
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -28104,12 +28274,29 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
     Fetch each URL (deterministically) and return scraped_meta in the same shape
     attach_source_snapshots_to_analysis expects: {url: {"status":..., "text":..., "extracted_numbers":[...]}}
     """
+    # PATCH FIX2AF_URL_SHAPE_NORMALIZER_AND_SCRAPE_LEDGER_V1 (ADDITIVE)
+    _fix2af_ledger = globals().get("_fix2af_last_scrape_ledger")
+    try:
+        _fix2af_norm_urls, _fix2af_norm_diag = _fix2af_normalize_url_items(urls)
+        urls = _fix2af_norm_urls
+        if isinstance(_fix2af_ledger, dict):
+            _fix2af_ledger["__fix2af_url_normalize_diag__"] = _fix2af_norm_diag
+    except Exception:
+        pass
+    # END PATCH FIX2AF_URL_SHAPE_NORMALIZER_AND_SCRAPE_LEDGER_V1
+
     scraped_meta = {}
     fetch_fn = globals().get("fetch_url_content_with_status") or globals().get("fetch_url_content")
     extract_fn = globals().get("extract_numbers_with_context")
 
     for u in urls or []:
         url = str(u or "").strip()
+        # PATCH FIX2AF_SCRAPE_LEDGER_ATTEMPTED_V1 (ADDITIVE)
+        try:
+            _fix2af_ledger_put(_fix2af_ledger, url, stage="attempted", reason="entered_loop")
+        except Exception:
+            pass
+        # END PATCH FIX2AF_SCRAPE_LEDGER_ATTEMPTED_V1
         if not url:
             continue
         try:
@@ -28121,9 +28308,19 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
             else:
                 text, status = (None, "no_fetch_fn")
 
-            txt = "" if text is None else str(text)
+            # PATCH FIX2AF_SCRAPED_TEXT_ACCESSOR_V1 (ADDITIVE)
+            txt = _fix2af_scraped_text_accessor(text)
+            # END PATCH FIX2AF_SCRAPED_TEXT_ACCESSOR_V1
             if max_chars_per_source and len(txt) > int(max_chars_per_source):
                 txt = txt[: int(max_chars_per_source)]
+
+            # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_V1 (ADDITIVE)
+            try:
+                _fix2af_fail_class = _fix2af_classify_fetch_failure(status, txt)
+                _fix2af_ledger_put(_fix2af_ledger, url, stage="fetched", reason=_fix2af_fail_class, extra={"status": status, "text_len": len(txt or "")})
+            except Exception:
+                pass
+            # END PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_V1
 
             nums = []
             if callable(extract_fn) and txt.strip():
@@ -28134,13 +28331,35 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
                 except Exception:
                     nums = []
 
+            # PATCH FIX2AF_SCRAPE_LEDGER_EXTRACTED_V1 (ADDITIVE)
+            try:
+                _fix2af_ledger_put(_fix2af_ledger, url, stage="extracted", reason="ok" if (isinstance(nums, list) and len(nums)>0) else "no_numbers", extra={"numbers_count": (len(nums) if isinstance(nums, list) else -1)})
+            except Exception:
+                pass
+            # END PATCH FIX2AF_SCRAPE_LEDGER_EXTRACTED_V1
+
             scraped_meta[url] = {
                 "status": status,
                 "text": txt,
                 "extracted_numbers": nums if isinstance(nums, list) else [],
+                # PATCH FIX2AF_PER_URL_FETCH_DIAG_V1 (ADDITIVE)
+                "fix2af_fetch_diag": {
+                    "url_norm": _fix2af_norm_url(url),
+                    "status": status,
+                    "text_len": len(txt or ""),
+                    "failure_class": _fix2af_classify_fetch_failure(status, txt),
+                    "numbers_count": (len(nums) if isinstance(nums, list) else -1),
+                },
+                # END PATCH FIX2AF_PER_URL_FETCH_DIAG_V1
             }
         except Exception as e:
-            scraped_meta[url] = {"status": f"exception:{type(e).__name__}", "text": "", "extracted_numbers": []}
+            # PATCH FIX2AF_SCRAPE_LEDGER_EXCEPTION_V1 (ADDITIVE)
+            try:
+                _fix2af_ledger_put(_fix2af_ledger, url, stage="exception", reason=type(e).__name__, extra={"msg": str(e)[:300]})
+            except Exception:
+                pass
+            # END PATCH FIX2AF_SCRAPE_LEDGER_EXCEPTION_V1
+            scraped_meta[url] = {"status": f"exception:{type(e).__name__}", "text": "", "extracted_numbers": [], "fix2af_fetch_diag": {"url_norm": _fix2af_norm_url(url), "status": f"exception:{type(e).__name__}", "text_len": 0, "failure_class": type(e).__name__, "numbers_count": 0}}
 
     return scraped_meta
 
@@ -28949,6 +29168,15 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
 
     scraped_meta = _fix24_build_scraped_meta(urls)
+
+    # PATCH FIX2AF_ATTACH_SCRAPE_LEDGER_TO_WEB_CONTEXT_V1 (ADDITIVE)
+    try:
+        _fix2af_led = globals().get("_fix2af_last_scrape_ledger")
+        if isinstance(web_context, dict) and isinstance(_fix2af_led, dict):
+            web_context["fix2af_scrape_ledger_v1"] = _fix2af_led
+    except Exception:
+        pass
+    # END PATCH FIX2AF_ATTACH_SCRAPE_LEDGER_TO_WEB_CONTEXT_V1
 
     # Step 3: Normalize into baseline_sources_cache and hash
     cur_bsc = _fix24_baseline_sources_cache_from_scraped_meta(scraped_meta)
