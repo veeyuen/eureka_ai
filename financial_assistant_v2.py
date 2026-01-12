@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2an_injected_url_stage_probe_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ao_injected_flow_diag_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -5952,6 +5952,168 @@ def _inj_trace_v1_build(
 #   - baseline_sources_cache (BSC): list of per-url snapshot dicts
 #   - scraped_meta: dict keyed by url with status/status_detail/clean_text_len
 # =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2AO_INJECTED_FLOW_DIAG_V1 (ADDITIVE)
+# Objective:
+# - Produce an end-to-end, stage-by-stage diagnostic for *injected-derived* candidates/metrics
+#   so we can pinpoint Analysis vs Evolution divergence points.
+# - Purely additive; does NOT change selection logic or canonical selector behavior.
+# - Designed to be called opportunistically wherever inj_trace_v1 is emitted.
+# =====================================================================
+def _fix2ao_norm_url(url: str) -> str:
+    try:
+        fn = globals().get("_normalize_url")
+        if callable(fn):
+            return str(fn(url or ""))
+    except Exception:
+        pass
+    return str((url or "").strip())
+
+def _fix2ao_safe_get_primary_metrics_canonical(obj: dict):
+    # Try a few known paths; fall back to recursive search for the first dict under key 'primary_metrics_canonical'
+    try:
+        if not isinstance(obj, dict):
+            return None
+        # common shapes
+        for path in [
+            ("results", "primary_metrics_canonical"),
+            ("primary_metrics_canonical",),
+            ("results", "analysis", "primary_metrics_canonical"),
+            ("analysis", "results", "primary_metrics_canonical"),
+        ]:
+            cur = obj
+            ok = True
+            for k in path:
+                if not isinstance(cur, dict) or k not in cur:
+                    ok = False
+                    break
+                cur = cur.get(k)
+            if ok and isinstance(cur, dict):
+                return cur
+        # recursive search
+        stack = [obj]
+        seen = set()
+        while stack:
+            cur = stack.pop()
+            if id(cur) in seen:
+                continue
+            seen.add(id(cur))
+            if isinstance(cur, dict):
+                if "primary_metrics_canonical" in cur and isinstance(cur.get("primary_metrics_canonical"), dict):
+                    return cur.get("primary_metrics_canonical")
+                for v in cur.values():
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+            elif isinstance(cur, list):
+                for v in cur:
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+    except Exception:
+        pass
+    return None
+
+def _fix2ao_walk_mentions(obj, injected_norm_set: set, max_samples: int = 8):
+    """Return (counts, samples, reasons) for injected-derived mention dicts found in the output."""
+    counts = {"mentions_total": 0, "mentions_injected": 0, "tagged": 0, "bound": 0}
+    samples = []
+    reasons = {}
+    try:
+        stack = [obj]
+        seen = set()
+        while stack:
+            cur = stack.pop()
+            if id(cur) in seen:
+                continue
+            seen.add(id(cur))
+            if isinstance(cur, dict):
+                # Heuristic: a 'mention/candidate' dict usually has a source_url plus a numeric value or value_norm
+                su = cur.get("source_url") or cur.get("source") or cur.get("url") or cur.get("source_url_norm")
+                su_n = _fix2ao_norm_url(str(su or "")) if su else ""
+                has_value = ("value_norm" in cur) or ("value" in cur) or ("raw_value" in cur)
+                if su_n and has_value:
+                    counts["mentions_total"] += 1
+                    if su_n in injected_norm_set:
+                        counts["mentions_injected"] += 1
+                        if isinstance(cur.get("semantic_tags_v1"), dict):
+                            counts["tagged"] += 1
+                        if ("fix2v_force_canonical_key" in cur) or ("canonical_key" in cur) or ("canonical_id" in cur):
+                            counts["bound"] += 1
+                        # capture sample
+                        if len(samples) < max_samples:
+                            samples.append({
+                                "source_url_norm": su_n,
+                                "value_norm": cur.get("value_norm") if isinstance(cur.get("value_norm"), (int, float)) else None,
+                                "value": cur.get("value"),
+                                "unit": cur.get("unit") or cur.get("unit_norm") or cur.get("unit_family"),
+                                "measure_kind": cur.get("measure_kind"),
+                                "fix2v_force_canonical_key": cur.get("fix2v_force_canonical_key"),
+                                "has_semantic_tags_v1": isinstance(cur.get("semantic_tags_v1"), dict),
+                                "ctx_head": str(cur.get("context_snippet") or cur.get("snippet") or "")[:140],
+                            })
+                # collect rejection-ish reason buckets if present
+                rr = cur.get("reject_reason") or cur.get("blocked_reason") or cur.get("reason")
+                if isinstance(rr, str) and rr:
+                    reasons[rr] = reasons.get(rr, 0) + 1
+                for v in cur.values():
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+            elif isinstance(cur, list):
+                for v in cur:
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+    except Exception:
+        pass
+    return counts, samples, reasons
+
+def _fix2ao_build_injected_flow_diag(out_obj: dict, inj_trace: dict) -> dict:
+    diag = {
+        "v": "fix2ao_injected_flow_diag_v1",
+        "injected_norm": [],
+        "counts": {},
+        "winners_from_injected": 0,
+        "winner_keys_from_injected": [],
+        "mention_samples": [],
+        "reason_buckets": {},
+    }
+    try:
+        if not isinstance(out_obj, dict) or not isinstance(inj_trace, dict):
+            return diag
+        inj_norm = []
+        for k in ("ui_norm", "intake_norm", "admitted_norm"):
+            v = inj_trace.get(k)
+            if isinstance(v, list):
+                inj_norm.extend([str(x) for x in v if str(x)])
+        injected_norm_set = set([_fix2ao_norm_url(u) for u in inj_norm if u])
+        diag["injected_norm"] = sorted(list(injected_norm_set))[:50]
+
+        counts, samples, reasons = _fix2ao_walk_mentions(out_obj, injected_norm_set, max_samples=8)
+        diag["counts"] = counts
+        diag["mention_samples"] = samples
+        diag["reason_buckets"] = dict(sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))) if isinstance(reasons, dict) else {}
+
+        pmc = _fix2ao_safe_get_primary_metrics_canonical(out_obj)
+        winner_keys = []
+        winners = 0
+        if isinstance(pmc, dict) and injected_norm_set:
+            for ck, m in pmc.items():
+                if not isinstance(m, dict):
+                    continue
+                su = m.get("source_url") or m.get("chosen_source_url") or m.get("preferred_url")
+                su_n = _fix2ao_norm_url(str(su or "")) if su else ""
+                if su_n and su_n in injected_norm_set:
+                    winners += 1
+                    winner_keys.append(str(ck))
+        diag["winners_from_injected"] = winners
+        diag["winner_keys_from_injected"] = winner_keys[:50]
+    except Exception:
+        pass
+    return diag
+# =====================================================================
+# END PATCH FIX2AO_INJECTED_FLOW_DIAG_V1
+# =====================================================================
+
 
 def _inj_trace_v1_enrich_diag_from_bsc(diag: dict, baseline_sources_cache: list) -> dict:
     """Add attempted/persisted evidence into diag_injected_urls from baseline_sources_cache."""
@@ -14554,6 +14716,19 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                             # Do not overwrite if already present; only fill/merge
                             if isinstance(analysis["results"]["debug"].get("inj_trace_v1"), dict):
                                 analysis["results"]["debug"]["inj_trace_v1"].update(_trace)
+
+                            # =====================================================================
+                            # PATCH FIX2AO_INJECTED_FLOW_DIAG_ATTACH_V1 (ADDITIVE)
+                            # Attach injected-flow diagnostics near inj_trace emission so both Analysis and Evolution
+                            # can be compared for divergence without changing any core logic.
+                            try:
+                                _inj_trace_obj = analysis["results"]["debug"].get("inj_trace_v1") if isinstance(analysis.get("results"), dict) and isinstance(analysis.get("results", {}).get("debug"), dict) else None
+                                if isinstance(_inj_trace_obj, dict):
+                                    analysis["results"]["debug"]["fix2ao_injected_flow_v1"] = _fix2ao_build_injected_flow_diag(analysis, _inj_trace_obj)
+                            except Exception:
+                                pass
+                            # END PATCH FIX2AO_INJECTED_FLOW_DIAG_ATTACH_V1
+                            # =====================================================================
                         except Exception:
                             pass
                         # =====================================================================
@@ -23516,6 +23691,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 output["results"]["debug"]["inj_trace_v1"] = _trace
 
                 # =====================================================================
+                # PATCH FIX2AO_INJECTED_FLOW_DIAG_ATTACH_V1 (ADDITIVE)
+                try:
+                    _inj_trace_obj = output["results"]["debug"].get("inj_trace_v1") if isinstance(output.get("results"), dict) and isinstance(output.get("results", {}).get("debug"), dict) else None
+                    if isinstance(_inj_trace_obj, dict):
+                        output["results"]["debug"]["fix2ao_injected_flow_v1"] = _fix2ao_build_injected_flow_diag(output, _inj_trace_obj)
+                except Exception:
+                    pass
+                # END PATCH FIX2AO_INJECTED_FLOW_DIAG_ATTACH_V1
+                # =====================================================================
+
+                # =====================================================================
                 # PATCH FIX41AFC12_POSTFETCH (ADDITIVE): inj_trace_v2_postfetch
                 #
                 # Emit a second trace after best-effort enrichment from scraped_meta / baseline cache so that
@@ -30362,6 +30548,17 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 out_replay["results"].setdefault("debug", {})
                 if isinstance(out_replay["results"].get("debug"), dict):
                     out_replay["results"]["debug"]["inj_trace_v1"] = _trace_replay
+
+                    # =====================================================================
+                    # PATCH FIX2AO_INJECTED_FLOW_DIAG_ATTACH_V1 (ADDITIVE) [REPLAY]
+                    try:
+                        _inj_trace_obj = out_replay["results"]["debug"].get("inj_trace_v1") if isinstance(out_replay.get("results"), dict) and isinstance(out_replay.get("results", {}).get("debug"), dict) else None
+                        if isinstance(_inj_trace_obj, dict):
+                            out_replay["results"]["debug"]["fix2ao_injected_flow_v1"] = _fix2ao_build_injected_flow_diag(out_replay, _inj_trace_obj)
+                    except Exception:
+                        pass
+                    # END PATCH FIX2AO_INJECTED_FLOW_DIAG_ATTACH_V1 [REPLAY]
+                    # =====================================================================
         except Exception:
             pass
         # =====================================================================
