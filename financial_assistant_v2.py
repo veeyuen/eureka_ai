@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ac_cfr_diagnosis_debug_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ae_injected_fetch_urls_merge_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -2891,6 +2891,78 @@ def rebuild_metrics_from_snapshots(
             rebuilt.setdefault("_fix41afc5_debug", {})
             if isinstance(rebuilt.get("_fix41afc5_debug"), dict):
                 rebuilt["_fix41afc5_debug"].update(dict(_fix41afc5_dbg))
+
+    # =====================================================================
+    # PATCH FIX2AD_INJ_ATTEMPT_GATING_DEBUG_V1 (ADDITIVE)
+    # Purpose: Explain precisely why an injected URL may be "admitted" (diag) but not "attempted" (fetch).
+    # Emits a small deterministic debug object into web_context['diag_injected_urls'].
+    # - No behavior changes; debug only.
+    # - Compares: raw extra_urls -> normalized extra_urls -> merged urls list.
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            web_context.setdefault("diag_injected_urls", {})
+            if isinstance(web_context.get("diag_injected_urls"), dict):
+                _fx2ad_diag = web_context.get("diag_injected_urls")
+                _fx2ad_raw_extra = []
+                try:
+                    _fx2ad_raw_extra = list((web_context or {}).get("extra_urls") or [])
+                except Exception:
+                    _fx2ad_raw_extra = []
+                _fx2ad_norm_extra = []
+                try:
+                    _fx2ad_norm_extra = _inj_diag_norm_url_list(_fx2ad_raw_extra)
+                except Exception:
+                    _fx2ad_norm_extra = []
+                _fx2ad_urls_list = []
+                try:
+                    _fx2ad_urls_list = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
+                except Exception:
+                    _fx2ad_urls_list = []
+                _fx2ad_norm_urls_list = []
+                try:
+                    _fx2ad_norm_urls_list = _inj_diag_norm_url_list(_fx2ad_urls_list)
+                except Exception:
+                    _fx2ad_norm_urls_list = []
+
+                # If "admitted" exists (from earlier trace), compare it to extra_urls.
+                _fx2ad_admitted_norm = []
+                try:
+                    _fx2ad_admitted_norm = _inj_diag_norm_url_list(_fx2ad_diag.get("admitted") or _fx2ad_diag.get("extra_urls_admitted") or [])
+                except Exception:
+                    _fx2ad_admitted_norm = []
+
+                _fx2ad_rows = []
+                try:
+                    for _u in _fx2ad_admitted_norm[:80]:
+                        _row = {
+                            "url": _u,
+                            "in_web_context_extra_urls_norm": (_u in set(_fx2ad_norm_extra)),
+                            "in_urls_after_merge_norm": (_u in set(_fx2ad_norm_urls_list)),
+                        }
+                        # Best-effort reason classification
+                        if not _row["in_web_context_extra_urls_norm"]:
+                            _row["gate_reason"] = "not_in_web_context_extra_urls"
+                        elif not _row["in_urls_after_merge_norm"]:
+                            _row["gate_reason"] = "not_merged_into_urls_list"
+                        else:
+                            _row["gate_reason"] = "present_in_urls_list"
+                        _fx2ad_rows.append(_row)
+                except Exception:
+                    _fx2ad_rows = _fx2ad_rows
+
+                _fx2ad_diag["fix2ad_inj_attempt_gating_v1"] = {
+                    "raw_extra_urls_count": len(_fx2ad_raw_extra),
+                    "norm_extra_urls_count": len(_fx2ad_norm_extra),
+                    "urls_list_count": len(_fx2ad_urls_list),
+                    "urls_list_norm_count": len(_fx2ad_norm_urls_list),
+                    "admitted_norm_count": len(_fx2ad_admitted_norm),
+                    "admitted_gate_rows": _fx2ad_rows,
+                    "sample_norm_extra_urls": _fx2ad_norm_extra[:20],
+                }
+    except Exception:
+        pass
+    # =====================================================================
     except Exception:
         pass
     # =====================================================================
@@ -28820,6 +28892,62 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     except Exception:
         pass
     # =====================================================================
+    # =====================================================================
+    # PATCH FIX2AE_INJECTED_FETCH_URLS_MERGE_V1 (ADDITIVE)
+    # Goal:
+    #   Ensure injected URLs are merged into the scrape/fetch URL universe in a shape-aware way.
+    #   If urls is a list of dicts, append {"url": u}; otherwise append the string u.
+    # Diagnostics:
+    #   web_context.debug.fix2ae reports counts and added URLs.
+    # Safety:
+    #   Additive only. Never removes or reorders existing entries.
+    # =====================================================================
+    try:
+        _fx2ae_inj_raw = list(_inj_extra_urls or [])
+        _fx2ae_inj_norm = _inj_diag_norm_url_list(_fx2ae_inj_raw) if _fx2ae_inj_raw else []
+        _fx2ae_added = []
+        _fx2ae_shape = "unknown"
+        _fx2ae_urls_before = []
+        _fx2ae_urls_after = []
+        if isinstance(urls, list):
+            _fx2ae_urls_before = [(_d.get("url") if isinstance(_d, dict) else _d) for _d in (urls or [])]
+            _urls_are_dicts = bool(urls) and isinstance(urls[0], dict)
+            _fx2ae_shape = "dicts" if _urls_are_dicts else "strings"
+            _seen_norm = set(_inj_diag_norm_url_list(_fx2ae_urls_before))
+            for _u in (_fx2ae_inj_norm or []):
+                if not _u:
+                    continue
+                if _u in _seen_norm:
+                    continue
+                _seen_norm.add(_u)
+                if _urls_are_dicts:
+                    urls.append({"url": _u})
+                else:
+                    urls.append(_u)
+                _fx2ae_added.append(_u)
+            _fx2ae_urls_after = [(_d.get("url") if isinstance(_d, dict) else _d) for _d in (urls or [])]
+        try:
+            if isinstance(web_context, dict):
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("fix2ae", {})
+                    if isinstance(web_context["debug"].get("fix2ae"), dict):
+                        web_context["debug"]["fix2ae"].update({
+                            "inj_count_raw": int(len(_fx2ae_inj_raw or [])),
+                            "inj_count_norm": int(len(_fx2ae_inj_norm or [])),
+                            "urls_shape": _fx2ae_shape,
+                            "urls_before_count": int(len(_inj_diag_norm_url_list(_fx2ae_urls_before) or [])),
+                            "urls_after_count": int(len(_inj_diag_norm_url_list(_fx2ae_urls_after) or [])),
+                            "added_count": int(len(_fx2ae_added or [])),
+                            "added_urls": list(_fx2ae_added or [])[:50],
+                        })
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # =====================================================================
+
+
 
 
 
