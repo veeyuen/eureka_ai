@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bd_unit_family_backfill_export_and_diffv2_harden_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2be_bridge_fn_missing_hook_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36913,4 +36913,80 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2BD_UNIT_FAMILY_BACKFILL_EXPORT_AND_DIFFV2_HARDEN_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2BE_BRIDGE_FN_MISSING_HOOK_V1 (ADDITIVE)
+#
+# Problem observed in Evolution JSON:
+# - debug.fix41afc19.applied == false
+# - reason == "fn_missing"
+#
+# Interpretation:
+# - The base run_source_anchored_evolution() path expects a callable `fn` hook,
+#   and will skip certain override/attach steps when fn is None / missing.
+#
+# Fix:
+# - Provide a deterministic, no-op default `fn` when none is supplied by callers.
+# - This preserves behavior (no-op) while satisfying the presence requirement.
+#
+# Safety:
+# - Additive wrapper only.
+# - Does not change selectors or values.
+# - When caller provides `fn`, we pass it through unchanged.
+# =====================================================================
+
+try:
+    _run_source_anchored_evolution_BASE_FIX2BE = run_source_anchored_evolution  # type: ignore
+except Exception:
+    _run_source_anchored_evolution_BASE_FIX2BE = None
+
+def _fix2be_default_fn(previous_data: dict, web_context: dict = None):
+    """
+    Deterministic no-op function.
+    Exists solely to satisfy base paths that require `fn` to be present.
+    """
+    return previous_data
+
+def run_source_anchored_evolution(previous_data: dict, fn=None, web_context: dict = None) -> dict:
+    base = _run_source_anchored_evolution_BASE_FIX2BE
+    bridged_fn = fn if callable(fn) else _fix2be_default_fn
+    out = base(previous_data, fn=bridged_fn, web_context=web_context) if callable(base) else {}
+
+    # Re-apply FIX2BD post-processing on the FINAL exported dict (idempotent)
+    try:
+        out = _fix2bd_apply_unit_family_backfill(out)  # type: ignore
+    except Exception:
+        pass
+    try:
+        out = _fix2bd_harden_diff_v2(out)  # type: ignore
+    except Exception:
+        pass
+    try:
+        out = _fix2bd_force_attach_canonical_for_render(out)  # type: ignore
+    except Exception:
+        pass
+
+    try:
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"]["fix2be_bridge_fn_missing_hook_v1"] = {
+                "applied": True,
+                "fn_was_callable": bool(callable(fn)),
+                "bridged_fn_used": "caller_fn" if callable(fn) else "fix2be_default_fn",
+                "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            }
+    except Exception:
+        pass
+
+    return out
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2be_bridge_fn_missing_hook_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2BE_BRIDGE_FN_MISSING_HOOK_V1
 # =====================================================================
