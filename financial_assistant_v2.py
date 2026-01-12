@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bb_final_export_audit_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bc_binder_hook_proof_and_diffv2_sentinel_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36528,4 +36528,174 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2BB_FINAL_EXPORT_AUDIT_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2BC_BINDER_HOOK_PROOF_AND_DIFFV2_SENTINEL_V1 (ADDITIVE)
+#
+# Goals:
+# 1) Prove whether the semantic tagging/binding layer is actually executing in a run,
+#    and why it is producing tagged=0 / bound=0 (without relying on upstream counters).
+# 2) Make diff_panel_v2_error easier to act on by emitting a deterministic sentinel row
+#    when V2 builder throws (esp. UnboundLocalError: summary) and returns no rows.
+#
+# Output:
+# - results.debug.fix2bc_binder_hook_proof_v1
+# - results.debug.fix2bc_diff_v2_sentinel_v1 (only when applicable)
+#
+# Safety:
+# - No selector changes.
+# - No value fabrication: binder proof only inspects; sentinel row only reports error.
+# =====================================================================
+
+try:
+    _run_source_anchored_evolution_BASE_FIX2BC = run_source_anchored_evolution  # type: ignore
+except Exception:
+    _run_source_anchored_evolution_BASE_FIX2BC = None
+
+def _fix2bc_safe_str(x):
+    try:
+        return "" if x is None else str(x)
+    except Exception:
+        return ""
+
+def _fix2bc_is_injected_url(url: str) -> bool:
+    # Reuse conservative heuristics (accio + any explicitly flagged injected URLs if present)
+    u = (url or "").strip().lower()
+    if not u:
+        return False
+    if "accio.com" in u:
+        return True
+    # also treat common injected fixtures as injected for diagnostics
+    if "statista" in u or "iea.org" in u or "ev-volumes.com" in u:
+        return True
+    return False
+
+def _fix2bc_collect_numbers(result_out: dict):
+    """
+    Collect extracted_numbers from baseline_sources_cache_current/baseline_sources_cache (top-level).
+    Returns list of (source_url, number_dict).
+    """
+    pairs = []
+    if not isinstance(result_out, dict):
+        return pairs
+    for pool_key in ("baseline_sources_cache_current", "baseline_sources_cache"):
+        pool = result_out.get(pool_key)
+        if not isinstance(pool, list):
+            continue
+        for srec in pool:
+            if not isinstance(srec, dict):
+                continue
+            surl = _fix2bc_safe_str(srec.get("url") or srec.get("source_url") or "")
+            nums = srec.get("extracted_numbers")
+            if not isinstance(nums, list):
+                continue
+            for n in nums:
+                if isinstance(n, dict):
+                    pairs.append((surl, n))
+    return pairs
+
+def _fix2bc_attach_binder_hook_proof(result_out: dict) -> dict:
+    if not isinstance(result_out, dict):
+        return result_out
+
+    dbg = result_out.setdefault("debug", {})
+    if not isinstance(dbg, dict):
+        dbg = {}
+        result_out["debug"] = dbg
+
+    pairs = _fix2bc_collect_numbers(result_out)
+
+    injected_pairs = [(u, n) for (u, n) in pairs if _fix2bc_is_injected_url(u)]
+    injected_sources = sorted(list({u for (u, _) in injected_pairs}))
+
+    total_nums = len(injected_pairs)
+    with_unit_family = 0
+    with_sem_tags = 0
+    with_force_ckey = 0
+    bind_reasons = {}
+
+    for u, n in injected_pairs:
+        uf = n.get("unit_family")
+        if isinstance(uf, str) and uf.strip():
+            with_unit_family += 1
+        if n.get("has_semantic_tags_v1") is True or isinstance(n.get("semantic_tags_v1"), dict):
+            with_sem_tags += 1
+        if n.get("fix2v_force_canonical_key"):
+            with_force_ckey += 1
+
+        bd = n.get("binding_diag_v1")
+        if isinstance(bd, dict) and bd.get("applied") is False:
+            r = _fix2bc_safe_str(bd.get("reason") or bd.get("fail_reason") or "")
+            if r:
+                bind_reasons[r] = bind_reasons.get(r, 0) + 1
+
+    top_reasons = sorted(bind_reasons.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+
+    proof = {
+        "injected_sources_detected": injected_sources[:20],
+        "injected_sources_count": int(len(injected_sources)),
+        "injected_extracted_numbers_total": int(total_nums),
+        "injected_numbers_with_unit_family": int(with_unit_family),
+        "injected_numbers_with_semantic_tags_v1": int(with_sem_tags),
+        "injected_numbers_with_fix2v_force_canonical_key": int(with_force_ckey),
+        "binding_rejection_top_reasons": [{"reason": k, "count": int(v)} for k, v in top_reasons],
+        "note": "If counts are all zero, FIX2AW/FIX2AV may not be running on this pool, or allowlist doesn't match injected URL.",
+    }
+
+    dbg["fix2bc_binder_hook_proof_v1"] = proof
+    return result_out
+
+def _fix2bc_apply_diff_v2_sentinel(result_out: dict) -> dict:
+    if not isinstance(result_out, dict):
+        return result_out
+    dbg = result_out.get("debug")
+    if not isinstance(dbg, dict):
+        return result_out
+
+    err = _fix2bc_safe_str(dbg.get("diff_panel_v2_error"))
+    if not err:
+        return result_out
+
+    # Only act when V2 rows are empty and error looks like the known crash
+    v2 = result_out.get("metric_changes_v2")
+    if isinstance(v2, list) and len(v2) > 0:
+        return result_out
+
+    if "UnboundLocalError" not in err and "summary" not in err:
+        return result_out
+
+    sentinel = {
+        "canonical_key": "__diff_v2_error__",
+        "metric_name": "Diff V2 Error",
+        "analysis_value": "",
+        "current_value": "",
+        "change_type": "error",
+        "anchor_used": False,
+        "diag": {
+            "fix2bc_diff_v2_sentinel_v1": {
+                "error": err,
+                "action": "V2 builder failed; produced sentinel row. Check upstream diff_panel_v2_error for stack context.",
+            }
+        },
+    }
+    result_out["metric_changes_v2"] = [sentinel]
+    dbg["fix2bc_diff_v2_sentinel_v1"] = {"applied": True, "error": err}
+    return result_out
+
+def run_source_anchored_evolution(previous_data: dict, fn=None, web_context: dict = None) -> dict:
+    base = _run_source_anchored_evolution_BASE_FIX2BC
+    out = base(previous_data, fn=fn, web_context=web_context) if callable(base) else {}
+    out = _fix2bc_attach_binder_hook_proof(out)
+    out = _fix2bc_apply_diff_v2_sentinel(out)
+    return out
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bc_binder_hook_proof_and_diffv2_sentinel_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2BC_BINDER_HOOK_PROOF_AND_DIFFV2_SENTINEL_V1
 # =====================================================================
