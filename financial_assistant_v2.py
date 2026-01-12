@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ae_injected_fetch_urls_merge_v1_fix2af_fetch_visibility_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ag_semantic_tagger_v1"  # PATCH FIX2AG (ADD): bump CODE_VERSION for semantic tagger v1
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -109,6 +109,210 @@ def _fix2af_norm_url(u: str) -> str:
         return s.rstrip("/")
     except Exception:
         return ""
+
+
+# =====================================================================
+# PATCH FIX2AG_SEMANTIC_TAGGER_V1 (ADDITIVE)
+# - Lightweight, dependency-free semantic role tagging on top of deterministic extraction
+# - NEVER invents numbers; only annotates extracted_numbers
+# - Cache keyed by stable hash: url_norm + context_snippet + normalized_numbers
+# - Single-sourced: called from the shared scrape/extract loop, thus used by Analysis + Evolution
+# =====================================================================
+
+# Feature flags (safe defaults)
+FIX2AG_SEMANTIC_TAGGER_ENABLED = bool(int(os.environ.get("YUREEKA_SEMANTIC_TAGGER_V1", "0") or "0"))
+FIX2AG_SEMANTIC_TAGGER_DEBUG_MAX = int(os.environ.get("YUREEKA_SEMANTIC_TAGGER_DEBUG_MAX", "50") or "50")
+
+# In-process cache (deterministic keys; values are structured dicts)
+_FIX2AG_SEM_CACHE_V1: Dict[str, dict] = {}
+
+def _fix2ag_sha256_hex(s: str) -> str:
+    try:
+        import hashlib
+        return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
+    except Exception:
+        return ""
+
+def _fix2ag_semantic_cache_key(url_norm: str, context_snippet: str, extracted_numbers: list) -> str:
+    try:
+        # Normalize numbers list deterministically
+        parts = []
+        for n in (extracted_numbers or []):
+            if not isinstance(n, dict):
+                continue
+            v = n.get("value_norm", n.get("value"))
+            u = n.get("unit_tag") or n.get("unit") or ""
+            rid = n.get("raw") or ""
+            parts.append(f"{v}|{u}|{rid}")
+        parts = sorted([str(p) for p in parts if p is not None])
+        base = f"{url_norm}\n{context_snippet}\n" + "\n".join(parts)
+        return _fix2ag_sha256_hex(base)
+    except Exception:
+        return ""
+
+def _fix2ag_extract_years(text: str) -> List[int]:
+    try:
+        import re
+        yrs = []
+        for m in re.finditer(r"\b(19\d{2}|20\d{2})\b", str(text or "")):
+            try:
+                yrs.append(int(m.group(1)))
+            except Exception:
+                pass
+        # Stable unique ordering
+        out = []
+        for y in yrs:
+            if y not in out:
+                out.append(y)
+        return out
+    except Exception:
+        return []
+
+def _fix2ag_guess_time_fields(context: str) -> dict:
+    """Heuristic time parser for a single snippet."""
+    ctx = str(context or "")
+    years = _fix2ag_extract_years(ctx)
+    # Prefer explicit "by <year>" as horizon_year, otherwise first year as year
+    horizon_year = None
+    year = None
+    evidence = []
+    try:
+        import re
+        m = re.search(r"\bby\s+(19\d{2}|20\d{2})\b", ctx, flags=re.IGNORECASE)
+        if m:
+            horizon_year = int(m.group(1))
+            evidence.append(m.group(0))
+    except Exception:
+        pass
+    if years:
+        if horizon_year and horizon_year in years:
+            # choose earliest non-horizon as year if present
+            for y in years:
+                if y != horizon_year:
+                    year = y
+                    break
+        if year is None:
+            year = years[0]
+    return {
+        "year": year,
+        "horizon_year": horizon_year,
+        "time_scope": ("forecast" if horizon_year else "point"),
+        "_time_evidence": evidence,
+        "_years_seen": years,
+    }
+
+def _fix2ag_semantic_tag_number(n: dict, context: str) -> dict:
+    """Return semantic tag dict for ONE extracted number dict (never changes numeric value)."""
+    ctx = str(context or "")
+    raw = str((n or {}).get("raw") or "")
+    unit_tag = str((n or {}).get("unit_tag") or (n or {}).get("unit") or "")
+    vt = (n or {}).get("value_norm", (n or {}).get("value"))
+    ctx_l = ctx.lower()
+    raw_l = raw.lower()
+    ut_l = unit_tag.lower()
+
+    evidence_tokens = []
+
+    # Metric type heuristics
+    metric_type = "other"
+    try:
+        if "%" in raw or ut_l in ["%", "percent", "percentage"]:
+            # distinguish share vs generic percent
+            if "share" in ctx_l or "market share" in ctx_l:
+                metric_type = "market_share"
+                evidence_tokens.append("share")
+            elif "growth" in ctx_l or "increase" in ctx_l or "yoy" in ctx_l:
+                metric_type = "other"  # growth rate; leave for later
+                evidence_tokens.append("growth/increase")
+            else:
+                metric_type = "other"
+        else:
+            # units/sales signals
+            if "sale" in ctx_l or "sales" in ctx_l:
+                metric_type = "sales_volume"
+                evidence_tokens.append("sales")
+            elif "unit" in ctx_l or "registrations" in ctx_l:
+                metric_type = "sales_volume"
+                evidence_tokens.append("units/registrations")
+    except Exception:
+        metric_type = "other"
+
+    # entity scope (very lightweight)
+    entity_scope = "unknown"
+    if "global" in ctx_l or "world" in ctx_l or "worldwide" in ctx_l:
+        entity_scope = "global"
+        evidence_tokens.append("global")
+
+    time_fields = _fix2ag_guess_time_fields(ctx)
+    evidence_tokens.extend(time_fields.get("_time_evidence") or [])
+
+    # evidence substrings that justify (keep short + deterministic)
+    # Include raw token itself when available
+    if raw:
+        evidence_tokens.append(raw)
+
+    # De-dupe stable
+    ev = []
+    for t in evidence_tokens:
+        t = str(t or "").strip()
+        if not t:
+            continue
+        if t not in ev:
+            ev.append(t)
+
+    return {
+        "metric_type": metric_type,
+        "time": {
+            "year": time_fields.get("year"),
+            "horizon_year": time_fields.get("horizon_year"),
+            "time_scope": time_fields.get("time_scope") or "point",
+        },
+        "entity_scope": entity_scope,
+        "evidence_tokens": ev[:12],  # keep bounded
+    }
+
+def _fix2ag_semantic_tag_extracted_numbers(url: str, extracted_numbers: list) -> dict:
+    """Tag extracted_numbers list. Returns a dict with per-id assignments + cache telemetry."""
+    url_norm = _fix2af_norm_url(url)
+    # group by context_snippet (sentence/window)
+    groups: Dict[str, List[dict]] = {}
+    for n in (extracted_numbers or []):
+        if not isinstance(n, dict):
+            continue
+        ctx = n.get("context_snippet") or n.get("context") or ""
+        groups.setdefault(str(ctx), []).append(n)
+
+    assignments = {}
+    cache_hits = 0
+    cache_misses = 0
+
+    for ctx, items in groups.items():
+        k = _fix2ag_semantic_cache_key(url_norm, ctx, items)
+        cached = _FIX2AG_SEM_CACHE_V1.get(k)
+        if isinstance(cached, dict):
+            cache_hits += 1
+            group_assign = cached.get("assignments") or {}
+        else:
+            cache_misses += 1
+            group_assign = {}
+            for n in items:
+                enid = n.get("extracted_number_id") or n.get("candidate_id") or n.get("anchor_hash") or ""
+                if not enid:
+                    continue
+                group_assign[str(enid)] = _fix2ag_semantic_tag_number(n, ctx)
+            _FIX2AG_SEM_CACHE_V1[k] = {"assignments": group_assign}
+
+        # merge
+        for enid, tag in (group_assign or {}).items():
+            assignments[str(enid)] = tag
+
+    return {
+        "url_norm": url_norm,
+        "assignments": assignments,
+        "cache_hits": cache_hits,
+        "cache_misses": cache_misses,
+        "cache_size": len(_FIX2AG_SEM_CACHE_V1),
+    }
 
 def _fix2af_normalize_url_items(urls):
     diag = {
@@ -6201,6 +6405,51 @@ def fetch_web_context(
                     meta["extracted_numbers"] = sort_snapshot_numbers(meta["extracted_numbers"])
                     meta["numbers_found"] = len(meta["extracted_numbers"])
                     # --------------------------------------------------------------
+
+
+                    # =====================================================================
+                    # PATCH FIX2AG_SEMANTIC_TAGGER_V1 (ADDITIVE): annotate extracted_numbers
+                    # =====================================================================
+                    try:
+                        if FIX2AG_SEMANTIC_TAGGER_ENABLED and isinstance(meta.get("extracted_numbers"), list) and meta.get("extracted_numbers"):
+                            _tag_res = _fix2ag_semantic_tag_extracted_numbers(urlv, meta.get("extracted_numbers"))
+                            _assign = (_tag_res or {}).get("assignments") or {}
+                            for _n in (meta.get("extracted_numbers") or []):
+                                if isinstance(_n, dict):
+                                    _enid = _n.get("extracted_number_id") or _n.get("candidate_id") or _n.get("anchor_hash") or ""
+                                    if _enid and _enid in _assign:
+                                        _n["semantic_tags_v1"] = _assign.get(_enid)
+                            meta["semantic_tagger_v1"] = {
+                                "enabled": True,
+                                "url_norm": (_tag_res or {}).get("url_norm"),
+                                "cache_hits": int((_tag_res or {}).get("cache_hits") or 0),
+                                "cache_misses": int((_tag_res or {}).get("cache_misses") or 0),
+                                "cache_size": int((_tag_res or {}).get("cache_size") or 0),
+                                "tagged_numbers": len(_assign),
+                            }
+                            # Lightweight run-level debug (bounded)
+                            _top = out.setdefault("semantic_tagger_v1", {})
+                            _top["enabled"] = True
+                            _top["version"] = "fix2ag_semantic_tagger_v1"
+                            _top["cache_hits"] = int(_top.get("cache_hits") or 0) + int((_tag_res or {}).get("cache_hits") or 0)
+                            _top["cache_misses"] = int(_top.get("cache_misses") or 0) + int((_tag_res or {}).get("cache_misses") or 0)
+                            _lst = _top.setdefault("tagged_snippets", [])
+                            if isinstance(_lst, list) and len(_lst) < FIX2AG_SEMANTIC_TAGGER_DEBUG_MAX:
+                                # capture one compact sample per URL
+                                _sample = {
+                                    "url": urlv,
+                                    "url_norm": (_tag_res or {}).get("url_norm"),
+                                    "tagged_numbers": len(_assign),
+                                }
+                                _lst.append(_sample)
+                        else:
+                            # disabled marker (helps audits)
+                            meta["semantic_tagger_v1"] = {"enabled": False}
+                    except Exception:
+                        try:
+                            meta["semantic_tagger_v1"] = {"enabled": False, "error": "exception"}
+                        except Exception:
+                            pass
 
                 out["scraped_meta"][url] = meta
                 out["scraped_content"][url] = cleaned
