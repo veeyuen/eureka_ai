@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ah_semantic_binding_v1_demo_slot_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ai_injected_url_parity_bridge_v1"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -3351,6 +3351,58 @@ def rebuild_metrics_from_snapshots(
                 }
     except Exception:
         pass
+    # =====================================================================
+    # PATCH FIX2AI_INJECTED_URL_PARITY_BRIDGE_V1 (ADDITIVE)
+    # Purpose:
+    #   Some runs provide injected URLs via web_context['extra_urls'] but do not populate
+    #   web_context['diag_injected_urls'] intake/ui fields. Downstream (including Analysis
+    #   inj_diag emission and injected-only semantic binding) prefers diag_injected_urls.
+    #
+    #   This bridge *does not* change which URLs are fetched; it only ensures the injected
+    #   URL list is visible consistently to both Analysis and Evolution diagnostics/binders.
+    #
+    # Behavior:
+    #   - If extra_urls exist and diag_injected_urls has no usable intake/ui list, populate:
+    #       diag_injected_urls['intake']      (raw list)
+    #       diag_injected_urls['intake_norm'] (normalized list)
+    #       diag_injected_urls['ui_norm']     (normalized list; best-effort)
+    #   - Emits small deterministic counters under diag_injected_urls.
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            web_context.setdefault("diag_injected_urls", {})
+            _d = web_context.get("diag_injected_urls") if isinstance(web_context.get("diag_injected_urls"), dict) else None
+            if isinstance(_d, dict):
+                _raw_extra = []
+                try:
+                    _raw_extra = list((web_context or {}).get("extra_urls") or [])
+                except Exception:
+                    _raw_extra = []
+                _raw_extra = [str(u or "").strip() for u in _raw_extra if str(u or "").strip()]
+                if _raw_extra:
+                    # Determine whether diag already has a usable intake/ui list
+                    _has_any = False
+                    for _k in ("intake_norm", "ui_norm", "intake", "ui", "extra_urls_normalized", "extra_urls"):
+                        _v = _d.get(_k)
+                        if isinstance(_v, (list, tuple)) and len(_v) > 0:
+                            _has_any = True
+                            break
+                    if not _has_any:
+                        _norm = []
+                        try:
+                            _norm = _inj_diag_norm_url_list(_raw_extra)
+                        except Exception:
+                            _norm = []
+                        _d.setdefault("intake", _raw_extra[:50])
+                        _d.setdefault("intake_norm", _norm[:50])
+                        _d.setdefault("ui_norm", _norm[:50])
+                        _d["fix2ai_parity_bridge_applied"] = True
+                        _d["fix2ai_extra_urls_count"] = int(len(_raw_extra))
+                        _d["fix2ai_extra_urls_norm_count"] = int(len(_norm))
+    except Exception:
+        pass
+    # END PATCH FIX2AI_INJECTED_URL_PARITY_BRIDGE_V1
+
 
 
     # =====================================================================
