@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2be_bridge_fn_missing_hook_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bf_injected_bind_and_hydrate_diff_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36989,4 +36989,326 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2BE_BRIDGE_FN_MISSING_HOOK_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2BF_INJECTED_BIND_AND_HYDRATE_DIFF_V1 (ADDITIVE)
+#
+# Purpose:
+# - For injected sources (e.g., accio.com), deterministically bind extracted numbers
+#   to existing canonical_keys (no selector changes), then hydrate Diff "Current"
+#   (results.metric_changes_legacy/current lane) when it is blank/N/A.
+#
+# Design:
+# - Do NOT alter canonical selection. We only:
+#   (a) assign fix2v_force_canonical_key on injected extracted_numbers
+#       using conservative heuristics + schema/metric_changes key discovery
+#   (b) fill metric_changes_legacy[].current_value / cur_value_norm when empty
+#       for those canonical_keys, and stamp provenance flags.
+#
+# Safety:
+# - Additive wrapper at run_source_anchored_evolution() level.
+# - No incumbent eviction; only fills Current when it is empty/N/A.
+# - If no good key match is found, it does nothing.
+# =====================================================================
+
+try:
+    _run_source_anchored_evolution_BASE_FIX2BF = run_source_anchored_evolution  # type: ignore
+except Exception:
+    _run_source_anchored_evolution_BASE_FIX2BF = None
+
+def _fix2bf_is_na(v):
+    try:
+        if v is None:
+            return True
+        s = str(v).strip()
+        return s == "" or s.upper() == "N/A"
+    except Exception:
+        return True
+
+def _fix2bf_lc(x):
+    try:
+        return (x or "").lower()
+    except Exception:
+        return ""
+
+def _fix2bf_is_injected_source(srec: dict) -> bool:
+    if not isinstance(srec, dict):
+        return False
+    if srec.get("injected") is True:
+        return True
+    url = str(srec.get("url") or srec.get("source_url") or "").lower()
+    return "accio.com" in url
+
+def _fix2bf_find_year(ctx: str):
+    c = _fix2bf_lc(ctx)
+    for y in ("2030", "2029", "2028", "2027", "2026", "2025", "2024", "2023"):
+        if y in c:
+            return int(y)
+    return None
+
+def _fix2bf_extract_ctx(n: dict) -> str:
+    for k in ("context_snippet", "ctx_head", "context", "sentence", "nearby_text"):
+        v = n.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+    return ""
+
+def _fix2bf_pick_key(candidates: list, prefer_substrings: list):
+    if not candidates:
+        return None
+    # rank by number of prefer_substrings matched
+    scored = []
+    for ck in candidates:
+        s = 0
+        l = ck.lower()
+        for p in prefer_substrings:
+            if p in l:
+                s += 1
+        scored.append(( -s, ck))
+    scored.sort()
+    return scored[0][1]
+
+def _fix2bf_discover_keys(out: dict):
+    """
+    Discover canonical keys available in this run, using metric_changes_legacy (and schema if present).
+    """
+    keys = set()
+    for lane in ("metric_changes_v2", "metric_changes_legacy", "metric_changes"):
+        rows = out.get(lane)
+        if isinstance(rows, list):
+            for r in rows:
+                if isinstance(r, dict):
+                    ck = r.get("canonical_key") or r.get("canonical") or r.get("canonical_id")
+                    if isinstance(ck, str) and ck.strip():
+                        keys.add(ck.strip())
+    # also include schema keys if present
+    msf = out.get("metric_schema_frozen")
+    if isinstance(msf, dict):
+        for ck in msf.keys():
+            if isinstance(ck, str) and ck.strip():
+                keys.add(ck.strip())
+    return sorted(keys)
+
+def _fix2bf_bind_injected_numbers(out: dict):
+    """
+    Assign fix2v_force_canonical_key to injected extracted_numbers when confidently mappable.
+    """
+    dbg = out.setdefault("debug", {})
+    if not isinstance(dbg, dict):
+        dbg = {}
+        out["debug"] = dbg
+
+    keys = _fix2bf_discover_keys(out)
+
+    bound = 0
+    considered = 0
+    bindings = []  # for audit
+
+    # Build simple key indexes
+    keys_by_year = {}
+    for ck in keys:
+        for y in ("2023","2024","2025","2026","2027","2028","2029","2030"):
+            if y in ck:
+                keys_by_year.setdefault(int(y), []).append(ck)
+
+    bcc = out.get("baseline_sources_cache_current")
+    if not isinstance(bcc, list):
+        return 0
+
+    for srec in bcc:
+        if not _fix2bf_is_injected_source(srec):
+            continue
+        nums = srec.get("extracted_numbers")
+        if not isinstance(nums, list):
+            continue
+
+        src_url = str(srec.get("url") or srec.get("source_url") or "")
+        for n in nums:
+            if not isinstance(n, dict):
+                continue
+            considered += 1
+            if n.get("fix2v_force_canonical_key"):
+                continue
+
+            uf = str(n.get("unit_family") or "")
+            raw = str(n.get("raw") or n.get("value") or "")
+            unit_tag = str(n.get("unit_tag") or n.get("unit") or "")
+            ctx = _fix2bf_extract_ctx(n)
+            year = _fix2bf_find_year(ctx) or _fix2bf_find_year(raw)
+
+            # percent => market/share key for that year
+            if uf == "percent" or "%" in raw or unit_tag == "%":
+                if year is None:
+                    continue
+                cands = [ck for ck in keys_by_year.get(year, []) if ck.endswith("__percent")]
+                if not cands:
+                    continue
+                # prefer "share" then "market_share"
+                ck = _fix2bf_pick_key(cands, ["market_share", "share"])
+                if ck:
+                    n["fix2v_force_canonical_key"] = ck
+                    bound += 1
+                    bindings.append({"canonical_key": ck, "raw": raw, "value_norm": n.get("value_norm"), "source_url": src_url})
+                    continue
+
+            # unit_sales => sales/units key for that year (allow __unknown too because schema uses unknown in your runs)
+            if uf == "unit_sales" or unit_tag == "M" or "million" in raw.lower():
+                if year is None:
+                    continue
+                cands = [ck for ck in keys_by_year.get(year, []) if ("sales" in ck.lower() or "units" in ck.lower())]
+                if not cands:
+                    continue
+                ck = _fix2bf_pick_key(cands, ["projected", "project", "sales", "units_sold", "ev_sales"])
+                if ck:
+                    n["fix2v_force_canonical_key"] = ck
+                    bound += 1
+                    bindings.append({"canonical_key": ck, "raw": raw, "value_norm": n.get("value_norm"), "source_url": src_url})
+                    continue
+
+    dbg["fix2bf_injected_bind_v1"] = {
+        "applied": True,
+        "considered_numbers": int(considered),
+        "bound_numbers": int(bound),
+        "bindings_sample": bindings[:8],
+        "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    }
+    return bound
+
+def _fix2bf_hydrate_metric_changes_current(out: dict):
+    """
+    Populate metric_changes_legacy current_value when empty/N/A using injected bound numbers.
+    """
+    dbg = out.setdefault("debug", {})
+    if not isinstance(dbg, dict):
+        dbg = {}
+        out["debug"] = dbg
+
+    bcc = out.get("baseline_sources_cache_current")
+    if not isinstance(bcc, list):
+        return 0
+
+    # Build best injected candidate per canonical_key
+    best = {}
+    for srec in bcc:
+        if not _fix2bf_is_injected_source(srec):
+            continue
+        src_url = str(srec.get("url") or srec.get("source_url") or "")
+        nums = srec.get("extracted_numbers")
+        if not isinstance(nums, list):
+            continue
+        for n in nums:
+            if not isinstance(n, dict):
+                continue
+            ck = n.get("fix2v_force_canonical_key")
+            if not isinstance(ck, str) or not ck.strip():
+                continue
+            ck = ck.strip()
+            vn = n.get("value_norm")
+            raw = n.get("raw") or n.get("value")
+            # choose first; if multiple, prefer one with anchor_hash
+            cur = best.get(ck)
+            ah = n.get("anchor_hash")
+            score = 0
+            if ah:
+                score += 2
+            if isinstance(vn, (int, float)):
+                score += 1
+            if cur is None or score > cur.get("_score", 0):
+                best[ck] = {
+                    "_score": score,
+                    "value_norm": vn,
+                    "raw": raw,
+                    "unit_family": n.get("unit_family"),
+                    "unit_tag": n.get("unit_tag") or n.get("unit"),
+                    "anchor_hash": ah,
+                    "source_url": src_url,
+                }
+
+    rows = out.get("metric_changes_legacy")
+    if not isinstance(rows, list):
+        return 0
+
+    promoted = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        ck = r.get("canonical_key")
+        if not isinstance(ck, str) or not ck.strip():
+            continue
+        ck = ck.strip()
+        if ck not in best:
+            continue
+        if not _fix2bf_is_na(r.get("current_value")):
+            continue  # do not overwrite incumbents
+        cand = best[ck]
+        # hydrate
+        r["current_value"] = cand.get("raw") if cand.get("raw") is not None else str(cand.get("value_norm"))
+        r["cur_value_norm"] = cand.get("value_norm")
+        if r.get("current_value_norm") is None:
+            r["current_value_norm"] = cand.get("value_norm")
+        if r.get("cur_unit_cmp") in (None, "", "unknown"):
+            # prefer unit_family for comparison, else unit_tag
+            r["cur_unit_cmp"] = cand.get("unit_family") or cand.get("unit_tag") or r.get("cur_unit_cmp")
+        r["injected_source_contributed"] = True
+        r["injected_sources_v1"] = [{
+            "source_url": cand.get("source_url"),
+            "anchor_hash": cand.get("anchor_hash"),
+            "raw": cand.get("raw"),
+            "value_norm": cand.get("value_norm"),
+            "unit_family": cand.get("unit_family"),
+            "unit_tag": cand.get("unit_tag"),
+        }]
+        promoted += 1
+
+    dbg["fix2bf_hydrate_metric_changes_current_v1"] = {
+        "applied": True,
+        "candidates_by_canonical_key": int(len(best)),
+        "promoted_rows": int(promoted),
+        "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    }
+    return promoted
+
+def run_source_anchored_evolution(previous_data: dict, fn=None, web_context: dict = None) -> dict:
+    base = _run_source_anchored_evolution_BASE_FIX2BF
+    out = base(previous_data, fn=fn, web_context=web_context) if callable(base) else {}
+
+    # Ensure unit_family backfill (from FIX2BD) if available
+    try:
+        out = _fix2bd_apply_unit_family_backfill(out)  # type: ignore
+    except Exception:
+        pass
+
+    # Bind injected numbers to existing canonical keys
+    try:
+        _fix2bf_bind_injected_numbers(out)
+    except Exception:
+        pass
+
+    # Hydrate metric_changes current values from injected bound candidates
+    try:
+        _fix2bf_hydrate_metric_changes_current(out)
+    except Exception:
+        pass
+
+    # Preserve existing post-processing (diff v2 harden + canonical_for_render attach) if present
+    try:
+        out = _fix2bd_harden_diff_v2(out)  # type: ignore
+    except Exception:
+        pass
+    try:
+        out = _fix2bd_force_attach_canonical_for_render(out)  # type: ignore
+    except Exception:
+        pass
+
+    return out
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bf_injected_bind_and_hydrate_diff_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2BF_INJECTED_BIND_AND_HYDRATE_DIFF_V1
 # =====================================================================
