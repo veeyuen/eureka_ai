@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1"  # PATCH FIX2BQ (ADD): bump CODE_VERSION to match patch filename
+CODE_VERSION = "FIX2BR_CUR_INDEX_MANIFEST_V1"  # PATCH FIX2BQ (ADD): bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -30033,6 +30033,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 _fix2bq__apply(out)
             except Exception:
                 pass
+            try:
+                _fix2br__emit_manifest(out)
+            except Exception:
+                pass
             return out
         except Exception as e:
             # Fall through to original behavior if anything unexpected
@@ -30063,6 +30067,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 pass
             try:
                 _fix2bq__apply(out_changed)
+            except Exception:
+                pass
+            try:
+                _fix2br__emit_manifest(out_changed)
             except Exception:
                 pass
             return out_changed
@@ -30272,6 +30280,202 @@ def _fix2bq__apply(output):
 # =========================
 # PATCH END: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
 # =========================
+
+
+# =========================
+# PATCH START: FIX2BR_CUR_INDEX_MANIFEST_V1
+# CODE_VERSION: FIX2BR_CUR_INDEX_MANIFEST_V1
+#
+# Purpose:
+#   Emit a "current index manifest" so we can deterministically see:
+#     - which pool(s) exist at final render time
+#     - what canonical keys are present in each pool
+#     - whether injected URLs contributed to any of them
+#   Additive-only, non-invasive, safe in production (lightweight).
+#
+# Classification: DIAGNOSTIC (intended removable after closure)
+# =========================
+
+def _fix2br__safe_get(d, k, default=None):
+    try:
+        if isinstance(d, dict) and k in d:
+            return d[k]
+    except Exception:
+        pass
+    return default
+
+def _fix2br__as_dict(x):
+    return x if isinstance(x, dict) else {}
+
+def _fix2br__as_list(x):
+    return x if isinstance(x, list) else []
+
+def _fix2br__pool_keys_sample(pool, n=12):
+    try:
+        if isinstance(pool, dict):
+            keys = list(pool.keys())
+            return {"keys_n": int(len(keys)), "keys_sample": [str(k) for k in keys[:n]]}
+        if isinstance(pool, list):
+            # If list of dicts, try canonical_key fields
+            keys = []
+            for it in pool:
+                if not isinstance(it, dict):
+                    continue
+                ck = (it.get("canonical_key") or it.get("canonical_metric_id") or it.get("metric_id") or it.get("id"))
+                if ck:
+                    keys.append(str(ck))
+            return {"keys_n": int(len(keys)), "keys_sample": keys[:n]}
+    except Exception:
+        pass
+    return {"keys_n": 0, "keys_sample": []}
+
+def _fix2br__find_injected_urls(output):
+    injected = []
+    try:
+        # Prefer explicit injection traces if present
+        dbg = _fix2br__as_dict(output.get("debug"))
+        inj = _fix2br__as_dict(dbg.get("inj_trace_v2_postfetch"))
+        for u in _fix2br__as_list(inj.get("rebuild_selected_norm")):
+            if isinstance(u, str) and u.startswith("http"):
+                # Only treat as injected if it appears in extra_urls or is tagged injected later
+                injected.append(u)
+
+        # Fallback: scan source_results for injected flags / injected_reason
+        results = _fix2br__as_dict(output.get("results"))
+        for sr in _fix2br__as_list(results.get("source_results")):
+            if not isinstance(sr, dict):
+                continue
+            if sr.get("injected") or sr.get("injected_reason") or sr.get("source_kind") == "injected":
+                u = sr.get("url") or sr.get("source_url")
+                if isinstance(u, str) and u.startswith("http"):
+                    injected.append(u)
+
+        # De-dup while preserving order
+        out = []
+        seen = set()
+        for u in injected:
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+    except Exception:
+        return []
+
+def _fix2br__pool_injected_presence(pool, injected_urls, max_hits=5):
+    hits = []
+    try:
+        if not injected_urls:
+            return {"present": False, "hits": []}
+
+        # Dict pools: scan common source fields in values
+        if isinstance(pool, dict):
+            for k, v in pool.items():
+                if not isinstance(v, dict):
+                    continue
+                su = v.get("source_url") or v.get("url") or v.get("source") or v.get("source_kind")
+                if isinstance(su, str):
+                    for u in injected_urls:
+                        if u and u in su:
+                            hits.append({"canonical_key": str(k), "source_url": su})
+                            if len(hits) >= max_hits:
+                                break
+                if len(hits) >= max_hits:
+                    break
+
+        # List pools: scan dict items
+        if isinstance(pool, list):
+            for it in pool:
+                if not isinstance(it, dict):
+                    continue
+                su = it.get("source_url") or it.get("url") or it.get("source")
+                if isinstance(su, str):
+                    for u in injected_urls:
+                        if u and u in su:
+                            hits.append({"item": it.get("canonical_key") or it.get("metric_id"), "source_url": su})
+                            if len(hits) >= max_hits:
+                                break
+                if len(hits) >= max_hits:
+                    break
+
+        return {"present": bool(hits), "hits": hits}
+    except Exception:
+        return {"present": False, "hits": []}
+
+def _fix2br__emit_manifest(output):
+    try:
+        if not isinstance(output, dict):
+            return
+        results = _fix2br__as_dict(output.get("results"))
+        dbg = _fix2br__as_dict(results.get("debug") or output.get("debug"))
+        # Ensure results.debug exists (preferred home)
+        if "results" in output:
+            results.setdefault("debug", {})
+            dbg_out = results["debug"]
+        else:
+            output.setdefault("debug", {})
+            dbg_out = output["debug"]
+
+        injected_urls = _fix2br__find_injected_urls(output)
+
+        # Candidate pools to inspect
+        pools = {}
+
+        # Canonical-for-render v1 (both common locations)
+        pools["results.debug.canonical_for_render_v1"] = _fix2br__safe_get(dbg, "canonical_for_render_v1")
+        pools["output_debug.canonical_for_render_v1"] = _fix2br__safe_get(_fix2br__as_dict(output.get("output_debug")), "canonical_for_render_v1")
+
+        # Primary canonical metrics (common locations)
+        pools["primary_metrics_canonical"] = _fix2br__safe_get(output, "primary_metrics_canonical")
+        pools["results.primary_metrics_canonical"] = _fix2br__safe_get(results, "primary_metrics_canonical")
+        pr = _fix2br__as_dict(results.get("primary_response"))
+        pools["results.primary_response.primary_metrics_canonical"] = _fix2br__safe_get(pr, "primary_metrics_canonical")
+
+        # Winner trace (key universe evidence)
+        pools["results.debug.evo_winner_trace_v1"] = _fix2br__safe_get(dbg, "evo_winner_trace_v1")
+
+        # Build manifest
+        manifest = {
+            "applied": True,
+            "injected_urls": injected_urls[:10],
+            "pools": {},
+        }
+
+        for name, pool in pools.items():
+            ps = _fix2br__pool_keys_sample(pool)
+            pres = _fix2br__pool_injected_presence(pool, injected_urls)
+            manifest["pools"][name] = {
+                "exists": bool(pool),
+                "keys_n": ps.get("keys_n", 0),
+                "keys_sample": ps.get("keys_sample", []),
+                "injected_present": pres.get("present", False),
+                "injected_hits": pres.get("hits", []),
+                "type": ("dict" if isinstance(pool, dict) else ("list" if isinstance(pool, list) else str(type(pool).__name__))),
+            }
+
+        # Heuristic: which pool is most likely being used for "current join"
+        # (purely a hint; not relied upon by logic)
+        likely = None
+        for candidate in [
+            "results.debug.canonical_for_render_v1",
+            "output_debug.canonical_for_render_v1",
+            "results.primary_response.primary_metrics_canonical",
+            "results.primary_metrics_canonical",
+            "primary_metrics_canonical",
+        ]:
+            if manifest["pools"].get(candidate, {}).get("keys_n", 0) > 0:
+                likely = candidate
+                break
+        manifest["likely_current_pool"] = likely
+
+        dbg_out["fix2br_cur_index_manifest_v1"] = manifest
+    except Exception:
+        pass
+
+# =========================
+# PATCH END: FIX2BR_CUR_INDEX_MANIFEST_V1
+# =========================
+
+
 
 
 # ==============================================================================
