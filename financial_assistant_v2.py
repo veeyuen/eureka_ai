@@ -35390,3 +35390,129 @@ except Exception:
 # =====================================================================
 # PATCH END: FIX2C1_EVO_HYDRATE_CURRENT_V1
 # =====================================================================
+
+# =========================
+# PATCH START: FIX2C3_EVO_POST_APPLY_V1
+# CODE_VERSION: FIX2C3_EVO_POST_APPLY_V1
+#
+# Problem observed (post-FIX2C2 JSON):
+# - Evolution 'Current' column still blank/N/A.
+# - Root cause: run_source_anchored_evolution() recompute_changed path returns `out`
+#   without applying FIX2C1 (and therefore without wiring shared canonical pools into
+#   producer fields). FIX2C1 was only applied on replay/other paths.
+#
+# Fix:
+# - Wrap the active run_source_anchored_evolution entrypoint so FIX2C1 is ALWAYS
+#   applied to the final Evolution output before it reaches Streamlit packaging.
+#
+# Scope:
+# - Core engine only. No UI changes.
+# - Additive-only: preserves the existing function as *_BASE_FIX2C3.
+#
+# Diagnostics:
+# - Emits out.debug.fix2c3 with before/after key counts.
+# =========================
+
+try:
+    CODE_VERSION = "FIX2C3_EVO_POST_APPLY_V1"
+except Exception:
+    pass
+
+# Patch tracker entry (keep short, additive)
+try:
+    _pt = globals().get("PATCH_TRACKER_V1")
+    if isinstance(_pt, list) and not any(isinstance(x, dict) and x.get("patch") == "FIX2C3_EVO_POST_APPLY_V1" for x in _pt):
+        _pt.append({
+            "patch": "FIX2C3_EVO_POST_APPLY_V1",
+            "date": "2026-01-13",
+            "class": "REFAC",
+            "keep": True,
+            "purpose": "Ensure FIX2C1 wiring is always applied to Evolution outputs so shared canonical pools publish into primary_metrics_canonical and diff hydration can populate Current.",
+            "safe_to_remove_after_consolidation": False
+        })
+except Exception:
+    pass
+
+# Preserve active entrypoint and wrap
+try:
+    if callable(globals().get("run_source_anchored_evolution")) and not callable(globals().get("run_source_anchored_evolution_BASE_FIX2C3")):
+        run_source_anchored_evolution_BASE_FIX2C3 = globals().get("run_source_anchored_evolution")
+
+        def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+            out = None
+            try:
+                out = run_source_anchored_evolution_BASE_FIX2C3(previous_data, web_context=web_context)
+            except Exception as e:
+                # preserve base behavior (never raise to UI)
+                try:
+                    out = {"status": "failed", "message": f"run_source_anchored_evolution crashed: {e}", "code_version": CODE_VERSION}
+                except Exception:
+                    out = {"status": "failed", "message": "run_source_anchored_evolution crashed", "code_version": "FIX2C3_EVO_POST_APPLY_V1"}
+
+            # Always apply FIX2C1 wiring (if available)
+            try:
+                if isinstance(out, dict) and callable(globals().get("_fix2c1__apply")):
+                    prev_full = None
+                    try:
+                        prev_full = globals().get("_fix24_get_prev_full_payload")(previous_data or {}) if callable(globals().get("_fix24_get_prev_full_payload")) else (previous_data or {})
+                    except Exception:
+                        prev_full = previous_data or {}
+
+                    # Before/after counts for diagnostics
+                    _before_top = 0
+                    _before_res = 0
+                    try:
+                        _before_top = int(len(out.get("primary_metrics_canonical") or {})) if isinstance(out.get("primary_metrics_canonical"), dict) else 0
+                    except Exception:
+                        _before_top = 0
+                    try:
+                        _r0 = out.get("results")
+                        _before_res = int(len((_r0 or {}).get("primary_metrics_canonical") or {})) if isinstance(_r0, dict) and isinstance((_r0 or {}).get("primary_metrics_canonical"), dict) else 0
+                    except Exception:
+                        _before_res = 0
+
+                    out = globals().get("_fix2c1__apply")(out, prev_full, web_context)
+
+                    _after_top = 0
+                    _after_res = 0
+                    try:
+                        _after_top = int(len(out.get("primary_metrics_canonical") or {})) if isinstance(out.get("primary_metrics_canonical"), dict) else 0
+                    except Exception:
+                        _after_top = 0
+                    try:
+                        _r1 = out.get("results")
+                        _after_res = int(len((_r1 or {}).get("primary_metrics_canonical") or {})) if isinstance(_r1, dict) and isinstance((_r1 or {}).get("primary_metrics_canonical"), dict) else 0
+                    except Exception:
+                        _after_res = 0
+
+                    out.setdefault("debug", {})
+                    if isinstance(out.get("debug"), dict):
+                        out["debug"].setdefault("fix2c3", {})
+                        if isinstance(out["debug"].get("fix2c3"), dict):
+                            out["debug"]["fix2c3"].update({
+                                "applied": True,
+                                "pmc_top_before_n": _before_top,
+                                "pmc_results_before_n": _before_res,
+                                "pmc_top_after_n": _after_top,
+                                "pmc_results_after_n": _after_res,
+                            })
+            except Exception:
+                pass
+
+            # Stamp version late (do not overwrite if already present)
+            try:
+                if isinstance(out, dict):
+                    out.setdefault("code_version", CODE_VERSION)
+            except Exception:
+                pass
+
+            return out
+
+        # publish wrapper
+        globals()["run_source_anchored_evolution"] = run_source_anchored_evolution
+except Exception:
+    pass
+
+# =========================
+# PATCH END: FIX2C3_EVO_POST_APPLY_V1
+# =========================
