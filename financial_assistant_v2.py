@@ -5334,7 +5334,7 @@ def source_quality_score(sources: List[str]) -> float:
     return sum(scores) / len(scores) if scores else 50.0
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
+def search_serpapi(query: str, num_results: int = 2) -> List[Dict]:
     """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
