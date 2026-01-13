@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BU_CORE_CONTRACTS_V1"  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+CODE_VERSION = "FIX2BV_SHARED_CANON_ENGINE_V1"  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -96,20 +96,28 @@ PATCH_TRACKER_V1 = [
     },
     {
         "patch": "FIX2BT_EVO_CANONICAL_PARITY_V1",
-        "type": "GOLDEN",
-        "scope": "evolution",
+        "date": "2026-01-13",
+        "class": "GOLDEN",
+        "keep": True,
         "purpose": "Run schema-only rebuild against current snapshots using previous (analysis) frozen schema; wire rebuilt canonical pool into canonical_for_render_v1 for diff hydration.",
         "safe_to_remove_after_consolidation": False
     },
-
-{
-    "patch": "FIX2BU_CORE_CONTRACTS_V1",
-    "date": "2026-01-13",
-    "class": "GOLDEN",
-    "keep": True,
-    "purpose": "Core-engine contract lock + integrated diagnostics scaffold (no wrapper/UI changes). Adds structured contract violation reporting for canonicalisation keyspace, hashing/evidence fields, and diff hydration; optional strict enforcement.",
-    "safe_to_remove_after_consolidation": False
-},
+    {
+        "patch": "FIX2BU_CORE_CONTRACTS_V1",
+        "date": "2026-01-13",
+        "class": "GOLDEN",
+        "keep": True,
+        "purpose": "Core-engine contract lock + integrated diagnostics scaffold (no wrapper/UI changes). Adds structured contract violation reporting for canonicalisation keyspace, hashing/evidence fields, and diff hydration; optional strict enforcement.",
+        "safe_to_remove_after_consolidation": False
+    },
+    {
+        "patch": "FIX2BV_SHARED_CANON_ENGINE_V1",
+        "date": "2026-01-13",
+        "class": "REFAC",
+        "keep": True,
+        "purpose": "Patch 2: Add shared-canonical-engine path for Evolution using the Analysis canonical final selector (read-only by default). Computes shared rebuild on current snapshots, compares against FIX2BT schema-only rebuild, and emits structured diagnostics. Optional toggle to wire shared pool into canonical_for_render_v1 after validation.",
+        "safe_to_remove_after_consolidation": False
+    }
 ]
 
 
@@ -30250,6 +30258,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 pass
             try:
                 _fix2bt__apply(out, prev_full, wc)
+                _fix2bv__apply(out, prev_full, wc)
             except Exception:
                 pass
             try:
@@ -30943,6 +30952,169 @@ def _fix2bt__apply(output: dict, prev_full: dict = None, web_context: dict = Non
 
 # =========================
 # PATCH END: FIX2BT_EVO_CANONICAL_PARITY_V1
+# =========================
+# PATCH START: FIX2BV_SHARED_CANON_ENGINE_V1 (ADDITIVE)
+# Purpose:
+#   Patch 2 (refactor alignment): Introduce a shared canonicalisation engine path for Evolution
+#   that reuses Analysis' canonical final selector logic. This is READ-ONLY by default to avoid
+#   surprising behavior changes. It computes a shared rebuild on current snapshots, compares
+#   it against FIX2BT schema-only rebuild, and emits structured diagnostics under results.debug.fix2bv.
+#
+# What this patch does:
+#   - Adds FIX2BV config toggle (WIRE_SHARED_CANONICAL_FOR_RENDER_V1 default False)
+#   - Computes shared canonical pool via rebuild_metrics_from_snapshots_analysis_canonical_v1
+#   - Compares keyspace and basic field coverage vs FIX2BT rebuild (if present)
+#   - Optionally wires canonical_for_render_v1 to the shared pool (only if toggle True)
+#
+# Safety:
+#   - No wrapper/UI changes.
+#   - Default mode does NOT change any downstream behavior (diagnostics only).
+#   - All changes are additive and guarded by try/except.
+# =========================
+
+FIX2BV_SHARED_CANON_ENGINE_V1 = {
+    # Default False: diagnostics-only. Set True only after golden tests confirm parity.
+    "WIRE_SHARED_CANONICAL_FOR_RENDER_V1": False,
+
+    # If True, include samples of differing keys for quick triage.
+    "INCLUDE_SAMPLES": True,
+}
+
+def _fix2bv__as_dict(x):
+    return x if isinstance(x, dict) else {}
+
+def _fix2bv__as_list(x):
+    return x if isinstance(x, list) else []
+
+def _fix2bv__ensure_results_debug(output):
+    if not isinstance(output, dict):
+        return None, None
+    results = output.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        output["results"] = results
+    dbg = results.get("debug")
+    if not isinstance(dbg, dict):
+        dbg = {}
+        results["debug"] = dbg
+    return results, dbg
+
+def _fix2bv__keyset(d):
+    try:
+        return set(d.keys()) if isinstance(d, dict) else set()
+    except Exception:
+        return set()
+
+def _fix2bv__pool_field_coverage(pool: dict) -> dict:
+    # Minimal coverage stats to detect structural drift without assuming schema details.
+    out = {"n": 0, "has_value_norm_n": 0, "has_unit_tag_n": 0, "has_anchor_hash_n": 0}
+    if not isinstance(pool, dict):
+        return out
+    out["n"] = int(len(pool))
+    for _, v in pool.items():
+        if isinstance(v, dict):
+            if v.get("value_norm") is not None:
+                out["has_value_norm_n"] += 1
+            if v.get("unit_tag") is not None:
+                out["has_unit_tag_n"] += 1
+            if v.get("anchor_hash") is not None:
+                out["has_anchor_hash_n"] += 1
+    return out
+
+def _fix2bv__apply(output: dict, prev_full: dict = None, web_context: dict = None):
+    try:
+        if not isinstance(output, dict):
+            return
+
+        results, dbg = _fix2bv__ensure_results_debug(output)
+        if results is None or dbg is None:
+            return
+
+        # Pull current snapshots cache (prefer results.*)
+        bsc_cur = (
+            results.get("baseline_sources_cache_current")
+            or output.get("baseline_sources_cache_current")
+            or results.get("baseline_sources_cache")
+            or output.get("baseline_sources_cache")
+        )
+
+        if not isinstance(prev_full, dict):
+            prev_full = {}
+
+        fn_shared = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+        if not callable(fn_shared):
+            dbg.setdefault("fix2bv", {})
+            if isinstance(dbg.get("fix2bv"), dict):
+                dbg["fix2bv"].update({
+                    "applied": False,
+                    "reason": "missing_rebuild_metrics_from_snapshots_analysis_canonical_v1",
+                })
+            return
+
+        shared_rebuilt = fn_shared(prev_full, bsc_cur, web_context=web_context)
+
+        # FIX2BT pool (if present) for comparison. Prefer dbg.evo_primary_metrics_canonical_v1 if it exists.
+        bt_pool = _fix2bv__as_dict(dbg.get("evo_primary_metrics_canonical_v1") or dbg.get("canonical_for_render_v1") or {})
+
+        shared_keys = _fix2bv__keyset(shared_rebuilt)
+        bt_keys = _fix2bv__keyset(bt_pool)
+
+        only_shared = sorted(list(shared_keys - bt_keys))
+        only_bt = sorted(list(bt_keys - shared_keys))
+        overlap = shared_keys & bt_keys
+
+        diag = {
+            "applied": True,
+            "wired": False,
+            "shared_rebuilt_keys_n": int(len(shared_keys)),
+            "bt_keys_n": int(len(bt_keys)),
+            "overlap_keys_n": int(len(overlap)),
+            "only_shared_keys_n": int(len(only_shared)),
+            "only_bt_keys_n": int(len(only_bt)),
+            "shared_field_coverage": _fix2bv__pool_field_coverage(shared_rebuilt),
+            "bt_field_coverage": _fix2bv__pool_field_coverage(bt_pool),
+            "wire_toggle": bool(_fix2bv__as_dict(globals().get("FIX2BV_SHARED_CANON_ENGINE_V1")).get("WIRE_SHARED_CANONICAL_FOR_RENDER_V1")),
+        }
+
+        if bool(_fix2bv__as_dict(globals().get("FIX2BV_SHARED_CANON_ENGINE_V1")).get("INCLUDE_SAMPLES", True)):
+            diag["only_shared_keys_sample"] = only_shared[:12]
+            diag["only_bt_keys_sample"] = only_bt[:12]
+            diag["overlap_keys_sample"] = sorted(list(overlap))[:12]
+
+        dbg.setdefault("fix2bv", {})
+        if isinstance(dbg.get("fix2bv"), dict):
+            dbg["fix2bv"].update(diag)
+
+        # Store shared pool under debug for review
+        dbg["evo_primary_metrics_canonical_shared_v1"] = shared_rebuilt if isinstance(shared_rebuilt, dict) else {}
+
+        # Optional wiring (OFF by default)
+        if diag["wire_toggle"] and isinstance(shared_rebuilt, dict) and shared_rebuilt:
+            prev_pool = dbg.get("canonical_for_render_v1")
+            if isinstance(prev_pool, dict) and prev_pool:
+                dbg.setdefault("canonical_for_render_v1_prev_fix2bv", prev_pool)
+            dbg["canonical_for_render_v1"] = shared_rebuilt
+            dbg["fix2bv"]["wired"] = True
+            dbg["fix2bv"]["wired_pool"] = "evo_primary_metrics_canonical_shared_v1"
+
+    except Exception:
+        # Never allow diagnostics to break the pipeline.
+        try:
+            if isinstance(output, dict):
+                results = output.get("results")
+                if isinstance(results, dict):
+                    dbg = results.get("debug")
+                    if isinstance(dbg, dict):
+                        dbg.setdefault("fix2bv", {})
+                        if isinstance(dbg.get("fix2bv"), dict):
+                            dbg["fix2bv"].update({"applied": False, "reason": "exception"})
+        except Exception:
+            pass
+
+# =========================
+# PATCH END: FIX2BV_SHARED_CANON_ENGINE_V1
+# =========================
+
 # =========================
 
 def _fix2br__emit_manifest(output):
