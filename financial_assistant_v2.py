@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2BM_EXPORT_CANONICAL_FOR_RENDER_V1_HARDWIRE"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 
 # =========================
@@ -21473,6 +21473,62 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["sources_fetched"] = len(baseline_sources_cache)
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
+
+    # =========================
+    # PATCH FIX2BM START
+    # CODE_VERSION: FIX2BM_EXPORT_CANONICAL_FOR_RENDER_V1_HARDWIRE
+    # Purpose:
+    #   Hardwire emission of canonical_for_render_v1 into the *actual* namespace
+    #   inspected by the diff join diagnostics (output["debug"]["canonical_for_render_v1"]).
+    #   This is computed from the already-built current_metrics map and is non-overwriting.
+    # =========================
+    try:
+        _dbg = output.setdefault("debug", {}) if isinstance(output, dict) else None
+        if isinstance(_dbg, dict):
+            if not _dbg.get("canonical_for_render_v1"):
+                _cfr = {}
+                try:
+                    if isinstance(current_metrics, dict):
+                        for _ck, _m in current_metrics.items():
+                            if not _ck:
+                                continue
+                            if isinstance(_m, dict):
+                                _val = _m.get("value_norm")
+                                if _val is None:
+                                    _val = _m.get("value")
+                                if _val is None:
+                                    _val = _m.get("current_value_norm")
+                                if _val is None:
+                                    _val = _m.get("current_value")
+                                _unit = _m.get("unit_tag")
+                                if not _unit:
+                                    _unit = _m.get("unit")
+                                if not _unit:
+                                    _unit = _m.get("unit_norm")
+                                _cfr[str(_ck)] = {
+                                    "value_norm": _val,
+                                    "unit_tag": _unit,
+                                    "source_url": _m.get("source_url") or _m.get("url"),
+                                    "anchor_used": bool(_m.get("anchor_used")) if isinstance(_m.get("anchor_used"), (bool, int)) else False,
+                                }
+                except Exception:
+                    _cfr = {}
+                _dbg["canonical_for_render_v1"] = _cfr if isinstance(_cfr, dict) else {}
+            # Minimal audit (safe, compact)
+            _dbg.setdefault("fix2bm_export_v1", {})
+            try:
+                _dbg["fix2bm_export_v1"]["emitted"] = True
+                _dbg["fix2bm_export_v1"]["keys_n"] = int(len(_dbg.get("canonical_for_render_v1") or {}))
+                _dbg["fix2bm_export_v1"]["keys_sample"] = list((_dbg.get("canonical_for_render_v1") or {}).keys())[:10]
+                _dbg["fix2bm_export_v1"]["source"] = "current_metrics"
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # =========================
+    # PATCH FIX2BM END
+    # =========================
+
 
 
     # =====================================================================
