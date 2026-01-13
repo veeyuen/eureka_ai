@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bf_injected_bind_and_hydrate_diff_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bg_force_fetch_injected_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -37311,4 +37311,95 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2BF_INJECTED_BIND_AND_HYDRATE_DIFF_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2BG_FORCE_FETCH_INJECTED_V1 (ADDITIVE)
+#
+# Problem (observed in latest JSON):
+# - Injected URL is admitted + rebuild_selected but not attempted/persisted in Evolution.
+#
+# Hypothesis:
+# - Evolution fastpath/fetch gating is not seeing a "force_rebuild" style flag, so it
+#   selects the URL logically but does not execute the fetch pipeline for it.
+#
+# Fix:
+# - If we detect injected URLs are present in the caller's web_context (extra_urls),
+#   or we can infer injection from previous_data, we set web_context["force_rebuild"]=True
+#   for this run. This is a production-safe mechanism already supported by the base code
+#   (FIX41G web_context normalization shows it reaches the fastpath gate).
+#
+# Safety:
+# - Additive wrapper only.
+# - Does NOT change selectors, does NOT fabricate values.
+# - Only affects whether fetch/rebuild is forced for runs that include injected URLs.
+# =====================================================================
+
+try:
+    _run_source_anchored_evolution_BASE_FIX2BG = run_source_anchored_evolution  # type: ignore
+except Exception:
+    _run_source_anchored_evolution_BASE_FIX2BG = None
+
+def _fix2bg_has_injected_urls(previous_data: dict, web_context: dict) -> bool:
+    try:
+        # 1) Look for extra_urls / evo_extra_urls in web_context
+        if isinstance(web_context, dict):
+            for k in ("extra_urls", "evo_extra_urls", "injected_urls", "urls"):
+                v = web_context.get(k)
+                if isinstance(v, list) and any(str(u or "").strip() for u in v):
+                    # Heuristic: treat presence of extra URLs as "injection mode"
+                    return True
+        # 2) Look for injected URL lists in previous_data (common patterns)
+        if isinstance(previous_data, dict):
+            for k in ("extra_urls", "evo_extra_urls", "injected_urls", "ui_extra_urls"):
+                v = previous_data.get(k)
+                if isinstance(v, list) and any(str(u or "").strip() for u in v):
+                    return True
+    except Exception:
+        return False
+    return False
+
+def run_source_anchored_evolution(previous_data: dict, fn=None, web_context: dict = None) -> dict:
+    base = _run_source_anchored_evolution_BASE_FIX2BG
+    # Normalize web_context dict
+    if web_context is None or not isinstance(web_context, dict):
+        web_context = {}
+
+    injected_present = _fix2bg_has_injected_urls(previous_data, web_context)
+
+    # Force rebuild only when injection mode is detected and caller hasn't already requested it.
+    forced = False
+    try:
+        if injected_present and not bool(web_context.get("force_rebuild")):
+            web_context["force_rebuild"] = True
+            forced = True
+    except Exception:
+        forced = False
+
+    out = base(previous_data, fn=fn, web_context=web_context) if callable(base) else {}
+
+    # Emit audit marker
+    try:
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"]["fix2bg_force_fetch_injected_v1"] = {
+                "applied": True,
+                "injected_present": bool(injected_present),
+                "force_rebuild_set": bool(forced),
+                "force_rebuild_final": bool(web_context.get("force_rebuild")),
+                "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            }
+    except Exception:
+        pass
+
+    return out
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bg_force_fetch_injected_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2BG_FORCE_FETCH_INJECTED_V1
 # =====================================================================
