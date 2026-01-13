@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BP_INJECTION_FETCH_PLACEHOLDER_ELIMINATION_V1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1"  # PATCH FIX2BQ (ADD): bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -30029,6 +30029,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 _p3v1__emit_canonical_for_render_v1(out)
             except Exception:
                 pass
+            try:
+                _fix2bq__apply(out)
+            except Exception:
+                pass
             return out
         except Exception as e:
             # Fall through to original behavior if anything unexpected
@@ -30057,6 +30061,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 _p3v1__emit_canonical_for_render_v1(out_changed)
             except Exception:
                 pass
+            try:
+                _fix2bq__apply(out_changed)
+            except Exception:
+                pass
             return out_changed
         except Exception:
             pass
@@ -30077,6 +30085,193 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         "metric_changes": [],
         "debug": {"fix24": True, "fix24_mode": "recompute_failed"},
     }
+
+
+
+# =========================
+# PATCH START: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
+# CODE_VERSION: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
+#
+# Goal:
+# - Hydrate Diff rows' Current fields using metric_definition.canonical_key (preferred),
+#   falling back to row.canonical_key / canonical_id.
+# - Pull values from the best available "current pool" already present in the output:
+#     1) results.debug.canonical_for_render_v1 (preferred, if keyed correctly)
+#     2) results.debug.evo_winner_trace_v1 (fallback; can use cur_value_norm, or top candidate glimpse)
+#
+# Safety:
+# - Additive-only, non-overwriting: only fills when current_value is blank/"N/A"/None.
+# - Never raises.
+# =========================
+
+def _fix2bq__is_blank_current(v):
+    try:
+        if v is None:
+            return True
+        if isinstance(v, str):
+            s = v.strip()
+            return (s == "" or s.upper() == "N/A")
+        return False
+    except Exception:
+        return True
+
+def _fix2bq__safe_dict(d):
+    return d if isinstance(d, dict) else {}
+
+def _fix2bq__safe_list(x):
+    return x if isinstance(x, list) else []
+
+def _fix2bq__get_row_key(row):
+    if not isinstance(row, dict):
+        return None
+    md = row.get("metric_definition")
+    if isinstance(md, dict):
+        k = md.get("canonical_key") or md.get("canonical_id")
+        if k:
+            return str(k)
+    # fallbacks
+    k2 = row.get("canonical_key") or row.get("canonical_id") or row.get("metric_id")
+    return str(k2) if k2 else None
+
+def _fix2bq__extract_from_pool_entry(entry):
+    """
+    Accepts various pool shapes and returns (value, value_norm, unit) tuple.
+    """
+    if entry is None:
+        return (None, None, None)
+    if isinstance(entry, dict):
+        v = entry.get("value")
+        vn = entry.get("value_norm", entry.get("cur_value_norm"))
+        u = entry.get("unit") or entry.get("unit_norm") or entry.get("cur_unit")
+        return (v, vn, u)
+    # scalar
+    return (entry, None, None)
+
+def _fix2bq__extract_from_winner_trace(trace_entry):
+    """
+    Winner trace shape (debug.evo_winner_trace_v1[k]):
+      - cur_value_norm / cur_unit may be None
+      - top3_candidates_glimpse may contain usable candidate
+    Returns (value_norm, unit_tag, source_tag) or (None,None,None)
+    """
+    if not isinstance(trace_entry, dict):
+        return (None, None, None)
+    vn = trace_entry.get("cur_value_norm")
+    u = trace_entry.get("cur_unit")
+    if vn is not None:
+        return (vn, u, "winner_trace.cur_value_norm")
+    # fallback to candidate glimpse
+    for c in _fix2bq__safe_list(trace_entry.get("top3_candidates_glimpse")):
+        if not isinstance(c, dict):
+            continue
+        if not c.get("has_unit_evidence"):
+            continue
+        vn2 = c.get("value_norm")
+        ut = c.get("unit_tag") or c.get("unit") or ""
+        if vn2 is None:
+            continue
+        return (vn2, ut, "winner_trace.top_candidate")
+    return (None, None, None)
+
+def _fix2bq__apply_to_results(results_obj):
+    """
+    results_obj is the dict under output['results'] (or similar).
+    Mutates results_obj in-place.
+    """
+    if not isinstance(results_obj, dict):
+        return
+
+    dbg = _fix2bq__safe_dict(results_obj.get("debug"))
+    pool = _fix2bq__safe_dict(dbg.get("canonical_for_render_v1"))
+    winner_trace = _fix2bq__safe_dict(dbg.get("evo_winner_trace_v1"))
+
+    # Candidate: apply to multiple metric_changes variants
+    targets = []
+    for k in ("metric_changes", "metric_changes_legacy", "metric_changes_v2"):
+        v = results_obj.get(k)
+        if isinstance(v, list) and v:
+            targets.append((k, v))
+
+    hydrated = 0
+    used_pool = 0
+    used_winner = 0
+
+    for name, rows in targets:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if not _fix2bq__is_blank_current(row.get("current_value")):
+                continue
+            key = _fix2bq__get_row_key(row)
+            if not key:
+                continue
+
+            # 1) Try canonical_for_render_v1
+            if key in pool:
+                v, vn, u = _fix2bq__extract_from_pool_entry(pool.get(key))
+                if vn is None and v is None:
+                    # nothing usable
+                    pass
+                else:
+                    # prefer numeric norm if present
+                    row["current_value_norm"] = vn if vn is not None else row.get("current_value_norm")
+                    row["current_value"] = vn if vn is not None else (v if v is not None else row.get("current_value"))
+                    if u and not row.get("current_unit"):
+                        row["current_unit"] = u
+                    hydrated += 1
+                    used_pool += 1
+                    continue
+
+            # 2) Try winner trace fallback
+            if key in winner_trace:
+                vn2, ut2, src_tag = _fix2bq__extract_from_winner_trace(winner_trace.get(key))
+                if vn2 is None:
+                    continue
+                row["current_value_norm"] = vn2
+                row["current_value"] = vn2
+                if ut2 and not row.get("current_unit"):
+                    row["current_unit"] = ut2
+                row.setdefault("debug", {})
+                if isinstance(row.get("debug"), dict):
+                    row["debug"].setdefault("fix2bq", {})
+                    if isinstance(row["debug"].get("fix2bq"), dict):
+                        row["debug"]["fix2bq"].update({"source": src_tag})
+                hydrated += 1
+                used_winner += 1
+
+    # Attach audit
+    results_obj.setdefault("debug", {})
+    if isinstance(results_obj.get("debug"), dict):
+        results_obj["debug"].setdefault("fix2bq", {})
+        if isinstance(results_obj["debug"].get("fix2bq"), dict):
+            results_obj["debug"]["fix2bq"].update({
+                "applied": True,
+                "hydrated_rows": int(hydrated),
+                "used_canonical_for_render_v1": int(used_pool),
+                "used_winner_trace": int(used_winner),
+                "pool_keys_n": int(len(pool)),
+                "winner_keys_n": int(len(winner_trace)),
+            })
+
+def _fix2bq__apply(output):
+    """
+    Applies FIX2BQ to an output dict that may contain:
+      - output['results'] (primary)
+      - or be itself a 'results' dict (fallback)
+    """
+    try:
+        if not isinstance(output, dict):
+            return
+        if isinstance(output.get("results"), dict):
+            _fix2bq__apply_to_results(output["results"])
+        else:
+            _fix2bq__apply_to_results(output)
+    except Exception:
+        pass
+
+# =========================
+# PATCH END: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
+# =========================
 
 
 # ==============================================================================
