@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2ag_spine_pub_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2ah_spine_bind_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -19200,7 +19200,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-
+    
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -22593,7 +22593,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-
+    
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -22622,7 +22622,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-
+            
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -26838,7 +26838,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-
+    
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -31205,14 +31205,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-#
+# 
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -31222,7 +31222,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-#
+# 
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -31579,7 +31579,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -33091,6 +33091,18 @@ try:
             ],
             "notes": "Historical patches prior to this tracker block are not enumerated here.",
         })
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AH_SPINE_SCHEMA_BINDER_V1",
+            "code_version": "fix2ah_spine_bind_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "Phase 1 deterministic schema binder that maps existing candidates to frozen metric_schema_frozen keys",
+                "Explainable binding trace + coverage diagnostics under debug.spine_v1.phase1_schema_bind",
+                "Publishes schema-keyed canonical current metrics into primary_metrics_canonical (disable via env YUREEKA_SPINE_V1_SCHEMA_BIND=0)"
+            ],
+            "risk": "low",
+            "notes": "Additive-only; does not modify extraction. Phase 2 will add unit/scale normalization and stricter unit-family enforcement."
+        })
 except Exception:
     pass
 # -------------------------
@@ -33282,6 +33294,338 @@ def spine_v1_maybe_publish_synthetic(prev_response: Dict[str, Any], cur_response
         return False
 
 
+
+# -------------------------
+# FIX2AH Phase 1: Schema Binder (additive)
+# -------------------------
+# Goal: deterministically bind existing extracted/canonical candidates to the frozen metric schema
+# and publish a schema-keyed current metrics map into primary_metrics_canonical (or sidecar),
+# with full explainability. No unit/scale normalization in this phase (beyond pass-through).
+
+def spine_v1__safe_text(x: Any) -> str:
+    try:
+        if x is None:
+            return ""
+        if isinstance(x, (int, float)):
+            return str(x)
+        return str(x)
+    except Exception:
+        return ""
+
+
+def spine_v1__tokenize(s: str) -> List[str]:
+    try:
+        s = (s or "").lower()
+        toks = re.findall(r"[a-z0-9]+", s)
+        return [t for t in toks if t and t not in ("and", "or", "the", "a", "an", "of", "to", "in", "by", "for")]
+    except Exception:
+        return []
+
+
+def spine_v1_build_schema_index(metric_schema_frozen: Any) -> Dict[str, Dict[str, Any]]:
+    """Return {schema_canonical_key: schema_spec}, filtered to dict-like entries."""
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        if not isinstance(metric_schema_frozen, dict):
+            return out
+        for k, v in metric_schema_frozen.items():
+            if not isinstance(k, str) or not k:
+                continue
+            if isinstance(v, dict):
+                spec = dict(v)
+                spec.setdefault("canonical_key", k)
+                spec.setdefault("canonical_id", spec.get("canonical_id") or spec.get("metric_id") or k)
+                spec.setdefault("dimension", spec.get("dimension") or spec.get("metric_dimension") or "")
+                spec.setdefault("unit_tag", spec.get("unit_tag") or spec.get("unit") or "")
+                kws = spec.get("keywords") or []
+                if not isinstance(kws, list):
+                    kws = []
+                spec["keywords"] = [spine_v1__safe_text(x).lower() for x in kws if spine_v1__safe_text(x)]
+                out[k] = spec
+            else:
+                out[k] = {"canonical_key": k, "canonical_id": k, "dimension": "", "unit_tag": "", "keywords": []}
+        return out
+    except Exception:
+        return out
+
+
+def spine_v1_collect_candidate_pool(cur_response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Collect candidate rows from existing cur_response structures (priority: primary_metrics_canonical)."""
+    pool: List[Dict[str, Any]] = []
+    try:
+        if not isinstance(cur_response, dict):
+            return pool
+
+        pmc = cur_response.get("primary_metrics_canonical")
+        if isinstance(pmc, dict):
+            for ck, row in pmc.items():
+                if not isinstance(ck, str) or not isinstance(row, dict):
+                    continue
+                r = dict(row)
+                r["_candidate_source"] = "primary_metrics_canonical"
+                r["_candidate_key"] = ck
+                r.setdefault("canonical_key", ck)
+                r.setdefault("canonical_id", r.get("canonical_id") or ck)
+                r.setdefault("dimension", r.get("dimension") or r.get("metric_dimension") or "")
+                r.setdefault("unit_tag", r.get("unit_tag") or r.get("unit") or "")
+                name = r.get("name") or r.get("metric_name") or r.get("original_name") or ck
+                r["_match_text"] = " ".join([
+                    spine_v1__safe_text(name),
+                    spine_v1__safe_text(r.get("canonical_id")),
+                    spine_v1__safe_text(r.get("canonical_key")),
+                    spine_v1__safe_text(r.get("geo_scope")),
+                    spine_v1__safe_text(r.get("geo_name")),
+                    spine_v1__safe_text(r.get("context_snippet")),
+                ])
+                pool.append(r)
+
+        # Secondary pool if pmc empty (kept for forward compatibility)
+        if not pool:
+            bsc = cur_response.get("baseline_sources_cache")
+            if isinstance(bsc, list):
+                for src in bsc:
+                    if not isinstance(src, dict):
+                        continue
+                    nums = src.get("extracted_numbers")
+                    if not isinstance(nums, list):
+                        continue
+                    for n in nums:
+                        if not isinstance(n, dict):
+                            continue
+                        r = dict(n)
+                        r["_candidate_source"] = "baseline_sources_cache"
+                        r["_candidate_key"] = spine_v1__safe_text(r.get("anchor_hash") or r.get("raw") or "")
+                        r.setdefault("canonical_key", "")
+                        r.setdefault("canonical_id", "")
+                        r.setdefault("dimension", "")
+                        r.setdefault("unit_tag", r.get("unit_tag") or r.get("unit") or "")
+                        r["_match_text"] = " ".join([
+                            spine_v1__safe_text(r.get("raw")),
+                            spine_v1__safe_text(r.get("context_snippet")),
+                            spine_v1__safe_text(r.get("source_url")),
+                        ])
+                        pool.append(r)
+
+        return pool
+    except Exception:
+        return pool
+
+
+def spine_v1_score_candidate_for_schema(schema_spec: Dict[str, Any], cand: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    """Deterministic, explainable score. Higher is better. Returns (score, breakdown)."""
+    breakdown: Dict[str, Any] = {"rules": []}
+    score = 0
+    try:
+        sk = spine_v1__safe_text(schema_spec.get("canonical_key"))
+        scid = spine_v1__safe_text(schema_spec.get("canonical_id"))
+        sd = spine_v1__safe_text(schema_spec.get("dimension")).lower()
+        su = spine_v1__safe_text(schema_spec.get("unit_tag")).lower()
+        keywords = schema_spec.get("keywords") or []
+        if not isinstance(keywords, list):
+            keywords = []
+
+        ck = spine_v1__safe_text(cand.get("canonical_key"))
+        cid = spine_v1__safe_text(cand.get("canonical_id"))
+        cd = spine_v1__safe_text(cand.get("dimension")).lower()
+        cu = spine_v1__safe_text(cand.get("unit_tag")).lower()
+
+        if sk and ck and sk == ck:
+            score += 1000
+            breakdown["rules"].append({"id": "R1_exact_canonical_key", "add": 1000})
+
+        if scid and cid and scid == cid:
+            score += 250
+            breakdown["rules"].append({"id": "R2_canonical_id_match", "add": 250})
+
+        if sd and cd and sd == cd:
+            score += 120
+            breakdown["rules"].append({"id": "R3_dimension_match", "add": 120})
+
+        if su and cu and su == cu:
+            score += 40
+            breakdown["rules"].append({"id": "R4_unit_tag_match", "add": 40})
+
+        text = spine_v1__safe_text(cand.get("_match_text"))
+        toks = set(spine_v1__tokenize(text))
+        kw_hits = 0
+        for kw in keywords:
+            ktoks = spine_v1__tokenize(spine_v1__safe_text(kw))
+            if ktoks and all(t in toks for t in ktoks):
+                kw_hits += 1
+        if kw_hits:
+            add = min(kw_hits, 10) * 15
+            score += add
+            breakdown["rules"].append({"id": "R5_keyword_hits", "add": add, "kw_hits": kw_hits})
+
+        # context_score as small deterministic bump
+        cs = cand.get("context_score")
+        try:
+            csf = float(cs)
+            add = int(max(0.0, min(30.0, csf / 5.0)))
+            if add:
+                score += add
+                breakdown["rules"].append({"id": "R6_context_score", "add": add, "context_score": csf})
+        except Exception:
+            pass
+
+        breakdown["score"] = int(score)
+        return int(score), breakdown
+    except Exception:
+        breakdown["score"] = int(score)
+        return int(score), breakdown
+
+
+def spine_v1_bind_to_schema(schema_index: Dict[str, Dict[str, Any]], candidate_pool: List[Dict[str, Any]],
+                           max_rejects: int = 8) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return (schema_keyed_map, diagnostics)."""
+    bound: Dict[str, Any] = {}
+    diag: Dict[str, Any] = {"coverage": {}, "binding_trace": {}, "candidate_source_used": None}
+
+    try:
+        if candidate_pool:
+            diag["candidate_source_used"] = spine_v1__safe_text(candidate_pool[0].get("_candidate_source") or "")
+
+        total = 0
+        hit = 0
+        for sk, spec in sorted(schema_index.items(), key=lambda kv: kv[0]):
+            total += 1
+            best = None
+            best_score = -10**9
+            best_break = None
+            rejects = []
+
+            for cand in candidate_pool:
+                sc, br = spine_v1_score_candidate_for_schema(spec, cand)
+                cand_key = spine_v1__safe_text(cand.get("_candidate_key") or cand.get("canonical_key") or "")
+                cand_anchor = spine_v1__safe_text(cand.get("anchor_hash") or "")
+                if sc > best_score:
+                    if best is not None:
+                        rejects.append({"candidate_key": spine_v1__safe_text(best.get("canonical_key") or ""),
+                                        "score": int(best_score), "why": best_break})
+                    best = cand
+                    best_score = sc
+                    best_break = br
+                    continue
+                if sc == best_score and best is not None:
+                    best_key = spine_v1__safe_text(best.get("_candidate_key") or best.get("canonical_key") or "")
+                    best_anchor = spine_v1__safe_text(best.get("anchor_hash") or "")
+                    if (cand_key, cand_anchor) < (best_key, best_anchor):
+                        rejects.append({"candidate_key": spine_v1__safe_text(best.get("canonical_key") or ""),
+                                        "score": int(best_score), "why": best_break})
+                        best = cand
+                        best_score = sc
+                        best_break = br
+                    else:
+                        if len(rejects) < max_rejects:
+                            rejects.append({"candidate_key": spine_v1__safe_text(cand.get("canonical_key") or ""),
+                                            "score": int(sc), "why": br})
+                else:
+                    if len(rejects) < max_rejects:
+                        rejects.append({"candidate_key": spine_v1__safe_text(cand.get("canonical_key") or ""),
+                                        "score": int(sc), "why": br})
+
+            accepted = False
+            accept_reason = "none"
+            if best is not None:
+                if spine_v1__safe_text(best.get("canonical_key")) == sk:
+                    accepted = True
+                    accept_reason = "exact_canonical_key"
+                else:
+                    if best_score >= 150:
+                        accepted = True
+                        accept_reason = "score_threshold"
+                    else:
+                        rules = (best_break or {}).get("rules") or []
+                        has_dim = any(r.get("id") == "R3_dimension_match" for r in rules)
+                        has_kw = any(r.get("id") == "R5_keyword_hits" and (r.get("kw_hits") or 0) >= 1 for r in rules)
+                        if has_dim and has_kw:
+                            accepted = True
+                            accept_reason = "dim_plus_keyword"
+
+            if accepted and best is not None:
+                hit += 1
+                out_row = dict(best)
+                out_row["canonical_key"] = sk
+                out_row["canonical_id"] = spine_v1__safe_text(spec.get("canonical_id") or out_row.get("canonical_id") or sk)
+                out_row["dimension"] = spine_v1__safe_text(spec.get("dimension") or out_row.get("dimension") or "")
+                out_row.setdefault("schema_unit_tag", spine_v1__safe_text(spec.get("unit_tag") or spec.get("unit") or ""))
+                out_row.setdefault("schema_keywords", spec.get("keywords") or [])
+                out_row["binding_accept_reason"] = accept_reason
+                out_row["binding_score"] = int(best_score)
+                bound[sk] = out_row
+
+                diag["binding_trace"][sk] = {
+                    "selected_candidate_key": spine_v1__safe_text(best.get("canonical_key") or ""),
+                    "selected_source": spine_v1__safe_text(best.get("_candidate_source") or ""),
+                    "accept_reason": accept_reason,
+                    "score": int(best_score),
+                    "score_breakdown": best_break,
+                    "rejected": rejects[:max_rejects],
+                }
+            else:
+                diag["binding_trace"][sk] = {
+                    "selected_candidate_key": "",
+                    "selected_source": "",
+                    "accept_reason": "no_match",
+                    "score": int(best_score) if best is not None else 0,
+                    "score_breakdown": best_break,
+                    "rejected": rejects[:max_rejects],
+                }
+
+        diag["coverage"] = {"schema_total": int(total), "schema_bound": int(hit), "schema_unbound": int(max(0, total-hit))}
+        return bound, diag
+    except Exception:
+        return bound, diag
+
+
+def spine_v1_maybe_schema_bind_and_publish(prev_response: Dict[str, Any], cur_response: Dict[str, Any]) -> bool:
+    """Phase 1 driver. Enabled by default if metric_schema_frozen exists; disable via YUREEKA_SPINE_V1_SCHEMA_BIND=0."""
+    try:
+        if not isinstance(cur_response, dict):
+            return False
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_SCHEMA_BIND") or "").strip().lower()
+        if flag in ("0", "false", "no", "n", "off"):
+            return False
+
+        schema = cur_response.get("metric_schema_frozen")
+        schema_index = spine_v1_build_schema_index(schema)
+        if not schema_index:
+            return False
+
+        pool = spine_v1_collect_candidate_pool(cur_response)
+        bound_map, diag = spine_v1_bind_to_schema(schema_index, pool)
+
+        # keep a backup for audit
+        if isinstance(cur_response.get("primary_metrics_canonical"), dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"].setdefault("spine_v1", {})
+                if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                    cur_response["debug"]["spine_v1"].setdefault("primary_metrics_canonical_legacy", cur_response.get("primary_metrics_canonical"))
+
+        spine_v1_publish_primary_metrics_canonical(
+            cur_response,
+            bound_map,
+            publish_path="primary_metrics_canonical",
+            debug_obj={
+                "phase": "phase1_schema_bind",
+                "schema_bind_enabled": True,
+                "schema_total": diag.get("coverage", {}).get("schema_total"),
+                "schema_bound": diag.get("coverage", {}).get("schema_bound"),
+                "candidate_source_used": diag.get("candidate_source_used"),
+            },
+        )
+
+        cur_response.setdefault("debug", {})
+        if isinstance(cur_response.get("debug"), dict):
+            cur_response["debug"].setdefault("spine_v1", {})
+            if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                cur_response["debug"]["spine_v1"]["phase1_schema_bind"] = diag
+
+        return True
+    except Exception:
+        return False
+
 # -------------------------
 # Wire-in (additive override)
 # -------------------------
@@ -33293,23 +33637,35 @@ except Exception:
 def diff_metrics_by_name_FIX2AG_SPINE_PUB(prev_response: dict, cur_response: dict):  # noqa: F811
     """
     Additive wrapper:
-      - If env-gated synthetic is enabled, publish into cur_response['primary_metrics_canonical']
-        before the existing diff_metrics_by_name runs.
+      - Phase 1: schema-bind and publish into cur_response['primary_metrics_canonical'] (enabled by default if schema exists;
+        disable via YUREEKA_SPINE_V1_SCHEMA_BIND=0)
+      - If env-gated synthetic is enabled, publish into cur_response['primary_metrics_canonical'] before the legacy diff runs.
       - Otherwise no-op.
     """
     try:
-        spine_v1_maybe_publish_synthetic(prev_response, cur_response)
-    except Exception:
-        pass
+        # FIX2AH: Phase 1 schema binding (deterministic)
+        try:
+            spine_v1_maybe_schema_bind_and_publish(prev_response, cur_response)
+        except Exception:
+            pass
 
-    if callable(_FIX2AG_LEGACY_DIFF_METRICS_BY_NAME):
-        return _FIX2AG_LEGACY_DIFF_METRICS_BY_NAME(prev_response, cur_response)
+        # FIX2AG: Optional synthetic hydration proof (env-gated)
+        try:
+            spine_v1_maybe_publish_synthetic(prev_response, cur_response)
+        except Exception:
+            pass
 
-    # ultra-safe fallback
-    try:
+        if callable(_FIX2AG_LEGACY_DIFF_METRICS_BY_NAME):
+            return _FIX2AG_LEGACY_DIFF_METRICS_BY_NAME(prev_response, cur_response)
+
+        # ultra-safe fallback
         return ([], 0, 0, 0, 0)
     except Exception:
-        return ([], 0, 0, 0, 0)
+        try:
+            return ([], 0, 0, 0, 0)
+        except Exception:
+            return ([], 0, 0, 0, 0)
+
 
 try:
     diff_metrics_by_name = diff_metrics_by_name_FIX2AG_SPINE_PUB  # type: ignore
@@ -33319,7 +33675,7 @@ except Exception:
 
 # Version bump (additive)
 try:
-    CODE_VERSION = "fix2ag_spine_pub_v1"
+    CODE_VERSION = "fix2ah_spine_bind_v1"
 except Exception:
     pass
 
