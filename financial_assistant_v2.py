@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'FIX2BY_MKTREV_V1'  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+CODE_VERSION = 'FIX2BZ_MONEY_KIND_V1'  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -141,6 +141,13 @@ PATCH_TRACKER_V1 = [
         "purpose": "Patch 5: Enforce semantic invariant: market size == revenue (currency). Adds currency-only guardrails for market-size metrics during diff hydration and reports explicit diagnostics; prevents unit-based values from populating revenue rows.",
         "safe_to_remove_after_consolidation": False
     }
+    ,{
+        "patch": "FIX2BZ_MONEY_KIND_V1",
+        "date": "2026-01-13",
+        "class": "GOLDEN",
+        "keep": True,
+        "purpose": "Fix measure_kind misclassification for currency magnitudes (e.g., US$996.3bn, US$1.1tn) by using explicit currency evidence from raw tokens. Enables deterministic binding of revenue/market-size metrics in canonical/diff hydration without relying on brittle context keywords."
+    },
 ]
 
 
@@ -24796,7 +24803,31 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             return "energy", "energy"
 
         return "other", "other"
+    
     # -------------------------------------------------------------------------
+    # PATCH FIX2BZ (ADDITIVE): currency-evidence aware measure classifier
+    # - Problem: currency values like "US$996.3bn" were being tagged as count_units
+    #   because context snippets may not include revenue keywords after truncation.
+    # - Fix: treat explicit currency tokens/symbols in the raw match as strong evidence
+    #   of money, regardless of context keyword coverage.
+    # - Deterministic: depends only on raw tokens + ctx + unit_tag.
+    # -------------------------------------------------------------------------
+    def _classify_measure_v2(unit_tag: str, ctx: str, raw_disp: str, currency_token: str):
+        c = (ctx or "").lower()
+        ut = (unit_tag or "").strip()
+        r = (raw_disp or "").lower().replace(" ", "")
+        cur = (currency_token or "").lower().replace(" ", "")
+
+        # explicit currency evidence wins
+        if any(s in r for s in ["us$", "s$", "$", "€", "£"]) or any(s in cur for s in ["us$", "s$", "$", "€", "£"]):
+            return "money", "money"
+        if any(code in r for code in ["usd", "sgd", "eur", "gbp"]) or any(code in c for code in [" usd", "sgd", " eur", " gbp"]):
+            return "money", "money"
+
+        # fallback to legacy logic
+        return _classify_measure(unit_tag, ctx)
+    # -------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
     # ---------- extraction pattern ----------
     # =========================
@@ -24930,7 +24961,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                 pass
             # =================================================================
 # semantic association tags
-        measure_kind, measure_assoc = _classify_measure(unit, ctx_store)
+        measure_kind, measure_assoc = _classify_measure_v2(unit, ctx_store, raw_disp, cur)
 
         out.append({
             "value": val,
