@@ -30259,6 +30259,12 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             try:
                 _fix2bt__apply(out, prev_full, wc)
                 _fix2bv__apply(out, prev_full, wc)
+                _fix2bw__apply(out, prev_full, wc)
+                # PATCH FIX2BW: re-emit canonical_for_render after wiring
+                try:
+                    _p3v1__emit_canonical_for_render_v1(out)
+                except Exception:
+                    pass
             except Exception:
                 pass
             try:
@@ -34781,3 +34787,165 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2Y_VERSION_BUMP
 # =====================================================================
+
+
+# =========================
+# PATCH START: FIX2BW_WIRE_SHARED_CANON_V1
+# CODE_VERSION: FIX2BW_WIRE_SHARED_CANON_V1
+#
+# Goal:
+# - Patch 3: Ensure Evolution PRODUCES a non-empty `primary_metrics_canonical` pool
+#   using the shared canonical engine (FIX2BV) so downstream diff hydration can
+#   deterministically populate the Current column.
+#
+# Scope:
+# - Core-engine only. No wrapper/UI changes.
+# - Additive-only: preserves legacy pools in debug; wiring is reversible by toggle.
+#
+# Behavior:
+# - By default, wires the shared pool (results.debug.evo_primary_metrics_canonical_shared_v1)
+#   into:
+#     - out['primary_metrics_canonical']
+#     - out['results']['primary_metrics_canonical']
+# - Records structured diagnostics under results.debug.fix2bw.
+#
+# Safety:
+# - Never raises. If anything fails or pool is empty, no wiring occurs and diagnostics
+#   explain why.
+# =========================
+
+# PATCH FIX2BW: bump CODE_VERSION to match patch filename (additive reassignment)
+try:
+    CODE_VERSION = "FIX2BW_WIRE_SHARED_CANON_V1"
+except Exception:
+    pass
+
+# PATCH FIX2BW: patch tracker entry (additive)
+try:
+    _pt = globals().get("PATCH_TRACKER_V1")
+    if isinstance(_pt, list) and not any(isinstance(x, dict) and x.get("patch") == "FIX2BW_WIRE_SHARED_CANON_V1" for x in _pt):
+        _pt.append({
+            "patch": "FIX2BW_WIRE_SHARED_CANON_V1",
+            "date": "2026-01-13",
+            "class": "REFAC",
+            "keep": True,
+            "purpose": "Patch 3: Wire FIX2BV shared-canonical pool into Evolution primary_metrics_canonical (producer), enabling deterministic diff hydration of Current column. Adds structured diagnostics and preserves legacy pools for audit.",
+            "safe_to_remove_after_consolidation": False
+        })
+except Exception:
+    pass
+
+FIX2BW_WIRE_SHARED_CANON_V1 = {
+    # Default ON: user requested Patch 3 to enable canonicalisation+diffing to take place end-to-end.
+    # Flip to False to validate read-only behavior or to bisect issues.
+    "WIRE_SHARED_POOL_TO_PRIMARY_METRICS_CANONICAL": True,
+    # If True, only wire when existing primary_metrics_canonical is missing/empty.
+    "ONLY_IF_PRIMARY_METRICS_CANONICAL_EMPTY": True,
+    # If True, also mirror to results.primary_metrics_canonical (recommended for UI/diff consumers).
+    "MIRROR_TO_RESULTS_CONTAINER": True,
+}
+
+def _fix2bw__safe_dict(d):
+    return d if isinstance(d, dict) else {}
+
+def _fix2bw__get_shared_pool(out: dict):
+    try:
+        res = _fix2bw__safe_dict((out or {}).get("results"))
+        dbg = _fix2bw__safe_dict(res.get("debug"))
+        pool = dbg.get("evo_primary_metrics_canonical_shared_v1")
+        return pool if isinstance(pool, dict) else {}
+    except Exception:
+        return {}
+
+def _fix2bw__get_existing_pmc(out: dict):
+    try:
+        if isinstance((out or {}).get("primary_metrics_canonical"), dict) and (out or {}).get("primary_metrics_canonical"):
+            return (out or {}).get("primary_metrics_canonical") or {}
+        res = _fix2bw__safe_dict((out or {}).get("results"))
+        if isinstance(res.get("primary_metrics_canonical"), dict) and res.get("primary_metrics_canonical"):
+            return res.get("primary_metrics_canonical") or {}
+    except Exception:
+        pass
+    return {}
+
+def _fix2bw__set_pmc(out: dict, pool: dict):
+    try:
+        if not isinstance(out, dict) or not isinstance(pool, dict):
+            return False
+        out["primary_metrics_canonical"] = pool
+        if FIX2BW_WIRE_SHARED_CANON_V1.get("MIRROR_TO_RESULTS_CONTAINER"):
+            out.setdefault("results", {})
+            if isinstance(out.get("results"), dict):
+                out["results"]["primary_metrics_canonical"] = pool
+        return True
+    except Exception:
+        return False
+
+def _fix2bw__apply(out: dict, prev_full: dict = None, wc: dict = None):
+    """Patch 3 wiring: promote shared canonical pool into Evolution's producer field."""
+    try:
+        if not isinstance(out, dict):
+            return
+        out.setdefault("results", {})
+        if not isinstance(out.get("results"), dict):
+            out["results"] = {}
+        out["results"].setdefault("debug", {})
+        if not isinstance(out["results"].get("debug"), dict):
+            out["results"]["debug"] = {}
+        dbg = out["results"]["debug"]
+        dbg.setdefault("fix2bw", {})
+        if not isinstance(dbg.get("fix2bw"), dict):
+            dbg["fix2bw"] = {}
+        d = dbg["fix2bw"]
+
+        shared_pool = _fix2bw__get_shared_pool(out)
+        existing_pmc = _fix2bw__get_existing_pmc(out)
+
+        d.update({
+            "applied": True,
+            "wire_enabled": bool(FIX2BW_WIRE_SHARED_CANON_V1.get("WIRE_SHARED_POOL_TO_PRIMARY_METRICS_CANONICAL")),
+            "only_if_empty": bool(FIX2BW_WIRE_SHARED_CANON_V1.get("ONLY_IF_PRIMARY_METRICS_CANONICAL_EMPTY")),
+            "shared_pool_n": int(len(shared_pool or {})) if isinstance(shared_pool, dict) else 0,
+            "existing_pmc_n": int(len(existing_pmc or {})) if isinstance(existing_pmc, dict) else 0,
+        })
+
+        # Preserve legacy/previous pool for audit (counts only by default)
+        try:
+            d.setdefault("existing_pmc_keys_sample", list((existing_pmc or {}).keys())[:8] if isinstance(existing_pmc, dict) else [])
+            d.setdefault("shared_pool_keys_sample", list((shared_pool or {}).keys())[:8] if isinstance(shared_pool, dict) else [])
+        except Exception:
+            pass
+
+        if not FIX2BW_WIRE_SHARED_CANON_V1.get("WIRE_SHARED_POOL_TO_PRIMARY_METRICS_CANONICAL"):
+            d["wired"] = False
+            d["reason"] = "wire_disabled"
+            return
+
+        if not isinstance(shared_pool, dict) or not shared_pool:
+            d["wired"] = False
+            d["reason"] = "shared_pool_empty"
+            return
+
+        if FIX2BW_WIRE_SHARED_CANON_V1.get("ONLY_IF_PRIMARY_METRICS_CANONICAL_EMPTY") and isinstance(existing_pmc, dict) and existing_pmc:
+            d["wired"] = False
+            d["reason"] = "existing_primary_metrics_canonical_nonempty"
+            return
+
+        ok = _fix2bw__set_pmc(out, shared_pool)
+        d["wired"] = bool(ok)
+        d["reason"] = "wired_shared_pool" if ok else "wire_failed"
+
+    except Exception:
+        # never raise
+        try:
+            if isinstance(out, dict):
+                out.setdefault("results", {}).setdefault("debug", {}).setdefault("fix2bw", {})
+                if isinstance(out["results"]["debug"].get("fix2bw"), dict):
+                    out["results"]["debug"]["fix2bw"].update({"applied": True, "wired": False, "reason": "exception"})
+        except Exception:
+            pass
+        return
+
+# =========================
+# PATCH END: FIX2BW_WIRE_SHARED_CANON_V1
+# =========================
