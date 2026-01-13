@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BM_EXPORT_CANONICAL_FOR_RENDER_V1_HARDWIRE"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 
 # =========================
@@ -23084,6 +23084,91 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
     except Exception:
         pass
+
+    # =====================================================================
+    # PATCH FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1 (ADDITIVE)
+    # Goal:
+    # - If Diff Panel V2 overrides `metric_changes`, re-hydrate "Current" fields
+    #   from canonical-for-render (analysis-aligned) so the dashboard Current column
+    #   is not blank/N/A.
+    # Safety:
+    # - Render-only: does NOT affect hashing/fastpath/snapshot attach/extraction.
+    # - Non-overwriting: only fills when current_value is blank/N/A.
+    # =====================================================================
+    try:
+        _fix2bn_pool = None
+        if isinstance(canonical_for_render, dict) and canonical_for_render:
+            _fix2bn_pool = canonical_for_render
+        elif isinstance(current_metrics, dict) and current_metrics:
+            _fix2bn_pool = current_metrics
+        else:
+            _fix2bn_pool = None
+
+        if isinstance(metric_changes, list) and isinstance(_fix2bn_pool, dict) and _fix2bn_pool:
+            _fix2bn_hydrated = 0
+            for _r in metric_changes:
+                if not isinstance(_r, dict):
+                    continue
+                _ck = _r.get("canonical_key") or _r.get("canonical") or _r.get("canonical_id") or ""
+                if not _ck:
+                    continue
+
+                _cm = _fix2bn_pool.get(_ck)
+                if not isinstance(_cm, dict):
+                    continue
+
+                # Only fill if blank/N/A
+                _cur = _r.get("current_value")
+                if _cur is not None and str(_cur).strip() not in ("", "N/A", "n/a", "NA"):
+                    continue
+
+                _vn = _cm.get("value_norm")
+                _unit = str((_cm.get("unit") or _cm.get("unit_tag") or "")).strip()
+                _raw = str((_cm.get("raw") or _cm.get("value_raw") or _cm.get("raw_value") or "")).strip()
+
+                if (_vn is None) and (not _raw):
+                    continue
+
+                if not _raw:
+                    try:
+                        if _vn is not None and _unit:
+                            _raw = f"{_vn} {_unit}".strip()
+                        elif _vn is not None:
+                            _raw = str(_vn)
+                    except Exception:
+                        _raw = ""
+
+                _r["current_value_norm"] = _vn
+                _r["cur_value_norm"] = _vn
+                _r["current_unit"] = _unit
+                _r["cur_unit_cmp"] = _unit
+                _r["current_value"] = _raw
+
+                _r.setdefault("diag", {})
+                if isinstance(_r.get("diag"), dict):
+                    _r["diag"].setdefault("fix2bn", {})
+                    if isinstance(_r["diag"].get("fix2bn"), dict):
+                        _r["diag"]["fix2bn"]["applied"] = True
+                        _r["diag"]["fix2bn"]["canonical_key"] = _ck
+
+                _fix2bn_hydrated += 1
+
+            # lightweight audit
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"]["fix2bn"] = {
+                        "applied": True,
+                        "rows_hydrated": int(_fix2bn_hydrated),
+                        "pool": "canonical_for_render" if _fix2bn_pool is canonical_for_render else "current_metrics",
+                    }
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1
+    # =====================================================================
 
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
