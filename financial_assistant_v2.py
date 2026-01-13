@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2ah_spine_bind_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2ai_spine_norm_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -19200,7 +19200,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-    
+
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -22593,7 +22593,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-    
+
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -22622,7 +22622,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-            
+
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -26838,7 +26838,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-    
+
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -31205,14 +31205,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-# 
+#
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -31222,7 +31222,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-# 
+#
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -31579,7 +31579,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -33578,6 +33578,258 @@ def spine_v1_bind_to_schema(schema_index: Dict[str, Dict[str, Any]], candidate_p
         return bound, diag
 
 
+
+# =====================================================================
+# PATCH FIX2AI_SPINE_PHASE2_NORMALIZATION_V1 (ADDITIVE)
+# Phase 2: deterministic unit + scale normalization (schema-driven, no NLP)
+#
+# Goals:
+# - Normalize bound values into schema-expected unit families with explicit traces
+# - Avoid silent failure: keep raw fields; add norm_* fields + per-key norm trace
+# - Deterministic, inference-free (only apply transformations when supported by explicit unit evidence)
+#
+# Env controls (optional):
+# - YUREEKA_SPINE_V1_NORMALIZE=0  (disable normalization; publish Phase1-bound values)
+# =====================================================================
+
+def spine_v1__is_yearlike_value(v: Any) -> bool:
+    try:
+        iv = int(float(v))
+        return 1900 <= iv <= 2100
+    except Exception:
+        return False
+
+def spine_v1__lower(s: Any) -> str:
+    try:
+        return str(s or "").strip().lower()
+    except Exception:
+        return ""
+
+def spine_v1__pick_unit_tag(row: Dict[str, Any]) -> str:
+    for k in ("unit_tag", "unit_norm", "unit", "base_unit"):
+        u = row.get(k)
+        if isinstance(u, str) and u.strip():
+            return u.strip()
+    return ""
+
+def spine_v1__unit_scale_multiplier(unit_tag: str, context: str = "") -> Tuple[float, str]:
+    """
+    Return (multiplier_to_base, scale_label) for common human scales.
+    Base for currency/count = 1 (units or currency base).
+    Only applies when explicit scale evidence is present in unit_tag/context.
+    """
+    ut = spine_v1__lower(unit_tag)
+    ctx = spine_v1__lower(context)
+    combo = f"{ut} {ctx}".strip()
+
+    # billions
+    if any(x in combo for x in [" billion", "bn", " b$", " b ", " usd b", " bnb", "billions"]):
+        return (1e9, "B")
+    # millions
+    if any(x in combo for x in [" million", "mn", " m$", " m ", " usd m", "millions"]):
+        return (1e6, "M")
+    # thousands
+    if any(x in combo for x in [" thousand", "k ", " k$", " usd k", "thousands"]):
+        return (1e3, "K")
+    return (1.0, "")
+
+def spine_v1_normalize_row_v1(schema_spec: Dict[str, Any], row_in: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Normalize a single bound row into schema-expected unit family.
+    Returns (row_out, norm_trace).
+    """
+    row = dict(row_in or {})
+    trace: Dict[str, Any] = {
+        "applied": False,
+        "expected_family": spine_v1__lower(schema_spec.get("unit_family") or schema_spec.get("unit") or ""),
+        "expected_unit": str(schema_spec.get("unit") or ""),
+        "input_unit_tag": spine_v1__pick_unit_tag(row),
+        "input_value_norm": row.get("value_norm"),
+        "actions": [],
+        "warnings": [],
+    }
+
+    # preserve originals
+    row.setdefault("value_norm_raw", row.get("value_norm"))
+    row.setdefault("unit_tag_raw", row.get("unit_tag") or row.get("unit") or row.get("base_unit") or "")
+
+    # numeric guard
+    try:
+        v = float(row.get("value_norm")) if row.get("value_norm") is not None else None
+    except Exception:
+        v = None
+
+    if v is None:
+        trace["warnings"].append("no_numeric_value_norm")
+        row["value_norm_norm"] = None
+        row["unit_tag_norm"] = trace["input_unit_tag"]
+        return row, trace
+
+    expected = trace["expected_family"]
+
+    # context for scale detection
+    ctx = str(row.get("context_snippet") or row.get("context") or row.get("evidence_text") or "")
+
+    # -------- Percent --------
+    if expected == "percent" or str(row.get("canonical_key") or "").endswith("__percent"):
+        ut = spine_v1__lower(trace["input_unit_tag"])
+        if "%" in ut or ut == "%":
+            row["value_norm_norm"] = v
+            row["unit_tag_norm"] = "%"
+            trace["applied"] = True
+            trace["actions"].append("percent_keep")
+            return row, trace
+
+        # Explicit evidence missing: only convert fraction->percent when schema expects percent AND value is [0,1]
+        if (row.get("unit_tag") in (None, "", " ") or not trace["input_unit_tag"]) and 0.0 <= v <= 1.0:
+            row["value_norm_norm"] = v * 100.0
+            row["unit_tag_norm"] = "%"
+            trace["applied"] = True
+            trace["actions"].append("fraction_to_percent_by_range")
+            trace["warnings"].append("unit_missing_used_range_rule")
+            return row, trace
+
+        # otherwise do not guess
+        row["value_norm_norm"] = v
+        row["unit_tag_norm"] = trace["input_unit_tag"]
+        trace["warnings"].append("percent_expected_but_no_percent_evidence")
+        return row, trace
+
+    # -------- Currency --------
+    if expected == "currency" or str(row.get("canonical_key") or "").endswith("__currency"):
+        ut = trace["input_unit_tag"]
+        mult, scale = spine_v1__unit_scale_multiplier(ut, ctx)
+
+        # also honor explicit base_unit shorthand when present
+        bu = spine_v1__lower(str(row.get("base_unit") or ""))
+        if mult == 1.0 and bu in ("b", "bn"):
+            mult, scale = (1e9, "B")
+        elif mult == 1.0 and bu in ("m", "mn"):
+            mult, scale = (1e6, "M")
+        elif mult == 1.0 and bu in ("k",):
+            mult, scale = (1e3, "K")
+
+        row["value_norm_norm"] = v * mult
+        row["unit_tag_norm"] = (row.get("currency") or row.get("currency_code") or row.get("currency_symbol") or "").strip() or (trace["input_unit_tag"] or "")
+        row["norm_multiplier_to_base"] = mult
+        row["norm_scale_tag"] = scale
+        trace["applied"] = True
+        trace["actions"].append(f"currency_scale_{scale or '1'}")
+        return row, trace
+
+    # -------- Energy (TWh/GWh/MWh/kWh/Wh) --------
+    if expected == "energy":
+        ut = spine_v1__lower(trace["input_unit_tag"])
+        # explicit conversions only
+        if "twh" in ut:
+            row["value_norm_norm"] = v * 1e12
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("twh_to_wh")
+            return row, trace
+        if "gwh" in ut:
+            row["value_norm_norm"] = v * 1e9
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("gwh_to_wh")
+            return row, trace
+        if "mwh" in ut:
+            row["value_norm_norm"] = v * 1e6
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("mwh_to_wh")
+            return row, trace
+        if "kwh" in ut:
+            row["value_norm_norm"] = v * 1e3
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("kwh_to_wh")
+            return row, trace
+        if "wh" in ut:
+            row["value_norm_norm"] = v
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("wh_keep")
+            return row, trace
+
+        row["value_norm_norm"] = v
+        row["unit_tag_norm"] = trace["input_unit_tag"]
+        trace["warnings"].append("energy_expected_but_no_energy_unit_evidence")
+        return row, trace
+
+    # -------- Count / unit_sales (default) --------
+    # Treat any non-percent/non-currency/non-energy as count-like unless schema says otherwise.
+    ut = spine_v1__lower(trace["input_unit_tag"])
+    mult, scale = (1.0, "")
+    # explicit "million" / "billion" / "thousand" evidence
+    mult, scale = spine_v1__unit_scale_multiplier(trace["input_unit_tag"], ctx)
+
+    # if unit tag explicitly mentions "units" but also scale evidence, convert to base units
+    if mult != 1.0:
+        row["value_norm_norm"] = v * mult
+        row["unit_tag_norm"] = "units"
+        row["norm_multiplier_to_base"] = mult
+        row["norm_scale_tag"] = scale
+        trace["applied"] = True
+        trace["actions"].append(f"count_scale_{scale or '1'}")
+        return row, trace
+
+    # If explicit unit is already "units"
+    if "unit" in ut or ut in ("units", "vehicles", "cars"):
+        row["value_norm_norm"] = v
+        row["unit_tag_norm"] = "units"
+        trace["applied"] = True
+        trace["actions"].append("units_keep")
+        return row, trace
+
+    # No explicit evidence -> don't guess
+    row["value_norm_norm"] = v
+    row["unit_tag_norm"] = trace["input_unit_tag"]
+    trace["warnings"].append("no_scale_or_unit_evidence_applied")
+    return row, trace
+
+
+def spine_v1_phase2_normalize_bound_metrics(schema_index: Dict[str, Dict[str, Any]],
+                                           bound_map: Dict[str, Any],
+                                           max_traces: int = 500) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Normalize all Phase1-bound metrics using schema expectations.
+    Returns (normalized_map, diag) where diag contains per-key normalization traces.
+    """
+    out: Dict[str, Any] = {}
+    diag: Dict[str, Any] = {"norm_trace": {}, "summary": {}}
+
+    total = 0
+    applied = 0
+    warnings = 0
+    yearlike_suspect = 0
+
+    for sk, row in sorted((bound_map or {}).items(), key=lambda kv: kv[0]):
+        total += 1
+        spec = schema_index.get(sk) or {}
+        row2, tr = spine_v1_normalize_row_v1(spec, row if isinstance(row, dict) else {})
+        out[sk] = row2
+        if tr.get("applied"):
+            applied += 1
+        if tr.get("warnings"):
+            warnings += 1
+        if spine_v1__is_yearlike_value(tr.get("input_value_norm")) and not (str(tr.get("input_unit_tag") or "").strip()):
+            yearlike_suspect += 1
+            tr.setdefault("warnings", []).append("yearlike_value_with_no_unit_evidence")
+
+        if len(diag["norm_trace"]) < int(max_traces):
+            diag["norm_trace"][sk] = tr
+
+    diag["summary"] = {
+        "total": int(total),
+        "normalized_applied": int(applied),
+        "keys_with_warnings": int(warnings),
+        "yearlike_suspect_count": int(yearlike_suspect),
+    }
+    return out, diag
+
+# END PATCH FIX2AI_SPINE_PHASE2_NORMALIZATION_V1
+
 def spine_v1_maybe_schema_bind_and_publish(prev_response: Dict[str, Any], cur_response: Dict[str, Any]) -> bool:
     """Phase 1 driver. Enabled by default if metric_schema_frozen exists; disable via YUREEKA_SPINE_V1_SCHEMA_BIND=0."""
     try:
@@ -33595,6 +33847,22 @@ def spine_v1_maybe_schema_bind_and_publish(prev_response: Dict[str, Any], cur_re
         pool = spine_v1_collect_candidate_pool(cur_response)
         bound_map, diag = spine_v1_bind_to_schema(schema_index, pool)
 
+        # Phase 2 normalization (schema-driven)
+        normalize_flag = str(os.environ.get("YUREEKA_SPINE_V1_NORMALIZE") or "").strip().lower()
+        _do_norm = True
+        if normalize_flag in ("0", "false", "no", "n", "off"):
+            _do_norm = False
+
+        norm_map = bound_map
+        norm_diag = {}
+        if _do_norm:
+            try:
+                norm_map, norm_diag = spine_v1_phase2_normalize_bound_metrics(schema_index, bound_map)
+            except Exception as _e_norm:
+                norm_map = bound_map
+                norm_diag = {"error": str(_e_norm)}
+
+
         # keep a backup for audit
         if isinstance(cur_response.get("primary_metrics_canonical"), dict):
             cur_response.setdefault("debug", {})
@@ -33605,7 +33873,7 @@ def spine_v1_maybe_schema_bind_and_publish(prev_response: Dict[str, Any], cur_re
 
         spine_v1_publish_primary_metrics_canonical(
             cur_response,
-            bound_map,
+            norm_map,
             publish_path="primary_metrics_canonical",
             debug_obj={
                 "phase": "phase1_schema_bind",
@@ -33621,6 +33889,13 @@ def spine_v1_maybe_schema_bind_and_publish(prev_response: Dict[str, Any], cur_re
             cur_response["debug"].setdefault("spine_v1", {})
             if isinstance(cur_response["debug"].get("spine_v1"), dict):
                 cur_response["debug"]["spine_v1"]["phase1_schema_bind"] = diag
+
+                # Phase 2 normalization diagnostics (additive)
+                try:
+                    cur_response["debug"]["spine_v1"]["phase2_normalization_v1"] = norm_diag
+                except Exception:
+                    pass
+
 
         return True
     except Exception:
@@ -33682,3 +33957,31 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2AG_SPINE_PUBLISHER_ADAPTER_V1
 # =====================================================================
+
+
+
+# -------------------------
+# PATCH TRACKER (ADDITIVE): FIX2AI
+# -------------------------
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AI_SPINE_PHASE2_NORMALIZATION_V1",
+            "date": "2026-01-14",
+            "summary": "Phase 2 schema-driven normalization (percent/currency/energy/count scales) with explicit traces; integrates into spine_v1_maybe_schema_bind_and_publish; env-gated via YUREEKA_SPINE_V1_NORMALIZE.",
+            "scope": "additive-only; no refactors",
+        })
+except Exception:
+    pass
+
+# VERSION STAMP (ADDITIVE): bump CODE_VERSION
+try:
+    _cv = str(globals().get("CODE_VERSION") or "")
+    if "fix2ai" not in _cv.lower():
+        CODE_VERSION = "fix2ai_spine_norm_v1"
+except Exception:
+    pass
