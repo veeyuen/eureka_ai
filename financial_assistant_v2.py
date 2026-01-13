@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'FIX2C0_PRESERVE_EXTRACT_FIELDS_V1'  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+CODE_VERSION = 'FIX2C2_CURMET_WIRE_V1'  # PATCH FIX2C2: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -115,46 +115,65 @@ PATCH_TRACKER_V1 = [
         "date": "2026-01-13",
         "class": "REFAC",
         "keep": True,
-        "purpose": "Patch 2: Add shared-canonical-engine path for Evolution using the Analysis canonical final selector (read-only by default). Computes shared rebuild on current snapshots, compares against FIX2BT schema-only rebuild, and emits structured diagnostics. Optional toggle to wire shared pool into canonical_for_render_v1 after validation.",
+        "purpose": "Patch 2: Add shared-canonical-engine path for Evolution using the Analysis canonical final selector (read-only by default). Computes shared rebuild on current snapshots, compares against FIX2BT schema-only rebuild, and emits structured diagnostics.",
         "safe_to_remove_after_consolidation": False
-    }    ,{
+    },
+    {
         "patch": "FIX2BW_WIRE_SHARED_CANON_V1",
         "date": "2026-01-13",
         "class": "REFAC",
         "keep": True,
         "purpose": "Patch 3: Wire shared canonical pool into Evolution producer fields (primary_metrics_canonical/results.primary_metrics_canonical) so diff hydration can populate Current deterministically; re-emit canonical_for_render_v1 and add wiring diagnostics.",
         "safe_to_remove_after_consolidation": False
-    }
-    ,{
+    },
+    {
         "patch": "FIX2BX_V2_SUMMARY_FIX_V1",
         "date": "2026-01-13",
         "class": "REFAC",
         "keep": True,
-        "purpose": "Patch 4: Fix UnboundLocalError in build_diff_metrics_panel_v2 by ensuring summary is always initialized; restore V2 diff emission stability; no wrapper/UI changes.",
+        "purpose": "Fix diff panel v2 UnboundLocalError on summary; ensure v2 diff builder completes and emits rows.",
         "safe_to_remove_after_consolidation": False
-    }
-    ,{
+    },
+    {
         "patch": "FIX2BY_MKTREV_V1",
         "date": "2026-01-13",
-        "class": "REFAC",
+        "class": "GOLDEN",
         "keep": True,
-        "purpose": "Patch 5: Enforce semantic invariant: market size == revenue (currency). Adds currency-only guardrails for market-size metrics during diff hydration and reports explicit diagnostics; prevents unit-based values from populating revenue rows.",
+        "purpose": "Enforce semantic invariant: market size == revenue (currency). Adds currency-only guardrails for market-size metrics during diff hydration and reports explicit diagnostics; prevents unit-based values from populating revenue rows.",
         "safe_to_remove_after_consolidation": False
-    }
-    ,{
+    },
+    {
         "patch": "FIX2BZ_MONEY_KIND_V1",
         "date": "2026-01-13",
         "class": "GOLDEN",
         "keep": True,
-        "purpose": "Fix measure_kind misclassification for currency magnitudes (e.g., US$996.3bn, US$1.1tn) by using explicit currency evidence from raw tokens. Enables deterministic binding of revenue/market-size metrics in canonical/diff hydration without relying on brittle context keywords."
+        "purpose": "Fix measure_kind misclassification for currency magnitudes (e.g., US$996.3bn, US$1.1tn) using explicit currency evidence from raw tokens.",
+        "safe_to_remove_after_consolidation": False
     },
     {
         "patch": "FIX2C0_PRESERVE_EXTRACT_FIELDS_V1",
         "date": "2026-01-13",
         "class": "CORE",
         "keep": True,
-        "purpose": "Preserve extractor-provided fields (unit_tag, value_norm, measure_kind, junk flags, spans) when building baseline_sources_cache_current so downstream canonicalisation + FIX39 unit-evidence gating can hydrate Current reliably."
+        "purpose": "Preserve extractor-provided fields (unit_tag, value_norm, measure_kind, junk flags, spans) when building baseline_sources_cache_current so downstream canonicalisation + unit-evidence gating can hydrate Current.",
+        "safe_to_remove_after_consolidation": False
     },
+    {
+        "patch": "FIX2C1_EVO_HYDRATE_CURRENT_V1",
+        "date": "2026-01-13",
+        "class": "CORE",
+        "keep": True,
+        "purpose": "Enforce Evolution output contract: publish primary_metrics_canonical before every return path so diff hydration can see current canonical pool; adds diagnostics.",
+        "safe_to_remove_after_consolidation": False
+    },
+    {
+        "patch": "FIX2C2_CURMET_WIRE_V1",
+        "date": "2026-01-13",
+        "class": "GOLDEN",
+        "keep": True,
+        "purpose": "Guarantee Evolution exposes a stable results.current_metrics pool for downstream diff hydration; if current_metrics is empty, materialize it deterministically from primary_metrics_canonical or shared canonical pool and publish (non-overwriting).",
+        "safe_to_remove_after_consolidation": False
+    }
 ]
 
 
@@ -18783,6 +18802,98 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                 # =====================================================================
         except Exception:
             current_metrics = {}
+
+
+    # ============================================================
+    # ============================================================
+    # PATCH FIX2C2_CURMET_WIRE_V1 (ADDITIVE):
+    # Materialize current_metrics from the most authoritative canonical pool
+    # and expose it under output.results.current_metrics for dashboard hydration.
+    #
+    # WHY:
+    # - Some hydration adapters expect results.current_metrics;
+    # - Some Evolution paths produce primary_metrics_canonical but skip current_metrics rebuild.
+    #
+    # SAFETY:
+    # - Non-overwriting: only fills when current_metrics is empty.
+    # - Deterministic: uses already-produced canonical pools only.
+    # ============================================================
+    try:
+        _fix2c2_dbg = None
+        if isinstance(output.get("debug"), dict):
+            output["debug"].setdefault("fix2c2", {})
+            _fix2c2_dbg = output["debug"]["fix2c2"]
+        elif isinstance(output, dict):
+            output.setdefault("debug", {})
+            output["debug"].setdefault("fix2c2", {})
+            _fix2c2_dbg = output["debug"]["fix2c2"]
+        if isinstance(_fix2c2_dbg, dict):
+            _fix2c2_dbg["applied"] = True
+
+        def _fix2c2_first_present(d, paths):
+            if not isinstance(d, dict):
+                return None
+            for p in paths or []:
+                cur = d
+                ok = True
+                for k in p:
+                    if not isinstance(cur, dict) or k not in cur:
+                        ok = False
+                        break
+                    cur = cur.get(k)
+                if ok and cur is not None:
+                    return cur
+            return None
+
+        def _fix2c2_pmc_to_curmetrics(pmc):
+            cm = {}
+            if not isinstance(pmc, dict):
+                return cm
+            for ck, m in pmc.items():
+                if not isinstance(ck, str) or not ck:
+                    continue
+                if not isinstance(m, dict):
+                    continue
+                cm[ck] = {
+                    "canonical_key": ck,
+                    "value": m.get("value"),
+                    "value_norm": m.get("value_norm") if m.get("value_norm") is not None else m.get("value"),
+                    "unit": m.get("unit") or m.get("unit_tag"),
+                    "unit_tag": m.get("unit_tag") or m.get("unit"),
+                    "measure_kind": m.get("measure_kind"),
+                    "source_url": m.get("source_url"),
+                    "anchor_hash": m.get("anchor_hash"),
+                    "candidate_id": m.get("candidate_id"),
+                    "context_snippet": m.get("context_snippet") or m.get("context") or "",
+                    "anchor_used": bool(m.get("anchor_used"))
+                }
+            return cm
+
+        if not isinstance(current_metrics, dict) or not current_metrics:
+            _pmc = None
+            # Prefer already-published canonical pools
+            _pmc = _fix2c2_first_present(output, [("primary_metrics_canonical",),("results","primary_metrics_canonical"),("primary_response","primary_metrics_canonical"),("results","primary_response","primary_metrics_canonical")])
+            if not (isinstance(_pmc, dict) and _pmc):
+                # Fall back to shared pool emitted by FIX2BV/2BW if present
+                _pmc = _fix2c2_first_present(output, [("results","debug","evo_primary_metrics_canonical_shared_v1"),("debug","evo_primary_metrics_canonical_shared_v1")])
+            if isinstance(_pmc, dict) and _pmc:
+                current_metrics = _fix2c2_pmc_to_curmetrics(_pmc)
+                if isinstance(_fix2c2_dbg, dict):
+                    _fix2c2_dbg["filled_from"] = "primary_metrics_canonical"
+                    _fix2c2_dbg["current_metrics_n"] = int(len(current_metrics))
+            else:
+                if isinstance(_fix2c2_dbg, dict):
+                    _fix2c2_dbg["filled_from"] = "none"
+                    _fix2c2_dbg["current_metrics_n"] = 0
+
+        # Always expose for downstream consumers (non-overwriting if already present)
+        if isinstance(output, dict):
+            output.setdefault("results", {})
+            if isinstance(output.get("results"), dict):
+                output["results"].setdefault("current_metrics", current_metrics if isinstance(current_metrics, dict) else {})
+            output.setdefault("current_metrics", current_metrics if isinstance(current_metrics, dict) else {})
+    except Exception:
+        pass
 
     if not isinstance(current_metrics, dict) or not current_metrics:
         output["status"] = "failed"
