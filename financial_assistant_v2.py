@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1"  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+CODE_VERSION = "FIX2BT_EVO_CANONICAL_PARITY_V1"  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -94,6 +94,14 @@ PATCH_TRACKER_V1 = [
         "keep": True,
         "purpose": "Align Evolution current-pool keyspace to Diff row canonical keys; backfill missing canonical_for_render_v1 entries from injected extracted numbers when possible (non-overwriting)."
     },
+    {
+        "patch": "FIX2BT_EVO_CANONICAL_PARITY_V1",
+        "type": "GOLDEN",
+        "scope": "evolution",
+        "purpose": "Run schema-only rebuild against current snapshots using previous (analysis) frozen schema; wire rebuilt canonical pool into canonical_for_render_v1 for diff hydration.",
+        "safe_to_remove_after_consolidation": False
+    },
+
 ]
 
 
@@ -30046,6 +30054,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             except Exception:
                 pass
             try:
+                _fix2bt__apply(out, prev_full, wc)
+            except Exception:
+                pass
+            try:
                 try:
                     _fix2bs__apply(out)
                 except Exception:
@@ -30632,6 +30644,110 @@ def _fix2bs__apply(output):
 
 # =========================
 # PATCH END: FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1
+# =========================
+
+# =========================
+# PATCH START: FIX2BT_EVO_CANONICAL_PARITY_V1
+# Purpose:
+#   Force Evolution to produce an Analysis-parity canonical metric pool (keyed by the
+#   SAME canonical_key space as Analysis) by running the schema-only rebuild against
+#   the CURRENT snapshots cache using the PREVIOUS (Analysis) frozen schema.
+#
+# Why:
+#   Current is blank/N/A because Evolution's emitted pool keys don't match diff row keys.
+#   This patch creates an "evo_primary_metrics_canonical_v1" dict that is shaped like
+#   primary_metrics_canonical (by canonical_key), then wires it into canonical_for_render_v1
+#   used by hydration (non-destructive: preserves prior pool copy).
+#
+# Safety:
+#   - Deterministic: uses ONLY baseline_sources_cache_current (no re-fetch).
+#   - Additive-only: keeps prior canonical_for_render_v1 under a new debug key.
+#   - No selector/semantic binding changes; schema-only rebuild.
+# =========================
+
+def _fix2bt__as_dict(x):
+    return x if isinstance(x, dict) else {}
+
+def _fix2bt__as_list(x):
+    return x if isinstance(x, list) else []
+
+def _fix2bt__ensure_results_debug(output):
+    if not isinstance(output, dict):
+        return None, None
+    results = output.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        output["results"] = results
+    dbg = results.get("debug")
+    if not isinstance(dbg, dict):
+        dbg = {}
+        results["debug"] = dbg
+    return results, dbg
+
+def _fix2bt__apply(output: dict, prev_full: dict = None, web_context: dict = None):
+    try:
+        if not isinstance(output, dict):
+            return
+
+        results, dbg = _fix2bt__ensure_results_debug(output)
+        if results is None or dbg is None:
+            return
+
+        # Pull current snapshots cache (prefer results.*)
+        bsc_cur = (
+            results.get("baseline_sources_cache_current")
+            or output.get("baseline_sources_cache_current")
+            or results.get("baseline_sources_cache")
+            or output.get("baseline_sources_cache")
+        )
+
+        # Require prev_full (analysis baseline) to provide frozen schema
+        if not isinstance(prev_full, dict):
+            prev_full = {}
+
+        fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only")
+        if not callable(fn_rebuild):
+            return
+
+        rebuilt = fn_rebuild(prev_full, bsc_cur, web_context=web_context)
+
+        # Record diagnostics
+        diag = {
+            "applied": True,
+            "rebuilt_keys_n": int(len(rebuilt)) if isinstance(rebuilt, dict) else 0,
+            "rebuilt_keys_sample": list(rebuilt.keys())[:12] if isinstance(rebuilt, dict) else [],
+            "has_prev_schema": True,
+            "current_bsc_rows": int(len(bsc_cur)) if isinstance(bsc_cur, list) else (int(len((bsc_cur or {}).get("snapshots", []))) if isinstance(bsc_cur, dict) else 0),
+        }
+
+        dbg.setdefault("fix2bt", {})
+        if isinstance(dbg.get("fix2bt"), dict):
+            dbg["fix2bt"].update(diag)
+
+        if not isinstance(rebuilt, dict) or not rebuilt:
+            # Still emit empty dict for clarity (do not omit)
+            dbg["evo_primary_metrics_canonical_v1"] = {}
+            return
+
+        # Export rebuilt as Analysis-parity canonical pool
+        dbg["evo_primary_metrics_canonical_v1"] = rebuilt
+
+        # Preserve prior canonical_for_render_v1, then set canonical_for_render_v1 to rebuilt
+        prev_pool = dbg.get("canonical_for_render_v1")
+        if isinstance(prev_pool, dict) and prev_pool:
+            dbg.setdefault("canonical_for_render_v1_prev_fix2bt", prev_pool)
+
+        dbg["canonical_for_render_v1"] = rebuilt
+
+        # Small hint for downstream hydration
+        dbg["fix2bt"]["wired_canonical_for_render_v1"] = True
+        dbg["fix2bt"]["prior_pool_preserved"] = bool(isinstance(prev_pool, dict) and prev_pool)
+
+    except Exception:
+        pass
+
+# =========================
+# PATCH END: FIX2BT_EVO_CANONICAL_PARITY_V1
 # =========================
 
 def _fix2br__emit_manifest(output):
