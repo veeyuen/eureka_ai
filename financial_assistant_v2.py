@@ -30364,6 +30364,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             _p3v1__emit_canonical_for_render_v1(out_replay)
         except Exception:
             pass
+        out_replay = _fix2c1__apply(out_replay, prev_full, wc) if callable(globals().get('_fix2c1__apply')) else out_replay
         return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
@@ -30429,7 +30430,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             try:
                 _fix2br__emit_manifest(out)
             except Exception:
-                pass
+                out = _fix2c1__apply(out, prev_full, wc) if callable(globals().get('_fix2c1__apply')) else out
+                return out
             return out
         except Exception as e:
             # Fall through to original behavior if anything unexpected
@@ -30466,6 +30468,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 _fix2br__emit_manifest(out_changed)
             except Exception:
                 pass
+            out_changed = _fix2c1__apply(out_changed, prev_full, wc) if callable(globals().get('_fix2c1__apply')) else out_changed
             return out_changed
         except Exception:
             pass
@@ -35112,3 +35115,167 @@ def _fix2bw__apply(out: dict, prev_full: dict = None, wc: dict = None):
 # =========================
 # PATCH END: FIX2BW_WIRE_SHARED_CANON_V1
 # =========================
+
+
+
+# =====================================================================
+# PATCH START: FIX2C1_EVO_HYDRATE_CURRENT_V1
+# CODE_VERSION: FIX2C1_EVO_HYDRATE_CURRENT_V1
+# Purpose:
+# - Ensure Evolution always produces a canonical current metrics map in the exact
+#   locations the Diff Panel hydration contract expects.
+# - This addresses the persistent "Current column blank" symptom when the active
+#   Evolution execution path bypasses earlier FIX2BT/FIX2BW wrappers.
+# Scope:
+# - Core-engine only. No wrapper/UI changes.
+# Behavior:
+# - Apply FIX2BT/FIX2BV/FIX2BW wiring (if present) to the Evolution output dict
+#   immediately before returning from run_source_anchored_evolution().
+# - Guarantee `out["primary_metrics_canonical"]` and `out["results"]["primary_metrics_canonical"]`
+#   are populated when a shared canonical pool exists.
+# Diagnostics:
+# - Emits `out["debug"]["fix2c1"]` with applied flags and key counts.
+# Safety:
+# - Additive, non-destructive: does not overwrite a non-empty primary_metrics_canonical.
+# =====================================================================
+
+# PATCH FIX2C1: bump CODE_VERSION to match patch filename (additive reassignment)
+try:
+    CODE_VERSION = "FIX2C1_EVO_HYDRATE_CURRENT_V1"
+except Exception:
+    pass
+
+def _fix2c1__key_count(d):
+    try:
+        return int(len(d)) if isinstance(d, dict) else 0
+    except Exception:
+        return 0
+
+def _fix2c1__get_shared_pool(out):
+    # Prefer FIX2BW wiring output if already present under results.primary_metrics_canonical
+    try:
+        if isinstance(out, dict):
+            r = out.get("results")
+            if isinstance(r, dict) and isinstance(r.get("primary_metrics_canonical"), dict) and r.get("primary_metrics_canonical"):
+                return r.get("primary_metrics_canonical")
+    except Exception:
+        pass
+    # Else prefer FIX2BV shared pool diagnostic location
+    try:
+        if isinstance(out, dict):
+            r = out.get("results")
+            if isinstance(r, dict):
+                dbg = r.get("debug")
+                if isinstance(dbg, dict):
+                    shared = dbg.get("evo_primary_metrics_canonical_shared_v1")
+                    if isinstance(shared, dict) and shared:
+                        return shared
+                # Some variants store debug under results.debug
+                dbg2 = r.get("debug")
+                if isinstance(dbg2, dict):
+                    pass
+    except Exception:
+        pass
+    try:
+        if isinstance(out, dict):
+            r = out.get("results")
+            if isinstance(r, dict):
+                dbg = r.get("debug")
+                if isinstance(dbg, dict):
+                    shared = dbg.get("evo_primary_metrics_canonical_shared_v1")
+                    if isinstance(shared, dict) and shared:
+                        return shared
+    except Exception:
+        pass
+    return None
+
+def _fix2c1__apply(out, prev_full=None, web_context=None):
+    if not isinstance(out, dict):
+        return out
+    dbg = out.setdefault("debug", {})
+    if not isinstance(dbg, dict):
+        return out
+
+    applied = {"fix2bt": False, "fix2bv": False, "fix2bw": False}
+    # Apply parity/engine patches if available
+    try:
+        if callable(globals().get("_fix2bt__apply")):
+            globals()["_fix2bt__apply"](out, prev_full, web_context)
+            applied["fix2bt"] = True
+    except Exception:
+        pass
+    try:
+        if callable(globals().get("_fix2bv__apply")):
+            globals()["_fix2bv__apply"](out, prev_full, web_context)
+            applied["fix2bv"] = True
+    except Exception:
+        pass
+    try:
+        if callable(globals().get("_fix2bw__apply")):
+            globals()["_fix2bw__apply"](out, prev_full, web_context)
+            applied["fix2bw"] = True
+    except Exception:
+        pass
+
+    # Ensure primary_metrics_canonical is present for diff hydration (non-overwriting)
+    try:
+        existing_top = out.get("primary_metrics_canonical")
+        if isinstance(existing_top, dict) and existing_top:
+            # already present
+            pass
+        else:
+            shared = _fix2c1__get_shared_pool(out)
+            if isinstance(shared, dict) and shared:
+                out["primary_metrics_canonical"] = shared
+    except Exception:
+        pass
+
+    try:
+        r = out.setdefault("results", {})
+        if isinstance(r, dict):
+            existing_r = r.get("primary_metrics_canonical")
+            if isinstance(existing_r, dict) and existing_r:
+                pass
+            else:
+                shared = out.get("primary_metrics_canonical")
+                if isinstance(shared, dict) and shared:
+                    r["primary_metrics_canonical"] = shared
+    except Exception:
+        pass
+
+    # Re-emit canonical_for_render_v1 if the helper exists (so render adapters see it)
+    try:
+        if callable(globals().get("_p3v1__emit_canonical_for_render_v1")):
+            globals()["_p3v1__emit_canonical_for_render_v1"](out)
+    except Exception:
+        pass
+
+    # Diagnostics
+    try:
+        dbg["fix2c1"] = {
+            "applied": True,
+            "applied_patches": applied,
+            "pmc_top_n": _fix2c1__key_count(out.get("primary_metrics_canonical")),
+            "pmc_results_n": _fix2c1__key_count(out.get("results", {}).get("primary_metrics_canonical")),
+        }
+    except Exception:
+        pass
+
+    return out
+
+# PATCH FIX2C1: patch tracker entry (additive)
+try:
+    _pt = globals().get("PATCH_TRACKER")
+    if isinstance(_pt, list) and not any(isinstance(x, dict) and x.get("patch") == "FIX2C1_EVO_HYDRATE_CURRENT_V1" for x in _pt):
+        _pt.append({
+            "patch": "FIX2C1_EVO_HYDRATE_CURRENT_V1",
+            "scope": "apply FIX2BT/FIX2BV/FIX2BW to active Evolution path; guarantee primary_metrics_canonical for diff hydration",
+            "risk": "low",
+            "status": "active",
+        })
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH END: FIX2C1_EVO_HYDRATE_CURRENT_V1
+# =====================================================================
