@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BV_SHARED_CANON_ENGINE_V1"  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+CODE_VERSION = 'FIX2BX_V2_SUMMARY_FIX_V1'  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -19263,6 +19263,13 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 
 def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     """Return (rows, summary) for Diff Metrics Panel V2."""
+
+    # PATCH FIX2BX_V2_SUMMARY_UNBOUNDLOCAL_FIX (ADDITIVE)
+    # Ensure `summary` is always defined (some branches previously returned/used it before assignment).
+    # Render-layer only; no effect on canonicalization/extraction.
+    summary = {}
+    # END PATCH FIX2BX_V2_SUMMARY_UNBOUNDLOCAL_FIX
+
 
     def _unwrap_primary_metrics_canonical(resp: dict):
         if not isinstance(resp, dict):
