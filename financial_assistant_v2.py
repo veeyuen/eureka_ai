@@ -79,767 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'FIX2C4_SCALE_UNITS_MONEY_V1'  # PATCH FIX2C4: bump CODE_VERSION to match patch filename
-
-
-# =========================
-# PATCH TRACKER (ADDITIVE, AUTHORITATIVE)
-# Each patch must add an entry here for future consolidation/cleanup.
-# =========================
-PATCH_TRACKER_V1 = [
-    {
-        "patch": "FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1",
-        "date": "2026-01-13",
-        "class": "GOLDEN",
-        "keep": True,
-        "purpose": "Align Evolution current-pool keyspace to Diff row canonical keys; backfill missing canonical_for_render_v1 entries from injected extracted numbers when possible (non-overwriting)."
-    },
-    {
-        "patch": "FIX2BT_EVO_CANONICAL_PARITY_V1",
-        "date": "2026-01-13",
-        "class": "GOLDEN",
-        "keep": True,
-        "purpose": "Run schema-only rebuild against current snapshots using previous (analysis) frozen schema; wire rebuilt canonical pool into canonical_for_render_v1 for diff hydration.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2BU_CORE_CONTRACTS_V1",
-        "date": "2026-01-13",
-        "class": "GOLDEN",
-        "keep": True,
-        "purpose": "Core-engine contract lock + integrated diagnostics scaffold (no wrapper/UI changes). Adds structured contract violation reporting for canonicalisation keyspace, hashing/evidence fields, and diff hydration; optional strict enforcement.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2BV_SHARED_CANON_ENGINE_V1",
-        "date": "2026-01-13",
-        "class": "REFAC",
-        "keep": True,
-        "purpose": "Patch 2: Add shared-canonical-engine path for Evolution using the Analysis canonical final selector (read-only by default). Computes shared rebuild on current snapshots, compares against FIX2BT schema-only rebuild, and emits structured diagnostics.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2BW_WIRE_SHARED_CANON_V1",
-        "date": "2026-01-13",
-        "class": "REFAC",
-        "keep": True,
-        "purpose": "Patch 3: Wire shared canonical pool into Evolution producer fields (primary_metrics_canonical/results.primary_metrics_canonical) so diff hydration can populate Current deterministically; re-emit canonical_for_render_v1 and add wiring diagnostics.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2BX_V2_SUMMARY_FIX_V1",
-        "date": "2026-01-13",
-        "class": "REFAC",
-        "keep": True,
-        "purpose": "Fix diff panel v2 UnboundLocalError on summary; ensure v2 diff builder completes and emits rows.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2BY_MKTREV_V1",
-        "date": "2026-01-13",
-        "class": "GOLDEN",
-        "keep": True,
-        "purpose": "Enforce semantic invariant: market size == revenue (currency). Adds currency-only guardrails for market-size metrics during diff hydration and reports explicit diagnostics; prevents unit-based values from populating revenue rows.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2BZ_MONEY_KIND_V1",
-        "date": "2026-01-13",
-        "class": "GOLDEN",
-        "keep": True,
-        "purpose": "Fix measure_kind misclassification for currency magnitudes (e.g., US$996.3bn, US$1.1tn) using explicit currency evidence from raw tokens.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2C0_PRESERVE_EXTRACT_FIELDS_V1",
-        "date": "2026-01-13",
-        "class": "CORE",
-        "keep": True,
-        "purpose": "Preserve extractor-provided fields (unit_tag, value_norm, measure_kind, junk flags, spans) when building baseline_sources_cache_current so downstream canonicalisation + unit-evidence gating can hydrate Current.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2C1_EVO_HYDRATE_CURRENT_V1",
-        "date": "2026-01-13",
-        "class": "CORE",
-        "keep": True,
-        "purpose": "Enforce Evolution output contract: publish primary_metrics_canonical before every return path so diff hydration can see current canonical pool; adds diagnostics.",
-        "safe_to_remove_after_consolidation": False
-    },
-    {
-        "patch": "FIX2C2_CURMET_WIRE_V1",
-        "date": "2026-01-13",
-        "class": "GOLDEN",
-        "keep": True,
-        "purpose": "Guarantee Evolution exposes a stable results.current_metrics pool for downstream diff hydration; if current_metrics is empty, materialize it deterministically from primary_metrics_canonical or shared canonical pool and publish (non-overwriting).",
-        "safe_to_remove_after_consolidation": False
-    }
-]
-
-
-
-
-
-# ===============================================================================
-# PATCH START: FIX2BU_CORE_CONTRACTS_V1 (ADDITIVE)
-# Goal:
-#   Lock core-engine contracts + emit structured diagnostics for troubleshooting,
-#   without modifying wrappers (SerpAPI/Perplexity), scoring, or UI.
-#
-# What this patch adds:
-#   - CORE_CONTRACTS_V1 config toggle
-#   - _core_contract_v1_validate_* helpers that return violations (no side effects)
-#   - Optional strict enforcement (default: False) to avoid surprising behavior changes
-#   - A single hook point that records violations under output.debug.core_contract_v1
-#
-# Safety:
-#   - Does NOT change extraction, hashing, canonicalisation, or diffing behavior.
-#   - Does NOT change UI feed shape; adds debug fields only.
-# ===============================================================================
-CORE_CONTRACTS_V1 = {
-    # If True, raise on contract violations (recommended only after golden tests pass).
-    "ENFORCE_STRICT": False,
-
-    # If True, include samples of offending keys/metrics in diagnostics (may be verbose).
-    "INCLUDE_SAMPLES": True,
-
-    # Max sample sizes for diagnostics.
-    "MAX_KEY_SAMPLES": 20,
-    "MAX_METRIC_SAMPLES": 10,
-}
-
-
-# ===============================================================================
-# PATCH START: FIX2C4_SCALE_UNITS_MONEY_V1 (ADDITIVE)
-# Goal:
-#   Ensure extracted_numbers retains decisive unit evidence for:
-#     (a) currency magnitudes like "US$ 996.3bn", "$1.1tn"
-#     (b) volume magnitudes like "17.8 million units", "22.1m sales"
-#
-#   This patch does NOT change wrappers/UI. It only normalizes candidate fields so that:
-#     - market size (revenue) rows can bind to currency candidates (unit_family='currency')
-#     - unit sales rows can bind to volume candidates (unit_family='count_units', scale=1e6 where relevant)
-#
-# Key behaviors (deterministic):
-#   - If raw contains currency token, force unit_family='currency' and set unit_tag/base_unit accordingly.
-#   - Interpret bn/tn/billion/trillion as multipliers (1e9/1e12) rather than "unit_tag".
-#   - If raw contains "million"/"m" with unit cues ("units", "sales", "vehicles"), set unit_family='count_units'
-#     with scale=1e6 and value_norm=value*1e6 (when numeric value available).
-#   - Never overwrite existing explicit unit_family/unit_tag/value_norm unless missing.
-#   - Emit lightweight diagnostics under output.debug.fix2c4
-# ===============================================================================
-_FIX2C4_CFG = {
-    "ENABLED": True,
-    "MAX_DIAG_SAMPLES": 8,
-}
-
-_FIX2C4_CURRENCY_TOKENS = [
-    "US$", "USD", "$", "S$", "SGD", "€", "EUR", "£", "GBP", "¥", "JPY", "CNY", "RMB", "AUD", "CAD"
-]
-
-def _fix2c4__detect_currency_token(raw: str):
-    if not isinstance(raw, str):
-        return None
-    r = raw.strip()
-    for t in _FIX2C4_CURRENCY_TOKENS:
-        if t in r:
-            # Prefer canonical currency codes where possible
-            if t in ("US$", "USD", "$"):
-                return "USD"
-            if t in ("S$", "SGD"):
-                return "SGD"
-            if t in ("€", "EUR"):
-                return "EUR"
-            if t in ("£", "GBP"):
-                return "GBP"
-            if t in ("¥", "JPY"):
-                return "JPY"
-            if t in ("CNY", "RMB"):
-                return "CNY"
-            if t == "AUD":
-                return "AUD"
-            if t == "CAD":
-                return "CAD"
-            return t
-    return None
-
-def _fix2c4__detect_scale_multiplier(raw: str):
-    """Return (multiplier:int, scale_tag:str|None) for bn/tn/mn/million etc."""
-    if not isinstance(raw, str):
-        return (1, None)
-    s = raw.lower()
-    # currency magnitudes
-    if "trillion" in s or " tn" in s or "tn" in s:
-        return (10**12, "tn")
-    if "billion" in s or " bn" in s or "bn" in s:
-        return (10**9, "bn")
-    # volumes
-    if "million" in s or " mn" in s or "mn" in s:
-        return (10**6, "mn")
-    # common shorthand: "22.1m" (avoid matching 'mm' etc)
-    if re.search(r"\b\d+(?:\.\d+)?\s*m\b", s) or re.search(r"\b\d+(?:\.\d+)?m\b", s):
-        return (10**6, "m")
-    return (1, None)
-
-def _fix2c4__looks_like_units_context(raw: str, ctx: str):
-    s = (raw or "") + " " + (ctx or "")
-    s = s.lower()
-    return any(w in s for w in [" unit", " units", " vehicle", " vehicles", " sales", " sold", " deliveries", " deliveries", " volume", " volumes"])
-
-def _fix2c4_normalize_extracted_numbers_v1(extracted_numbers: list):
-    """Normalize a list of extracted number dicts in-place (best-effort)."""
-    if not (isinstance(extracted_numbers, list) and extracted_numbers):
-        return extracted_numbers
-    for n in extracted_numbers:
-        if not isinstance(n, dict):
-            continue
-        raw = n.get("raw") or n.get("text") or ""
-        ctx = n.get("context") or n.get("context_snippet") or ""
-        # --- currency evidence
-        cur = _fix2c4__detect_currency_token(raw)
-        if cur and not (n.get("unit_family") or n.get("measure_kind") == "money"):
-            n.setdefault("unit_family", "currency")
-            n.setdefault("measure_kind", "money")
-        if cur:
-            # Prefer explicit unit_tag when absent
-            if not n.get("unit_tag"):
-                n["unit_tag"] = cur
-            n.setdefault("base_unit", cur)
-
-        # --- scale evidence
-        mult, scale_tag = _fix2c4__detect_scale_multiplier(raw)
-        if mult != 1:
-            n.setdefault("scale_multiplier", int(mult))
-            if scale_tag and not n.get("scale_tag"):
-                n["scale_tag"] = str(scale_tag)
-
-        # --- unit volumes (million units)
-        if (not cur) and (not n.get("unit_family")) and mult in (10**6, 10**9, 10**12):
-            # Only treat as unit volume if context suggests units/sales/vehicles.
-            if _fix2c4__looks_like_units_context(raw, ctx):
-                n.setdefault("unit_family", "count_units")
-                n.setdefault("measure_kind", "count_units")
-                if not n.get("unit_tag"):
-                    n["unit_tag"] = "unit_sales"
-                n.setdefault("base_unit", "units")
-
-        # --- recompute value_norm when possible and missing
-        try:
-            v = n.get("value_norm")
-            if v is None:
-                vv = n.get("value")
-                if isinstance(vv, (int, float)):
-                    v = float(vv)
-                elif isinstance(vv, str):
-                    v = float(vv)
-            if v is not None and isinstance(v, (int, float)) and mult != 1:
-                # Only apply multiplier if it looks like a magnitude (bn/tn/million)
-                n.setdefault("value_norm", float(v) * float(mult))
-        except Exception:
-            pass
-
-    return extracted_numbers
-
-def _fix2c4_apply_to_baseline_sources_cache_v1(baseline_sources_cache: list, output: dict = None):
-    """Walk baseline_sources_cache[*].extracted_numbers and normalize candidates."""
-    if not (_FIX2C4_CFG.get("ENABLED") is True):
-        return baseline_sources_cache
-    if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
-        return baseline_sources_cache
-    changed = 0
-    samples = []
-    for row in baseline_sources_cache:
-        if not isinstance(row, dict):
-            continue
-        nums = row.get("extracted_numbers")
-        if not isinstance(nums, list) or not nums:
-            continue
-        before = None
-        try:
-            # capture one sample raw for diagnostics
-            before = nums[0].get("unit_tag"), nums[0].get("unit_family"), nums[0].get("value_norm")
-        except Exception:
-            before = None
-        _fix2c4_normalize_extracted_numbers_v1(nums)
-        after = None
-        try:
-            after = nums[0].get("unit_tag"), nums[0].get("unit_family"), nums[0].get("value_norm")
-        except Exception:
-            after = None
-        if before != after:
-            changed += 1
-            if len(samples) < int(_FIX2C4_CFG.get("MAX_DIAG_SAMPLES") or 8):
-                samples.append({
-                    "url": row.get("url") or row.get("source_url"),
-                    "before": before,
-                    "after": after,
-                    "raw0": (nums[0].get("raw") or "")[:120],
-                })
-
-    if isinstance(output, dict):
-        try:
-            output.setdefault("debug", {})
-            if isinstance(output.get("debug"), dict):
-                output["debug"].setdefault("fix2c4", {})
-                if isinstance(output["debug"].get("fix2c4"), dict):
-                    output["debug"]["fix2c4"].update({
-                        "applied": True,
-                        "rows_touched": int(changed),
-                        "sample": samples,
-                    })
-        except Exception:
-            pass
-    return baseline_sources_cache
-# ===============================================================================
-# PATCH END: FIX2C4_SCALE_UNITS_MONEY_V1
-# ===============================================================================
-def _core_contract_v1__is_metric_dict(x):
-    return isinstance(x, dict) and isinstance(x.get("canonical_key") or x.get("canonical_id") or x.get("name"), str)
-
-def _core_contract_v1_validate_canonical_pool(current_metrics, frozen_schema):
-    """Validate canonical pool shape and (when schema exists) keyspace parity."""
-    v = {"ok": True, "violations": []}
-    if not isinstance(current_metrics, dict):
-        v["ok"] = False
-        v["violations"].append({"code": "cur_pool_not_dict", "detail": type(current_metrics).__name__})
-        return v
-
-    # Key shape checks
-    bad_keys = [k for k in current_metrics.keys() if not isinstance(k, str) or "__" not in k]
-    if bad_keys:
-        v["ok"] = False
-        v["violations"].append({
-            "code": "cur_pool_bad_keys",
-            "count": len(bad_keys),
-            "sample": bad_keys[: int(CORE_CONTRACTS_V1.get("MAX_KEY_SAMPLES") or 20)] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
-        })
-
-    # Metric field checks (lightweight; no inference)
-    missing_fields = []
-    for ck, md in current_metrics.items():
-        if not isinstance(md, dict):
-            missing_fields.append((ck, "metric_not_dict"))
-            continue
-        # canonical_key should match dict key when present
-        if isinstance(md.get("canonical_key"), str) and md.get("canonical_key") != ck:
-            missing_fields.append((ck, "canonical_key_mismatch"))
-        # ensure value_norm exists when value exists
-        if "value" in md and "value_norm" not in md:
-            missing_fields.append((ck, "value_norm_missing"))
-        if "unit_tag" not in md and "unit" not in md:
-            missing_fields.append((ck, "unit_missing"))
-
-    if missing_fields:
-        v["ok"] = False
-        samp = missing_fields[: int(CORE_CONTRACTS_V1.get("MAX_METRIC_SAMPLES") or 10)] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else []
-        v["violations"].append({
-            "code": "cur_pool_metric_fields",
-            "count": len(missing_fields),
-            "sample": [{"canonical_key": a, "issue": b} for (a, b) in samp] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
-        })
-
-    # Schema parity: in diff hydration mode, current_metrics must be subset of schema keys
-    if isinstance(frozen_schema, dict) and frozen_schema:
-        schema_keys = set(k for k in frozen_schema.keys() if isinstance(k, str))
-        cur_keys = set(k for k in current_metrics.keys() if isinstance(k, str))
-        extra = sorted(list(cur_keys - schema_keys))
-        missing = sorted(list(schema_keys - cur_keys))
-        if extra:
-            v["ok"] = False
-            v["violations"].append({
-                "code": "cur_pool_keys_not_in_schema",
-                "count": len(extra),
-                "sample": extra[: int(CORE_CONTRACTS_V1.get("MAX_KEY_SAMPLES") or 20)] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
-            })
-        # Missing schema keys are allowed in non-strict mode, but we report them for visibility
-        if missing:
-            v["violations"].append({
-                "code": "cur_pool_missing_schema_keys",
-                "count": len(missing),
-                "sample": missing[: int(CORE_CONTRACTS_V1.get("MAX_KEY_SAMPLES") or 20)] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
-                "severity": "warning",
-            })
-
-    return v
-
-def _core_contract_v1_validate_diff_rows(metric_changes_v2):
-    """Validate diff row feed is non-silent: each row should have a reason or diag."""
-    v = {"ok": True, "violations": []}
-    if not isinstance(metric_changes_v2, list):
-        v["ok"] = False
-        v["violations"].append({"code": "diff_rows_not_list", "detail": type(metric_changes_v2).__name__})
-        return v
-    if not metric_changes_v2:
-        # Empty allowed only if prev empty; core cannot know here, report as warning
-        v["violations"].append({"code": "diff_rows_empty", "severity": "warning"})
-        return v
-
-    silent = 0
-    samples = []
-    for r in metric_changes_v2:
-        if not isinstance(r, dict):
-            silent += 1
-            if len(samples) < 5:
-                samples.append({"row_type": type(r).__name__})
-            continue
-        diag = r.get("diag") if isinstance(r.get("diag"), dict) else {}
-        reason = r.get("reason") or diag.get("reason") or r.get("change_type")
-        if not reason:
-            silent += 1
-            if len(samples) < 5:
-                samples.append({"canonical_key": r.get("canonical_key"), "metric_name": r.get("metric_name")})
-    if silent:
-        v["ok"] = False
-        v["violations"].append({
-            "code": "diff_rows_silent",
-            "count": silent,
-            "sample": samples if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
-        })
-    return v
-
-def _core_contract_v1_attach(output, stage, payload):
-    """Attach contract diagnostics safely into output.debug.core_contract_v1."""
-    try:
-        dbg = output.setdefault("debug", {})
-        if not isinstance(dbg, dict):
-            return
-        cc = dbg.setdefault("core_contract_v1", {})
-        if not isinstance(cc, dict):
-            return
-        cc[stage] = payload
-        cc.setdefault("code_version", str(globals().get("CODE_VERSION") or ""))
-    except Exception:
-        pass
-
-# ===============================================================================
-# PATCH END: FIX2BU_CORE_CONTRACTS_V1
-# ===============================================================================
-# =========================
-# PATCH START: PHASE3_HARNESS_AND_EXPORT_V1
-# CODE_VERSION: FIX2BK_PHASE3_CONSOLIDATION_V1
-#
-# Goal:
-#   Consolidate Phase-3 injection harness + export wiring into ONE additive module block.
-#   This is consolidation scaffolding on top of FIX2AF (no behavior changes required).
-#
-# Notes:
-#   - Harness features are only active when injected URLs are present (web_context.extra_urls),
-#     so production runs remain unaffected unless the harness is used.
-#   - Export wiring (canonical_for_render_v1) is intentionally left as a stub in this patch;
-#     it will be implemented by FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1.
-# =========================
-
-PHASE3_HARNESS_AND_EXPORT_V1 = {
-    # Harness toggles (default: auto-enable only when injection is present)
-    "ENABLE_INJECTION_HARNESS": True,
-    "ENABLE_INJECTION_TEXT_FALLBACK": True,
-
-    # Export wiring (implemented in FIX2BK, keep False until that patch lands)
-    "ENABLE_EXPORT_CANONICAL_FOR_RENDER_V1": True,
-
-    # Diagnostics (keep off by default; enable temporarily when needed)
-    "ENABLE_DIAGNOSTICS": False,
-}
-
-def _p3v1__safe_get(d, k, default=None):
-    try:
-        if isinstance(d, dict) and k in d:
-            return d[k]
-    except Exception:
-        pass
-    return default
-
-def _p3v1__as_list(x):
-    if x is None:
-        return []
-    if isinstance(x, list):
-        return x
-    if isinstance(x, tuple):
-        return list(x)
-    return [x]
-
-def _p3v1__inj_present(web_context: dict) -> bool:
-    try:
-        if not isinstance(web_context, dict):
-            return False
-        ex = web_context.get("extra_urls") or web_context.get("diag_extra_urls_ui") or web_context.get("diag_extra_urls_ui_raw")
-        if isinstance(ex, str):
-            return bool(ex.strip())
-        return bool(ex)
-    except Exception:
-        return False
-
-def _p3v1__recover_extra_urls_into_web_context(web_context: dict) -> None:
-    """Recover injected URLs into web_context['extra_urls'] if missing/empty."""
-    try:
-        if not isinstance(web_context, dict):
-            return
-        cur = web_context.get("extra_urls")
-        if isinstance(cur, (list, tuple)) and cur:
-            return
-
-        recovered = []
-        v_list = web_context.get("diag_extra_urls_ui")
-        if isinstance(v_list, (list, tuple)) and v_list:
-            recovered = list(v_list)
-
-        if not recovered:
-            raw = web_context.get("diag_extra_urls_ui_raw")
-            if isinstance(raw, str) and raw.strip():
-                parts = []
-                for line in raw.splitlines():
-                    line = (line or "").strip()
-                    if not line:
-                        continue
-                    for p in line.split(","):
-                        p = (p or "").strip()
-                        if p:
-                            parts.append(p)
-                recovered = parts
-
-        if recovered:
-            norm = globals().get("_inj_diag_norm_url_list")
-            normed = norm(recovered) if callable(norm) else recovered
-            if normed:
-                web_context["extra_urls"] = list(normed)
-                dbg = web_context.get("debug")
-                if not isinstance(dbg, dict):
-                    dbg = {}
-                    web_context["debug"] = dbg
-                f = dbg.get("phase3_v1")
-                if not isinstance(f, dict):
-                    f = {}
-                    dbg["phase3_v1"] = f
-                f.update({"extra_urls_recovered": True, "extra_urls_recovered_count": int(len(normed))})
-    except Exception:
-        pass
-
-def _p3v1_evo_prepare_url_universe(prev_full: dict, previous_data: dict, web_context: dict, urls: list):
-    """
-    Consolidated URL-universe preparation for Evolution runs when injection harness is used.
-
-    - Recovers injected URLs into web_context['extra_urls'] (if only present in diag fields)
-    - Routes baseline+injected through fetch_web_context(identity_only=True) to get admitted list
-    - Ensures injected URLs are merged into urls list before scraped_meta build
-    """
-    try:
-        if not PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_INJECTION_HARNESS"):
-            return urls
-        if not _p3v1__inj_present(web_context):
-            return urls
-
-        if isinstance(web_context, dict):
-            _p3v1__recover_extra_urls_into_web_context(web_context)
-
-        extra_raw = (web_context or {}).get("extra_urls") or []
-        _norm = globals().get("_inj_diag_norm_url_list")
-        extra_norm = _norm(extra_raw) if callable(_norm) else list(extra_raw)
-        if not extra_norm:
-            return urls
-
-        baseline_urls = []
-        try:
-            baseline_urls = _fix24_extract_source_urls(prev_full) or []
-        except Exception:
-            baseline_urls = []
-        baseline_norm = _norm(baseline_urls) if callable(_norm) else list(baseline_urls)
-
-        q = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
-        diag_run_id = str((web_context or {}).get("diag_run_id") or "") or (globals().get("_inj_diag_make_run_id")("evo") if callable(globals().get("_inj_diag_make_run_id")) else "evo")
-
-        admitted = None
-        try:
-            _fwc = fetch_web_context(
-                q or "evolution_identity_only",
-                num_sources=int(min(12, max(1, len(baseline_norm) + len(extra_norm)))),
-                fallback_mode=True,
-                fallback_urls=baseline_norm,
-                existing_snapshots=(prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None,
-                extra_urls=extra_norm,
-                diag_run_id=diag_run_id,
-                diag_extra_urls_ui_raw=(web_context or {}).get("diag_extra_urls_ui_raw"),
-                identity_only=True,
-            ) or {}
-            admitted = _fwc.get("web_sources") or _fwc.get("sources") or None
-
-            # Attach diag injected urls if available (non-clobber)
-            if isinstance(web_context, dict) and isinstance(_fwc.get("diag_injected_urls"), dict):
-                web_context.setdefault("diag_injected_urls", {})
-                if isinstance(web_context.get("diag_injected_urls"), dict):
-                    for k, v in _fwc.get("diag_injected_urls").items():
-                        web_context["diag_injected_urls"].setdefault(k, v)
-
-            if isinstance(web_context, dict):
-                web_context.setdefault("debug", {})
-                if isinstance(web_context.get("debug"), dict):
-                    web_context["debug"].setdefault("phase3_v1", {})
-                    if isinstance(web_context["debug"].get("phase3_v1"), dict):
-                        _h = globals().get("_inj_diag_set_hash")
-                        _hval = _h(extra_norm) if callable(_h) else ""
-                        web_context["debug"]["phase3_v1"].update({
-                            "fwc_identity_only_called": True,
-                            "baseline_urls_count": int(len(baseline_norm)),
-                            "extra_urls_count": int(len(extra_norm)),
-                        })
-        except Exception:
-            admitted = None
-
-        # Adopt admitted list if it looks valid
-        if isinstance(admitted, list) and admitted:
-            urls = list(admitted)
-
-        # Merge injected URLs into urls universe (ensure attempted)
-        if isinstance(urls, list) and extra_norm:
-            seen = set()
-            try:
-                # urls may be list of dicts or strings
-                for d in urls:
-                    u = d.get("url") if isinstance(d, dict) else d
-                    u = str(u or "").strip()
-                    if not u:
-                        continue
-                    seen.add((_norm([u])[0] if callable(_norm) else u))
-            except Exception:
-                pass
-
-            for u in extra_norm:
-                if u in seen:
-                    continue
-                urls.append(u)
-                seen.add(u)
-
-        return urls
-    except Exception:
-        return urls
-
-def _p3v1_attach(payload: dict, context: dict = None) -> dict:
-    """Single end-of-export attach point for Phase3 module."""
-    if not isinstance(payload, dict):
-        return payload
-    context = context if isinstance(context, dict) else {}
-
-    # Export wiring stub (FIX2BK will implement)
-    if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_EXPORT_CANONICAL_FOR_RENDER_V1"):
-        # intentionally empty in consolidation patch
-        pass
-
-    # Optional minimal diagnostics
-    if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_DIAGNOSTICS"):
-        payload.setdefault("debug", {})
-        if isinstance(payload.get("debug"), dict):
-            payload["debug"].setdefault("phase3_v1", {})
-            if isinstance(payload["debug"].get("phase3_v1"), dict):
-                payload["debug"]["phase3_v1"]["attached"] = True
-    return payload
-
-# =========================
-
-# =========================
-# PATCH START: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
-# CODE_VERSION: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
-#
-# Purpose:
-#   Ensure Evolution emits render-ready canonical metrics to the namespace
-#   consumed by the Diff join:
-#       output_debug.canonical_for_render_v1
-#
-# Behavior:
-#   - Derives from the *actual* canonical pool already present in the payload
-#     (primary_response.primary_metrics_canonical or primary_metrics_canonical).
-#   - Non-overwriting: if canonical_for_render_v1 already exists and is non-empty,
-#     we leave it unchanged.
-#   - Always emits the key (empty dict allowed) to avoid "missing_output_debug..." diagnoses.
-# =========================
-
-def _p3v1__get_primary_metrics_canonical(payload: dict):
-    try:
-        if not isinstance(payload, dict):
-            return None
-        pmc = payload.get("primary_metrics_canonical")
-        if isinstance(pmc, dict) and pmc:
-            return pmc
-        pr = payload.get("primary_response")
-        if isinstance(pr, dict):
-            pmc2 = pr.get("primary_metrics_canonical")
-            if isinstance(pmc2, dict) and pmc2:
-                return pmc2
-        return pmc if isinstance(pmc, dict) else None
-    except Exception:
-        return None
-
-def _p3v1__build_canonical_for_render_v1(pmc: dict) -> dict:
-    out = {}
-    if not isinstance(pmc, dict):
-        return out
-    for ck, m in pmc.items():
-        if not ck:
-            continue
-        if not isinstance(m, dict):
-            out[str(ck)] = {"value": m, "unit": None, "value_norm": None, "unit_tag": None}
-            continue
-        out[str(ck)] = {
-            # prefer normalized value when available
-            "value": m.get("value", m.get("value_norm")),
-            "value_norm": m.get("value_norm", m.get("value")),
-            "unit": m.get("unit", m.get("unit_tag")),
-            "unit_tag": m.get("unit_tag", m.get("unit")),
-            "unit_family": m.get("unit_family", ""),
-            "dimension": m.get("dimension", m.get("dimension_kind", "")),
-            "canonical_id": m.get("canonical_id", m.get("canonical_metric_id", "")),
-            "canonical_key": m.get("canonical_key", str(ck)),
-            # optional evidence pointers (safe)
-            "source_url": m.get("source_url", ""),
-            "context_snippet": m.get("context_snippet", ""),
-        }
-    return out
-
-def _p3v1__emit_canonical_for_render_v1(payload: dict) -> None:
-    try:
-        if not isinstance(payload, dict):
-            return
-
-        od = payload.get("output_debug")
-        if not isinstance(od, dict):
-            od = {}
-            payload["output_debug"] = od
-
-        existing = od.get("canonical_for_render_v1")
-        if isinstance(existing, dict) and existing:
-            # Non-overwriting: if already present and non-empty, leave it.
-            return
-
-        pmc = _p3v1__get_primary_metrics_canonical(payload)
-        cfr = _p3v1__build_canonical_for_render_v1(pmc or {})
-
-        # Always emit (even empty dict) to avoid "missing_output_debug..." gating downstream.
-        od["canonical_for_render_v1"] = cfr
-
-        # Optional: also mirror top-level namespace (safe/non-breaking) for robustness
-        if "canonical_for_render_v1" not in payload or not payload.get("canonical_for_render_v1"):
-            payload["canonical_for_render_v1"] = cfr
-
-        # Minimal audit breadcrumb (non-invasive)
-        if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_DIAGNOSTICS"):
-            dbg = payload.get("debug")
-            if not isinstance(dbg, dict):
-                dbg = {}
-                payload["debug"] = dbg
-            fx = dbg.get("fix2bk_export_v1")
-            if not isinstance(fx, dict):
-                fx = {}
-                dbg["fix2bk_export_v1"] = fx
-            fx["emitted"] = True
-            fx["keys"] = int(len(cfr))
-            fx["sample_keys"] = list(cfr.keys())[:5]
-    except Exception:
-        return
-
-# =========================
-# PATCH END: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
-# =========================
-
-# PATCH END: PHASE3_HARNESS_AND_EXPORT_V1
-# =========================
+CODE_VERSION = "fix2ag_spine_pub_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -15647,32 +14887,6 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
                 "quality_reasons": reasons,
                 "topic_overlap": tok_overlap,
             })
-# =====================================================================
-            # PATCH START: FIX2C0_PRESERVE_EXTRACT_FIELDS_V1
-            # Preserve rich extractor fields for downstream canonicalisation and FIX39 unit-evidence gating.
-            # This is additive-only: we enrich the already-appended dict in-place.
-            # =====================================================================
-            try:
-                _last = cleaned_numbers[-1] if cleaned_numbers else None
-                if isinstance(_last, dict) and isinstance(n, dict):
-                    for _k in (
-                        "unit_tag","unit_family","base_unit","multiplier_to_base","value_norm",
-                        "measure_kind","measure_assoc","is_junk","junk_reason",
-                        "start_idx","end_idx","display","label"
-                    ):
-                        if _k in n and _k not in _last:
-                            _last[_k] = n.get(_k)
-                    # If unit_tag still missing but raw carries currency evidence, preserve it deterministically.
-                    _raw_s = raw if isinstance(raw, str) else ""
-                    if not _last.get("unit_tag") and _raw_s:
-                        if any(sym in _raw_s for sym in ("US$", "USD", "$", "S$", "€", "£", "¥")):
-                            _last["unit_tag"] = _raw_s.strip().split()[0] if _raw_s.strip().split() else (_last.get("unit") or "")
-            except Exception:
-                pass
-            # =====================================================================
-            # PATCH END: FIX2C0_PRESERVE_EXTRACT_FIELDS_V1
-            # =====================================================================
-
 
         out.append({
             "url": url_s,
@@ -18988,98 +18202,6 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         except Exception:
             current_metrics = {}
 
-
-    # ============================================================
-    # ============================================================
-    # PATCH FIX2C2_CURMET_WIRE_V1 (ADDITIVE):
-    # Materialize current_metrics from the most authoritative canonical pool
-    # and expose it under output.results.current_metrics for dashboard hydration.
-    #
-    # WHY:
-    # - Some hydration adapters expect results.current_metrics;
-    # - Some Evolution paths produce primary_metrics_canonical but skip current_metrics rebuild.
-    #
-    # SAFETY:
-    # - Non-overwriting: only fills when current_metrics is empty.
-    # - Deterministic: uses already-produced canonical pools only.
-    # ============================================================
-    try:
-        _fix2c2_dbg = None
-        if isinstance(output.get("debug"), dict):
-            output["debug"].setdefault("fix2c2", {})
-            _fix2c2_dbg = output["debug"]["fix2c2"]
-        elif isinstance(output, dict):
-            output.setdefault("debug", {})
-            output["debug"].setdefault("fix2c2", {})
-            _fix2c2_dbg = output["debug"]["fix2c2"]
-        if isinstance(_fix2c2_dbg, dict):
-            _fix2c2_dbg["applied"] = True
-
-        def _fix2c2_first_present(d, paths):
-            if not isinstance(d, dict):
-                return None
-            for p in paths or []:
-                cur = d
-                ok = True
-                for k in p:
-                    if not isinstance(cur, dict) or k not in cur:
-                        ok = False
-                        break
-                    cur = cur.get(k)
-                if ok and cur is not None:
-                    return cur
-            return None
-
-        def _fix2c2_pmc_to_curmetrics(pmc):
-            cm = {}
-            if not isinstance(pmc, dict):
-                return cm
-            for ck, m in pmc.items():
-                if not isinstance(ck, str) or not ck:
-                    continue
-                if not isinstance(m, dict):
-                    continue
-                cm[ck] = {
-                    "canonical_key": ck,
-                    "value": m.get("value"),
-                    "value_norm": m.get("value_norm") if m.get("value_norm") is not None else m.get("value"),
-                    "unit": m.get("unit") or m.get("unit_tag"),
-                    "unit_tag": m.get("unit_tag") or m.get("unit"),
-                    "measure_kind": m.get("measure_kind"),
-                    "source_url": m.get("source_url"),
-                    "anchor_hash": m.get("anchor_hash"),
-                    "candidate_id": m.get("candidate_id"),
-                    "context_snippet": m.get("context_snippet") or m.get("context") or "",
-                    "anchor_used": bool(m.get("anchor_used"))
-                }
-            return cm
-
-        if not isinstance(current_metrics, dict) or not current_metrics:
-            _pmc = None
-            # Prefer already-published canonical pools
-            _pmc = _fix2c2_first_present(output, [("primary_metrics_canonical",),("results","primary_metrics_canonical"),("primary_response","primary_metrics_canonical"),("results","primary_response","primary_metrics_canonical")])
-            if not (isinstance(_pmc, dict) and _pmc):
-                # Fall back to shared pool emitted by FIX2BV/2BW if present
-                _pmc = _fix2c2_first_present(output, [("results","debug","evo_primary_metrics_canonical_shared_v1"),("debug","evo_primary_metrics_canonical_shared_v1")])
-            if isinstance(_pmc, dict) and _pmc:
-                current_metrics = _fix2c2_pmc_to_curmetrics(_pmc)
-                if isinstance(_fix2c2_dbg, dict):
-                    _fix2c2_dbg["filled_from"] = "primary_metrics_canonical"
-                    _fix2c2_dbg["current_metrics_n"] = int(len(current_metrics))
-            else:
-                if isinstance(_fix2c2_dbg, dict):
-                    _fix2c2_dbg["filled_from"] = "none"
-                    _fix2c2_dbg["current_metrics_n"] = 0
-
-        # Always expose for downstream consumers (non-overwriting if already present)
-        if isinstance(output, dict):
-            output.setdefault("results", {})
-            if isinstance(output.get("results"), dict):
-                output["results"].setdefault("current_metrics", current_metrics if isinstance(current_metrics, dict) else {})
-            output.setdefault("current_metrics", current_metrics if isinstance(current_metrics, dict) else {})
-    except Exception:
-        pass
-
     if not isinstance(current_metrics, dict) or not current_metrics:
         output["status"] = "failed"
         output["message"] = "Valid snapshots exist, but metric rebuild returned empty. No re-fetch / no heuristic matching performed."
@@ -19341,42 +18463,6 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["metric_changes_v2"] = _mc_v2 or []
     except Exception:
         pass
-    # =================================================================
-    # PATCH FIX2BU_CORE_CONTRACTS_HOOK_V1 (ADDITIVE)
-    # Record core-engine contract diagnostics for canonical pool + diff rows.
-    # This is debug-only unless CORE_CONTRACTS_V1["ENFORCE_STRICT"] is enabled.
-    # =================================================================
-    try:
-        _frozen_schema = None
-        # Prefer explicitly stored schema on current/prev responses if present
-        if isinstance(cur_resp_for_diff, dict) and isinstance(cur_resp_for_diff.get("metric_schema_frozen"), dict):
-            _frozen_schema = cur_resp_for_diff.get("metric_schema_frozen")
-        elif isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen"), dict):
-            _frozen_schema = prev_response.get("metric_schema_frozen")
-        elif isinstance(output, dict) and isinstance(output.get("metric_schema_frozen"), dict):
-            _frozen_schema = output.get("metric_schema_frozen")
-
-        _cc_cur = _core_contract_v1_validate_canonical_pool(current_metrics, _frozen_schema)
-        _cc_diff = _core_contract_v1_validate_diff_rows(_mc_v2)
-        _core_contract_v1_attach(output, "canonical_pool", _cc_cur)
-        _core_contract_v1_attach(output, "diff_rows_v2", _cc_diff)
-
-        if bool(CORE_CONTRACTS_V1.get("ENFORCE_STRICT")):
-            # Strict mode: fail fast on hard violations (warnings ignored)
-            hard = []
-            for item in (_cc_cur, _cc_diff):
-                if isinstance(item, dict) and item.get("ok") is False:
-                    hard.append(item)
-            if hard:
-                raise RuntimeError("FIX2BU core contract violation(s); see debug.core_contract_v1 for details")
-    except Exception as _cc_e:
-        try:
-            _core_contract_v1_attach(output, "contract_hook_error", {"error": f"{type(_cc_e).__name__}: {_cc_e}"})
-        except Exception:
-            pass
-    # =================================================================
-    # END PATCH FIX2BU_CORE_CONTRACTS_HOOK_V1
-    # =================================================================
 
     # =================================================================
     # PATCH DIFF_PANEL_V2_WIRING_FIX2 (ADDITIVE): Persist V2 artifacts under output["results"]
@@ -19623,13 +18709,6 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     """Return (rows, summary) for Diff Metrics Panel V2."""
 
-    # PATCH FIX2BX_V2_SUMMARY_UNBOUNDLOCAL_FIX (ADDITIVE)
-    # Ensure `summary` is always defined (some branches previously returned/used it before assignment).
-    # Render-layer only; no effect on canonicalization/extraction.
-    summary = {}
-    # END PATCH FIX2BX_V2_SUMMARY_UNBOUNDLOCAL_FIX
-
-
     def _unwrap_primary_metrics_canonical(resp: dict):
         if not isinstance(resp, dict):
             return {}
@@ -19706,53 +18785,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         if not isinstance(m, dict):
             return ""
         return str(m.get("base_unit") or m.get("unit") or m.get("unit_tag") or "").strip()
-
-    # ===============================================================================
-    # PATCH START: FIX2BY_MKTREV_V1 (ADDITIVE)
-    # Goal:
-    #   Enforce semantic invariant: market size == revenue (currency).
-    #   Prevent unit-based values (e.g., vehicles sold) from populating market-size rows.
-    #
-    # Approach:
-    #   - Detect market-size / revenue metrics by canonical key and/or display name.
-    #   - Require current unit_tag to look like a currency unit.
-    #   - If not, treat as unit_mismatch (split to current_only) with explicit diagnostics.
-    #
-    # Safety:
-    #   - Does NOT change wrappers/UI.
-    #   - Only tightens diff hydration matching when a row is market-size/revenue.
-    # ===============================================================================
-    _FIX2BY_CURRENCY_PREFIXES = (
-        'usd', 'eur', 'sgd', 'gbp', 'aud', 'cad', 'nzd', 'jpy', 'cny', 'rmb', 'inr', 'krw',
-        'chf', 'hkd', 'twd', 'sek', 'nok', 'dkk', 'zar', 'mxn', 'brl', 'idr', 'myr', 'thb',
-        'php', 'vnd', 'pln', 'try', 'aed', 'sar', 'qar', 'kwd',
-    )
-
-    def _fix2by__is_market_size_metric(ckey: str, m: dict):
-        try:
-            name = str((m or {}).get('name') or (m or {}).get('display_name') or (m or {}).get('original_name') or '')
-            s = (ckey or '').lower()
-            n = name.lower()
-            if 'market_size' in s or 'market size' in n or 'market value' in n or 'market worth' in n:
-                return True
-            # revenue keys are treated as market-size (revenue) by definition
-            if 'revenue' in s or 'market_revenue' in s:
-                return True
-        except Exception:
-            return False
-        return False
-
-    def _fix2by__unit_tag_looks_currency(unit_tag: str):
-        try:
-            u = str(unit_tag or '').strip().lower()
-            if not u:
-                return False
-            return any(u.startswith(p) for p in _FIX2BY_CURRENCY_PREFIXES)
-        except Exception:
-            return False
-
-    # PATCH END: FIX2BY_MKTREV_V1
-
 
     prev_metrics = _unwrap_primary_metrics_canonical(prev_response)
     cur_metrics = _unwrap_primary_metrics_canonical(cur_response)
@@ -20099,7 +19131,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     # -------------------------------------------------------------
     current_only_total = 0
     current_only_injected = 0
-    current_only_market_size_rejected = 0  # FIX2BY
     try:
         if isinstance(cur_metrics, dict) and cur_metrics:
             for ck, cm in cur_metrics.items():
@@ -20109,15 +19140,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     continue
                 if not isinstance(cm, dict):
                     continue
-
-                # FIX2BY: do not surface current-only market-size/revenue metrics unless currency
-                try:
-                    if _fix2by__is_market_size_metric(ck, cm):
-                        if not _fix2by__unit_tag_looks_currency(_canon_unit_tag(cm)):
-                            current_only_market_size_rejected += 1
-                            continue
-                except Exception:
-                    pass
 
                 cur_raw = _raw_display_value(cm) or "N/A"
                 cur_val_norm = _canon_value_norm(cm)
@@ -20178,7 +19200,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-    
+
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -21628,133 +20650,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
 
 
-        
-
         # =====================================================================
-        # PATCH FIX2BP (ADDITIVE): Injection Fetch / Placeholder Elimination (relaxed)
-        #
-        # Observed gap:
-        #   Some injected URLs remain as placeholder rows (e.g. injected_reason="prehash_placeholder")
-        #   with empty snapshot_text and numbers_found==0. Downstream extraction/binding cannot run.
-        #
-        # Fix:
-        #   Best-effort second-pass fetch+extract for injected placeholder/failed rows, using a
-        #   relaxed minimum-text threshold (GitHub Pages test pages can be short).
-        #
-        # Safety:
-        #   - Additive-only.
-        #   - Only targets injected rows with empty snapshot_text and 0 numbers.
-        #   - Never overwrites non-empty snapshot_text or existing extracted_numbers.
-        # =====================================================================
-        try:
-            _fx2bp_min_len = 20  # relaxed threshold for short injected test pages
-            _fx2bp_targets = []
-            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
-                for _row in (baseline_sources_cache or []):
-                    if not isinstance(_row, dict):
-                        continue
-                    if not (_row.get("injected") is True or isinstance(_row.get("injected_reason"), str)):
-                        continue
-                    _u = _row.get("source_url") or _row.get("url") or ""
-                    if not (isinstance(_u, str) and _u.strip()):
-                        continue
-                    # Only target placeholder/failed injected rows that have no text/numbers yet
-                    _txt0 = _row.get("snapshot_text")
-                    _nums0 = _row.get("extracted_numbers")
-                    _nf0 = _row.get("numbers_found")
-                    if isinstance(_txt0, str) and _txt0.strip():
-                        continue
-                    if isinstance(_nums0, list) and len(_nums0 or []) > 0:
-                        continue
-                    if isinstance(_nf0, int) and _nf0 > 0:
-                        continue
-                    _why = _row.get("injected_reason") or _row.get("status_detail") or _row.get("status") or "unknown"
-                    _fx2bp_targets.append((_u.strip(), _row, str(_why)))
-
-            _fx2bp_fetched = []
-            _fx2bp_failed = []
-            if _fx2bp_targets:
-                for (_u, _row, _why) in _fx2bp_targets:
-                    _txt = None
-                    _detail = ""
-                    try:
-                        _txt, _detail = fetch_url_content_with_status(_u, timeout=35)
-                    except Exception as _e:
-                        _txt, _detail = None, f"exception:{type(_e).__name__}"
-
-                    if isinstance(_txt, str) and len(_txt.strip()) >= _fx2bp_min_len:
-                        try:
-                            _nums = extract_numbers_with_context(_txt, source_url=_u) or []
-                        except Exception:
-                            _nums = []
-                        try:
-                            _row.update({
-                                "status": "fetched",
-                                "status_detail": (_detail or "success"),
-                                "snapshot_text": _txt[:7000],
-                                "extracted_numbers": _nums,
-                                "numbers_found": int(len(_nums or [])),
-                                "injected": True,
-                                "injected_reason": _row.get("injected_reason") or "fix2bp_relaxed_fetch",
-                            })
-                        except Exception:
-                            pass
-                        _fx2bp_fetched.append({
-                            "url": _u,
-                            "why": _why,
-                            "min_len": int(_fx2bp_min_len),
-                            "text_len": int(len(_txt.strip())),
-                            "numbers_found": int(len(_nums or [])),
-                            "status_detail": (_detail or "success"),
-                        })
-                    else:
-                        try:
-                            # Keep status_detail for debugging but avoid the misleading "success" label if no text
-                            _row.update({
-                                "status": "failed",
-                                "status_detail": (_detail or "failed:no_text"),
-                                "snapshot_text": "",
-                                "extracted_numbers": [],
-                                "numbers_found": 0,
-                                "injected": True,
-                                "injected_reason": _row.get("injected_reason") or "fix2bp_relaxed_fetch_failed",
-                            })
-                        except Exception:
-                            pass
-                        _fx2bp_failed.append({
-                            "url": _u,
-                            "why": _why,
-                            "min_len": int(_fx2bp_min_len),
-                            "status_detail": (_detail or "failed:no_text"),
-                        })
-
-            # Debug breadcrumb (non-fatal)
-            try:
-                output.setdefault("debug", {})
-                if isinstance(output.get("debug"), dict):
-                    output["debug"].setdefault("fix2bp", {})
-                    if isinstance(output["debug"].get("fix2bp"), dict):
-                        output["debug"]["fix2bp"].update({
-                            "min_len": int(_fx2bp_min_len),
-                            "target_count": int(len(_fx2bp_targets or [])),
-                            "fetched_count": int(len(_fx2bp_fetched or [])),
-                            "failed_count": int(len(_fx2bp_failed or [])),
-                            "fetched": list(_fx2bp_fetched or [])[:10],
-                            "failed": list(_fx2bp_failed or [])[:10],
-                        })
-            except Exception:
-                pass
-        except Exception:
-            pass
-# =====================================================================
-        # PATCH FIX2C4 (ADDITIVE): normalize currency + unit scale evidence in extracted_numbers for downstream canonicalisation/diff hydration
-        try:
-            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
-                baseline_sources_cache = _fix2c4_apply_to_baseline_sources_cache_v1(baseline_sources_cache, output)
-        except Exception:
-            pass
-# =====================================================================
-# =====================================================================
         # PATCH FIX41AFC17 (ADDITIVE): Pin fetched injected snapshots into canonical snapshot plumbing
         #
         # Observed gap (from evolution JSON after FIX41AFC16):
@@ -22249,62 +21145,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["sources_fetched"] = len(baseline_sources_cache)
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
-
-    # =========================
-    # PATCH FIX2BM START
-    # CODE_VERSION: FIX2BM_EXPORT_CANONICAL_FOR_RENDER_V1_HARDWIRE
-    # Purpose:
-    #   Hardwire emission of canonical_for_render_v1 into the *actual* namespace
-    #   inspected by the diff join diagnostics (output["debug"]["canonical_for_render_v1"]).
-    #   This is computed from the already-built current_metrics map and is non-overwriting.
-    # =========================
-    try:
-        _dbg = output.setdefault("debug", {}) if isinstance(output, dict) else None
-        if isinstance(_dbg, dict):
-            if not _dbg.get("canonical_for_render_v1"):
-                _cfr = {}
-                try:
-                    if isinstance(current_metrics, dict):
-                        for _ck, _m in current_metrics.items():
-                            if not _ck:
-                                continue
-                            if isinstance(_m, dict):
-                                _val = _m.get("value_norm")
-                                if _val is None:
-                                    _val = _m.get("value")
-                                if _val is None:
-                                    _val = _m.get("current_value_norm")
-                                if _val is None:
-                                    _val = _m.get("current_value")
-                                _unit = _m.get("unit_tag")
-                                if not _unit:
-                                    _unit = _m.get("unit")
-                                if not _unit:
-                                    _unit = _m.get("unit_norm")
-                                _cfr[str(_ck)] = {
-                                    "value_norm": _val,
-                                    "unit_tag": _unit,
-                                    "source_url": _m.get("source_url") or _m.get("url"),
-                                    "anchor_used": bool(_m.get("anchor_used")) if isinstance(_m.get("anchor_used"), (bool, int)) else False,
-                                }
-                except Exception:
-                    _cfr = {}
-                _dbg["canonical_for_render_v1"] = _cfr if isinstance(_cfr, dict) else {}
-            # Minimal audit (safe, compact)
-            _dbg.setdefault("fix2bm_export_v1", {})
-            try:
-                _dbg["fix2bm_export_v1"]["emitted"] = True
-                _dbg["fix2bm_export_v1"]["keys_n"] = int(len(_dbg.get("canonical_for_render_v1") or {}))
-                _dbg["fix2bm_export_v1"]["keys_sample"] = list((_dbg.get("canonical_for_render_v1") or {}).keys())[:10]
-                _dbg["fix2bm_export_v1"]["source"] = "current_metrics"
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # =========================
-    # PATCH FIX2BM END
-    # =========================
-
 
 
     # =====================================================================
@@ -23753,7 +22593,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-    
+
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -23782,7 +22622,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-            
+
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -23860,91 +22700,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
     except Exception:
         pass
-
-    # =====================================================================
-    # PATCH FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1 (ADDITIVE)
-    # Goal:
-    # - If Diff Panel V2 overrides `metric_changes`, re-hydrate "Current" fields
-    #   from canonical-for-render (analysis-aligned) so the dashboard Current column
-    #   is not blank/N/A.
-    # Safety:
-    # - Render-only: does NOT affect hashing/fastpath/snapshot attach/extraction.
-    # - Non-overwriting: only fills when current_value is blank/N/A.
-    # =====================================================================
-    try:
-        _fix2bn_pool = None
-        if isinstance(canonical_for_render, dict) and canonical_for_render:
-            _fix2bn_pool = canonical_for_render
-        elif isinstance(current_metrics, dict) and current_metrics:
-            _fix2bn_pool = current_metrics
-        else:
-            _fix2bn_pool = None
-
-        if isinstance(metric_changes, list) and isinstance(_fix2bn_pool, dict) and _fix2bn_pool:
-            _fix2bn_hydrated = 0
-            for _r in metric_changes:
-                if not isinstance(_r, dict):
-                    continue
-                _ck = _r.get("canonical_key") or _r.get("canonical") or _r.get("canonical_id") or ""
-                if not _ck:
-                    continue
-
-                _cm = _fix2bn_pool.get(_ck)
-                if not isinstance(_cm, dict):
-                    continue
-
-                # Only fill if blank/N/A
-                _cur = _r.get("current_value")
-                if _cur is not None and str(_cur).strip() not in ("", "N/A", "n/a", "NA"):
-                    continue
-
-                _vn = _cm.get("value_norm")
-                _unit = str((_cm.get("unit") or _cm.get("unit_tag") or "")).strip()
-                _raw = str((_cm.get("raw") or _cm.get("value_raw") or _cm.get("raw_value") or "")).strip()
-
-                if (_vn is None) and (not _raw):
-                    continue
-
-                if not _raw:
-                    try:
-                        if _vn is not None and _unit:
-                            _raw = f"{_vn} {_unit}".strip()
-                        elif _vn is not None:
-                            _raw = str(_vn)
-                    except Exception:
-                        _raw = ""
-
-                _r["current_value_norm"] = _vn
-                _r["cur_value_norm"] = _vn
-                _r["current_unit"] = _unit
-                _r["cur_unit_cmp"] = _unit
-                _r["current_value"] = _raw
-
-                _r.setdefault("diag", {})
-                if isinstance(_r.get("diag"), dict):
-                    _r["diag"].setdefault("fix2bn", {})
-                    if isinstance(_r["diag"].get("fix2bn"), dict):
-                        _r["diag"]["fix2bn"]["applied"] = True
-                        _r["diag"]["fix2bn"]["canonical_key"] = _ck
-
-                _fix2bn_hydrated += 1
-
-            # lightweight audit
-            try:
-                output.setdefault("debug", {})
-                if isinstance(output.get("debug"), dict):
-                    output["debug"]["fix2bn"] = {
-                        "applied": True,
-                        "rows_hydrated": int(_fix2bn_hydrated),
-                        "pool": "canonical_for_render" if _fix2bn_pool is canonical_for_render else "current_metrics",
-                    }
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # =====================================================================
-    # END PATCH FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1
-    # =====================================================================
 
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
@@ -25140,31 +23895,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             return "energy", "energy"
 
         return "other", "other"
-    
     # -------------------------------------------------------------------------
-    # PATCH FIX2BZ (ADDITIVE): currency-evidence aware measure classifier
-    # - Problem: currency values like "US$996.3bn" were being tagged as count_units
-    #   because context snippets may not include revenue keywords after truncation.
-    # - Fix: treat explicit currency tokens/symbols in the raw match as strong evidence
-    #   of money, regardless of context keyword coverage.
-    # - Deterministic: depends only on raw tokens + ctx + unit_tag.
-    # -------------------------------------------------------------------------
-    def _classify_measure_v2(unit_tag: str, ctx: str, raw_disp: str, currency_token: str):
-        c = (ctx or "").lower()
-        ut = (unit_tag or "").strip()
-        r = (raw_disp or "").lower().replace(" ", "")
-        cur = (currency_token or "").lower().replace(" ", "")
-
-        # explicit currency evidence wins
-        if any(s in r for s in ["us$", "s$", "$", "€", "£"]) or any(s in cur for s in ["us$", "s$", "$", "€", "£"]):
-            return "money", "money"
-        if any(code in r for code in ["usd", "sgd", "eur", "gbp"]) or any(code in c for code in [" usd", "sgd", " eur", " gbp"]):
-            return "money", "money"
-
-        # fallback to legacy logic
-        return _classify_measure(unit_tag, ctx)
-    # -------------------------------------------------------------------------
-# -------------------------------------------------------------------------
 
     # ---------- extraction pattern ----------
     # =========================
@@ -25298,7 +24029,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                 pass
             # =================================================================
 # semantic association tags
-        measure_kind, measure_assoc = _classify_measure_v2(unit, ctx_store, raw_disp, cur)
+        measure_kind, measure_assoc = _classify_measure(unit, ctx_store)
 
         out.append({
             "value": val,
@@ -28107,7 +26838,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-    
+
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -29769,16 +28500,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     # Step 2: Build current scraped_meta by fetching the same URLs used previously
     urls = _fix24_extract_source_urls(prev_full)
-
-    # =========================
-    # PATCH START: PHASE3_HARNESS_AND_EXPORT_V1 (consolidated URL universe)
-    # Purpose: keep injected URL parity logic centralized (no behavior change intended)
-    try:
-        urls = _p3v1_evo_prepare_url_universe(prev_full, previous_data, web_context, urls)
-    except Exception:
-        pass
-    # PATCH END: PHASE3_HARNESS_AND_EXPORT_V1 (consolidated URL universe)
-    # =========================
     # =====================================================================
     # PATCH FIX41AFC3 (ADDITIVE): Recover Evolution injected URLs into web_context['extra_urls']
     #
@@ -30664,11 +29385,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         # =====================================================================
         # END PATCH EVO_INJ_TRACE_REPLAY1
         # =====================================================================
-        try:
-            _p3v1__emit_canonical_for_render_v1(out_replay)
-        except Exception:
-            pass
-        out_replay = _fix2c1__apply(out_replay, prev_full, wc) if callable(globals().get('_fix2c1__apply')) else out_replay
         return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
@@ -30708,34 +29424,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
                     out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
-            try:
-                _p3v1__emit_canonical_for_render_v1(out)
-            except Exception:
-                pass
-            try:
-                _fix2bt__apply(out, prev_full, wc)
-                _fix2bv__apply(out, prev_full, wc)
-                _fix2bw__apply(out, prev_full, wc)
-                # PATCH FIX2BW: re-emit canonical_for_render after wiring
-                try:
-                    _p3v1__emit_canonical_for_render_v1(out)
-                except Exception:
-                    pass
-            except Exception:
-                pass
-            try:
-                try:
-                    _fix2bs__apply(out)
-                except Exception:
-                    pass
-                _fix2bq__apply(out)
-            except Exception:
-                pass
-            try:
-                _fix2br__emit_manifest(out)
-            except Exception:
-                out = _fix2c1__apply(out, prev_full, wc) if callable(globals().get('_fix2c1__apply')) else out
-                return out
             return out
         except Exception as e:
             # Fall through to original behavior if anything unexpected
@@ -30760,30 +29448,9 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
             except Exception:
                 pass
-            try:
-                _p3v1__emit_canonical_for_render_v1(out_changed)
-            except Exception:
-                pass
-            try:
-                _fix2bq__apply(out_changed)
-            except Exception:
-                pass
-            try:
-                _fix2br__emit_manifest(out_changed)
-            except Exception:
-                pass
-            out_changed = _fix2c1__apply(out_changed, prev_full, wc) if callable(globals().get('_fix2c1__apply')) else out_changed
             return out_changed
         except Exception:
             pass
-
-    try:
-
-        _p3v1__emit_canonical_for_render_v1(locals().get("out_changed") or locals().get("out") or locals().get("out_replay") or {})
-
-    except Exception:
-
-        pass
 
     return {
         "status": "failed",
@@ -30793,869 +29460,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         "metric_changes": [],
         "debug": {"fix24": True, "fix24_mode": "recompute_failed"},
     }
-
-
-
-# =========================
-# PATCH START: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
-# CODE_VERSION: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
-#
-# Goal:
-# - Hydrate Diff rows' Current fields using metric_definition.canonical_key (preferred),
-#   falling back to row.canonical_key / canonical_id.
-# - Pull values from the best available "current pool" already present in the output:
-#     1) results.debug.canonical_for_render_v1 (preferred, if keyed correctly)
-#     2) results.debug.evo_winner_trace_v1 (fallback; can use cur_value_norm, or top candidate glimpse)
-#
-# Safety:
-# - Additive-only, non-overwriting: only fills when current_value is blank/"N/A"/None.
-# - Never raises.
-# =========================
-
-def _fix2bq__is_blank_current(v):
-    try:
-        if v is None:
-            return True
-        if isinstance(v, str):
-            s = v.strip()
-            return (s == "" or s.upper() == "N/A")
-        return False
-    except Exception:
-        return True
-
-def _fix2bq__safe_dict(d):
-    return d if isinstance(d, dict) else {}
-
-def _fix2bq__safe_list(x):
-    return x if isinstance(x, list) else []
-
-def _fix2bq__get_row_key(row):
-    if not isinstance(row, dict):
-        return None
-    md = row.get("metric_definition")
-    if isinstance(md, dict):
-        k = md.get("canonical_key") or md.get("canonical_id")
-        if k:
-            return str(k)
-    # fallbacks
-    k2 = row.get("canonical_key") or row.get("canonical_id") or row.get("metric_id")
-    return str(k2) if k2 else None
-
-def _fix2bq__extract_from_pool_entry(entry):
-    """
-    Accepts various pool shapes and returns (value, value_norm, unit) tuple.
-    """
-    if entry is None:
-        return (None, None, None)
-    if isinstance(entry, dict):
-        v = entry.get("value")
-        vn = entry.get("value_norm", entry.get("cur_value_norm"))
-        u = entry.get("unit") or entry.get("unit_norm") or entry.get("cur_unit")
-        return (v, vn, u)
-    # scalar
-    return (entry, None, None)
-
-def _fix2bq__extract_from_winner_trace(trace_entry):
-    """
-    Winner trace shape (debug.evo_winner_trace_v1[k]):
-      - cur_value_norm / cur_unit may be None
-      - top3_candidates_glimpse may contain usable candidate
-    Returns (value_norm, unit_tag, source_tag) or (None,None,None)
-    """
-    if not isinstance(trace_entry, dict):
-        return (None, None, None)
-    vn = trace_entry.get("cur_value_norm")
-    u = trace_entry.get("cur_unit")
-    if vn is not None:
-        return (vn, u, "winner_trace.cur_value_norm")
-    # fallback to candidate glimpse
-    for c in _fix2bq__safe_list(trace_entry.get("top3_candidates_glimpse")):
-        if not isinstance(c, dict):
-            continue
-        if not c.get("has_unit_evidence"):
-            continue
-        vn2 = c.get("value_norm")
-        ut = c.get("unit_tag") or c.get("unit") or ""
-        if vn2 is None:
-            continue
-        return (vn2, ut, "winner_trace.top_candidate")
-    return (None, None, None)
-
-def _fix2bq__apply_to_results(results_obj):
-    """
-    results_obj is the dict under output['results'] (or similar).
-    Mutates results_obj in-place.
-    """
-    if not isinstance(results_obj, dict):
-        return
-
-    dbg = _fix2bq__safe_dict(results_obj.get("debug"))
-    pool = _fix2bq__safe_dict(dbg.get("canonical_for_render_v1"))
-    winner_trace = _fix2bq__safe_dict(dbg.get("evo_winner_trace_v1"))
-
-    # Candidate: apply to multiple metric_changes variants
-    targets = []
-    for k in ("metric_changes", "metric_changes_legacy", "metric_changes_v2"):
-        v = results_obj.get(k)
-        if isinstance(v, list) and v:
-            targets.append((k, v))
-
-    hydrated = 0
-    used_pool = 0
-    used_winner = 0
-
-    for name, rows in targets:
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            if not _fix2bq__is_blank_current(row.get("current_value")):
-                continue
-            key = _fix2bq__get_row_key(row)
-            if not key:
-                continue
-
-            # 1) Try canonical_for_render_v1
-            if key in pool:
-                v, vn, u = _fix2bq__extract_from_pool_entry(pool.get(key))
-                if vn is None and v is None:
-                    # nothing usable
-                    pass
-                else:
-                    # prefer numeric norm if present
-                    row["current_value_norm"] = vn if vn is not None else row.get("current_value_norm")
-                    row["current_value"] = vn if vn is not None else (v if v is not None else row.get("current_value"))
-                    if u and not row.get("current_unit"):
-                        row["current_unit"] = u
-                    hydrated += 1
-                    used_pool += 1
-                    continue
-
-            # 2) Try winner trace fallback
-            if key in winner_trace:
-                vn2, ut2, src_tag = _fix2bq__extract_from_winner_trace(winner_trace.get(key))
-                if vn2 is None:
-                    continue
-                row["current_value_norm"] = vn2
-                row["current_value"] = vn2
-                if ut2 and not row.get("current_unit"):
-                    row["current_unit"] = ut2
-                row.setdefault("debug", {})
-                if isinstance(row.get("debug"), dict):
-                    row["debug"].setdefault("fix2bq", {})
-                    if isinstance(row["debug"].get("fix2bq"), dict):
-                        row["debug"]["fix2bq"].update({"source": src_tag})
-                hydrated += 1
-                used_winner += 1
-
-    # Attach audit
-    results_obj.setdefault("debug", {})
-    if isinstance(results_obj.get("debug"), dict):
-        results_obj["debug"].setdefault("fix2bq", {})
-        if isinstance(results_obj["debug"].get("fix2bq"), dict):
-            results_obj["debug"]["fix2bq"].update({
-                "applied": True,
-                "hydrated_rows": int(hydrated),
-                "used_canonical_for_render_v1": int(used_pool),
-                "used_winner_trace": int(used_winner),
-                "pool_keys_n": int(len(pool)),
-                "winner_keys_n": int(len(winner_trace)),
-            })
-
-def _fix2bq__apply(output):
-    """
-    Applies FIX2BQ to an output dict that may contain:
-      - output['results'] (primary)
-      - or be itself a 'results' dict (fallback)
-    """
-    try:
-        if not isinstance(output, dict):
-            return
-        if isinstance(output.get("results"), dict):
-            _fix2bq__apply_to_results(output["results"])
-        else:
-            _fix2bq__apply_to_results(output)
-    except Exception:
-        pass
-
-# =========================
-# PATCH END: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
-# =========================
-
-
-# =========================
-# PATCH START: FIX2BR_CUR_INDEX_MANIFEST_V1
-# CODE_VERSION: FIX2BR_CUR_INDEX_MANIFEST_V1
-#
-# Purpose:
-#   Emit a "current index manifest" so we can deterministically see:
-#     - which pool(s) exist at final render time
-#     - what canonical keys are present in each pool
-#     - whether injected URLs contributed to any of them
-#   Additive-only, non-invasive, safe in production (lightweight).
-#
-# Classification: DIAGNOSTIC (intended removable after closure)
-# =========================
-
-def _fix2br__safe_get(d, k, default=None):
-    try:
-        if isinstance(d, dict) and k in d:
-            return d[k]
-    except Exception:
-        pass
-    return default
-
-def _fix2br__as_dict(x):
-    return x if isinstance(x, dict) else {}
-
-def _fix2br__as_list(x):
-    return x if isinstance(x, list) else []
-
-def _fix2br__pool_keys_sample(pool, n=12):
-    try:
-        if isinstance(pool, dict):
-            keys = list(pool.keys())
-            return {"keys_n": int(len(keys)), "keys_sample": [str(k) for k in keys[:n]]}
-        if isinstance(pool, list):
-            # If list of dicts, try canonical_key fields
-            keys = []
-            for it in pool:
-                if not isinstance(it, dict):
-                    continue
-                ck = (it.get("canonical_key") or it.get("canonical_metric_id") or it.get("metric_id") or it.get("id"))
-                if ck:
-                    keys.append(str(ck))
-            return {"keys_n": int(len(keys)), "keys_sample": keys[:n]}
-    except Exception:
-        pass
-    return {"keys_n": 0, "keys_sample": []}
-
-def _fix2br__find_injected_urls(output):
-    injected = []
-    try:
-        # Prefer explicit injection traces if present
-        dbg = _fix2br__as_dict(output.get("debug"))
-        inj = _fix2br__as_dict(dbg.get("inj_trace_v2_postfetch"))
-        for u in _fix2br__as_list(inj.get("rebuild_selected_norm")):
-            if isinstance(u, str) and u.startswith("http"):
-                # Only treat as injected if it appears in extra_urls or is tagged injected later
-                injected.append(u)
-
-        # Fallback: scan source_results for injected flags / injected_reason
-        results = _fix2br__as_dict(output.get("results"))
-        for sr in _fix2br__as_list(results.get("source_results")):
-            if not isinstance(sr, dict):
-                continue
-            if sr.get("injected") or sr.get("injected_reason") or sr.get("source_kind") == "injected":
-                u = sr.get("url") or sr.get("source_url")
-                if isinstance(u, str) and u.startswith("http"):
-                    injected.append(u)
-
-        # De-dup while preserving order
-        out = []
-        seen = set()
-        for u in injected:
-            if u not in seen:
-                seen.add(u)
-                out.append(u)
-        return out
-    except Exception:
-        return []
-
-def _fix2br__pool_injected_presence(pool, injected_urls, max_hits=5):
-    hits = []
-    try:
-        if not injected_urls:
-            return {"present": False, "hits": []}
-
-        # Dict pools: scan common source fields in values
-        if isinstance(pool, dict):
-            for k, v in pool.items():
-                if not isinstance(v, dict):
-                    continue
-                su = v.get("source_url") or v.get("url") or v.get("source") or v.get("source_kind")
-                if isinstance(su, str):
-                    for u in injected_urls:
-                        if u and u in su:
-                            hits.append({"canonical_key": str(k), "source_url": su})
-                            if len(hits) >= max_hits:
-                                break
-                if len(hits) >= max_hits:
-                    break
-
-        # List pools: scan dict items
-        if isinstance(pool, list):
-            for it in pool:
-                if not isinstance(it, dict):
-                    continue
-                su = it.get("source_url") or it.get("url") or it.get("source")
-                if isinstance(su, str):
-                    for u in injected_urls:
-                        if u and u in su:
-                            hits.append({"item": it.get("canonical_key") or it.get("metric_id"), "source_url": su})
-                            if len(hits) >= max_hits:
-                                break
-                if len(hits) >= max_hits:
-                    break
-
-        return {"present": bool(hits), "hits": hits}
-    except Exception:
-        return {"present": False, "hits": []}
-
-
-
-# =========================
-# PATCH START: FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1
-# Purpose:
-#   If Evolution has extracted injected numbers but canonical_for_render_v1 keyspace
-#   does not match the Diff row canonical keys, we will (non-overwriting) add entries
-#   for the Diff keys into results.debug.canonical_for_render_v1 using best-effort
-#   mapping from injected extracted_numbers.
-#
-# Notes:
-#   - Additive-only, production-safe (only fills missing keys)
-#   - Does NOT change selection logic; only supplies a render/hydration pool
-#   - Primary intent: prove end-to-end wiring by lighting up at least 1-2 rows
-# =========================
-
-def _fix2bs__as_dict(x):
-    return x if isinstance(x, dict) else {}
-
-def _fix2bs__as_list(x):
-    return x if isinstance(x, list) else []
-
-def _fix2bs__safe_get(d, k, default=None):
-    try:
-        if isinstance(d, dict) and k in d:
-            return d[k]
-    except Exception:
-        pass
-    return default
-
-def _fix2bs__norm_str(x):
-    try:
-        return str(x).strip()
-    except Exception:
-        return ""
-
-def _fix2bs__collect_diff_keys(output):
-    out = []
-    try:
-        results = _fix2bs__as_dict(output.get("results"))
-        arrays = []
-        for name in ("metric_changes", "metric_changes_legacy", "metric_changes_v2"):
-            arrays.extend(_fix2bs__as_list(results.get(name)))
-        for row in arrays:
-            if not isinstance(row, dict):
-                continue
-            md = _fix2bs__as_dict(row.get("metric_definition"))
-            k = md.get("canonical_key") or row.get("canonical_key") or row.get("canonical_id") or row.get("metric_id")
-            if k:
-                out.append(str(k))
-    except Exception:
-        pass
-    seen = set()
-    uniq = []
-    for k in out:
-        if k in seen:
-            continue
-        seen.add(k)
-        uniq.append(k)
-    return uniq
-
-def _fix2bs__find_injected_sources(output):
-    injected = []
-    try:
-        results = _fix2bs__as_dict(output.get("results"))
-        candidates = []
-        candidates.extend(_fix2bs__as_list(results.get("source_results")))
-        candidates.extend(_fix2bs__as_list(output.get("baseline_sources_cache_current")))
-        candidates.extend(_fix2bs__as_list(output.get("baseline_sources_cache")))
-        for s in candidates:
-            if not isinstance(s, dict):
-                continue
-            url = s.get("url") or s.get("source_url")
-            if not url:
-                continue
-            if s.get("injected") or s.get("is_injected") or s.get("injected_reason"):
-                injected.append(s)
-    except Exception:
-        pass
-    out = []
-    seen = set()
-    for s in injected:
-        url = s.get("url") or s.get("source_url")
-        if url in seen:
-            continue
-        seen.add(url)
-        out.append(s)
-    return out
-
-def _fix2bs__collect_injected_numbers(injected_sources):
-    nums = []
-    for s in injected_sources:
-        url = s.get("url") or s.get("source_url")
-        for n in _fix2bs__as_list(s.get("extracted_numbers")):
-            if isinstance(n, dict):
-                raw = n.get("raw") or n.get("text") or n.get("value_raw")
-                value_norm = n.get("value_norm") if "value_norm" in n else n.get("norm")
-                unit = n.get("unit") or n.get("unit_norm") or n.get("unit_family")
-                ctx = n.get("context") or n.get("span") or ""
-            else:
-                raw = n
-                value_norm = None
-                unit = None
-                ctx = ""
-            nums.append({
-                "raw": raw,
-                "value_norm": value_norm,
-                "unit": unit,
-                "context": ctx,
-                "url": url,
-            })
-    return nums
-
-def _fix2bs__is_percent(n):
-    raw = _fix2bs__norm_str(n.get("raw"))
-    unit = _fix2bs__norm_str(n.get("unit")).lower()
-    return "%" in raw or "percent" in unit
-
-def _fix2bs__looks_like_millions(n):
-    raw = _fix2bs__norm_str(n.get("raw")).lower()
-    unit = _fix2bs__norm_str(n.get("unit")).lower()
-    return ("million" in raw) or ("units" in raw) or ("unit_sales" in unit) or ("units" in unit)
-
-def _fix2bs__pick_best(nums, predicate):
-    for n in nums:
-        try:
-            if predicate(n):
-                return n
-        except Exception:
-            continue
-    return None
-
-def _fix2bs__map_injected_to_key(target_key, injected_nums):
-    k = (target_key or "").lower()
-    if ("percent" in k) or ("share" in k):
-        cand = _fix2bs__pick_best(injected_nums, _fix2bs__is_percent)
-        if cand:
-            return cand
-    if ("sales" in k or "units" in k or "unit_sales" in k) and ("2024" in k or "global" in k or "ytd" in k):
-        cand = _fix2bs__pick_best(injected_nums, _fix2bs__looks_like_millions)
-        if cand:
-            return cand
-    return None
-
-def _fix2bs__ensure_results_debug(output):
-    if not isinstance(output, dict):
-        return None, None
-    results = output.get("results")
-    if not isinstance(results, dict):
-        results = {}
-        output["results"] = results
-    dbg = results.get("debug")
-    if not isinstance(dbg, dict):
-        dbg = {}
-        results["debug"] = dbg
-    return results, dbg
-
-def _fix2bs__apply(output):
-    try:
-        if not isinstance(output, dict):
-            return
-        results, dbg = _fix2bs__ensure_results_debug(output)
-        pool = dbg.get("canonical_for_render_v1")
-        if not isinstance(pool, dict):
-            pool = {}
-            dbg["canonical_for_render_v1"] = pool
-
-        target_keys = _fix2bs__collect_diff_keys(output)
-        injected_sources = _fix2bs__find_injected_sources(output)
-        injected_nums = _fix2bs__collect_injected_numbers(injected_sources)
-
-        added = 0
-        added_keys = []
-        used = []
-
-        for key in target_keys:
-            if not key:
-                continue
-            if key in pool and pool.get(key):
-                continue
-            cand = _fix2bs__map_injected_to_key(key, injected_nums)
-            if not cand:
-                continue
-            entry = {
-                "value_norm": cand.get("value_norm"),
-                "value": cand.get("raw"),
-                "unit_norm": cand.get("unit"),
-                "source_url": cand.get("url"),
-                "method": "fix2bs_demo_keyspace_align",
-                "context": cand.get("context") or "",
-            }
-            pool[key] = entry
-            added += 1
-            added_keys.append(key)
-            used.append({"k": key, "raw": cand.get("raw"), "url": cand.get("url")})
-
-        dbg.setdefault("fix2bs", {})
-        dbg["fix2bs"].update({
-            "applied": True,
-            "target_keys_n": len(target_keys),
-            "injected_sources_n": len(injected_sources),
-            "injected_numbers_n": len(injected_nums),
-            "added_n": added,
-            "added_keys_sample": added_keys[:10],
-            "used_sample": used[:5],
-        })
-    except Exception:
-        pass
-
-# =========================
-# PATCH END: FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1
-# =========================
-
-# =========================
-# PATCH START: FIX2BT_EVO_CANONICAL_PARITY_V1
-# Purpose:
-#   Force Evolution to produce an Analysis-parity canonical metric pool (keyed by the
-#   SAME canonical_key space as Analysis) by running the schema-only rebuild against
-#   the CURRENT snapshots cache using the PREVIOUS (Analysis) frozen schema.
-#
-# Why:
-#   Current is blank/N/A because Evolution's emitted pool keys don't match diff row keys.
-#   This patch creates an "evo_primary_metrics_canonical_v1" dict that is shaped like
-#   primary_metrics_canonical (by canonical_key), then wires it into canonical_for_render_v1
-#   used by hydration (non-destructive: preserves prior pool copy).
-#
-# Safety:
-#   - Deterministic: uses ONLY baseline_sources_cache_current (no re-fetch).
-#   - Additive-only: keeps prior canonical_for_render_v1 under a new debug key.
-#   - No selector/semantic binding changes; schema-only rebuild.
-# =========================
-
-def _fix2bt__as_dict(x):
-    return x if isinstance(x, dict) else {}
-
-def _fix2bt__as_list(x):
-    return x if isinstance(x, list) else []
-
-def _fix2bt__ensure_results_debug(output):
-    if not isinstance(output, dict):
-        return None, None
-    results = output.get("results")
-    if not isinstance(results, dict):
-        results = {}
-        output["results"] = results
-    dbg = results.get("debug")
-    if not isinstance(dbg, dict):
-        dbg = {}
-        results["debug"] = dbg
-    return results, dbg
-
-def _fix2bt__apply(output: dict, prev_full: dict = None, web_context: dict = None):
-    try:
-        if not isinstance(output, dict):
-            return
-
-        results, dbg = _fix2bt__ensure_results_debug(output)
-        if results is None or dbg is None:
-            return
-
-        # Pull current snapshots cache (prefer results.*)
-        bsc_cur = (
-            results.get("baseline_sources_cache_current")
-            or output.get("baseline_sources_cache_current")
-            or results.get("baseline_sources_cache")
-            or output.get("baseline_sources_cache")
-        )
-
-        # Require prev_full (analysis baseline) to provide frozen schema
-        if not isinstance(prev_full, dict):
-            prev_full = {}
-
-        fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only")
-        if not callable(fn_rebuild):
-            return
-
-        rebuilt = fn_rebuild(prev_full, bsc_cur, web_context=web_context)
-
-        # Record diagnostics
-        diag = {
-            "applied": True,
-            "rebuilt_keys_n": int(len(rebuilt)) if isinstance(rebuilt, dict) else 0,
-            "rebuilt_keys_sample": list(rebuilt.keys())[:12] if isinstance(rebuilt, dict) else [],
-            "has_prev_schema": True,
-            "current_bsc_rows": int(len(bsc_cur)) if isinstance(bsc_cur, list) else (int(len((bsc_cur or {}).get("snapshots", []))) if isinstance(bsc_cur, dict) else 0),
-        }
-
-        dbg.setdefault("fix2bt", {})
-        if isinstance(dbg.get("fix2bt"), dict):
-            dbg["fix2bt"].update(diag)
-
-        if not isinstance(rebuilt, dict) or not rebuilt:
-            # Still emit empty dict for clarity (do not omit)
-            dbg["evo_primary_metrics_canonical_v1"] = {}
-            return
-
-        # Export rebuilt as Analysis-parity canonical pool
-        dbg["evo_primary_metrics_canonical_v1"] = rebuilt
-
-        # Preserve prior canonical_for_render_v1, then set canonical_for_render_v1 to rebuilt
-        prev_pool = dbg.get("canonical_for_render_v1")
-        if isinstance(prev_pool, dict) and prev_pool:
-            dbg.setdefault("canonical_for_render_v1_prev_fix2bt", prev_pool)
-
-        dbg["canonical_for_render_v1"] = rebuilt
-
-        # Small hint for downstream hydration
-        dbg["fix2bt"]["wired_canonical_for_render_v1"] = True
-        dbg["fix2bt"]["prior_pool_preserved"] = bool(isinstance(prev_pool, dict) and prev_pool)
-
-    except Exception:
-        pass
-
-# =========================
-# PATCH END: FIX2BT_EVO_CANONICAL_PARITY_V1
-# =========================
-# PATCH START: FIX2BV_SHARED_CANON_ENGINE_V1 (ADDITIVE)
-# Purpose:
-#   Patch 2 (refactor alignment): Introduce a shared canonicalisation engine path for Evolution
-#   that reuses Analysis' canonical final selector logic. This is READ-ONLY by default to avoid
-#   surprising behavior changes. It computes a shared rebuild on current snapshots, compares
-#   it against FIX2BT schema-only rebuild, and emits structured diagnostics under results.debug.fix2bv.
-#
-# What this patch does:
-#   - Adds FIX2BV config toggle (WIRE_SHARED_CANONICAL_FOR_RENDER_V1 default False)
-#   - Computes shared canonical pool via rebuild_metrics_from_snapshots_analysis_canonical_v1
-#   - Compares keyspace and basic field coverage vs FIX2BT rebuild (if present)
-#   - Optionally wires canonical_for_render_v1 to the shared pool (only if toggle True)
-#
-# Safety:
-#   - No wrapper/UI changes.
-#   - Default mode does NOT change any downstream behavior (diagnostics only).
-#   - All changes are additive and guarded by try/except.
-# =========================
-
-FIX2BV_SHARED_CANON_ENGINE_V1 = {
-    # Default False: diagnostics-only. Set True only after golden tests confirm parity.
-    "WIRE_SHARED_CANONICAL_FOR_RENDER_V1": False,
-
-    # If True, include samples of differing keys for quick triage.
-    "INCLUDE_SAMPLES": True,
-}
-
-def _fix2bv__as_dict(x):
-    return x if isinstance(x, dict) else {}
-
-def _fix2bv__as_list(x):
-    return x if isinstance(x, list) else []
-
-def _fix2bv__ensure_results_debug(output):
-    if not isinstance(output, dict):
-        return None, None
-    results = output.get("results")
-    if not isinstance(results, dict):
-        results = {}
-        output["results"] = results
-    dbg = results.get("debug")
-    if not isinstance(dbg, dict):
-        dbg = {}
-        results["debug"] = dbg
-    return results, dbg
-
-def _fix2bv__keyset(d):
-    try:
-        return set(d.keys()) if isinstance(d, dict) else set()
-    except Exception:
-        return set()
-
-def _fix2bv__pool_field_coverage(pool: dict) -> dict:
-    # Minimal coverage stats to detect structural drift without assuming schema details.
-    out = {"n": 0, "has_value_norm_n": 0, "has_unit_tag_n": 0, "has_anchor_hash_n": 0}
-    if not isinstance(pool, dict):
-        return out
-    out["n"] = int(len(pool))
-    for _, v in pool.items():
-        if isinstance(v, dict):
-            if v.get("value_norm") is not None:
-                out["has_value_norm_n"] += 1
-            if v.get("unit_tag") is not None:
-                out["has_unit_tag_n"] += 1
-            if v.get("anchor_hash") is not None:
-                out["has_anchor_hash_n"] += 1
-    return out
-
-def _fix2bv__apply(output: dict, prev_full: dict = None, web_context: dict = None):
-    try:
-        if not isinstance(output, dict):
-            return
-
-        results, dbg = _fix2bv__ensure_results_debug(output)
-        if results is None or dbg is None:
-            return
-
-        # Pull current snapshots cache (prefer results.*)
-        bsc_cur = (
-            results.get("baseline_sources_cache_current")
-            or output.get("baseline_sources_cache_current")
-            or results.get("baseline_sources_cache")
-            or output.get("baseline_sources_cache")
-        )
-
-        if not isinstance(prev_full, dict):
-            prev_full = {}
-
-        fn_shared = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
-        if not callable(fn_shared):
-            dbg.setdefault("fix2bv", {})
-            if isinstance(dbg.get("fix2bv"), dict):
-                dbg["fix2bv"].update({
-                    "applied": False,
-                    "reason": "missing_rebuild_metrics_from_snapshots_analysis_canonical_v1",
-                })
-            return
-
-        shared_rebuilt = fn_shared(prev_full, bsc_cur, web_context=web_context)
-
-        # FIX2BT pool (if present) for comparison. Prefer dbg.evo_primary_metrics_canonical_v1 if it exists.
-        bt_pool = _fix2bv__as_dict(dbg.get("evo_primary_metrics_canonical_v1") or dbg.get("canonical_for_render_v1") or {})
-
-        shared_keys = _fix2bv__keyset(shared_rebuilt)
-        bt_keys = _fix2bv__keyset(bt_pool)
-
-        only_shared = sorted(list(shared_keys - bt_keys))
-        only_bt = sorted(list(bt_keys - shared_keys))
-        overlap = shared_keys & bt_keys
-
-        diag = {
-            "applied": True,
-            "wired": False,
-            "shared_rebuilt_keys_n": int(len(shared_keys)),
-            "bt_keys_n": int(len(bt_keys)),
-            "overlap_keys_n": int(len(overlap)),
-            "only_shared_keys_n": int(len(only_shared)),
-            "only_bt_keys_n": int(len(only_bt)),
-            "shared_field_coverage": _fix2bv__pool_field_coverage(shared_rebuilt),
-            "bt_field_coverage": _fix2bv__pool_field_coverage(bt_pool),
-            "wire_toggle": bool(_fix2bv__as_dict(globals().get("FIX2BV_SHARED_CANON_ENGINE_V1")).get("WIRE_SHARED_CANONICAL_FOR_RENDER_V1")),
-        }
-
-        if bool(_fix2bv__as_dict(globals().get("FIX2BV_SHARED_CANON_ENGINE_V1")).get("INCLUDE_SAMPLES", True)):
-            diag["only_shared_keys_sample"] = only_shared[:12]
-            diag["only_bt_keys_sample"] = only_bt[:12]
-            diag["overlap_keys_sample"] = sorted(list(overlap))[:12]
-
-        dbg.setdefault("fix2bv", {})
-        if isinstance(dbg.get("fix2bv"), dict):
-            dbg["fix2bv"].update(diag)
-
-        # Store shared pool under debug for review
-        dbg["evo_primary_metrics_canonical_shared_v1"] = shared_rebuilt if isinstance(shared_rebuilt, dict) else {}
-
-        # Optional wiring (OFF by default)
-        if diag["wire_toggle"] and isinstance(shared_rebuilt, dict) and shared_rebuilt:
-            prev_pool = dbg.get("canonical_for_render_v1")
-            if isinstance(prev_pool, dict) and prev_pool:
-                dbg.setdefault("canonical_for_render_v1_prev_fix2bv", prev_pool)
-            dbg["canonical_for_render_v1"] = shared_rebuilt
-            dbg["fix2bv"]["wired"] = True
-            dbg["fix2bv"]["wired_pool"] = "evo_primary_metrics_canonical_shared_v1"
-
-    except Exception:
-        # Never allow diagnostics to break the pipeline.
-        try:
-            if isinstance(output, dict):
-                results = output.get("results")
-                if isinstance(results, dict):
-                    dbg = results.get("debug")
-                    if isinstance(dbg, dict):
-                        dbg.setdefault("fix2bv", {})
-                        if isinstance(dbg.get("fix2bv"), dict):
-                            dbg["fix2bv"].update({"applied": False, "reason": "exception"})
-        except Exception:
-            pass
-
-# =========================
-# PATCH END: FIX2BV_SHARED_CANON_ENGINE_V1
-# =========================
-
-# =========================
-
-def _fix2br__emit_manifest(output):
-    try:
-        if not isinstance(output, dict):
-            return
-        results = _fix2br__as_dict(output.get("results"))
-        dbg = _fix2br__as_dict(results.get("debug") or output.get("debug"))
-        # Ensure results.debug exists (preferred home)
-        if "results" in output:
-            results.setdefault("debug", {})
-            dbg_out = results["debug"]
-        else:
-            output.setdefault("debug", {})
-            dbg_out = output["debug"]
-
-        injected_urls = _fix2br__find_injected_urls(output)
-
-        # Candidate pools to inspect
-        pools = {}
-
-        # Canonical-for-render v1 (both common locations)
-        pools["results.debug.canonical_for_render_v1"] = _fix2br__safe_get(dbg, "canonical_for_render_v1")
-        pools["output_debug.canonical_for_render_v1"] = _fix2br__safe_get(_fix2br__as_dict(output.get("output_debug")), "canonical_for_render_v1")
-
-        # Primary canonical metrics (common locations)
-        pools["primary_metrics_canonical"] = _fix2br__safe_get(output, "primary_metrics_canonical")
-        pools["results.primary_metrics_canonical"] = _fix2br__safe_get(results, "primary_metrics_canonical")
-        pr = _fix2br__as_dict(results.get("primary_response"))
-        pools["results.primary_response.primary_metrics_canonical"] = _fix2br__safe_get(pr, "primary_metrics_canonical")
-
-        # Winner trace (key universe evidence)
-        pools["results.debug.evo_winner_trace_v1"] = _fix2br__safe_get(dbg, "evo_winner_trace_v1")
-
-        # Build manifest
-        manifest = {
-            "applied": True,
-            "injected_urls": injected_urls[:10],
-            "pools": {},
-        }
-
-        for name, pool in pools.items():
-            ps = _fix2br__pool_keys_sample(pool)
-            pres = _fix2br__pool_injected_presence(pool, injected_urls)
-            manifest["pools"][name] = {
-                "exists": bool(pool),
-                "keys_n": ps.get("keys_n", 0),
-                "keys_sample": ps.get("keys_sample", []),
-                "injected_present": pres.get("present", False),
-                "injected_hits": pres.get("hits", []),
-                "type": ("dict" if isinstance(pool, dict) else ("list" if isinstance(pool, list) else str(type(pool).__name__))),
-            }
-
-        # Heuristic: which pool is most likely being used for "current join"
-        # (purely a hint; not relied upon by logic)
-        likely = None
-        for candidate in [
-            "results.debug.canonical_for_render_v1",
-            "output_debug.canonical_for_render_v1",
-            "results.primary_response.primary_metrics_canonical",
-            "results.primary_metrics_canonical",
-            "primary_metrics_canonical",
-        ]:
-            if manifest["pools"].get(candidate, {}).get("keys_n", 0) > 0:
-                likely = candidate
-                break
-        manifest["likely_current_pool"] = likely
-
-        dbg_out["fix2br_cur_index_manifest_v1"] = manifest
-    except Exception:
-        pass
-
-# =========================
-# PATCH END: FIX2BR_CUR_INDEX_MANIFEST_V1
-# =========================
-
-
 
 
 # ==============================================================================
@@ -33401,14 +31205,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-# 
+#
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -33418,7 +31222,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-# 
+#
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -33775,7 +31579,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -34602,8 +32406,8 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
         cur_val_norm = None
         cur_unit = ""
         cur_ah = None
+
         unit_mismatch = False
-        fix2by_market_size_guard = False
         if resolved_cur_ckey:
             cur_raw = _raw_display_value(cm) or "N/A"
             cur_val_norm = _canon_value_norm(cm)
@@ -34620,16 +32424,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
                     unit_mismatch = True
             except Exception:
                 unit_mismatch = False
-
-            # FIX2BY: market size rows must be currency even if prev unit is missing/blank
-            if not unit_mismatch:
-                try:
-                    if _fix2by__is_market_size_metric(prev_ckey, pm):
-                        if not _fix2by__unit_tag_looks_currency(cur_unit):
-                            unit_mismatch = True
-                            fix2by_market_size_guard = True
-                except Exception:
-                    pass
 
         if unit_mismatch:
             unit_mismatch_split += 1
@@ -34730,8 +32524,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
                 "cur_unit_tag": cur_unit,
                 "joined_ckey": resolved_cur_ckey,
                 "action": "split_to_current_only",
-                "fix2by_market_size_guard": bool(fix2by_market_size_guard),
-                "market_size_currency_enforced": bool(_fix2by__is_market_size_metric(prev_ckey, pm)),
             }
 
         rows.append(row)
@@ -35258,454 +33050,279 @@ except Exception:
 # END PATCH FIX2Y_VERSION_BUMP
 # =====================================================================
 
+# =====================================================================
+# PATCH FIX2AG_SPINE_PUBLISHER_ADAPTER_V1 (ADDITIVE)
+# Purpose:
+#   - Provide a minimal, write-only publisher adapter that deterministically
+#     writes a canonical "current metrics" map into the exact contract path
+#     used by Diff Panel V2 ("primary_metrics_canonical").
+#   - Provide an opt-in synthetic hydration mode (env-var gated) so you can
+#     prove the UI hydrates Current before implementing binding/normalization.
+#
+# Safety / Constraints:
+#   - Additive only; does not refactor or modify existing extraction/canon/UI.
+#   - Synthetic mode is OFF by default. When OFF, this patch is no-op.
+#
+# How to use (synthetic proof):
+#   - Set env var YUREEKA_SPINE_V1_SYNTHETIC=1 to auto-publish 3 dummy keys
+#     from metric_schema_frozen (if available) or use YUREEKA_SPINE_V1_SYNTHETIC_JSON
+#     to provide an explicit map.
+#   - Example JSON:
+#       {"global_ev_sales_2024__unknown":{"value_norm":17.8,"unit_tag":"million units"}}
+# =====================================================================
 
-# =========================
-# PATCH START: FIX2BW_WIRE_SHARED_CANON_V1
-# CODE_VERSION: FIX2BW_WIRE_SHARED_CANON_V1
-#
-# Goal:
-# - Patch 3: Ensure Evolution PRODUCES a non-empty `primary_metrics_canonical` pool
-#   using the shared canonical engine (FIX2BV) so downstream diff hydration can
-#   deterministically populate the Current column.
-#
-# Scope:
-# - Core-engine only. No wrapper/UI changes.
-# - Additive-only: preserves legacy pools in debug; wiring is reversible by toggle.
-#
-# Behavior:
-# - By default, wires the shared pool (results.debug.evo_primary_metrics_canonical_shared_v1)
-#   into:
-#     - out['primary_metrics_canonical']
-#     - out['results']['primary_metrics_canonical']
-# - Records structured diagnostics under results.debug.fix2bw.
-#
-# Safety:
-# - Never raises. If anything fails or pool is empty, no wiring occurs and diagnostics
-#   explain why.
-# =========================
-
-# PATCH FIX2BW: bump CODE_VERSION to match patch filename (additive reassignment)
+# -------------------------
+# PATCH TRACKER (ADDITIVE)
+# -------------------------
 try:
-    CODE_VERSION = "FIX2BW_WIRE_SHARED_CANON_V1"
+    PATCH_TRACKER
 except Exception:
-    pass
-
-# PATCH FIX2BW: patch tracker entry (additive)
+    PATCH_TRACKER = []
 try:
-    _pt = globals().get("PATCH_TRACKER_V1")
-    if isinstance(_pt, list) and not any(isinstance(x, dict) and x.get("patch") == "FIX2BW_WIRE_SHARED_CANON_V1" for x in _pt):
-        _pt.append({
-            "patch": "FIX2BW_WIRE_SHARED_CANON_V1",
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AG_SPINE_PUBLISHER_ADAPTER_V1",
+            "code_version": "fix2ag_spine_pub_v1",
             "date": "2026-01-13",
-            "class": "REFAC",
-            "keep": True,
-            "purpose": "Patch 3: Wire FIX2BV shared-canonical pool into Evolution primary_metrics_canonical (producer), enabling deterministic diff hydration of Current column. Adds structured diagnostics and preserves legacy pools for audit.",
-            "safe_to_remove_after_consolidation": False
+            "adds": [
+                "publisher adapter -> primary_metrics_canonical",
+                "env-gated synthetic hydration proof",
+                "debug.spine_v1 publish diagnostics",
+            ],
+            "notes": "Historical patches prior to this tracker block are not enumerated here.",
         })
 except Exception:
     pass
+# -------------------------
 
-FIX2BW_WIRE_SHARED_CANON_V1 = {
-    # Default ON: user requested Patch 3 to enable canonicalisation+diffing to take place end-to-end.
-    # Flip to False to validate read-only behavior or to bisect issues.
-    "WIRE_SHARED_POOL_TO_PRIMARY_METRICS_CANONICAL": True,
-    # If True, only wire when existing primary_metrics_canonical is missing/empty.
-    "ONLY_IF_PRIMARY_METRICS_CANONICAL_EMPTY": True,
-    # If True, also mirror to results.primary_metrics_canonical (recommended for UI/diff consumers).
-    "MIRROR_TO_RESULTS_CONTAINER": True,
-}
-
-def _fix2bw__safe_dict(d):
-    return d if isinstance(d, dict) else {}
-
-def _fix2bw__get_shared_pool(out: dict):
+def _spine_v1__coerce_metric_row(ckey: str, v: Any) -> Dict[str, Any]:
+    """
+    Coerce an incoming map entry into a stable primary_metrics_canonical row.
+    Accepts:
+      - dict metric row
+      - scalar numeric
+      - (value, unit_tag) tuple/list (len>=2)
+    """
     try:
-        res = _fix2bw__safe_dict((out or {}).get("results"))
-        dbg = _fix2bw__safe_dict(res.get("debug"))
-        pool = dbg.get("evo_primary_metrics_canonical_shared_v1")
-        return pool if isinstance(pool, dict) else {}
+        ck = str(ckey or "").strip()
     except Exception:
-        return {}
+        ck = ""
+    row: Dict[str, Any] = {"canonical_key": ck}
 
-def _fix2bw__get_existing_pmc(out: dict):
+    if isinstance(v, dict):
+        try:
+            row.update(dict(v))
+        except Exception:
+            pass
+    elif isinstance(v, (list, tuple)) and len(v) >= 1:
+        try:
+            row["value_norm"] = v[0]
+            row["value"] = v[0]
+            if len(v) >= 2:
+                row["unit_tag"] = v[1]
+                row["unit"] = v[1]
+        except Exception:
+            pass
+    else:
+        # scalar
+        row["value_norm"] = v
+        row["value"] = v
+
+    # Minimal stabilization / defaults (do not fabricate semantics)
     try:
-        if isinstance((out or {}).get("primary_metrics_canonical"), dict) and (out or {}).get("primary_metrics_canonical"):
-            return (out or {}).get("primary_metrics_canonical") or {}
-        res = _fix2bw__safe_dict((out or {}).get("results"))
-        if isinstance(res.get("primary_metrics_canonical"), dict) and res.get("primary_metrics_canonical"):
-            return res.get("primary_metrics_canonical") or {}
+        row.setdefault("canonical_key", ck)
+        row.setdefault("canonical_id", row.get("canonical_id") or ck)
+        row.setdefault("name", row.get("name") or row.get("metric_name") or ck)
+        # unit fields (optional)
+        if "unit_tag" in row and "unit" not in row:
+            row["unit"] = row.get("unit_tag")
+        if "unit" in row and "unit_tag" not in row:
+            row["unit_tag"] = row.get("unit")
+        # keep anchor fields present
+        row.setdefault("anchor_hash", row.get("anchor_hash"))
+        # prefer numeric normalization if possible
+        if row.get("value_norm") is None and row.get("value") is not None:
+            row["value_norm"] = row.get("value")
     except Exception:
         pass
-    return {}
 
-def _fix2bw__set_pmc(out: dict, pool: dict):
+    return row
+
+
+def spine_v1_publish_primary_metrics_canonical(output_obj: Dict[str, Any], current_metrics_map: Dict[str, Any],
+                                              publish_path: str = "primary_metrics_canonical",
+                                              debug_obj: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Deterministically publish a canonical current-metrics map into output_obj[publish_path].
+    - Does not validate semantics; write-only adapter.
+    - Orders keys deterministically (sorted).
+    - Emits debug.spine_v1 publish diagnostics.
+    Returns output_obj for convenience.
+    """
+    if not isinstance(output_obj, dict):
+        return output_obj
+
+    if not isinstance(current_metrics_map, dict):
+        current_metrics_map = {}
+
+    published: Dict[str, Any] = {}
+    keys = []
     try:
-        if not isinstance(out, dict) or not isinstance(pool, dict):
+        keys = sorted([str(k) for k in current_metrics_map.keys() if isinstance(k, str) and k and not k.startswith("_")])
+    except Exception:
+        keys = []
+
+    for ck in keys:
+        try:
+            published[ck] = _spine_v1__coerce_metric_row(ck, current_metrics_map.get(ck))
+        except Exception:
+            continue
+
+    # Write contract
+    try:
+        output_obj[publish_path] = published
+    except Exception:
+        pass
+
+    # Debug
+    try:
+        output_obj.setdefault("debug", {})
+        if isinstance(output_obj.get("debug"), dict):
+            output_obj["debug"].setdefault("spine_v1", {})
+            if isinstance(output_obj["debug"].get("spine_v1"), dict):
+                output_obj["debug"]["spine_v1"].update({
+                    "publish_path_used": publish_path,
+                    "keys_written": int(len(published)),
+                    "sample_keys": keys[:10],
+                })
+                if isinstance(debug_obj, dict):
+                    output_obj["debug"]["spine_v1"].update(dict(debug_obj))
+    except Exception:
+        pass
+
+    return output_obj
+
+
+def _spine_v1__build_synth_map_from_schema(prev_response: Dict[str, Any], max_keys: int = 3) -> Dict[str, Any]:
+    """Pick up to max_keys canonical keys from metric_schema_frozen and create dummy values."""
+    out_map: Dict[str, Any] = {}
+    schema = None
+    try:
+        if isinstance(prev_response, dict):
+            schema = prev_response.get("metric_schema_frozen") or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+    except Exception:
+        schema = None
+    if not isinstance(schema, dict) or not schema:
+        return out_map
+
+    keys = []
+    try:
+        keys = sorted([str(k) for k in schema.keys() if isinstance(k, str) and k and not k.startswith("_")])[:max_keys]
+    except Exception:
+        keys = []
+
+    # Stable dummy values: 101,102,103...
+    base = 101
+    for i, ck in enumerate(keys):
+        try:
+            spec = schema.get(ck) if isinstance(schema.get(ck), dict) else {}
+            unit_tag = (spec or {}).get("unit_tag") or (spec or {}).get("unit") or ""
+            out_map[ck] = {
+                "value_norm": float(base + i),
+                "value": float(base + i),
+                "unit_tag": unit_tag,
+                "unit": unit_tag,
+                "rebuild_method": "spine_v1_synthetic",
+                "provenance": {"method": "spine_v1_synthetic"},
+            }
+        except Exception:
+            pass
+    return out_map
+
+
+def spine_v1_maybe_publish_synthetic(prev_response: Dict[str, Any], cur_response: Dict[str, Any]) -> bool:
+    """
+    Opt-in synthetic hydration:
+      - YUREEKA_SPINE_V1_SYNTHETIC_JSON: JSON dict to publish directly
+      - YUREEKA_SPINE_V1_SYNTHETIC=1: auto-generate dummy keys from schema
+    Returns True if a publish occurred.
+    """
+    try:
+        if not isinstance(cur_response, dict):
             return False
-        out["primary_metrics_canonical"] = pool
-        if FIX2BW_WIRE_SHARED_CANON_V1.get("MIRROR_TO_RESULTS_CONTAINER"):
-            out.setdefault("results", {})
-            if isinstance(out.get("results"), dict):
-                out["results"]["primary_metrics_canonical"] = pool
-        return True
+
+        synth_json = str(os.environ.get("YUREEKA_SPINE_V1_SYNTHETIC_JSON") or "").strip()
+        if synth_json:
+            try:
+                m = json.loads(synth_json)
+                if isinstance(m, dict) and m:
+                    spine_v1_publish_primary_metrics_canonical(
+                        cur_response, m,
+                        publish_path="primary_metrics_canonical",
+                        debug_obj={"synthetic_used": True, "synthetic_mode": "env_json"},
+                    )
+                    return True
+            except Exception:
+                # fall through to flag mode
+                pass
+
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_SYNTHETIC") or "").strip().lower()
+        if flag in ("1", "true", "yes", "y", "on"):
+            m2 = _spine_v1__build_synth_map_from_schema(prev_response, max_keys=3)
+            if isinstance(m2, dict) and m2:
+                spine_v1_publish_primary_metrics_canonical(
+                    cur_response, m2,
+                    publish_path="primary_metrics_canonical",
+                    debug_obj={"synthetic_used": True, "synthetic_mode": "schema_auto"},
+                )
+                return True
+
+        return False
     except Exception:
         return False
 
-def _fix2bw__apply(out: dict, prev_full: dict = None, wc: dict = None):
-    """Patch 3 wiring: promote shared canonical pool into Evolution's producer field."""
-    try:
-        if not isinstance(out, dict):
-            return
-        out.setdefault("results", {})
-        if not isinstance(out.get("results"), dict):
-            out["results"] = {}
-        out["results"].setdefault("debug", {})
-        if not isinstance(out["results"].get("debug"), dict):
-            out["results"]["debug"] = {}
-        dbg = out["results"]["debug"]
-        dbg.setdefault("fix2bw", {})
-        if not isinstance(dbg.get("fix2bw"), dict):
-            dbg["fix2bw"] = {}
-        d = dbg["fix2bw"]
 
-        shared_pool = _fix2bw__get_shared_pool(out)
-        existing_pmc = _fix2bw__get_existing_pmc(out)
-
-        d.update({
-            "applied": True,
-            "wire_enabled": bool(FIX2BW_WIRE_SHARED_CANON_V1.get("WIRE_SHARED_POOL_TO_PRIMARY_METRICS_CANONICAL")),
-            "only_if_empty": bool(FIX2BW_WIRE_SHARED_CANON_V1.get("ONLY_IF_PRIMARY_METRICS_CANONICAL_EMPTY")),
-            "shared_pool_n": int(len(shared_pool or {})) if isinstance(shared_pool, dict) else 0,
-            "existing_pmc_n": int(len(existing_pmc or {})) if isinstance(existing_pmc, dict) else 0,
-        })
-
-        # Preserve legacy/previous pool for audit (counts only by default)
-        try:
-            d.setdefault("existing_pmc_keys_sample", list((existing_pmc or {}).keys())[:8] if isinstance(existing_pmc, dict) else [])
-            d.setdefault("shared_pool_keys_sample", list((shared_pool or {}).keys())[:8] if isinstance(shared_pool, dict) else [])
-        except Exception:
-            pass
-
-        if not FIX2BW_WIRE_SHARED_CANON_V1.get("WIRE_SHARED_POOL_TO_PRIMARY_METRICS_CANONICAL"):
-            d["wired"] = False
-            d["reason"] = "wire_disabled"
-            return
-
-        if not isinstance(shared_pool, dict) or not shared_pool:
-            d["wired"] = False
-            d["reason"] = "shared_pool_empty"
-            return
-
-        if FIX2BW_WIRE_SHARED_CANON_V1.get("ONLY_IF_PRIMARY_METRICS_CANONICAL_EMPTY") and isinstance(existing_pmc, dict) and existing_pmc:
-            d["wired"] = False
-            d["reason"] = "existing_primary_metrics_canonical_nonempty"
-            return
-
-        ok = _fix2bw__set_pmc(out, shared_pool)
-        d["wired"] = bool(ok)
-        d["reason"] = "wired_shared_pool" if ok else "wire_failed"
-
-    except Exception:
-        # never raise
-        try:
-            if isinstance(out, dict):
-                out.setdefault("results", {}).setdefault("debug", {}).setdefault("fix2bw", {})
-                if isinstance(out["results"]["debug"].get("fix2bw"), dict):
-                    out["results"]["debug"]["fix2bw"].update({"applied": True, "wired": False, "reason": "exception"})
-        except Exception:
-            pass
-        return
-
-# =========================
-# PATCH END: FIX2BW_WIRE_SHARED_CANON_V1
-# =========================
-
-
-
-# =====================================================================
-# PATCH START: FIX2C1_EVO_HYDRATE_CURRENT_V1
-# CODE_VERSION: FIX2C1_EVO_HYDRATE_CURRENT_V1
-# Purpose:
-# - Ensure Evolution always produces a canonical current metrics map in the exact
-#   locations the Diff Panel hydration contract expects.
-# - This addresses the persistent "Current column blank" symptom when the active
-#   Evolution execution path bypasses earlier FIX2BT/FIX2BW wrappers.
-# Scope:
-# - Core-engine only. No wrapper/UI changes.
-# Behavior:
-# - Apply FIX2BT/FIX2BV/FIX2BW wiring (if present) to the Evolution output dict
-#   immediately before returning from run_source_anchored_evolution().
-# - Guarantee `out["primary_metrics_canonical"]` and `out["results"]["primary_metrics_canonical"]`
-#   are populated when a shared canonical pool exists.
-# Diagnostics:
-# - Emits `out["debug"]["fix2c1"]` with applied flags and key counts.
-# Safety:
-# - Additive, non-destructive: does not overwrite a non-empty primary_metrics_canonical.
-# =====================================================================
-
-# PATCH FIX2C1: bump CODE_VERSION to match patch filename (additive reassignment)
+# -------------------------
+# Wire-in (additive override)
+# -------------------------
 try:
-    CODE_VERSION = "FIX2C1_EVO_HYDRATE_CURRENT_V1"
+    _FIX2AG_LEGACY_DIFF_METRICS_BY_NAME = diff_metrics_by_name  # capture current entrypoint
+except Exception:
+    _FIX2AG_LEGACY_DIFF_METRICS_BY_NAME = None
+
+def diff_metrics_by_name_FIX2AG_SPINE_PUB(prev_response: dict, cur_response: dict):  # noqa: F811
+    """
+    Additive wrapper:
+      - If env-gated synthetic is enabled, publish into cur_response['primary_metrics_canonical']
+        before the existing diff_metrics_by_name runs.
+      - Otherwise no-op.
+    """
+    try:
+        spine_v1_maybe_publish_synthetic(prev_response, cur_response)
+    except Exception:
+        pass
+
+    if callable(_FIX2AG_LEGACY_DIFF_METRICS_BY_NAME):
+        return _FIX2AG_LEGACY_DIFF_METRICS_BY_NAME(prev_response, cur_response)
+
+    # ultra-safe fallback
+    try:
+        return ([], 0, 0, 0, 0)
+    except Exception:
+        return ([], 0, 0, 0, 0)
+
+try:
+    diff_metrics_by_name = diff_metrics_by_name_FIX2AG_SPINE_PUB  # type: ignore
 except Exception:
     pass
 
-def _fix2c1__key_count(d):
-    try:
-        return int(len(d)) if isinstance(d, dict) else 0
-    except Exception:
-        return 0
 
-def _fix2c1__get_shared_pool(out):
-    # Prefer FIX2BW wiring output if already present under results.primary_metrics_canonical
-    try:
-        if isinstance(out, dict):
-            r = out.get("results")
-            if isinstance(r, dict) and isinstance(r.get("primary_metrics_canonical"), dict) and r.get("primary_metrics_canonical"):
-                return r.get("primary_metrics_canonical")
-    except Exception:
-        pass
-    # Else prefer FIX2BV shared pool diagnostic location
-    try:
-        if isinstance(out, dict):
-            r = out.get("results")
-            if isinstance(r, dict):
-                dbg = r.get("debug")
-                if isinstance(dbg, dict):
-                    shared = dbg.get("evo_primary_metrics_canonical_shared_v1")
-                    if isinstance(shared, dict) and shared:
-                        return shared
-                # Some variants store debug under results.debug
-                dbg2 = r.get("debug")
-                if isinstance(dbg2, dict):
-                    pass
-    except Exception:
-        pass
-    try:
-        if isinstance(out, dict):
-            r = out.get("results")
-            if isinstance(r, dict):
-                dbg = r.get("debug")
-                if isinstance(dbg, dict):
-                    shared = dbg.get("evo_primary_metrics_canonical_shared_v1")
-                    if isinstance(shared, dict) and shared:
-                        return shared
-    except Exception:
-        pass
-    return None
-
-def _fix2c1__apply(out, prev_full=None, web_context=None):
-    if not isinstance(out, dict):
-        return out
-    dbg = out.setdefault("debug", {})
-    if not isinstance(dbg, dict):
-        return out
-
-    applied = {"fix2bt": False, "fix2bv": False, "fix2bw": False}
-    # Apply parity/engine patches if available
-    try:
-        if callable(globals().get("_fix2bt__apply")):
-            globals()["_fix2bt__apply"](out, prev_full, web_context)
-            applied["fix2bt"] = True
-    except Exception:
-        pass
-    try:
-        if callable(globals().get("_fix2bv__apply")):
-            globals()["_fix2bv__apply"](out, prev_full, web_context)
-            applied["fix2bv"] = True
-    except Exception:
-        pass
-    try:
-        if callable(globals().get("_fix2bw__apply")):
-            globals()["_fix2bw__apply"](out, prev_full, web_context)
-            applied["fix2bw"] = True
-    except Exception:
-        pass
-
-    # Ensure primary_metrics_canonical is present for diff hydration (non-overwriting)
-    try:
-        existing_top = out.get("primary_metrics_canonical")
-        if isinstance(existing_top, dict) and existing_top:
-            # already present
-            pass
-        else:
-            shared = _fix2c1__get_shared_pool(out)
-            if isinstance(shared, dict) and shared:
-                out["primary_metrics_canonical"] = shared
-    except Exception:
-        pass
-
-    try:
-        r = out.setdefault("results", {})
-        if isinstance(r, dict):
-            existing_r = r.get("primary_metrics_canonical")
-            if isinstance(existing_r, dict) and existing_r:
-                pass
-            else:
-                shared = out.get("primary_metrics_canonical")
-                if isinstance(shared, dict) and shared:
-                    r["primary_metrics_canonical"] = shared
-    except Exception:
-        pass
-
-    # Re-emit canonical_for_render_v1 if the helper exists (so render adapters see it)
-    try:
-        if callable(globals().get("_p3v1__emit_canonical_for_render_v1")):
-            globals()["_p3v1__emit_canonical_for_render_v1"](out)
-    except Exception:
-        pass
-
-    # Diagnostics
-    try:
-        dbg["fix2c1"] = {
-            "applied": True,
-            "applied_patches": applied,
-            "pmc_top_n": _fix2c1__key_count(out.get("primary_metrics_canonical")),
-            "pmc_results_n": _fix2c1__key_count(out.get("results", {}).get("primary_metrics_canonical")),
-        }
-    except Exception:
-        pass
-
-    return out
-
-# PATCH FIX2C1: patch tracker entry (additive)
+# Version bump (additive)
 try:
-    _pt = globals().get("PATCH_TRACKER")
-    if isinstance(_pt, list) and not any(isinstance(x, dict) and x.get("patch") == "FIX2C1_EVO_HYDRATE_CURRENT_V1" for x in _pt):
-        _pt.append({
-            "patch": "FIX2C1_EVO_HYDRATE_CURRENT_V1",
-            "scope": "apply FIX2BT/FIX2BV/FIX2BW to active Evolution path; guarantee primary_metrics_canonical for diff hydration",
-            "risk": "low",
-            "status": "active",
-        })
+    CODE_VERSION = "fix2ag_spine_pub_v1"
 except Exception:
     pass
 
 # =====================================================================
-# PATCH END: FIX2C1_EVO_HYDRATE_CURRENT_V1
+# END PATCH FIX2AG_SPINE_PUBLISHER_ADAPTER_V1
 # =====================================================================
-
-# =========================
-# PATCH START: FIX2C3_EVO_POST_APPLY_V1
-# CODE_VERSION: FIX2C3_EVO_POST_APPLY_V1
-#
-# Problem observed (post-FIX2C2 JSON):
-# - Evolution 'Current' column still blank/N/A.
-# - Root cause: run_source_anchored_evolution() recompute_changed path returns `out`
-#   without applying FIX2C1 (and therefore without wiring shared canonical pools into
-#   producer fields). FIX2C1 was only applied on replay/other paths.
-#
-# Fix:
-# - Wrap the active run_source_anchored_evolution entrypoint so FIX2C1 is ALWAYS
-#   applied to the final Evolution output before it reaches Streamlit packaging.
-#
-# Scope:
-# - Core engine only. No UI changes.
-# - Additive-only: preserves the existing function as *_BASE_FIX2C3.
-#
-# Diagnostics:
-# - Emits out.debug.fix2c3 with before/after key counts.
-# =========================
-
-try:
-    CODE_VERSION = "FIX2C3_EVO_POST_APPLY_V1"
-except Exception:
-    pass
-
-# Patch tracker entry (keep short, additive)
-try:
-    _pt = globals().get("PATCH_TRACKER_V1")
-    if isinstance(_pt, list) and not any(isinstance(x, dict) and x.get("patch") == "FIX2C3_EVO_POST_APPLY_V1" for x in _pt):
-        _pt.append({
-            "patch": "FIX2C3_EVO_POST_APPLY_V1",
-            "date": "2026-01-13",
-            "class": "REFAC",
-            "keep": True,
-            "purpose": "Ensure FIX2C1 wiring is always applied to Evolution outputs so shared canonical pools publish into primary_metrics_canonical and diff hydration can populate Current.",
-            "safe_to_remove_after_consolidation": False
-        })
-except Exception:
-    pass
-
-# Preserve active entrypoint and wrap
-try:
-    if callable(globals().get("run_source_anchored_evolution")) and not callable(globals().get("run_source_anchored_evolution_BASE_FIX2C3")):
-        run_source_anchored_evolution_BASE_FIX2C3 = globals().get("run_source_anchored_evolution")
-
-        def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
-            out = None
-            try:
-                out = run_source_anchored_evolution_BASE_FIX2C3(previous_data, web_context=web_context)
-            except Exception as e:
-                # preserve base behavior (never raise to UI)
-                try:
-                    out = {"status": "failed", "message": f"run_source_anchored_evolution crashed: {e}", "code_version": CODE_VERSION}
-                except Exception:
-                    out = {"status": "failed", "message": "run_source_anchored_evolution crashed", "code_version": "FIX2C3_EVO_POST_APPLY_V1"}
-
-            # Always apply FIX2C1 wiring (if available)
-            try:
-                if isinstance(out, dict) and callable(globals().get("_fix2c1__apply")):
-                    prev_full = None
-                    try:
-                        prev_full = globals().get("_fix24_get_prev_full_payload")(previous_data or {}) if callable(globals().get("_fix24_get_prev_full_payload")) else (previous_data or {})
-                    except Exception:
-                        prev_full = previous_data or {}
-
-                    # Before/after counts for diagnostics
-                    _before_top = 0
-                    _before_res = 0
-                    try:
-                        _before_top = int(len(out.get("primary_metrics_canonical") or {})) if isinstance(out.get("primary_metrics_canonical"), dict) else 0
-                    except Exception:
-                        _before_top = 0
-                    try:
-                        _r0 = out.get("results")
-                        _before_res = int(len((_r0 or {}).get("primary_metrics_canonical") or {})) if isinstance(_r0, dict) and isinstance((_r0 or {}).get("primary_metrics_canonical"), dict) else 0
-                    except Exception:
-                        _before_res = 0
-
-                    out = globals().get("_fix2c1__apply")(out, prev_full, web_context)
-
-                    _after_top = 0
-                    _after_res = 0
-                    try:
-                        _after_top = int(len(out.get("primary_metrics_canonical") or {})) if isinstance(out.get("primary_metrics_canonical"), dict) else 0
-                    except Exception:
-                        _after_top = 0
-                    try:
-                        _r1 = out.get("results")
-                        _after_res = int(len((_r1 or {}).get("primary_metrics_canonical") or {})) if isinstance(_r1, dict) and isinstance((_r1 or {}).get("primary_metrics_canonical"), dict) else 0
-                    except Exception:
-                        _after_res = 0
-
-                    out.setdefault("debug", {})
-                    if isinstance(out.get("debug"), dict):
-                        out["debug"].setdefault("fix2c3", {})
-                        if isinstance(out["debug"].get("fix2c3"), dict):
-                            out["debug"]["fix2c3"].update({
-                                "applied": True,
-                                "pmc_top_before_n": _before_top,
-                                "pmc_results_before_n": _before_res,
-                                "pmc_top_after_n": _after_top,
-                                "pmc_results_after_n": _after_res,
-                            })
-            except Exception:
-                pass
-
-            # Stamp version late (do not overwrite if already present)
-            try:
-                if isinstance(out, dict):
-                    out.setdefault("code_version", CODE_VERSION)
-            except Exception:
-                pass
-
-            return out
-
-        # publish wrapper
-        globals()["run_source_anchored_evolution"] = run_source_anchored_evolution
-except Exception:
-    pass
-
-# =========================
-# PATCH END: FIX2C3_EVO_POST_APPLY_V1
-# =========================
