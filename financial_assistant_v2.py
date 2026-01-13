@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bh_deterministic_candidate_admission_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2at_demo_only_binding_assist_v1.py"  # PATCH FIX2AH (ADD): bump CODE_VERSION for semantic binding v1 + demo slot
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -5334,7 +5334,7 @@ def source_quality_score(sources: List[str]) -> float:
     return sum(scores) / len(scores) if scores else 50.0
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def search_serpapi(query: str, num_results: int = 1) -> List[Dict]:
+def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
     """Search Google via SerpAPI with stability controls"""
     if not SERPAPI_KEY:
         return []
@@ -20004,7 +20004,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-
+    
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -23397,7 +23397,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-
+    
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -23426,7 +23426,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-
+            
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -23880,7 +23880,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         rebuild_pool=_hash_inputs,
                         rebuild_selected=_selected,
                         hash_exclusion_reasons=_evo_hash_reasons,
-                    )
+                    ) 
                     # PATCH START: FIX2AR_INJECTED_CONTENT_PROBE_ATTACH_V1 (ADDITIVE)
                     try:
                         _sm2 = locals().get("scraped_meta")
@@ -27794,7 +27794,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-
+    
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -28263,7 +28263,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                                 "source_url": _c.get("source_url") or "",
                             })
                         continue
-
+                
                     # PATCH FIX2AS_DEMO_FORCED_EXTRA_SLOTS_V1 (ADDITIVE): additional demo-only forced bindings
                     try:
                         _mt2 = str(_tags.get("metric_type") or "")
@@ -28630,7 +28630,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     # END PATCH FIX2AJ_DEMO_PROMOTION_V1
 
 
-
+    
     # =====================================================================
     # PATCH FIX2AK_HIGH_SIGNAL_FILTER_DIAG_ATTACH_V1 (ADDITIVE)
     # Attach high-signal filter diagnostics into semantic_binding_v1 output.
@@ -31122,7 +31122,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
                     out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
-
+            
             # =====================================================================
             # PATCH FIX2AK_DEMO_SLOT_FINAL_WINNER_EMIT_V1 (ADDITIVE)
             # Emit explicit demo-slot final winner (if present) into web_context semantic_binding_v1
@@ -31206,7 +31206,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
             except Exception:
                 pass
-
+            
             # =====================================================================
             # PATCH FIX2AK_DEMO_SLOT_FINAL_WINNER_EMIT_FALLBACK_V1 (ADDITIVE)
             # Same as above but for compute_source_anchored_diff fallback path.
@@ -33019,14 +33019,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-#
+# 
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -33036,7 +33036,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-#
+# 
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -33393,7 +33393,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -37661,3 +37661,191 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2BH_DETERMINISTIC_CANDIDATE_ADMISSION_V1
 # =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2BI_INJECTION_TEXT_PARITY_FALLBACK_V1 (ADDITIVE)
+#
+# Goal:
+# - Close injection-vs-production parity gap where injected GitHub Pages URL
+#   shows status=fetched but snapshot_text == "" and numbers_found == 0.
+# - Provide:
+#   (1) audit: raw_html_len, text_len, text_head for injected urls
+#   (2) fallback: if fetched+empty snapshot_text, re-fetch via requests and
+#       produce text via deterministic strip-tags, then re-run extraction.
+#
+# Safety:
+# - Only runs for injected sources (srec.injected==True or github.io inject page).
+# - Only applies fallback when snapshot_text is empty and numbers_found==0.
+# - Does not change selectors.
+# - After repair, re-runs FIX2BH admission/hydration (idempotent).
+# =====================================================================
+
+try:
+    _run_source_anchored_evolution_BASE_FIX2BI = run_source_anchored_evolution  # type: ignore
+except Exception:
+    _run_source_anchored_evolution_BASE_FIX2BI = None
+
+def _fix2bi_is_injected_source(srec: dict) -> bool:
+    try:
+        if not isinstance(srec, dict):
+            return False
+        if srec.get("injected") is True:
+            return True
+        u = str(srec.get("url") or srec.get("source_url") or "").lower()
+        return ("github.io" in u and "inject" in u) or ("accio.com" in u)
+    except Exception:
+        return False
+
+def _fix2bi_clean_html_to_text(html: str) -> str:
+    try:
+        # Try BeautifulSoup if available (best)
+        try:
+            from bs4 import BeautifulSoup  # type: ignore
+            soup = BeautifulSoup(html or "", "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form"]):
+                try:
+                    tag.decompose()
+                except Exception:
+                    pass
+            txt = soup.get_text(separator="\n")
+        except Exception:
+            txt = html or ""
+            txt = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", txt)
+            txt = re.sub(r"(?is)<[^>]+>", " ", txt)
+
+        # Unescape entities if possible
+        try:
+            import html as _html
+            txt = _html.unescape(txt or "")
+        except Exception:
+            pass
+
+        # Normalize whitespace
+        lines = [ln.strip() for ln in (txt or "").splitlines() if ln.strip()]
+        out = "\n".join(lines)
+        out = re.sub(r"\n{3,}", "\n\n", out)
+        return out.strip()
+    except Exception:
+        return ""
+
+def _fix2bi_fetch_html(url: str) -> str:
+    try:
+        import requests  # type: ignore
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+        resp = requests.get(url, headers=headers, timeout=20)
+        # accept text/html and also plain text
+        if resp is None:
+            return ""
+        return resp.text or ""
+    except Exception:
+        return ""
+
+def _fix2bi_repair_injected_snapshot_text(out: dict) -> dict:
+    dbg = out.setdefault("debug", {})
+    if not isinstance(dbg, dict):
+        dbg = {}
+        out["debug"] = dbg
+
+    audit = []
+    repaired = 0
+
+    bcc = out.get("baseline_sources_cache_current")
+    if not isinstance(bcc, list):
+        dbg["fix2bi_injection_text_parity_fallback_v1"] = {"applied": True, "note": "no baseline_sources_cache_current"}
+        return out
+
+    for srec in bcc:
+        if not _fix2bi_is_injected_source(srec):
+            continue
+        url = str(srec.get("url") or srec.get("source_url") or "")
+        status = srec.get("status")
+        detail = srec.get("status_detail")
+        snap = srec.get("snapshot_text") or ""
+        nums = srec.get("extracted_numbers")
+        nf = srec.get("numbers_found")
+
+        # audit pre
+        audit.append({
+            "url": url,
+            "status": status,
+            "detail": detail,
+            "snapshot_text_len": len(snap),
+            "numbers_found": int(nf) if isinstance(nf, int) else nf,
+            "text_head": (snap[:200] if isinstance(snap, str) else ""),
+        })
+
+        # fallback condition: fetched/success but empty text and no numbers
+        if (isinstance(snap, str) and snap.strip() == "") and (nf == 0 or nf is None) and str(status).lower() in ("fetched", "success", "ok"):
+            html = _fix2bi_fetch_html(url)
+            raw_len = len(html or "")
+            txt = _fix2bi_clean_html_to_text(html)
+            txt_len = len(txt or "")
+
+            # attach audit
+            srec.setdefault("debug_fix2bi", {})
+            if isinstance(srec.get("debug_fix2bi"), dict):
+                srec["debug_fix2bi"]["raw_html_len"] = raw_len
+                srec["debug_fix2bi"]["fallback_text_len"] = txt_len
+                srec["debug_fix2bi"]["fallback_text_head"] = (txt[:200] if isinstance(txt, str) else "")
+
+            # only apply if fallback yields non-empty text
+            if txt_len > 0:
+                srec["snapshot_text"] = txt
+                # re-run extraction deterministically
+                try:
+                    # Prefer with context if available
+                    en = extract_numbers_with_context(txt or "", source_url=url, max_results=600)  # type: ignore
+                except Exception:
+                    try:
+                        en = extract_numbers_from_text(txt or "")  # type: ignore
+                    except Exception:
+                        en = []
+                if not isinstance(en, list):
+                    en = []
+                srec["extracted_numbers"] = en
+                srec["numbers_found"] = len(en)
+                repaired += 1
+
+    dbg["fix2bi_injection_text_parity_fallback_v1"] = {
+        "applied": True,
+        "audited_injected_sources": int(len(audit)),
+        "repaired_sources": int(repaired),
+        "audit_sample": audit[:5],
+        "timestamp_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    }
+    return out
+
+def run_source_anchored_evolution(previous_data: dict, fn=None, web_context: dict = None) -> dict:
+    base = _run_source_anchored_evolution_BASE_FIX2BI
+    out = base(previous_data, fn=fn, web_context=web_context) if callable(base) else {}
+
+    # Repair empty injected snapshot_text and re-extract numbers
+    try:
+        out = _fix2bi_repair_injected_snapshot_text(out)
+    except Exception:
+        pass
+
+    # Re-run FIX2BH admission/hydration after repair (idempotent)
+    try:
+        out = _fix2bh_admit_and_hydrate(out)  # type: ignore
+    except Exception:
+        pass
+
+    return out
+
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2bi_injection_text_parity_fallback_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2BI_INJECTION_TEXT_PARITY_FALLBACK_V1
+# =====================================================================
+
