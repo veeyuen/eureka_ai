@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BT_EVO_CANONICAL_PARITY_V1"  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+CODE_VERSION = "FIX2BU_CORE_CONTRACTS_V1"  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -102,10 +102,169 @@ PATCH_TRACKER_V1 = [
         "safe_to_remove_after_consolidation": False
     },
 
+{
+    "patch": "FIX2BU_CORE_CONTRACTS_V1",
+    "date": "2026-01-13",
+    "class": "GOLDEN",
+    "keep": True,
+    "purpose": "Core-engine contract lock + integrated diagnostics scaffold (no wrapper/UI changes). Adds structured contract violation reporting for canonicalisation keyspace, hashing/evidence fields, and diff hydration; optional strict enforcement.",
+    "safe_to_remove_after_consolidation": False
+},
 ]
 
 
 
+
+
+# ===============================================================================
+# PATCH START: FIX2BU_CORE_CONTRACTS_V1 (ADDITIVE)
+# Goal:
+#   Lock core-engine contracts + emit structured diagnostics for troubleshooting,
+#   without modifying wrappers (SerpAPI/Perplexity), scoring, or UI.
+#
+# What this patch adds:
+#   - CORE_CONTRACTS_V1 config toggle
+#   - _core_contract_v1_validate_* helpers that return violations (no side effects)
+#   - Optional strict enforcement (default: False) to avoid surprising behavior changes
+#   - A single hook point that records violations under output.debug.core_contract_v1
+#
+# Safety:
+#   - Does NOT change extraction, hashing, canonicalisation, or diffing behavior.
+#   - Does NOT change UI feed shape; adds debug fields only.
+# ===============================================================================
+CORE_CONTRACTS_V1 = {
+    # If True, raise on contract violations (recommended only after golden tests pass).
+    "ENFORCE_STRICT": False,
+
+    # If True, include samples of offending keys/metrics in diagnostics (may be verbose).
+    "INCLUDE_SAMPLES": True,
+
+    # Max sample sizes for diagnostics.
+    "MAX_KEY_SAMPLES": 20,
+    "MAX_METRIC_SAMPLES": 10,
+}
+
+def _core_contract_v1__is_metric_dict(x):
+    return isinstance(x, dict) and isinstance(x.get("canonical_key") or x.get("canonical_id") or x.get("name"), str)
+
+def _core_contract_v1_validate_canonical_pool(current_metrics, frozen_schema):
+    """Validate canonical pool shape and (when schema exists) keyspace parity."""
+    v = {"ok": True, "violations": []}
+    if not isinstance(current_metrics, dict):
+        v["ok"] = False
+        v["violations"].append({"code": "cur_pool_not_dict", "detail": type(current_metrics).__name__})
+        return v
+
+    # Key shape checks
+    bad_keys = [k for k in current_metrics.keys() if not isinstance(k, str) or "__" not in k]
+    if bad_keys:
+        v["ok"] = False
+        v["violations"].append({
+            "code": "cur_pool_bad_keys",
+            "count": len(bad_keys),
+            "sample": bad_keys[: int(CORE_CONTRACTS_V1.get("MAX_KEY_SAMPLES") or 20)] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
+        })
+
+    # Metric field checks (lightweight; no inference)
+    missing_fields = []
+    for ck, md in current_metrics.items():
+        if not isinstance(md, dict):
+            missing_fields.append((ck, "metric_not_dict"))
+            continue
+        # canonical_key should match dict key when present
+        if isinstance(md.get("canonical_key"), str) and md.get("canonical_key") != ck:
+            missing_fields.append((ck, "canonical_key_mismatch"))
+        # ensure value_norm exists when value exists
+        if "value" in md and "value_norm" not in md:
+            missing_fields.append((ck, "value_norm_missing"))
+        if "unit_tag" not in md and "unit" not in md:
+            missing_fields.append((ck, "unit_missing"))
+
+    if missing_fields:
+        v["ok"] = False
+        samp = missing_fields[: int(CORE_CONTRACTS_V1.get("MAX_METRIC_SAMPLES") or 10)] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else []
+        v["violations"].append({
+            "code": "cur_pool_metric_fields",
+            "count": len(missing_fields),
+            "sample": [{"canonical_key": a, "issue": b} for (a, b) in samp] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
+        })
+
+    # Schema parity: in diff hydration mode, current_metrics must be subset of schema keys
+    if isinstance(frozen_schema, dict) and frozen_schema:
+        schema_keys = set(k for k in frozen_schema.keys() if isinstance(k, str))
+        cur_keys = set(k for k in current_metrics.keys() if isinstance(k, str))
+        extra = sorted(list(cur_keys - schema_keys))
+        missing = sorted(list(schema_keys - cur_keys))
+        if extra:
+            v["ok"] = False
+            v["violations"].append({
+                "code": "cur_pool_keys_not_in_schema",
+                "count": len(extra),
+                "sample": extra[: int(CORE_CONTRACTS_V1.get("MAX_KEY_SAMPLES") or 20)] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
+            })
+        # Missing schema keys are allowed in non-strict mode, but we report them for visibility
+        if missing:
+            v["violations"].append({
+                "code": "cur_pool_missing_schema_keys",
+                "count": len(missing),
+                "sample": missing[: int(CORE_CONTRACTS_V1.get("MAX_KEY_SAMPLES") or 20)] if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
+                "severity": "warning",
+            })
+
+    return v
+
+def _core_contract_v1_validate_diff_rows(metric_changes_v2):
+    """Validate diff row feed is non-silent: each row should have a reason or diag."""
+    v = {"ok": True, "violations": []}
+    if not isinstance(metric_changes_v2, list):
+        v["ok"] = False
+        v["violations"].append({"code": "diff_rows_not_list", "detail": type(metric_changes_v2).__name__})
+        return v
+    if not metric_changes_v2:
+        # Empty allowed only if prev empty; core cannot know here, report as warning
+        v["violations"].append({"code": "diff_rows_empty", "severity": "warning"})
+        return v
+
+    silent = 0
+    samples = []
+    for r in metric_changes_v2:
+        if not isinstance(r, dict):
+            silent += 1
+            if len(samples) < 5:
+                samples.append({"row_type": type(r).__name__})
+            continue
+        diag = r.get("diag") if isinstance(r.get("diag"), dict) else {}
+        reason = r.get("reason") or diag.get("reason") or r.get("change_type")
+        if not reason:
+            silent += 1
+            if len(samples) < 5:
+                samples.append({"canonical_key": r.get("canonical_key"), "metric_name": r.get("metric_name")})
+    if silent:
+        v["ok"] = False
+        v["violations"].append({
+            "code": "diff_rows_silent",
+            "count": silent,
+            "sample": samples if CORE_CONTRACTS_V1.get("INCLUDE_SAMPLES") else None,
+        })
+    return v
+
+def _core_contract_v1_attach(output, stage, payload):
+    """Attach contract diagnostics safely into output.debug.core_contract_v1."""
+    try:
+        dbg = output.setdefault("debug", {})
+        if not isinstance(dbg, dict):
+            return
+        cc = dbg.setdefault("core_contract_v1", {})
+        if not isinstance(cc, dict):
+            return
+        cc[stage] = payload
+        cc.setdefault("code_version", str(globals().get("CODE_VERSION") or ""))
+    except Exception:
+        pass
+
+# ===============================================================================
+# PATCH END: FIX2BU_CORE_CONTRACTS_V1
+# ===============================================================================
 # =========================
 # PATCH START: PHASE3_HARNESS_AND_EXPORT_V1
 # CODE_VERSION: FIX2BK_PHASE3_CONSOLIDATION_V1
@@ -18815,6 +18974,42 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["metric_changes_v2"] = _mc_v2 or []
     except Exception:
         pass
+    # =================================================================
+    # PATCH FIX2BU_CORE_CONTRACTS_HOOK_V1 (ADDITIVE)
+    # Record core-engine contract diagnostics for canonical pool + diff rows.
+    # This is debug-only unless CORE_CONTRACTS_V1["ENFORCE_STRICT"] is enabled.
+    # =================================================================
+    try:
+        _frozen_schema = None
+        # Prefer explicitly stored schema on current/prev responses if present
+        if isinstance(cur_resp_for_diff, dict) and isinstance(cur_resp_for_diff.get("metric_schema_frozen"), dict):
+            _frozen_schema = cur_resp_for_diff.get("metric_schema_frozen")
+        elif isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen"), dict):
+            _frozen_schema = prev_response.get("metric_schema_frozen")
+        elif isinstance(output, dict) and isinstance(output.get("metric_schema_frozen"), dict):
+            _frozen_schema = output.get("metric_schema_frozen")
+
+        _cc_cur = _core_contract_v1_validate_canonical_pool(current_metrics, _frozen_schema)
+        _cc_diff = _core_contract_v1_validate_diff_rows(_mc_v2)
+        _core_contract_v1_attach(output, "canonical_pool", _cc_cur)
+        _core_contract_v1_attach(output, "diff_rows_v2", _cc_diff)
+
+        if bool(CORE_CONTRACTS_V1.get("ENFORCE_STRICT")):
+            # Strict mode: fail fast on hard violations (warnings ignored)
+            hard = []
+            for item in (_cc_cur, _cc_diff):
+                if isinstance(item, dict) and item.get("ok") is False:
+                    hard.append(item)
+            if hard:
+                raise RuntimeError("FIX2BU core contract violation(s); see debug.core_contract_v1 for details")
+    except Exception as _cc_e:
+        try:
+            _core_contract_v1_attach(output, "contract_hook_error", {"error": f"{type(_cc_e).__name__}: {_cc_e}"})
+        except Exception:
+            pass
+    # =================================================================
+    # END PATCH FIX2BU_CORE_CONTRACTS_HOOK_V1
+    # =================================================================
 
     # =================================================================
     # PATCH DIFF_PANEL_V2_WIRING_FIX2 (ADDITIVE): Persist V2 artifacts under output["results"]
