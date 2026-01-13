@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'FIX2BX_V2_SUMMARY_FIX_V1'  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+CODE_VERSION = 'FIX2BY_MKTREV_V1'  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -116,6 +116,29 @@ PATCH_TRACKER_V1 = [
         "class": "REFAC",
         "keep": True,
         "purpose": "Patch 2: Add shared-canonical-engine path for Evolution using the Analysis canonical final selector (read-only by default). Computes shared rebuild on current snapshots, compares against FIX2BT schema-only rebuild, and emits structured diagnostics. Optional toggle to wire shared pool into canonical_for_render_v1 after validation.",
+        "safe_to_remove_after_consolidation": False
+    }    ,{
+        "patch": "FIX2BW_WIRE_SHARED_CANON_V1",
+        "date": "2026-01-13",
+        "class": "REFAC",
+        "keep": True,
+        "purpose": "Patch 3: Wire shared canonical pool into Evolution producer fields (primary_metrics_canonical/results.primary_metrics_canonical) so diff hydration can populate Current deterministically; re-emit canonical_for_render_v1 and add wiring diagnostics.",
+        "safe_to_remove_after_consolidation": False
+    }
+    ,{
+        "patch": "FIX2BX_V2_SUMMARY_FIX_V1",
+        "date": "2026-01-13",
+        "class": "REFAC",
+        "keep": True,
+        "purpose": "Patch 4: Fix UnboundLocalError in build_diff_metrics_panel_v2 by ensuring summary is always initialized; restore V2 diff emission stability; no wrapper/UI changes.",
+        "safe_to_remove_after_consolidation": False
+    }
+    ,{
+        "patch": "FIX2BY_MKTREV_V1",
+        "date": "2026-01-13",
+        "class": "REFAC",
+        "keep": True,
+        "purpose": "Patch 5: Enforce semantic invariant: market size == revenue (currency). Adds currency-only guardrails for market-size metrics during diff hydration and reports explicit diagnostics; prevents unit-based values from populating revenue rows.",
         "safe_to_remove_after_consolidation": False
     }
 ]
@@ -19348,6 +19371,53 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             return ""
         return str(m.get("base_unit") or m.get("unit") or m.get("unit_tag") or "").strip()
 
+    # ===============================================================================
+    # PATCH START: FIX2BY_MKTREV_V1 (ADDITIVE)
+    # Goal:
+    #   Enforce semantic invariant: market size == revenue (currency).
+    #   Prevent unit-based values (e.g., vehicles sold) from populating market-size rows.
+    #
+    # Approach:
+    #   - Detect market-size / revenue metrics by canonical key and/or display name.
+    #   - Require current unit_tag to look like a currency unit.
+    #   - If not, treat as unit_mismatch (split to current_only) with explicit diagnostics.
+    #
+    # Safety:
+    #   - Does NOT change wrappers/UI.
+    #   - Only tightens diff hydration matching when a row is market-size/revenue.
+    # ===============================================================================
+    _FIX2BY_CURRENCY_PREFIXES = (
+        'usd', 'eur', 'sgd', 'gbp', 'aud', 'cad', 'nzd', 'jpy', 'cny', 'rmb', 'inr', 'krw',
+        'chf', 'hkd', 'twd', 'sek', 'nok', 'dkk', 'zar', 'mxn', 'brl', 'idr', 'myr', 'thb',
+        'php', 'vnd', 'pln', 'try', 'aed', 'sar', 'qar', 'kwd',
+    )
+
+    def _fix2by__is_market_size_metric(ckey: str, m: dict):
+        try:
+            name = str((m or {}).get('name') or (m or {}).get('display_name') or (m or {}).get('original_name') or '')
+            s = (ckey or '').lower()
+            n = name.lower()
+            if 'market_size' in s or 'market size' in n or 'market value' in n or 'market worth' in n:
+                return True
+            # revenue keys are treated as market-size (revenue) by definition
+            if 'revenue' in s or 'market_revenue' in s:
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _fix2by__unit_tag_looks_currency(unit_tag: str):
+        try:
+            u = str(unit_tag or '').strip().lower()
+            if not u:
+                return False
+            return any(u.startswith(p) for p in _FIX2BY_CURRENCY_PREFIXES)
+        except Exception:
+            return False
+
+    # PATCH END: FIX2BY_MKTREV_V1
+
+
     prev_metrics = _unwrap_primary_metrics_canonical(prev_response)
     cur_metrics = _unwrap_primary_metrics_canonical(cur_response)
 
@@ -19693,6 +19763,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     # -------------------------------------------------------------
     current_only_total = 0
     current_only_injected = 0
+    current_only_market_size_rejected = 0  # FIX2BY
     try:
         if isinstance(cur_metrics, dict) and cur_metrics:
             for ck, cm in cur_metrics.items():
@@ -19702,6 +19773,15 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     continue
                 if not isinstance(cm, dict):
                     continue
+
+                # FIX2BY: do not surface current-only market-size/revenue metrics unless currency
+                try:
+                    if _fix2by__is_market_size_metric(ck, cm):
+                        if not _fix2by__unit_tag_looks_currency(_canon_unit_tag(cm)):
+                            current_only_market_size_rejected += 1
+                            continue
+                except Exception:
+                    pass
 
                 cur_raw = _raw_display_value(cm) or "N/A"
                 cur_val_norm = _canon_value_norm(cm)
@@ -34151,8 +34231,8 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
         cur_val_norm = None
         cur_unit = ""
         cur_ah = None
-
         unit_mismatch = False
+        fix2by_market_size_guard = False
         if resolved_cur_ckey:
             cur_raw = _raw_display_value(cm) or "N/A"
             cur_val_norm = _canon_value_norm(cm)
@@ -34169,6 +34249,16 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
                     unit_mismatch = True
             except Exception:
                 unit_mismatch = False
+
+            # FIX2BY: market size rows must be currency even if prev unit is missing/blank
+            if not unit_mismatch:
+                try:
+                    if _fix2by__is_market_size_metric(prev_ckey, pm):
+                        if not _fix2by__unit_tag_looks_currency(cur_unit):
+                            unit_mismatch = True
+                            fix2by_market_size_guard = True
+                except Exception:
+                    pass
 
         if unit_mismatch:
             unit_mismatch_split += 1
@@ -34269,6 +34359,8 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
                 "cur_unit_tag": cur_unit,
                 "joined_ckey": resolved_cur_ckey,
                 "action": "split_to_current_only",
+                "fix2by_market_size_guard": bool(fix2by_market_size_guard),
+                "market_size_currency_enforced": bool(_fix2by__is_market_size_metric(prev_ckey, pm)),
             }
 
         rows.append(row)
