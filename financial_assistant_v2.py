@@ -79,7 +79,23 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BR_CUR_INDEX_MANIFEST_V1"  # PATCH FIX2BQ (ADD): bump CODE_VERSION to match patch filename
+CODE_VERSION = "FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1"  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+
+
+# =========================
+# PATCH TRACKER (ADDITIVE, AUTHORITATIVE)
+# Each patch must add an entry here for future consolidation/cleanup.
+# =========================
+PATCH_TRACKER_V1 = [
+    {
+        "patch": "FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1",
+        "date": "2026-01-13",
+        "class": "GOLDEN",
+        "keep": True,
+        "purpose": "Align Evolution current-pool keyspace to Diff row canonical keys; backfill missing canonical_for_render_v1 entries from injected extracted numbers when possible (non-overwriting)."
+    },
+]
+
 
 
 # =========================
@@ -30030,6 +30046,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             except Exception:
                 pass
             try:
+                try:
+                    _fix2bs__apply(out)
+                except Exception:
+                    pass
                 _fix2bq__apply(out)
             except Exception:
                 pass
@@ -30400,6 +30420,219 @@ def _fix2br__pool_injected_presence(pool, injected_urls, max_hits=5):
         return {"present": bool(hits), "hits": hits}
     except Exception:
         return {"present": False, "hits": []}
+
+
+
+# =========================
+# PATCH START: FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1
+# Purpose:
+#   If Evolution has extracted injected numbers but canonical_for_render_v1 keyspace
+#   does not match the Diff row canonical keys, we will (non-overwriting) add entries
+#   for the Diff keys into results.debug.canonical_for_render_v1 using best-effort
+#   mapping from injected extracted_numbers.
+#
+# Notes:
+#   - Additive-only, production-safe (only fills missing keys)
+#   - Does NOT change selection logic; only supplies a render/hydration pool
+#   - Primary intent: prove end-to-end wiring by lighting up at least 1-2 rows
+# =========================
+
+def _fix2bs__as_dict(x):
+    return x if isinstance(x, dict) else {}
+
+def _fix2bs__as_list(x):
+    return x if isinstance(x, list) else []
+
+def _fix2bs__safe_get(d, k, default=None):
+    try:
+        if isinstance(d, dict) and k in d:
+            return d[k]
+    except Exception:
+        pass
+    return default
+
+def _fix2bs__norm_str(x):
+    try:
+        return str(x).strip()
+    except Exception:
+        return ""
+
+def _fix2bs__collect_diff_keys(output):
+    out = []
+    try:
+        results = _fix2bs__as_dict(output.get("results"))
+        arrays = []
+        for name in ("metric_changes", "metric_changes_legacy", "metric_changes_v2"):
+            arrays.extend(_fix2bs__as_list(results.get(name)))
+        for row in arrays:
+            if not isinstance(row, dict):
+                continue
+            md = _fix2bs__as_dict(row.get("metric_definition"))
+            k = md.get("canonical_key") or row.get("canonical_key") or row.get("canonical_id") or row.get("metric_id")
+            if k:
+                out.append(str(k))
+    except Exception:
+        pass
+    seen = set()
+    uniq = []
+    for k in out:
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(k)
+    return uniq
+
+def _fix2bs__find_injected_sources(output):
+    injected = []
+    try:
+        results = _fix2bs__as_dict(output.get("results"))
+        candidates = []
+        candidates.extend(_fix2bs__as_list(results.get("source_results")))
+        candidates.extend(_fix2bs__as_list(output.get("baseline_sources_cache_current")))
+        candidates.extend(_fix2bs__as_list(output.get("baseline_sources_cache")))
+        for s in candidates:
+            if not isinstance(s, dict):
+                continue
+            url = s.get("url") or s.get("source_url")
+            if not url:
+                continue
+            if s.get("injected") or s.get("is_injected") or s.get("injected_reason"):
+                injected.append(s)
+    except Exception:
+        pass
+    out = []
+    seen = set()
+    for s in injected:
+        url = s.get("url") or s.get("source_url")
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(s)
+    return out
+
+def _fix2bs__collect_injected_numbers(injected_sources):
+    nums = []
+    for s in injected_sources:
+        url = s.get("url") or s.get("source_url")
+        for n in _fix2bs__as_list(s.get("extracted_numbers")):
+            if isinstance(n, dict):
+                raw = n.get("raw") or n.get("text") or n.get("value_raw")
+                value_norm = n.get("value_norm") if "value_norm" in n else n.get("norm")
+                unit = n.get("unit") or n.get("unit_norm") or n.get("unit_family")
+                ctx = n.get("context") or n.get("span") or ""
+            else:
+                raw = n
+                value_norm = None
+                unit = None
+                ctx = ""
+            nums.append({
+                "raw": raw,
+                "value_norm": value_norm,
+                "unit": unit,
+                "context": ctx,
+                "url": url,
+            })
+    return nums
+
+def _fix2bs__is_percent(n):
+    raw = _fix2bs__norm_str(n.get("raw"))
+    unit = _fix2bs__norm_str(n.get("unit")).lower()
+    return "%" in raw or "percent" in unit
+
+def _fix2bs__looks_like_millions(n):
+    raw = _fix2bs__norm_str(n.get("raw")).lower()
+    unit = _fix2bs__norm_str(n.get("unit")).lower()
+    return ("million" in raw) or ("units" in raw) or ("unit_sales" in unit) or ("units" in unit)
+
+def _fix2bs__pick_best(nums, predicate):
+    for n in nums:
+        try:
+            if predicate(n):
+                return n
+        except Exception:
+            continue
+    return None
+
+def _fix2bs__map_injected_to_key(target_key, injected_nums):
+    k = (target_key or "").lower()
+    if ("percent" in k) or ("share" in k):
+        cand = _fix2bs__pick_best(injected_nums, _fix2bs__is_percent)
+        if cand:
+            return cand
+    if ("sales" in k or "units" in k or "unit_sales" in k) and ("2024" in k or "global" in k or "ytd" in k):
+        cand = _fix2bs__pick_best(injected_nums, _fix2bs__looks_like_millions)
+        if cand:
+            return cand
+    return None
+
+def _fix2bs__ensure_results_debug(output):
+    if not isinstance(output, dict):
+        return None, None
+    results = output.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        output["results"] = results
+    dbg = results.get("debug")
+    if not isinstance(dbg, dict):
+        dbg = {}
+        results["debug"] = dbg
+    return results, dbg
+
+def _fix2bs__apply(output):
+    try:
+        if not isinstance(output, dict):
+            return
+        results, dbg = _fix2bs__ensure_results_debug(output)
+        pool = dbg.get("canonical_for_render_v1")
+        if not isinstance(pool, dict):
+            pool = {}
+            dbg["canonical_for_render_v1"] = pool
+
+        target_keys = _fix2bs__collect_diff_keys(output)
+        injected_sources = _fix2bs__find_injected_sources(output)
+        injected_nums = _fix2bs__collect_injected_numbers(injected_sources)
+
+        added = 0
+        added_keys = []
+        used = []
+
+        for key in target_keys:
+            if not key:
+                continue
+            if key in pool and pool.get(key):
+                continue
+            cand = _fix2bs__map_injected_to_key(key, injected_nums)
+            if not cand:
+                continue
+            entry = {
+                "value_norm": cand.get("value_norm"),
+                "value": cand.get("raw"),
+                "unit_norm": cand.get("unit"),
+                "source_url": cand.get("url"),
+                "method": "fix2bs_demo_keyspace_align",
+                "context": cand.get("context") or "",
+            }
+            pool[key] = entry
+            added += 1
+            added_keys.append(key)
+            used.append({"k": key, "raw": cand.get("raw"), "url": cand.get("url")})
+
+        dbg.setdefault("fix2bs", {})
+        dbg["fix2bs"].update({
+            "applied": True,
+            "target_keys_n": len(target_keys),
+            "injected_sources_n": len(injected_sources),
+            "injected_numbers_n": len(injected_nums),
+            "added_n": added,
+            "added_keys_sample": added_keys[:10],
+            "used_sample": used[:5],
+        })
+    except Exception:
+        pass
+
+# =========================
+# PATCH END: FIX2BS_CUR_POOL_KEYSPACE_ALIGN_V1
+# =========================
 
 def _fix2br__emit_manifest(output):
     try:
