@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2BP_INJECTION_FETCH_PLACEHOLDER_ELIMINATION_V1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 
 # =========================
@@ -20978,7 +20978,125 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
 
 
+        
+
         # =====================================================================
+        # PATCH FIX2BP (ADDITIVE): Injection Fetch / Placeholder Elimination (relaxed)
+        #
+        # Observed gap:
+        #   Some injected URLs remain as placeholder rows (e.g. injected_reason="prehash_placeholder")
+        #   with empty snapshot_text and numbers_found==0. Downstream extraction/binding cannot run.
+        #
+        # Fix:
+        #   Best-effort second-pass fetch+extract for injected placeholder/failed rows, using a
+        #   relaxed minimum-text threshold (GitHub Pages test pages can be short).
+        #
+        # Safety:
+        #   - Additive-only.
+        #   - Only targets injected rows with empty snapshot_text and 0 numbers.
+        #   - Never overwrites non-empty snapshot_text or existing extracted_numbers.
+        # =====================================================================
+        try:
+            _fx2bp_min_len = 20  # relaxed threshold for short injected test pages
+            _fx2bp_targets = []
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                for _row in (baseline_sources_cache or []):
+                    if not isinstance(_row, dict):
+                        continue
+                    if not (_row.get("injected") is True or isinstance(_row.get("injected_reason"), str)):
+                        continue
+                    _u = _row.get("source_url") or _row.get("url") or ""
+                    if not (isinstance(_u, str) and _u.strip()):
+                        continue
+                    # Only target placeholder/failed injected rows that have no text/numbers yet
+                    _txt0 = _row.get("snapshot_text")
+                    _nums0 = _row.get("extracted_numbers")
+                    _nf0 = _row.get("numbers_found")
+                    if isinstance(_txt0, str) and _txt0.strip():
+                        continue
+                    if isinstance(_nums0, list) and len(_nums0 or []) > 0:
+                        continue
+                    if isinstance(_nf0, int) and _nf0 > 0:
+                        continue
+                    _why = _row.get("injected_reason") or _row.get("status_detail") or _row.get("status") or "unknown"
+                    _fx2bp_targets.append((_u.strip(), _row, str(_why)))
+
+            _fx2bp_fetched = []
+            _fx2bp_failed = []
+            if _fx2bp_targets:
+                for (_u, _row, _why) in _fx2bp_targets:
+                    _txt = None
+                    _detail = ""
+                    try:
+                        _txt, _detail = fetch_url_content_with_status(_u, timeout=35)
+                    except Exception as _e:
+                        _txt, _detail = None, f"exception:{type(_e).__name__}"
+
+                    if isinstance(_txt, str) and len(_txt.strip()) >= _fx2bp_min_len:
+                        try:
+                            _nums = extract_numbers_with_context(_txt, source_url=_u) or []
+                        except Exception:
+                            _nums = []
+                        try:
+                            _row.update({
+                                "status": "fetched",
+                                "status_detail": (_detail or "success"),
+                                "snapshot_text": _txt[:7000],
+                                "extracted_numbers": _nums,
+                                "numbers_found": int(len(_nums or [])),
+                                "injected": True,
+                                "injected_reason": _row.get("injected_reason") or "fix2bp_relaxed_fetch",
+                            })
+                        except Exception:
+                            pass
+                        _fx2bp_fetched.append({
+                            "url": _u,
+                            "why": _why,
+                            "min_len": int(_fx2bp_min_len),
+                            "text_len": int(len(_txt.strip())),
+                            "numbers_found": int(len(_nums or [])),
+                            "status_detail": (_detail or "success"),
+                        })
+                    else:
+                        try:
+                            # Keep status_detail for debugging but avoid the misleading "success" label if no text
+                            _row.update({
+                                "status": "failed",
+                                "status_detail": (_detail or "failed:no_text"),
+                                "snapshot_text": "",
+                                "extracted_numbers": [],
+                                "numbers_found": 0,
+                                "injected": True,
+                                "injected_reason": _row.get("injected_reason") or "fix2bp_relaxed_fetch_failed",
+                            })
+                        except Exception:
+                            pass
+                        _fx2bp_failed.append({
+                            "url": _u,
+                            "why": _why,
+                            "min_len": int(_fx2bp_min_len),
+                            "status_detail": (_detail or "failed:no_text"),
+                        })
+
+            # Debug breadcrumb (non-fatal)
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix2bp", {})
+                    if isinstance(output["debug"].get("fix2bp"), dict):
+                        output["debug"]["fix2bp"].update({
+                            "min_len": int(_fx2bp_min_len),
+                            "target_count": int(len(_fx2bp_targets or [])),
+                            "fetched_count": int(len(_fx2bp_fetched or [])),
+                            "failed_count": int(len(_fx2bp_failed or [])),
+                            "fetched": list(_fx2bp_fetched or [])[:10],
+                            "failed": list(_fx2bp_failed or [])[:10],
+                        })
+            except Exception:
+                pass
+        except Exception:
+            pass
+# =====================================================================
         # PATCH FIX41AFC17 (ADDITIVE): Pin fetched injected snapshots into canonical snapshot plumbing
         #
         # Observed gap (from evolution JSON after FIX41AFC16):
