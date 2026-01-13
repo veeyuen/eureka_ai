@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'FIX2C2_CURMET_WIRE_V1'  # PATCH FIX2C2: bump CODE_VERSION to match patch filename
+CODE_VERSION = 'FIX2C4_SCALE_UNITS_MONEY_V1'  # PATCH FIX2C4: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -208,6 +208,191 @@ CORE_CONTRACTS_V1 = {
     "MAX_METRIC_SAMPLES": 10,
 }
 
+
+# ===============================================================================
+# PATCH START: FIX2C4_SCALE_UNITS_MONEY_V1 (ADDITIVE)
+# Goal:
+#   Ensure extracted_numbers retains decisive unit evidence for:
+#     (a) currency magnitudes like "US$ 996.3bn", "$1.1tn"
+#     (b) volume magnitudes like "17.8 million units", "22.1m sales"
+#
+#   This patch does NOT change wrappers/UI. It only normalizes candidate fields so that:
+#     - market size (revenue) rows can bind to currency candidates (unit_family='currency')
+#     - unit sales rows can bind to volume candidates (unit_family='count_units', scale=1e6 where relevant)
+#
+# Key behaviors (deterministic):
+#   - If raw contains currency token, force unit_family='currency' and set unit_tag/base_unit accordingly.
+#   - Interpret bn/tn/billion/trillion as multipliers (1e9/1e12) rather than "unit_tag".
+#   - If raw contains "million"/"m" with unit cues ("units", "sales", "vehicles"), set unit_family='count_units'
+#     with scale=1e6 and value_norm=value*1e6 (when numeric value available).
+#   - Never overwrite existing explicit unit_family/unit_tag/value_norm unless missing.
+#   - Emit lightweight diagnostics under output.debug.fix2c4
+# ===============================================================================
+_FIX2C4_CFG = {
+    "ENABLED": True,
+    "MAX_DIAG_SAMPLES": 8,
+}
+
+_FIX2C4_CURRENCY_TOKENS = [
+    "US$", "USD", "$", "S$", "SGD", "€", "EUR", "£", "GBP", "¥", "JPY", "CNY", "RMB", "AUD", "CAD"
+]
+
+def _fix2c4__detect_currency_token(raw: str):
+    if not isinstance(raw, str):
+        return None
+    r = raw.strip()
+    for t in _FIX2C4_CURRENCY_TOKENS:
+        if t in r:
+            # Prefer canonical currency codes where possible
+            if t in ("US$", "USD", "$"):
+                return "USD"
+            if t in ("S$", "SGD"):
+                return "SGD"
+            if t in ("€", "EUR"):
+                return "EUR"
+            if t in ("£", "GBP"):
+                return "GBP"
+            if t in ("¥", "JPY"):
+                return "JPY"
+            if t in ("CNY", "RMB"):
+                return "CNY"
+            if t == "AUD":
+                return "AUD"
+            if t == "CAD":
+                return "CAD"
+            return t
+    return None
+
+def _fix2c4__detect_scale_multiplier(raw: str):
+    """Return (multiplier:int, scale_tag:str|None) for bn/tn/mn/million etc."""
+    if not isinstance(raw, str):
+        return (1, None)
+    s = raw.lower()
+    # currency magnitudes
+    if "trillion" in s or " tn" in s or "tn" in s:
+        return (10**12, "tn")
+    if "billion" in s or " bn" in s or "bn" in s:
+        return (10**9, "bn")
+    # volumes
+    if "million" in s or " mn" in s or "mn" in s:
+        return (10**6, "mn")
+    # common shorthand: "22.1m" (avoid matching 'mm' etc)
+    if re.search(r"\b\d+(?:\.\d+)?\s*m\b", s) or re.search(r"\b\d+(?:\.\d+)?m\b", s):
+        return (10**6, "m")
+    return (1, None)
+
+def _fix2c4__looks_like_units_context(raw: str, ctx: str):
+    s = (raw or "") + " " + (ctx or "")
+    s = s.lower()
+    return any(w in s for w in [" unit", " units", " vehicle", " vehicles", " sales", " sold", " deliveries", " deliveries", " volume", " volumes"])
+
+def _fix2c4_normalize_extracted_numbers_v1(extracted_numbers: list):
+    """Normalize a list of extracted number dicts in-place (best-effort)."""
+    if not (isinstance(extracted_numbers, list) and extracted_numbers):
+        return extracted_numbers
+    for n in extracted_numbers:
+        if not isinstance(n, dict):
+            continue
+        raw = n.get("raw") or n.get("text") or ""
+        ctx = n.get("context") or n.get("context_snippet") or ""
+        # --- currency evidence
+        cur = _fix2c4__detect_currency_token(raw)
+        if cur and not (n.get("unit_family") or n.get("measure_kind") == "money"):
+            n.setdefault("unit_family", "currency")
+            n.setdefault("measure_kind", "money")
+        if cur:
+            # Prefer explicit unit_tag when absent
+            if not n.get("unit_tag"):
+                n["unit_tag"] = cur
+            n.setdefault("base_unit", cur)
+
+        # --- scale evidence
+        mult, scale_tag = _fix2c4__detect_scale_multiplier(raw)
+        if mult != 1:
+            n.setdefault("scale_multiplier", int(mult))
+            if scale_tag and not n.get("scale_tag"):
+                n["scale_tag"] = str(scale_tag)
+
+        # --- unit volumes (million units)
+        if (not cur) and (not n.get("unit_family")) and mult in (10**6, 10**9, 10**12):
+            # Only treat as unit volume if context suggests units/sales/vehicles.
+            if _fix2c4__looks_like_units_context(raw, ctx):
+                n.setdefault("unit_family", "count_units")
+                n.setdefault("measure_kind", "count_units")
+                if not n.get("unit_tag"):
+                    n["unit_tag"] = "unit_sales"
+                n.setdefault("base_unit", "units")
+
+        # --- recompute value_norm when possible and missing
+        try:
+            v = n.get("value_norm")
+            if v is None:
+                vv = n.get("value")
+                if isinstance(vv, (int, float)):
+                    v = float(vv)
+                elif isinstance(vv, str):
+                    v = float(vv)
+            if v is not None and isinstance(v, (int, float)) and mult != 1:
+                # Only apply multiplier if it looks like a magnitude (bn/tn/million)
+                n.setdefault("value_norm", float(v) * float(mult))
+        except Exception:
+            pass
+
+    return extracted_numbers
+
+def _fix2c4_apply_to_baseline_sources_cache_v1(baseline_sources_cache: list, output: dict = None):
+    """Walk baseline_sources_cache[*].extracted_numbers and normalize candidates."""
+    if not (_FIX2C4_CFG.get("ENABLED") is True):
+        return baseline_sources_cache
+    if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
+        return baseline_sources_cache
+    changed = 0
+    samples = []
+    for row in baseline_sources_cache:
+        if not isinstance(row, dict):
+            continue
+        nums = row.get("extracted_numbers")
+        if not isinstance(nums, list) or not nums:
+            continue
+        before = None
+        try:
+            # capture one sample raw for diagnostics
+            before = nums[0].get("unit_tag"), nums[0].get("unit_family"), nums[0].get("value_norm")
+        except Exception:
+            before = None
+        _fix2c4_normalize_extracted_numbers_v1(nums)
+        after = None
+        try:
+            after = nums[0].get("unit_tag"), nums[0].get("unit_family"), nums[0].get("value_norm")
+        except Exception:
+            after = None
+        if before != after:
+            changed += 1
+            if len(samples) < int(_FIX2C4_CFG.get("MAX_DIAG_SAMPLES") or 8):
+                samples.append({
+                    "url": row.get("url") or row.get("source_url"),
+                    "before": before,
+                    "after": after,
+                    "raw0": (nums[0].get("raw") or "")[:120],
+                })
+
+    if isinstance(output, dict):
+        try:
+            output.setdefault("debug", {})
+            if isinstance(output.get("debug"), dict):
+                output["debug"].setdefault("fix2c4", {})
+                if isinstance(output["debug"].get("fix2c4"), dict):
+                    output["debug"]["fix2c4"].update({
+                        "applied": True,
+                        "rows_touched": int(changed),
+                        "sample": samples,
+                    })
+        except Exception:
+            pass
+    return baseline_sources_cache
+# ===============================================================================
+# PATCH END: FIX2C4_SCALE_UNITS_MONEY_V1
+# ===============================================================================
 def _core_contract_v1__is_metric_dict(x):
     return isinstance(x, dict) and isinstance(x.get("canonical_key") or x.get("canonical_id") or x.get("name"), str)
 
@@ -21561,6 +21746,14 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
         except Exception:
             pass
+# =====================================================================
+        # PATCH FIX2C4 (ADDITIVE): normalize currency + unit scale evidence in extracted_numbers for downstream canonicalisation/diff hydration
+        try:
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                baseline_sources_cache = _fix2c4_apply_to_baseline_sources_cache_v1(baseline_sources_cache, output)
+        except Exception:
+            pass
+# =====================================================================
 # =====================================================================
         # PATCH FIX41AFC17 (ADDITIVE): Pin fetched injected snapshots into canonical snapshot plumbing
         #
