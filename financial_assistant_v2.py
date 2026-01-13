@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'FIX2BZ_MONEY_KIND_V1'  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
+CODE_VERSION = 'FIX2C0_PRESERVE_EXTRACT_FIELDS_V1'  # PATCH FIX2BS: bump CODE_VERSION to match patch filename
 
 
 # =========================
@@ -147,6 +147,13 @@ PATCH_TRACKER_V1 = [
         "class": "GOLDEN",
         "keep": True,
         "purpose": "Fix measure_kind misclassification for currency magnitudes (e.g., US$996.3bn, US$1.1tn) by using explicit currency evidence from raw tokens. Enables deterministic binding of revenue/market-size metrics in canonical/diff hydration without relying on brittle context keywords."
+    },
+    {
+        "patch": "FIX2C0_PRESERVE_EXTRACT_FIELDS_V1",
+        "date": "2026-01-13",
+        "class": "CORE",
+        "keep": True,
+        "purpose": "Preserve extractor-provided fields (unit_tag, value_norm, measure_kind, junk flags, spans) when building baseline_sources_cache_current so downstream canonicalisation + FIX39 unit-evidence gating can hydrate Current reliably."
     },
 ]
 
@@ -15436,6 +15443,32 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
                 "quality_reasons": reasons,
                 "topic_overlap": tok_overlap,
             })
+# =====================================================================
+            # PATCH START: FIX2C0_PRESERVE_EXTRACT_FIELDS_V1
+            # Preserve rich extractor fields for downstream canonicalisation and FIX39 unit-evidence gating.
+            # This is additive-only: we enrich the already-appended dict in-place.
+            # =====================================================================
+            try:
+                _last = cleaned_numbers[-1] if cleaned_numbers else None
+                if isinstance(_last, dict) and isinstance(n, dict):
+                    for _k in (
+                        "unit_tag","unit_family","base_unit","multiplier_to_base","value_norm",
+                        "measure_kind","measure_assoc","is_junk","junk_reason",
+                        "start_idx","end_idx","display","label"
+                    ):
+                        if _k in n and _k not in _last:
+                            _last[_k] = n.get(_k)
+                    # If unit_tag still missing but raw carries currency evidence, preserve it deterministically.
+                    _raw_s = raw if isinstance(raw, str) else ""
+                    if not _last.get("unit_tag") and _raw_s:
+                        if any(sym in _raw_s for sym in ("US$", "USD", "$", "S$", "€", "£", "¥")):
+                            _last["unit_tag"] = _raw_s.strip().split()[0] if _raw_s.strip().split() else (_last.get("unit") or "")
+            except Exception:
+                pass
+            # =====================================================================
+            # PATCH END: FIX2C0_PRESERVE_EXTRACT_FIELDS_V1
+            # =====================================================================
+
 
         out.append({
             "url": url_s,
