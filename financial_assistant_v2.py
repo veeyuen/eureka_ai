@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2b5_unified_poc_alias_keys_v2"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -253,37 +253,37 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v21'
+#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
+#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2s1_observed_to_canonical_rules_v1_syntaxfix"
+#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
+#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
+#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
+#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -30130,7 +30130,7 @@ except Exception:
 
 # PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -30281,7 +30281,7 @@ except Exception:
 
 # PATCH V24_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v24'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -30290,7 +30290,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v25"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # =====================================================================
@@ -30301,7 +30301,7 @@ except Exception:
 # =====================================================================
 # PATCH CODE_VERSION_V26 (ADDITIVE)
 # =====================================================================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v26'
+CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # =====================================================================
 # END PATCH CODE_VERSION_V26
 # =====================================================================
@@ -30310,7 +30310,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # PATCH V27_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v27'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # =====================================================================
@@ -30321,7 +30321,7 @@ except Exception:
 # PATCH V28_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v28'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # =====================================================================
@@ -30332,7 +30332,7 @@ except Exception:
 # =====================================================================
 # PATCH V29_CODE_VERSION_BUMP (ADDITIVE)
 # =====================================================================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v29'
+CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # =====================================================================
 # END PATCH V29_CODE_VERSION_BUMP
 # =====================================================================
@@ -30511,7 +30511,7 @@ except Exception:
 
 # PATCH V32_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v32'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -30770,7 +30770,7 @@ except Exception:
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -30819,7 +30819,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, sn
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -30957,7 +30957,7 @@ except Exception:
 
 # PATCH V34C_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34c'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -30970,7 +30970,7 @@ except Exception:
 # PATCH V34F_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -31272,7 +31272,7 @@ except Exception:
 
 # Version bump (additive)
 try:
-    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2g_option_b_proof_injhashdiag"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -31564,7 +31564,7 @@ except Exception:
 
 # Final version bump (additive) — ensure this is the last CODE_VERSION assignment.
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2h_canon_index_debug_blocks'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -31574,7 +31574,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2F_CODE_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2f_diffpanel_v2_option_b_lastmile'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -31582,7 +31582,7 @@ except Exception:
 # PATCH FIX2H_CODE_VERSION_FINAL (ADDITIVE)
 # Ensure CODE_VERSION reflects this build for audit/debug.
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2h_canon_index_debug_blocks'
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # =====================================================================
@@ -31618,13 +31618,13 @@ except Exception:
 try:
     CODE_VERSION = str(globals().get('CODE_VERSION') or '')
 except Exception:
-    CODE_VERSION = ''
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 
 try:
     if CODE_VERSION and 'fix2j' not in CODE_VERSION:
         CODE_VERSION = f"{CODE_VERSION}_fix2j_diffpanel_v2_unit_mismatch_split_and_raw_current_rows"
     elif not CODE_VERSION:
-        CODE_VERSION = 'fix2j_diffpanel_v2_unit_mismatch_split_and_raw_current_rows'
+        CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -33070,7 +33070,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2j_diffpanel_v2_unit_mismatch_split_and_raw_current_rows"
+        CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -33102,7 +33102,7 @@ try:
     if _CV and 'fix2k' not in _CV:
         CODE_VERSION = f"{_CV}_fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only"
     elif not _CV:
-        CODE_VERSION = 'fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only'
+        CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -33418,7 +33418,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2u_ev_chargers_canon_schema_unit_count"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -33430,7 +33430,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2y_candidate_autopsy_v1"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # =====================================================================
@@ -34087,7 +34087,7 @@ except Exception:
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
-    CODE_VERSION = "fix2ag_evo_runner_clean_v1"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -34824,13 +34824,13 @@ except Exception:
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
-    CODE_VERSION = "fix2ah_evo_runner_schema_target_v1"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
 # PATCH FIX2AL (ADD): ensure CODE_VERSION reflects latest issued file
 try:
-    CODE_VERSION = "fix2am_inj_fetch_assure_v2"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -35740,7 +35740,7 @@ except Exception:
 
 # PATCH FIX2AN (ADD): bump CODE_VERSION to new patch filename
 try:
-    CODE_VERSION = "fix2an_injected_wins_resolution_v1"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -36092,7 +36092,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 #   to use it (additive-only; legacy binders remain intact).
 
 try:
-    CODE_VERSION = "fix2an_injected_wins_resolution_v1"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -36456,7 +36456,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 # so the diff/join (and thus the UI Current column) can populate deterministically.
 
 # PATCH FIX2AO (ADDITIVE): bump CODE_VERSION to new patch filename
-CODE_VERSION = "fix2ao_evo_key_reconcile_v1"
+CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 
 
 def _fix2ao_norm_key_base(canonical_key: str) -> str:
@@ -37404,7 +37404,7 @@ if _fix2at__orig_run_evolutionary_runner is not None:
 # - FIX2AT: Hydrate results.metric_changes[].current_value deterministically from emitted canonical metrics + frozen schema.
 
 # Ensure CODE_VERSION matches this file (override any stale bump blocks)
-CODE_VERSION = "fix2at_evo_hydrate_metric_changes_v1"
+CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 
 
 # =====================================================================
@@ -37412,7 +37412,7 @@ CODE_VERSION = "fix2at_evo_hydrate_metric_changes_v1"
 # Ensure CODE_VERSION reflects the latest issued file (append-only override).
 # =====================================================================
 try:
-    CODE_VERSION = "fix2au_evo_inj_disable_replay_v1"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # =====================================================================
@@ -37568,7 +37568,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     return rows, summary
 
 # Hard override CODE_VERSION at EOF (authoritative)
-CODE_VERSION = "fix2av_evo_diff_panel_v2_summary_guard_v1"
+CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # PATCH TRACKER (append-only)
 # - FIX2AV: Guard DIFF_PANEL_V2 summary UnboundLocalError + deterministic fallback rows to populate Current column.
 # =================== END PATCH FIX2AV (ADDITIVE) ====================
@@ -37585,7 +37585,7 @@ CODE_VERSION = "fix2av_evo_diff_panel_v2_summary_guard_v1"
 # Ensure CODE_VERSION reflects the filename even if older blocks reset it.
 # =====================================================================
 try:
-    CODE_VERSION = "fix2ay_evo_render_smoke_v2"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # =====================================================================
@@ -37859,7 +37859,7 @@ def run_unified_poc(question: str,
 
 # CODE_VERSION (authoritative at EOF)
 try:
-    CODE_VERSION = "fix2b6_unified_poc_alias_keys_v3"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 
@@ -37876,7 +37876,7 @@ except Exception:
 # This final assignment is authoritative for this patched file.
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v1"
+    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 except Exception:
     pass
 # =====================================================================
