@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2ai_evo_runner_answer_select_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2aj_evo_runner_injected_priority_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -34401,3 +34401,345 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 # ============================================================
 # PATCH FIX2AI END
 # ============================================================
+
+
+
+# PATCH FIX2AJ START
+# Purpose:
+#   - Prefer injected URL candidates over baseline sources when binding to schema (deterministic).
+#   - Emit explicit injected-source harvesting diagnostics so we can see whether injected content was used.
+#   - Preserve FIX2AF deterministic semantics; no legacy wrapper reliance.
+#
+# Notes:
+#   - We do NOT "force" injected to win if it fails unit-family hard gates; we only prioritize when comparable.
+#   - We tag candidates with _inj_priority (1 injected, 0 baseline) and incorporate that into the bind score.
+#
+try:
+    from typing import List as _FIX2AJ_List, Tuple as _FIX2AJ_Tuple, Dict as _FIX2AJ_Dict
+except Exception:
+    _FIX2AJ_List = list
+    _FIX2AJ_Tuple = tuple
+    _FIX2AJ_Dict = dict
+
+
+def _fix2aj_candidate_score(cand: dict, kws: _FIX2AJ_List[str], expect_uf: str) -> _FIX2AJ_Tuple[int, int, int, str]:
+    """Deterministic score tuple:
+    (inj_priority, keyword_hits, unit_match, anchor_hash)
+
+    Higher is better under tuple comparison.
+    """
+    try:
+        injp = 1 if int(cand.get("_inj_priority") or 0) == 1 else 0
+    except Exception:
+        injp = 0
+    try:
+        # Reuse FIX2AG scoring semantics
+        hits, unit_match, ah = _fix2ag_candidate_score(cand, kws, expect_uf)
+        try:
+            hits = int(hits)
+        except Exception:
+            hits = 0
+        try:
+            unit_match = int(unit_match)
+        except Exception:
+            unit_match = 0
+        ah = str(ah or "")
+        return injp, hits, unit_match, ah
+    except Exception:
+        return injp, 0, 0, str(cand.get("anchor_hash") or "")
+
+
+def _fix2aj_bind_candidates_to_schema(schema: dict, candidates: _FIX2AJ_List[dict], injected_urls_set: set = None) -> _FIX2AJ_Tuple[dict, dict]:
+    """FIX2AJ bind: identical to FIX2AG/FIX2AI, but with injected priority as the leading score component."""
+    if injected_urls_set is None:
+        injected_urls_set = set()
+
+    # Ensure candidate tag is present (stable)
+    tagged = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            tagged.append(c2)
+        except Exception:
+            tagged.append(c)
+
+    cur = {}
+    dbg = {
+        "candidates_total": int(len(tagged or [])),
+        "bound": 0,
+        "not_found": 0,
+        "unit_mismatch": 0,
+        "rows": {},
+        "injected": {
+            "urls": sorted(list(injected_urls_set))[:25],
+            "candidates_total": int(sum(1 for c in (tagged or []) if int(c.get("_inj_priority") or 0) == 1)),
+        }
+    }
+
+    for ck, entry in (schema or {}).items():
+        try:
+            ckey = str(ck)
+            md = entry if isinstance(entry, dict) else {}
+            label = md.get("metric_label") or md.get("metric_name") or ckey
+
+            kws = md.get("keywords") or md.get("tags") or []
+            if not isinstance(kws, list):
+                kws = []
+            kws = [str(x).strip().lower() for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            expect_uf = str(md.get("unit_family") or md.get("dimension") or "").strip().lower()
+            if expect_uf in ("unit_sales", "units", "count_units"):
+                expect_uf = "magnitude"
+            if expect_uf == "percent":
+                expect_uf = "percent"
+
+            best = None
+            best_score = (-1, -1, -1, "")
+            for cand in (tagged or []):
+                if not isinstance(cand, dict):
+                    continue
+                # Hard gate: if schema has unit_family and candidate has one, require match
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+                score = _fix2aj_candidate_score(cand, kws, expect_uf)
+                if score > best_score:
+                    best_score = score
+                    best = cand
+
+            if best is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "not_found",
+                    "expect_unit_family": expect_uf,
+                    "keywords": kws[:12],
+                }
+                continue
+
+            v_norm = best.get("value_norm")
+            if v_norm is None:
+                v_norm = best.get("value")
+            v_norm = _fix2ag_safe_float(v_norm)
+
+            # Unit-family evidence gate: if schema expects a unit family but best lacks it, mark mismatch
+            if expect_uf and not str(best.get("unit_family") or "").strip():
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "chosen": {
+                        "url": best.get("url") or best.get("source_url"),
+                        "raw": (best.get("raw") or "")[:120],
+                        "context": (best.get("context") or best.get("context_snippet") or "")[:160],
+                        "unit_tag": best.get("unit_tag"),
+                        "unit_family": best.get("unit_family"),
+                        "inj_priority": int(best.get("_inj_priority") or 0),
+                    },
+                    "score": {"inj_priority": best_score[0], "keyword_hits": best_score[1], "unit_match": best_score[2]},
+                }
+                # FIX2AI behavior: keep best candidate even on mismatch for display
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": best.get("raw") or "",
+                    "unit_family": best.get("unit_family"),
+                    "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                    "source_url": best.get("url") or best.get("source_url"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "context": best.get("context") or best.get("context_snippet") or "",
+                    "unit_mismatch": True,
+                    "inj_priority": int(best.get("_inj_priority") or 0),
+                }
+                continue
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": best.get("raw") or "",
+                "unit_family": best.get("unit_family"),
+                "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                "source_url": best.get("url") or best.get("source_url"),
+                "anchor_hash": best.get("anchor_hash"),
+                "context": best.get("context") or best.get("context_snippet") or "",
+                "inj_priority": int(best.get("_inj_priority") or 0),
+            }
+            dbg["bound"] += 1
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "chosen": {
+                    "url": cur[ckey].get("source_url"),
+                    "raw": (cur[ckey].get("raw") or "")[:120],
+                    "inj_priority": int(best.get("_inj_priority") or 0),
+                },
+                "score": {"inj_priority": best_score[0], "keyword_hits": best_score[1], "unit_match": best_score[2]},
+            }
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "exception", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    return cur, dbg
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX2AJ: Clean deterministic Evolution runner + injected priority binding + injected harvest diagnostics."""
+    out = _fix2ag_contract_template(status="success", message="")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        out["output_debug"].update({
+            "diag_run_id": web_context.get("diag_run_id"),
+            "force_rebuild": bool(web_context.get("force_rebuild")),
+            "code_version": CODE_VERSION,
+        })
+
+        schema = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        if not schema:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "schema_missing"
+            out["summary"]["message"] = "Missing frozen metric schema"
+            return out
+
+        # URLs: baseline + injected
+        urls = _fix2ag_get_baseline_urls(previous_data or {})
+        extra_urls = []
+        try:
+            extra_urls = list(web_context.get("extra_urls") or [])
+        except Exception:
+            extra_urls = []
+
+        injected_urls_set = set()
+        for u in (extra_urls or []):
+            try:
+                nu = globals().get("_fix2af_norm_url")(u) if callable(globals().get("_fix2af_norm_url")) else str(u).strip()
+            except Exception:
+                nu = str(u).strip()
+            if nu:
+                injected_urls_set.add(nu)
+                if nu not in urls:
+                    urls.append(nu)
+
+        out["output_debug"]["urls"] = {
+            "baseline_count": int(len(_fix2ag_get_baseline_urls(previous_data or {}) or [])),
+            "injected_count": int(len(injected_urls_set)),
+            "urls_total": int(len(urls or [])),
+            "injected_urls": sorted(list(injected_urls_set))[:25],
+        }
+
+        if not urls:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "no_urls"
+            out["summary"]["message"] = "No URLs available to fetch"
+            return out
+
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout") or 25))
+        out["output_debug"]["fetch"] = fetch_dbg
+        out["output_debug"]["sources_checked"] = int(fetch_dbg.get("urls_requested") or 0)
+        out["output_debug"]["sources_fetched"] = int(fetch_dbg.get("urls_fetched") or 0)
+        out["output_debug"]["baseline_sources_cache"] = source_results
+
+        # Candidate extraction
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            for url, t in (scraped_content or {}).items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(t, source_url=url) or []):
+                            n2 = dict(n) if isinstance(n, dict) else {}
+                            n2["url"] = url
+                            candidates.append(n2)
+                except Exception:
+                    pass
+
+        # Tag injected priority for diagnostics + binding (binding also tags again defensively)
+        tagged = []
+        inj_cnt = 0
+        for c in (candidates or []):
+            if not isinstance(c, dict):
+                continue
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            if c2["_inj_priority"] == 1:
+                inj_cnt += 1
+            tagged.append(c2)
+
+        # Deterministic sort
+        def _cand_key(c):
+            try:
+                return (
+                    -int(c.get("_inj_priority") or 0),  # injected first for stable order (does not override bind score)
+                    str(c.get("url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    str(c.get("value_norm") if c.get("value_norm") is not None else c.get("value") or ""),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return (0, "", "", "", "")
+        tagged.sort(key=_cand_key)
+
+        out["output_debug"]["candidates_total"] = int(len(tagged))
+        out["output_debug"]["injected_candidates_total"] = int(inj_cnt)
+
+        # Bind with injected priority
+        cur_metrics, bind_dbg = _fix2aj_bind_candidates_to_schema(schema, tagged, injected_urls_set=injected_urls_set)
+        out["output_debug"]["bind"] = {
+            "candidates_total": bind_dbg.get("candidates_total"),
+            "bound": bind_dbg.get("bound"),
+            "not_found": bind_dbg.get("not_found"),
+            "unit_mismatch": bind_dbg.get("unit_mismatch"),
+            "injected": bind_dbg.get("injected"),
+            "rows_sample": {k: (bind_dbg.get("rows", {}) or {}).get(k) for k in list(sorted((bind_dbg.get("rows", {}) or {}).keys()))[:10]},
+        }
+
+        # Diff
+        metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics, schema)
+        out["metric_changes"] = metric_changes
+        out["summary"] = summary
+
+        # Make answer selection deterministic (re-use FIX2AI answer selector if present)
+        try:
+            fn_ans = globals().get("_fix2ai_assign_roles_and_answer_metrics")
+            if callable(fn_ans):
+                out = fn_ans(out) or out
+        except Exception:
+            pass
+
+        # Ensure contract fields exist
+        out.setdefault("output_debug", {})
+        out.setdefault("metric_changes_v2", out.get("metric_changes_v2") or [])
+        out.setdefault("metric_changes_legacy", out.get("metric_changes_legacy") or out.get("metric_changes") or [])
+        out.setdefault("results", None)  # do not create nested results if UI expects top-level
+        return out
+
+    except Exception as e:
+        out["status"] = "failed"
+        out["summary"]["status"] = "failed"
+        out["summary"]["failure_stage"] = "runner_exception"
+        out["summary"]["message"] = f"{type(e).__name__}: {e}"
+        try:
+            out["output_debug"]["exception"] = {"type": type(e).__name__, "msg": str(e)}
+        except Exception:
+            pass
+        return out
+
+# PATCH FIX2AJ END
+
