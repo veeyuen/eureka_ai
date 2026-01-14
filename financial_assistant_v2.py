@@ -34163,3 +34163,234 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2AK_SPINE_PHASE3_V2_WIRING_V1
 # =====================================================================
+
+# =====================================================================
+# PATCH FIX2AL_SPINE_PHASE3_1_METRIC_CHANGES_ADAPTER_V1 (ADDITIVE)
+# Objective:
+# - Close the remaining "Current=N/A" gap by hydrating the Evolution dashboard's
+#   primary table feed (results.metric_changes / metric_changes_legacy) from the
+#   new spine output: cur_response['primary_metrics_canonical'].
+#
+# Diagnosis (from JSON reports):
+# - The spine is producing a populated primary_metrics_canonical map (analysis-side
+#   responses show canonical keys like units_sold_2030__unit_sales with value_norm),
+#   but the Evolution dashboard is still rendering current_value as "N/A" because
+#   the legacy metric_changes builder does not read that map.
+#
+# Safety:
+# - Additive wrapper only; does not alter extraction, caching, hashing, or UI.
+# - Only fills current_value when it is missing/blank/"N/A" and a canonical_key
+#   exists in primary_metrics_canonical.
+# - Disable via YUREEKA_SPINE_V1_METRIC_CHANGES_ADAPTER=0
+# =====================================================================
+
+try:
+    _FIX2AL_PREV_DIFF_METRICS_BY_NAME = diff_metrics_by_name  # capture current entrypoint (already patched by FIX2AG)
+except Exception:
+    _FIX2AL_PREV_DIFF_METRICS_BY_NAME = None
+
+
+def _spine_v1__is_missing_current_value(v: Any) -> bool:
+    try:
+        if v is None:
+            return True
+        if isinstance(v, str):
+            s = v.strip().lower()
+            return (s == "" or s == "n/a" or s == "na" or s == "-" or s == "none" or s == "null")
+        return False
+    except Exception:
+        return True
+
+
+def _spine_v1__pick_metric_value(metric_row: Dict[str, Any]) -> Tuple[Any, Any]:
+    """
+    Return (value_for_current_value, unit_tag) from a canonical metric row.
+    Prefer value_norm when present.
+    """
+    try:
+        if not isinstance(metric_row, dict):
+            return (None, None)
+        v = metric_row.get("value_norm")
+        if v is None:
+            v = metric_row.get("value")
+        u = metric_row.get("unit_tag") or metric_row.get("unit") or metric_row.get("base_unit")
+        return (v, u)
+    except Exception:
+        return (None, None)
+
+
+def _spine_v1__hydrate_metric_changes_from_pmc(cur_response: Dict[str, Any], metric_changes: Any) -> Dict[str, Any]:
+    """
+    Mutates metric_changes rows in-place (list[dict]) when current_value is missing:
+      - current_value <- pmc.value_norm (or value)
+      - adds current_unit (best-effort)
+      - adds spine_hydrated_current flag
+    Returns a small diagnostics dict.
+    """
+    diag = {
+        "attempted": 0,
+        "hydrated": 0,
+        "pmc_keys": 0,
+        "sample_hydrated": [],
+        "disabled": False,
+    }
+    try:
+        if not isinstance(cur_response, dict):
+            return diag
+
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_METRIC_CHANGES_ADAPTER") or "").strip().lower()
+        if flag in ("0", "false", "no", "n", "off"):
+            diag["disabled"] = True
+            return diag
+
+        pmc = cur_response.get("primary_metrics_canonical")
+        if not isinstance(pmc, dict) or not pmc:
+            # try nested shapes (some code paths wrap outputs)
+            try:
+                pmc = (cur_response.get("results") or {}).get("primary_metrics_canonical") if isinstance(cur_response.get("results"), dict) else pmc
+            except Exception:
+                pmc = pmc
+        if not isinstance(pmc, dict):
+            pmc = {}
+        diag["pmc_keys"] = int(len(pmc))
+
+        if not isinstance(metric_changes, list):
+            return diag
+
+        for row in metric_changes:
+            try:
+                if not isinstance(row, dict):
+                    continue
+                ck = row.get("canonical_key") or (row.get("metric_definition") or {}).get("canonical_key")
+                if not ck:
+                    continue
+                diag["attempted"] += 1
+                if not _spine_v1__is_missing_current_value(row.get("current_value")):
+                    continue
+                mrow = pmc.get(str(ck))
+                if not isinstance(mrow, dict):
+                    continue
+                val, unit_tag = _spine_v1__pick_metric_value(mrow)
+                if val is None:
+                    continue
+
+                row["current_value"] = val
+                if unit_tag:
+                    row["current_unit"] = unit_tag
+                # optional extras (non-breaking)
+                row["spine_hydrated_current"] = True
+                try:
+                    if "source_url" in mrow and mrow.get("source_url"):
+                        row.setdefault("spine_source_url", mrow.get("source_url"))
+                except Exception:
+                    pass
+
+                diag["hydrated"] += 1
+                if len(diag["sample_hydrated"]) < 5:
+                    diag["sample_hydrated"].append(str(ck))
+            except Exception:
+                continue
+
+        return diag
+    except Exception:
+        return diag
+
+
+def diff_metrics_by_name_FIX2AL_SPINE_METRIC_CHANGES_ADAPTER(prev_response, cur_response):  # noqa: F811
+    """
+    Wrapper around diff_metrics_by_name that:
+      - preserves legacy tuple return signature
+      - post-hydrates metric_changes rows from cur_response['primary_metrics_canonical']
+      - emits output_debug.canonical_for_render_v1 so the UI/diagnostics can confirm
+        which canonical map was used for render hydration.
+    """
+    try:
+        if callable(_FIX2AL_PREV_DIFF_METRICS_BY_NAME):
+            out = _FIX2AL_PREV_DIFF_METRICS_BY_NAME(prev_response, cur_response)
+        else:
+            out = ([], 0, 0, 0, 0)
+
+        # Unpack (best-effort)
+        metric_changes = None
+        try:
+            if isinstance(out, tuple) and len(out) >= 1:
+                metric_changes = out[0]
+        except Exception:
+            metric_changes = None
+
+        # Hydrate the dashboard feed from spine output
+        diag = {}
+        try:
+            if isinstance(cur_response, dict):
+                diag = _spine_v1__hydrate_metric_changes_from_pmc(cur_response, metric_changes)
+        except Exception:
+            diag = {}
+
+        # Emit canonical-for-render marker so diagnostics can assert the binding
+        try:
+            if isinstance(cur_response, dict):
+                cur_response.setdefault("output_debug", {})
+                if isinstance(cur_response.get("output_debug"), dict):
+                    cur_response["output_debug"].setdefault("canonical_for_render_v1", {})
+                    if isinstance(cur_response["output_debug"].get("canonical_for_render_v1"), dict):
+                        cur_response["output_debug"]["canonical_for_render_v1"].update({
+                            "present": True,
+                            "method": "spine_v1_metric_changes_adapter",
+                            "source_map": "primary_metrics_canonical",
+                            "pmc_keys": int(diag.get("pmc_keys") or 0),
+                            "attempted": int(diag.get("attempted") or 0),
+                            "hydrated": int(diag.get("hydrated") or 0),
+                            "disabled": bool(diag.get("disabled") or False),
+                            "sample_hydrated": diag.get("sample_hydrated") or [],
+                        })
+        except Exception:
+            pass
+
+        return out
+    except Exception:
+        try:
+            if callable(_FIX2AL_PREV_DIFF_METRICS_BY_NAME):
+                return _FIX2AL_PREV_DIFF_METRICS_BY_NAME(prev_response, cur_response)
+        except Exception:
+            pass
+        return ([], 0, 0, 0, 0)
+
+
+try:
+    diff_metrics_by_name = diff_metrics_by_name_FIX2AL_SPINE_METRIC_CHANGES_ADAPTER  # type: ignore
+except Exception:
+    pass
+
+
+# -------------------------
+# PATCH TRACKER (ADDITIVE): FIX2AL
+# -------------------------
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AL_SPINE_PHASE3_1_METRIC_CHANGES_ADAPTER_V1",
+            "code_version": "fix2al_spine_phase3_1_metric_changes_adapter_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "Post-hydrate results.metric_changes rows from cur_response.primary_metrics_canonical when current_value is missing",
+                "Emit output_debug.canonical_for_render_v1 marker with hydrated counts for audit",
+                "Disable switch: YUREEKA_SPINE_V1_METRIC_CHANGES_ADAPTER=0",
+            ],
+            "risk": "low",
+            "scope": "render adapter only; additive",
+        })
+except Exception:
+    pass
+
+# VERSION STAMP (ADDITIVE): ensure CODE_VERSION matches filename
+try:
+    CODE_VERSION = "fix2al_spine_phase3_1_metric_changes_adapter_v1"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX2AL_SPINE_PHASE3_1_METRIC_CHANGES_ADAPTER_V1
+# =====================================================================
