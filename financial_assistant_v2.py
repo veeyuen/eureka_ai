@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2b7_option_a_hydrate_current_v3"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2B8"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -253,37 +253,37 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+#CODE_VERSION = "FIX2B8"
 
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+#CODE_VERSION = "FIX2B8"
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+#CODE_VERSION = "FIX2B8"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+#CODE_VERSION = "FIX2B8"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+#CODE_VERSION = "FIX2B8"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2B8"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2B8"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+#CODE_VERSION = "FIX2B8"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -12021,55 +12021,7 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
 
     # Interpretation
 
-
     # =====================================================================
-    # PATCH FIX2B7_OPTION_A_PASS_THROUGH_V3 (ADDITIVE)
-    # Ensure Evolution renderer can hydrate Current from canonical metrics by
-    # passing unified-engine canonical payload through to the render results.
-    #
-    # Sources (best-effort):
-    # - web_context["primary_metrics_canonical"] / ["canonical_metrics"]
-    # - web_context["analysis"]["primary_metrics_canonical"] (nested)
-    # - out["canonical_for_render_v1"] (legacy bridge if present)
-    #
-    # Writes:
-    # - out["primary_metrics_canonical"] and out["canonical_metrics"]
-    # - out["debug"]["fix2b7_option_a_passthrough_v3"] counters
-    # =====================================================================
-    try:
-        _fix2b7_cm = None
-        if isinstance(web_context, dict):
-            _fix2b7_cm = web_context.get("primary_metrics_canonical") or web_context.get("canonical_metrics")
-            if _fix2b7_cm is None and isinstance(web_context.get("analysis"), dict):
-                _fix2b7_cm = web_context["analysis"].get("primary_metrics_canonical") or web_context["analysis"].get("canonical_metrics")
-
-        # Fallback: some earlier bridges used this name
-        if _fix2b7_cm is None and isinstance(out, dict):
-            _fix2b7_cm = out.get("canonical_for_render_v1") or out.get("canonical_for_render") or out.get("primary_metrics_canonical") or out.get("canonical_metrics")
-
-        _fix2b7_keys = 0
-        if isinstance(_fix2b7_cm, dict):
-            _fix2b7_keys = len(_fix2b7_cm)
-            if isinstance(out, dict):
-                out.setdefault("primary_metrics_canonical", _fix2b7_cm)
-                out.setdefault("canonical_metrics", _fix2b7_cm)
-
-        if isinstance(out, dict):
-            out.setdefault("debug", {})
-            if isinstance(out.get("debug"), dict):
-                out["debug"].setdefault("fix2b7_option_a_passthrough_v3", {})
-                if isinstance(out["debug"].get("fix2b7_option_a_passthrough_v3"), dict):
-                    out["debug"]["fix2b7_option_a_passthrough_v3"].update({
-                        "web_context_present": bool(isinstance(web_context, dict)),
-                        "canonical_metrics_found": bool(isinstance(_fix2b7_cm, dict) and _fix2b7_keys > 0),
-                        "canonical_metrics_keys": int(_fix2b7_keys),
-                        "wrote_primary_metrics_canonical": bool(isinstance(out.get("primary_metrics_canonical"), dict)),
-                        "wrote_canonical_metrics": bool(isinstance(out.get("canonical_metrics"), dict)),
-                    })
-    except Exception:
-        pass
-
-# =====================================================================
     # PATCH FIX39 (ADDITIVE): enforce unit-required gate at render time
     # =====================================================================
     try:
@@ -19248,7 +19200,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-
+    
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -22641,7 +22593,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-
+    
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -22670,7 +22622,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-
+            
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -24351,12 +24303,12 @@ def render_source_anchored_results(results, query: str):
     # Metric changes table
     # -------------------------
     st.subheader("💰 Metric Changes")
-    rows = results.get("metric_changes") or []
+    rows = results.get("metric_changes") or results.get("metric_changes_v2") or []
     if not isinstance(rows, list) or not rows:
         st.info("No metric changes to display.")
         return
 
-
+    
     # =====================================================================
     # PATCH FIX2B7_OPTION_A_HYDRATE_CURRENT_V1 (ADDITIVE)
     #
@@ -27062,7 +27014,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-
+    
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -30178,7 +30130,7 @@ except Exception:
 
 # PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30329,7 +30281,7 @@ except Exception:
 
 # PATCH V24_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30338,7 +30290,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -30349,7 +30301,7 @@ except Exception:
 # =====================================================================
 # PATCH CODE_VERSION_V26 (ADDITIVE)
 # =====================================================================
-CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+CODE_VERSION = "FIX2B8"
 # =====================================================================
 # END PATCH CODE_VERSION_V26
 # =====================================================================
@@ -30358,7 +30310,7 @@ CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # PATCH V27_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -30369,7 +30321,7 @@ except Exception:
 # PATCH V28_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -30380,7 +30332,7 @@ except Exception:
 # =====================================================================
 # PATCH V29_CODE_VERSION_BUMP (ADDITIVE)
 # =====================================================================
-CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+CODE_VERSION = "FIX2B8"
 # =====================================================================
 # END PATCH V29_CODE_VERSION_BUMP
 # =====================================================================
@@ -30559,7 +30511,7 @@ except Exception:
 
 # PATCH V32_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30818,7 +30770,7 @@ except Exception:
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30867,7 +30819,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, sn
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31005,7 +30957,7 @@ except Exception:
 
 # PATCH V34C_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31018,7 +30970,7 @@ except Exception:
 # PATCH V34F_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31320,7 +31272,7 @@ except Exception:
 
 # Version bump (additive)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31612,7 +31564,7 @@ except Exception:
 
 # Final version bump (additive) — ensure this is the last CODE_VERSION assignment.
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31622,7 +31574,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2F_CODE_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31630,7 +31582,7 @@ except Exception:
 # PATCH FIX2H_CODE_VERSION_FINAL (ADDITIVE)
 # Ensure CODE_VERSION reflects this build for audit/debug.
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -31640,14 +31592,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-#
+# 
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -31657,7 +31609,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-#
+# 
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -31666,13 +31618,13 @@ except Exception:
 try:
     CODE_VERSION = str(globals().get('CODE_VERSION') or '')
 except Exception:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 
 try:
     if CODE_VERSION and 'fix2j' not in CODE_VERSION:
         CODE_VERSION = f"{CODE_VERSION}_fix2j_diffpanel_v2_unit_mismatch_split_and_raw_current_rows"
     elif not CODE_VERSION:
-        CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+        CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -32014,7 +31966,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -33118,7 +33070,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+        CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -33150,7 +33102,7 @@ try:
     if _CV and 'fix2k' not in _CV:
         CODE_VERSION = f"{_CV}_fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only"
     elif not _CV:
-        CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+        CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -33466,7 +33418,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -33478,7 +33430,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -34080,6 +34032,24 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 
         # Diff
         metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics, schema)
+        # =====================================================================
+        # PATCH FIX2B8_OPTION_A_BRIDGE_RUNNER_V1 (ADDITIVE)
+        #
+        # Option A requires canonical metrics to be present in the Evolution
+        # results payload so the renderer can hydrate Current from canonical_keys.
+        # Attach the bound canonical dict (cur_metrics) under stable keys.
+        # =====================================================================
+        try:
+            out["primary_metrics_canonical"] = cur_metrics if isinstance(cur_metrics, dict) else {}
+            out["canonical_metrics"] = out["primary_metrics_canonical"]
+            out.setdefault("output_debug", {})
+            if isinstance(out.get("output_debug"), dict):
+                out["output_debug"]["fix2b8_option_a_bridge_attached"] = bool(out["primary_metrics_canonical"])
+                out["output_debug"]["fix2b8_option_a_bridge_keys"] = int(len(out["primary_metrics_canonical"] or {}))
+        except Exception:
+            pass
+        # =====================================================================
+
 
         out["metric_changes"] = metric_changes
         out["summary"] = summary
@@ -34135,7 +34105,7 @@ except Exception:
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -34640,7 +34610,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 
 
 # ---------------------------------------------------------------------
-#
+# 
 # =====================================================================
 # PATCH FIX2AL_EVO_RUNNER_INJECTED_FETCH_ASSURE_V1 (ADDITIVE)
 # Purpose:
@@ -34872,13 +34842,13 @@ except Exception:
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
 # PATCH FIX2AL (ADD): ensure CODE_VERSION reflects latest issued file
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -35788,7 +35758,7 @@ except Exception:
 
 # PATCH FIX2AN (ADD): bump CODE_VERSION to new patch filename
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -36140,7 +36110,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 #   to use it (additive-only; legacy binders remain intact).
 
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -36504,7 +36474,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 # so the diff/join (and thus the UI Current column) can populate deterministically.
 
 # PATCH FIX2AO (ADDITIVE): bump CODE_VERSION to new patch filename
-CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+CODE_VERSION = "FIX2B8"
 
 
 def _fix2ao_norm_key_base(canonical_key: str) -> str:
@@ -36786,7 +36756,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
                         canonical_metrics[str(_ak)] = float(_v)
                 except Exception:
                     pass
-
+        
             # Prefer schema keys (stable ordering), then include any extra reconciled keys for debugging.
             for _ck in sorted(set(list(schema.keys()) + list(cur_metrics_recon.keys()))):
                 _cm = cur_metrics_recon.get(_ck)
@@ -36800,7 +36770,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
                 if _v is None:
                     continue
                 _set_cm(_ck, _v)
-
+        
             out["canonical_metrics"] = canonical_metrics
             out.setdefault("output_debug", {})
             if isinstance(out.get("output_debug"), dict):
@@ -37452,7 +37422,7 @@ if _fix2at__orig_run_evolutionary_runner is not None:
 # - FIX2AT: Hydrate results.metric_changes[].current_value deterministically from emitted canonical metrics + frozen schema.
 
 # Ensure CODE_VERSION matches this file (override any stale bump blocks)
-CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+CODE_VERSION = "FIX2B8"
 
 
 # =====================================================================
@@ -37460,7 +37430,7 @@ CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # Ensure CODE_VERSION reflects the latest issued file (append-only override).
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -37616,7 +37586,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     return rows, summary
 
 # Hard override CODE_VERSION at EOF (authoritative)
-CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+CODE_VERSION = "FIX2B8"
 # PATCH TRACKER (append-only)
 # - FIX2AV: Guard DIFF_PANEL_V2 summary UnboundLocalError + deterministic fallback rows to populate Current column.
 # =================== END PATCH FIX2AV (ADDITIVE) ====================
@@ -37633,7 +37603,7 @@ CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
 # Ensure CODE_VERSION reflects the filename even if older blocks reset it.
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -37871,7 +37841,7 @@ def run_unified_poc(question: str,
             row['change_pct'] = None
         metric_changes.append(row)
 
-
+    
     # PATCH FIX2B4 (ADDITIVE): Coverage stats for PoC → dashboard hydration debugging
     _poc_stats = {
         "schema_keys": int(len(SCHEMA)),
@@ -37907,7 +37877,7 @@ def run_unified_poc(question: str,
 
 # CODE_VERSION (authoritative at EOF)
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -37924,7 +37894,8 @@ except Exception:
 # This final assignment is authoritative for this patched file.
 # =====================================================================
 try:
-    CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
+
