@@ -35309,3 +35309,733 @@ except Exception:
     pass
 
 # PATCH FIX2AK END
+
+# PATCH FIX2AN START
+# ---------------------------------------------------------------------
+# FIX2AN: Injected-wins resolution policy (Option A)
+#
+# Problem addressed:
+#   When both baseline and injected sources contain plausible values for the same
+#   canonical metric (e.g., 17.8M vs 19.2M), Evolution must surface the injected
+#   value in "Current" to make injection testing and delta validation meaningful.
+#
+# Policy:
+#   If at least one injected candidate passes the schema hard gates (unit_family match
+#   where available), the best injected candidate MUST be selected for the metric,
+#   even if a baseline candidate has a higher non-injection score.
+#
+# Notes:
+#   - Deterministic: tie-breaking remains stable via the existing score tuple.
+#   - Auditability: emits output_debug.resolution.* diagnostics.
+#   - Additive-only: does not refactor existing binders; introduces a new binder
+#     and a final run_evolutionary_runner override that uses it.
+
+try:
+    from typing import List as _FIX2AN_List, Tuple as _FIX2AN_Tuple
+except Exception:
+    _FIX2AN_List = list
+    _FIX2AN_Tuple = tuple
+
+
+# PATCH FIX2AN (ADD): bump CODE_VERSION to new patch filename
+try:
+    CODE_VERSION = "fix2an_injected_wins_resolution_v1"
+except Exception:
+    pass
+
+
+def _fix2an_bind_candidates_to_schema_injected_wins(schema: dict, candidates: _FIX2AN_List[dict], injected_urls_set: set = None) -> _FIX2AN_Tuple[dict, dict]:
+    """Bind candidates to schema with injected-wins override (Option A)."""
+    if injected_urls_set is None:
+        injected_urls_set = set()
+
+    # Ensure candidate tag is present (stable)
+    tagged = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else int(c2.get("_inj_priority") or 0)
+            tagged.append(c2)
+        except Exception:
+            tagged.append(c)
+
+    cur = {}
+    dbg = {
+        "candidates_total": int(len(tagged or [])),
+        "bound": 0,
+        "not_found": 0,
+        "unit_mismatch": 0,
+        "rows": {},
+        "resolution": {
+            "policy": "injected_wins",
+            "override_applied_count": 0,
+        },
+        "injected": {
+            "urls": sorted(list(injected_urls_set))[:25],
+            "candidates_total": int(sum(1 for c in (tagged or []) if int(c.get("_inj_priority") or 0) == 1)),
+        },
+    }
+
+    for ck, entry in (schema or {}).items():
+        try:
+            ckey = str(ck)
+            md = entry if isinstance(entry, dict) else {}
+            label = md.get("metric_label") or md.get("metric_name") or ckey
+
+            kws = md.get("keywords") or md.get("tags") or []
+            if not isinstance(kws, list):
+                kws = []
+            kws = [str(x).strip().lower() for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            expect_uf = str(md.get("unit_family") or md.get("dimension") or "").strip().lower()
+            if expect_uf in ("unit_sales", "units", "count_units"):
+                expect_uf = "magnitude"
+            if expect_uf == "percent":
+                expect_uf = "percent"
+
+            best_any = None
+            best_any_score = (-1, -1, -1, "")
+            best_inj = None
+            best_inj_score = (-1, -1, -1, "")
+
+            for cand in (tagged or []):
+                if not isinstance(cand, dict):
+                    continue
+
+                # Hard gate: if schema has unit_family and candidate has one, require match
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+
+                score = _fix2aj_candidate_score(cand, kws, expect_uf)
+
+                if score > best_any_score:
+                    best_any_score = score
+                    best_any = cand
+
+                if int(cand.get("_inj_priority") or 0) == 1:
+                    if score > best_inj_score:
+                        best_inj_score = score
+                        best_inj = cand
+
+            if best_any is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "not_found",
+                    "expect_unit_family": expect_uf,
+                    "keywords": kws[:12],
+                }
+                continue
+
+            # Option A: injected wins if present
+            chosen = best_inj if best_inj is not None else best_any
+            chosen_score = best_inj_score if best_inj is not None else best_any_score
+            override_applied = bool(best_inj is not None and best_any is not None and best_inj is not best_any)
+            if override_applied:
+                dbg["resolution"]["override_applied_count"] += 1
+
+            v_norm = chosen.get("value_norm")
+            if v_norm is None:
+                v_norm = chosen.get("value")
+            v_norm = _fix2ag_safe_float(v_norm)
+
+            # Unit-family evidence gate: if schema expects a unit family but chosen lacks it, mark mismatch
+            if expect_uf and not str(chosen.get("unit_family") or "").strip():
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "override_applied": override_applied,
+                    "chosen": {
+                        "url": chosen.get("url") or chosen.get("source_url"),
+                        "raw": (chosen.get("raw") or "")[:120],
+                        "context": (chosen.get("context") or chosen.get("context_snippet") or "")[:160],
+                        "unit_tag": chosen.get("unit_tag"),
+                        "unit_family": chosen.get("unit_family"),
+                        "inj_priority": int(chosen.get("_inj_priority") or 0),
+                    },
+                    "score": {"inj_priority": chosen_score[0], "keyword_hits": chosen_score[1], "unit_match": chosen_score[2]},
+                }
+                # keep best even on mismatch for display
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": chosen.get("raw") or "",
+                    "unit_family": chosen.get("unit_family"),
+                    "base_unit": chosen.get("base_unit") or chosen.get("unit_tag") or md.get("unit") or "",
+                    "source_url": chosen.get("url") or chosen.get("source_url"),
+                    "anchor_hash": chosen.get("anchor_hash"),
+                    "context": chosen.get("context") or chosen.get("context_snippet") or "",
+                    "unit_mismatch": True,
+                    "inj_priority": int(chosen.get("_inj_priority") or 0),
+                    "resolution_override": bool(override_applied),
+                }
+                continue
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": chosen.get("raw") or "",
+                "unit_family": chosen.get("unit_family"),
+                "base_unit": chosen.get("base_unit") or chosen.get("unit_tag") or md.get("unit") or "",
+                "source_url": chosen.get("url") or chosen.get("source_url"),
+                "anchor_hash": chosen.get("anchor_hash"),
+                "context": chosen.get("context") or chosen.get("context_snippet") or "",
+                "inj_priority": int(chosen.get("_inj_priority") or 0),
+                "resolution_override": bool(override_applied),
+            }
+            dbg["bound"] += 1
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "override_applied": override_applied,
+                "chosen": {
+                    "url": cur[ckey].get("source_url"),
+                    "raw": (cur[ckey].get("raw") or "")[:120],
+                    "inj_priority": int(chosen.get("_inj_priority") or 0),
+                },
+                "score": {"inj_priority": chosen_score[0], "keyword_hits": chosen_score[1], "unit_match": chosen_score[2]},
+            }
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "exception", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    return cur, dbg
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX2AN: Evolution runner override using injected-wins binder."""
+    out = _fix2ag_contract_template(status="success", message="")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        out["output_debug"].update({
+            "diag_run_id": web_context.get("diag_run_id"),
+            "force_rebuild": bool(web_context.get("force_rebuild")),
+            "code_version": CODE_VERSION,
+        })
+
+        schema = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        if not schema:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "schema_missing"
+            out["summary"]["message"] = "Missing frozen metric schema"
+            return out
+
+        # URLs: baseline + injected
+        urls = _fix2ag_get_baseline_urls(previous_data or {})
+        extra_urls = []
+        try:
+            extra_urls = list(web_context.get("extra_urls") or [])
+        except Exception:
+            extra_urls = []
+
+        injected_urls_set = set()
+        for u in (extra_urls or []):
+            try:
+                nu = globals().get("_fix2af_norm_url")(u) if callable(globals().get("_fix2af_norm_url")) else str(u).strip()
+            except Exception:
+                nu = str(u).strip()
+            if nu:
+                injected_urls_set.add(nu)
+                if nu not in urls:
+                    urls.append(nu)
+
+        out["output_debug"]["urls"] = {
+            "baseline_count": int(len(_fix2ag_get_baseline_urls(previous_data or {}) or [])),
+            "injected_count": int(len(injected_urls_set)),
+            "urls_total": int(len(urls or [])),
+            "injected_urls": sorted(list(injected_urls_set))[:25],
+        }
+
+        if not urls:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "no_urls"
+            out["summary"]["message"] = "No URLs available to fetch"
+            return out
+
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout") or 25))
+        out["output_debug"]["fetch"] = fetch_dbg
+        out["output_debug"]["sources_checked"] = int(fetch_dbg.get("urls_requested") or 0)
+        out["output_debug"]["sources_fetched"] = int(fetch_dbg.get("urls_fetched") or 0)
+        out["output_debug"]["baseline_sources_cache"] = source_results
+
+        # Candidate extraction
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            for url, t in (scraped_content or {}).items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(t, source_url=url) or []):
+                            n2 = dict(n) if isinstance(n, dict) else {}
+                            n2["url"] = url
+                            candidates.append(n2)
+                except Exception:
+                    pass
+
+        # Tag injected priority for deterministic sort
+        tagged = []
+        inj_cnt = 0
+        for c in (candidates or []):
+            if not isinstance(c, dict):
+                continue
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            if c2["_inj_priority"] == 1:
+                inj_cnt += 1
+            tagged.append(c2)
+
+        def _cand_key(c):
+            try:
+                return (
+                    -int(c.get("_inj_priority") or 0),
+                    str(c.get("url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    str(c.get("value_norm") if c.get("value_norm") is not None else c.get("value") or ""),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return (0, "", "", "", "")
+
+        tagged.sort(key=_cand_key)
+
+        out["output_debug"]["candidates_total"] = int(len(tagged))
+        out["output_debug"]["injected_candidates_total"] = int(inj_cnt)
+
+        # Apply injected windowing (FIX2AK) if available
+        try:
+            fn_win = globals().get("_fix2ak_apply_injected_windowing")
+            if callable(fn_win):
+                tagged2, win_dbg = fn_win(tagged, injected_urls_set, schema)
+                tagged = tagged2 or tagged
+                out["output_debug"].setdefault("bind", {})
+                out["output_debug"]["bind"].setdefault("injected", {})
+                out["output_debug"]["bind"]["injected"]["windowing"] = win_dbg
+        except Exception:
+            pass
+
+        # Bind with injected-wins resolution
+        cur_metrics, bind_dbg = _fix2an_bind_candidates_to_schema_injected_wins(schema, tagged, injected_urls_set=injected_urls_set)
+        out["output_debug"]["bind"] = {
+            "candidates_total": bind_dbg.get("candidates_total"),
+            "bound": bind_dbg.get("bound"),
+            "not_found": bind_dbg.get("not_found"),
+            "unit_mismatch": bind_dbg.get("unit_mismatch"),
+            "injected": bind_dbg.get("injected"),
+            "resolution": bind_dbg.get("resolution"),
+            "rows_sample": {k: (bind_dbg.get("rows", {}) or {}).get(k) for k in list(sorted((bind_dbg.get("rows", {}) or {}).keys()))[:10]},
+        }
+
+        # Diff
+        metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics, schema)
+        out["metric_changes"] = metric_changes
+        out["summary"] = summary
+
+        # Optional answer selection
+        try:
+            fn_ans = globals().get("_fix2ai_assign_roles_and_answer_metrics")
+            if callable(fn_ans):
+                out = fn_ans(out) or out
+        except Exception:
+            pass
+
+        # Ensure contract fields exist
+        out.setdefault("output_debug", {})
+        out.setdefault("metric_changes_v2", out.get("metric_changes_v2") or [])
+        out.setdefault("metric_changes_legacy", out.get("metric_changes_legacy") or out.get("metric_changes") or [])
+        out.setdefault("results", None)
+        return out
+
+    except Exception as e:
+        out["status"] = "failed"
+        out["summary"]["status"] = "failed"
+        out["summary"]["failure_stage"] = "runner_exception"
+        out["summary"]["message"] = f"{type(e).__name__}: {e}"
+        try:
+            out["output_debug"]["exception"] = {"type": type(e).__name__, "msg": str(e)}
+        except Exception:
+            pass
+        return out
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - FIX2AN: Injected-wins resolution policy (Option A) + resolution diagnostics
+
+# PATCH FIX2AN END
+
+# PATCH FIX2AN START
+# ---------------------------------------------------------------------
+# FIX2AN: Injected-wins resolution policy (Option A)
+# - If at least one injected candidate passes hard gates for a schema metric,
+#   that injected candidate MUST win binding for "current".
+# - Adds explicit resolution diagnostics under output_debug.resolution.
+# - Implements by introducing a new binder and overriding the runner entrypoint
+#   to use it (additive-only; legacy binders remain intact).
+
+try:
+    CODE_VERSION = "fix2an_injected_wins_resolution_v1"
+except Exception:
+    pass
+
+try:
+    from typing import List as _FIX2AN_List, Tuple as _FIX2AN_Tuple
+except Exception:
+    _FIX2AN_List = list
+    _FIX2AN_Tuple = tuple
+
+
+def _fix2an_bind_candidates_to_schema(schema: dict, candidates: _FIX2AN_List[dict], injected_urls_set: set = None) -> _FIX2AN_Tuple[dict, dict]:
+    """Bind candidates to schema with injected-wins resolution."""
+    if injected_urls_set is None:
+        injected_urls_set = set()
+
+    # Ensure tag is present
+    tagged = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            tagged.append(c2)
+        except Exception:
+            tagged.append(c)
+
+    cur = {}
+    dbg = {
+        "candidates_total": int(len(tagged or [])),
+        "bound": 0,
+        "not_found": 0,
+        "unit_mismatch": 0,
+        "rows": {},
+        "resolution": {"policy": "injected_wins", "overrides": 0, "overridden_keys": []},
+        "injected": {
+            "urls": sorted(list(injected_urls_set))[:25],
+            "candidates_total": int(sum(1 for c in (tagged or []) if int(c.get("_inj_priority") or 0) == 1)),
+        },
+    }
+
+    for ck, entry in (schema or {}).items():
+        try:
+            ckey = str(ck)
+            md = entry if isinstance(entry, dict) else {}
+            label = md.get("metric_label") or md.get("metric_name") or ckey
+
+            kws = md.get("keywords") or md.get("tags") or []
+            if not isinstance(kws, list):
+                kws = []
+            kws = [str(x).strip().lower() for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            expect_uf = str(md.get("unit_family") or md.get("dimension") or "").strip().lower()
+            if expect_uf in ("unit_sales", "units", "count_units"):
+                expect_uf = "magnitude"
+            if expect_uf == "percent":
+                expect_uf = "percent"
+
+            best_any = None
+            best_any_score = (-1, -1, -1, "")
+            best_inj = None
+            best_inj_score = (-1, -1, -1, "")
+
+            for cand in (tagged or []):
+                if not isinstance(cand, dict):
+                    continue
+                # Hard gate: unit family match when both present
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+
+                score = _fix2aj_candidate_score(cand, kws, expect_uf)
+                if score > best_any_score:
+                    best_any_score = score
+                    best_any = cand
+
+                if int(cand.get("_inj_priority") or 0) == 1:
+                    if score > best_inj_score:
+                        best_inj_score = score
+                        best_inj = cand
+
+            chosen = best_any
+            chosen_score = best_any_score
+            overridden = False
+            if best_inj is not None:
+                # Option A: injected wins if it exists and passes hard gates
+                chosen = best_inj
+                chosen_score = best_inj_score
+                if best_any is not None and (best_any is not best_inj):
+                    overridden = True
+
+            if chosen is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {"status": "not_found", "expect_unit_family": expect_uf, "keywords": kws[:12]}
+                continue
+
+            v_norm = chosen.get("value_norm")
+            if v_norm is None:
+                v_norm = chosen.get("value")
+            v_norm = _fix2ag_safe_float(v_norm)
+
+            # Unit-family evidence gate: if schema expects a unit family but chosen lacks it, mark mismatch
+            if expect_uf and not str(chosen.get("unit_family") or "").strip():
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "chosen": {
+                        "url": chosen.get("url") or chosen.get("source_url"),
+                        "raw": (chosen.get("raw") or "")[:120],
+                        "context": (chosen.get("context") or chosen.get("context_snippet") or "")[:160],
+                        "unit_tag": chosen.get("unit_tag"),
+                        "unit_family": chosen.get("unit_family"),
+                        "inj_priority": int(chosen.get("_inj_priority") or 0),
+                    },
+                    "score": {"inj_priority": chosen_score[0], "keyword_hits": chosen_score[1], "unit_match": chosen_score[2]},
+                    "overridden": bool(overridden),
+                }
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": chosen.get("raw") or "",
+                    "unit_family": chosen.get("unit_family"),
+                    "base_unit": chosen.get("base_unit") or chosen.get("unit_tag") or md.get("unit") or "",
+                    "source_url": chosen.get("url") or chosen.get("source_url"),
+                    "anchor_hash": chosen.get("anchor_hash"),
+                    "context": chosen.get("context") or chosen.get("context_snippet") or "",
+                    "unit_mismatch": True,
+                    "inj_priority": int(chosen.get("_inj_priority") or 0),
+                }
+                if overridden:
+                    dbg["resolution"]["overrides"] += 1
+                    dbg["resolution"]["overridden_keys"].append(ckey)
+                continue
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": chosen.get("raw") or "",
+                "unit_family": chosen.get("unit_family"),
+                "base_unit": chosen.get("base_unit") or chosen.get("unit_tag") or md.get("unit") or "",
+                "source_url": chosen.get("url") or chosen.get("source_url"),
+                "anchor_hash": chosen.get("anchor_hash"),
+                "context": chosen.get("context") or chosen.get("context_snippet") or "",
+                "inj_priority": int(chosen.get("_inj_priority") or 0),
+            }
+            dbg["bound"] += 1
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "chosen": {
+                    "url": cur[ckey].get("source_url"),
+                    "raw": (cur[ckey].get("raw") or "")[:120],
+                    "inj_priority": int(chosen.get("_inj_priority") or 0),
+                },
+                "score": {"inj_priority": chosen_score[0], "keyword_hits": chosen_score[1], "unit_match": chosen_score[2]},
+                "overridden": bool(overridden),
+            }
+            if overridden:
+                dbg["resolution"]["overrides"] += 1
+                dbg["resolution"]["overridden_keys"].append(ckey)
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "exception", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    # cap overridden_keys for payload size
+    try:
+        dbg["resolution"]["overridden_keys"] = (dbg["resolution"].get("overridden_keys") or [])[:50]
+    except Exception:
+        pass
+
+    return cur, dbg
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX2AN runner: same as FIX2AJ+FIX2AK+FIX2AM, but uses injected-wins resolution binder."""
+    out = _fix2ag_contract_template(status="success", message="")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        out["output_debug"].update({
+            "diag_run_id": web_context.get("diag_run_id"),
+            "force_rebuild": bool(web_context.get("force_rebuild")),
+            "code_version": CODE_VERSION,
+        })
+
+        schema = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        if not schema:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "schema_missing"
+            out["summary"]["message"] = "Missing frozen metric schema"
+            return out
+
+        urls = _fix2ag_get_baseline_urls(previous_data or {})
+        extra_urls = []
+        try:
+            extra_urls = list(web_context.get("extra_urls") or [])
+        except Exception:
+            extra_urls = []
+
+        injected_urls_set = set()
+        for u in (extra_urls or []):
+            try:
+                nu = globals().get("_fix2af_norm_url")(u) if callable(globals().get("_fix2af_norm_url")) else str(u).strip()
+            except Exception:
+                nu = str(u).strip()
+            if nu:
+                injected_urls_set.add(nu)
+                if nu not in urls:
+                    urls.append(nu)
+
+        out["output_debug"]["urls"] = {
+            "baseline_count": int(len(_fix2ag_get_baseline_urls(previous_data or {}) or [])),
+            "injected_count": int(len(injected_urls_set)),
+            "urls_total": int(len(urls or [])),
+            "injected_urls": sorted(list(injected_urls_set))[:25],
+        }
+
+        if not urls:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "no_urls"
+            out["summary"]["message"] = "No URLs available to fetch"
+            return out
+
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout") or 25))
+        out["output_debug"]["fetch"] = fetch_dbg
+        out["output_debug"]["sources_checked"] = int(fetch_dbg.get("urls_requested") or 0)
+        out["output_debug"]["sources_fetched"] = int(fetch_dbg.get("urls_fetched") or 0)
+        out["output_debug"]["baseline_sources_cache"] = source_results
+
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            for url, t in (scraped_content or {}).items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(t, source_url=url) or []):
+                            n2 = dict(n) if isinstance(n, dict) else {}
+                            n2["url"] = url
+                            candidates.append(n2)
+                except Exception:
+                    pass
+
+        # Tag injected priority; apply windowing tags if available
+        tagged = []
+        inj_cnt = 0
+        for c in (candidates or []):
+            if not isinstance(c, dict):
+                continue
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            if c2["_inj_priority"] == 1:
+                inj_cnt += 1
+            tagged.append(c2)
+
+        # Apply FIX2AK windowing if function exists
+        try:
+            fn_win = globals().get("_fix2ak_apply_injected_windowing")
+            if callable(fn_win):
+                tagged, win_dbg = fn_win(tagged, injected_urls_set, schema)
+                out["output_debug"].setdefault("bind", {})
+                out["output_debug"]["bind"].setdefault("injected", {})
+                out["output_debug"]["bind"]["injected"]["windowing"] = win_dbg
+        except Exception:
+            pass
+
+        # Deterministic sort
+        def _cand_key(c):
+            try:
+                return (
+                    -int(c.get("_inj_priority") or 0),
+                    -int(c.get("_inj_window_boost") or 0),
+                    str(c.get("url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    str(c.get("value_norm") if c.get("value_norm") is not None else c.get("value") or ""),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return (0, 0, "", "", "", "")
+
+        tagged.sort(key=_cand_key)
+
+        out["output_debug"]["candidates_total"] = int(len(tagged))
+        out["output_debug"]["injected_candidates_total"] = int(inj_cnt)
+
+        cur_metrics, bind_dbg = _fix2an_bind_candidates_to_schema(schema, tagged, injected_urls_set=injected_urls_set)
+
+        out["output_debug"].setdefault("bind", {})
+        out["output_debug"]["bind"].update({
+            "candidates_total": bind_dbg.get("candidates_total"),
+            "bound": bind_dbg.get("bound"),
+            "not_found": bind_dbg.get("not_found"),
+            "unit_mismatch": bind_dbg.get("unit_mismatch"),
+            "injected": bind_dbg.get("injected"),
+            "resolution": bind_dbg.get("resolution"),
+            "rows_sample": {k: (bind_dbg.get("rows", {}) or {}).get(k) for k in list(sorted((bind_dbg.get("rows", {}) or {}).keys()))[:10]},
+        })
+
+        metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics, schema)
+        out["metric_changes"] = metric_changes
+        out["summary"] = summary
+
+        # Answer selection (if present)
+        try:
+            fn_ans = globals().get("_fix2ai_assign_roles_and_answer_metrics")
+            if callable(fn_ans):
+                out = fn_ans(out) or out
+        except Exception:
+            pass
+
+        out.setdefault("output_debug", {})
+        out.setdefault("metric_changes_v2", out.get("metric_changes_v2") or [])
+        out.setdefault("metric_changes_legacy", out.get("metric_changes_legacy") or out.get("metric_changes") or [])
+        out.setdefault("results", None)
+        return out
+
+    except Exception as e:
+        out["status"] = "failed"
+        out["summary"]["status"] = "failed"
+        out["summary"]["failure_stage"] = "runner_exception"
+        out["summary"]["message"] = f"{type(e).__name__}: {e}"
+        try:
+            out["output_debug"]["exception"] = {"type": type(e).__name__, "msg": str(e)}
+        except Exception:
+            pass
+        return out
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - FIX2AN: Injected-wins resolution policy (Option A) + resolution diagnostics
+
+# PATCH FIX2AN END
