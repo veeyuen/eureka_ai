@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2b7_option_a_hydrate_current_v2"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2b7_option_a_hydrate_current_v3"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -12021,7 +12021,55 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
 
     # Interpretation
 
+
     # =====================================================================
+    # PATCH FIX2B7_OPTION_A_PASS_THROUGH_V3 (ADDITIVE)
+    # Ensure Evolution renderer can hydrate Current from canonical metrics by
+    # passing unified-engine canonical payload through to the render results.
+    #
+    # Sources (best-effort):
+    # - web_context["primary_metrics_canonical"] / ["canonical_metrics"]
+    # - web_context["analysis"]["primary_metrics_canonical"] (nested)
+    # - out["canonical_for_render_v1"] (legacy bridge if present)
+    #
+    # Writes:
+    # - out["primary_metrics_canonical"] and out["canonical_metrics"]
+    # - out["debug"]["fix2b7_option_a_passthrough_v3"] counters
+    # =====================================================================
+    try:
+        _fix2b7_cm = None
+        if isinstance(web_context, dict):
+            _fix2b7_cm = web_context.get("primary_metrics_canonical") or web_context.get("canonical_metrics")
+            if _fix2b7_cm is None and isinstance(web_context.get("analysis"), dict):
+                _fix2b7_cm = web_context["analysis"].get("primary_metrics_canonical") or web_context["analysis"].get("canonical_metrics")
+
+        # Fallback: some earlier bridges used this name
+        if _fix2b7_cm is None and isinstance(out, dict):
+            _fix2b7_cm = out.get("canonical_for_render_v1") or out.get("canonical_for_render") or out.get("primary_metrics_canonical") or out.get("canonical_metrics")
+
+        _fix2b7_keys = 0
+        if isinstance(_fix2b7_cm, dict):
+            _fix2b7_keys = len(_fix2b7_cm)
+            if isinstance(out, dict):
+                out.setdefault("primary_metrics_canonical", _fix2b7_cm)
+                out.setdefault("canonical_metrics", _fix2b7_cm)
+
+        if isinstance(out, dict):
+            out.setdefault("debug", {})
+            if isinstance(out.get("debug"), dict):
+                out["debug"].setdefault("fix2b7_option_a_passthrough_v3", {})
+                if isinstance(out["debug"].get("fix2b7_option_a_passthrough_v3"), dict):
+                    out["debug"]["fix2b7_option_a_passthrough_v3"].update({
+                        "web_context_present": bool(isinstance(web_context, dict)),
+                        "canonical_metrics_found": bool(isinstance(_fix2b7_cm, dict) and _fix2b7_keys > 0),
+                        "canonical_metrics_keys": int(_fix2b7_keys),
+                        "wrote_primary_metrics_canonical": bool(isinstance(out.get("primary_metrics_canonical"), dict)),
+                        "wrote_canonical_metrics": bool(isinstance(out.get("canonical_metrics"), dict)),
+                    })
+    except Exception:
+        pass
+
+# =====================================================================
     # PATCH FIX39 (ADDITIVE): enforce unit-required gate at render time
     # =====================================================================
     try:
@@ -19200,7 +19248,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-    
+
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -22593,7 +22641,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-    
+
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -22622,7 +22670,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-            
+
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -24308,7 +24356,7 @@ def render_source_anchored_results(results, query: str):
         st.info("No metric changes to display.")
         return
 
-    
+
     # =====================================================================
     # PATCH FIX2B7_OPTION_A_HYDRATE_CURRENT_V1 (ADDITIVE)
     #
@@ -27014,7 +27062,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-    
+
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -31592,14 +31640,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-# 
+#
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -31609,7 +31657,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-# 
+#
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -31966,7 +32014,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -34592,7 +34640,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 
 
 # ---------------------------------------------------------------------
-# 
+#
 # =====================================================================
 # PATCH FIX2AL_EVO_RUNNER_INJECTED_FETCH_ASSURE_V1 (ADDITIVE)
 # Purpose:
@@ -36738,7 +36786,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
                         canonical_metrics[str(_ak)] = float(_v)
                 except Exception:
                     pass
-        
+
             # Prefer schema keys (stable ordering), then include any extra reconciled keys for debugging.
             for _ck in sorted(set(list(schema.keys()) + list(cur_metrics_recon.keys()))):
                 _cm = cur_metrics_recon.get(_ck)
@@ -36752,7 +36800,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
                 if _v is None:
                     continue
                 _set_cm(_ck, _v)
-        
+
             out["canonical_metrics"] = canonical_metrics
             out.setdefault("output_debug", {})
             if isinstance(out.get("output_debug"), dict):
@@ -37823,7 +37871,7 @@ def run_unified_poc(question: str,
             row['change_pct'] = None
         metric_changes.append(row)
 
-    
+
     # PATCH FIX2B4 (ADDITIVE): Coverage stats for PoC → dashboard hydration debugging
     _poc_stats = {
         "schema_keys": int(len(SCHEMA)),
@@ -37880,4 +37928,3 @@ try:
 except Exception:
     pass
 # =====================================================================
-
