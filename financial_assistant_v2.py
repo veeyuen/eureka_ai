@@ -35856,3 +35856,239 @@ try:
 except Exception:
     pass
 # END PATCH FIX2AQ_PATCH_TRACKER
+
+# ==============================================================================
+# PATCH FIX2AR_SPINE_PHASE4_4_EVO_SCHEMA_REHYDRATE_FORCE_SPINE_V1 (ADDITIVE)
+#
+# Purpose:
+# - Evolution runs can still show Current=N/A when the spine never executes because
+#   metric_schema_frozen isn't present on the dict returned by the Evolution runner.
+# - The schema *does* exist in the baseline analysis payload, typically under:
+#     previous_data['primary_response']['metric_schema_frozen']
+#   but the Phase 4.1 wrapper's rehydration path may miss it in some baselines.
+#
+# This patch makes schema rehydration explicit + force-runs the spine for Evolution:
+#   1) Rehydrate metric_schema_frozen from multiple baseline paths (schema-first)
+#   2) Force-run spine_v1_maybe_schema_bind_and_publish() to produce primary_metrics_canonical
+#   3) Apply phase4 schema-key enforcement (schema-authoritative pmc)
+#   4) Rebuild the Evolution output contract (results.* mirrors) so the UI sees it
+#   5) Emit explicit debug markers to confirm this wrapper ran
+#
+# Safety:
+# - Additive wrapper only; does not touch fetch/hashing/fastpath.
+# - If schema cannot be found, this wrapper becomes a no-op (but still tags debug).
+#
+# Toggle:
+# - Disable with YUREEKA_SPINE_V1_PHASE4_4_FORCE=0
+# ==============================================================================
+
+try:
+    _FIX2AR_BASE = run_source_anchored_evolution
+except Exception:
+    _FIX2AR_BASE = None
+
+
+def _fix2ar_get_schema_from_baseline(previous_data: dict) -> dict:
+    """Best-effort schema rehydration from baseline analysis payload."""
+    pd = previous_data or {}
+    if not isinstance(pd, dict):
+        return {}
+
+    # Common location: analysis report root
+    try:
+        if isinstance(pd.get('metric_schema_frozen'), dict) and pd.get('metric_schema_frozen'):
+            return pd.get('metric_schema_frozen') or {}
+    except Exception:
+        pass
+
+    # Common location: analysis report primary_response
+    try:
+        pr = pd.get('primary_response')
+        if isinstance(pr, dict) and isinstance(pr.get('metric_schema_frozen'), dict) and pr.get('metric_schema_frozen'):
+            return pr.get('metric_schema_frozen') or {}
+    except Exception:
+        pass
+
+    # Some baselines nest prior analysis under results.primary_response
+    try:
+        res = pd.get('results')
+        if isinstance(res, dict):
+            if isinstance(res.get('metric_schema_frozen'), dict) and res.get('metric_schema_frozen'):
+                return res.get('metric_schema_frozen') or {}
+            pr2 = res.get('primary_response')
+            if isinstance(pr2, dict) and isinstance(pr2.get('metric_schema_frozen'), dict) and pr2.get('metric_schema_frozen'):
+                return pr2.get('metric_schema_frozen') or {}
+    except Exception:
+        pass
+
+    return {}
+
+
+def _fix2ar_safe_len(x) -> int:
+    try:
+        return int(len(x))
+    except Exception:
+        return 0
+
+
+def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+    try:
+        flag = str(os.environ.get('YUREEKA_SPINE_V1_PHASE4_4_FORCE') or '').strip().lower()
+        if flag in ('0', 'false', 'no', 'n', 'off'):
+            if callable(_FIX2AR_BASE):
+                out0 = _FIX2AR_BASE(previous_data, web_context=web_context)
+                if isinstance(out0, dict):
+                    out0.setdefault('code_version', CODE_VERSION)
+                return out0
+            return {"status":"failed","message":"FIX2AR: base evolution runner not callable","metric_changes":[],"debug":{"fix2ar":False}}
+
+        if not callable(_FIX2AR_BASE):
+            return {"status":"failed","message":"FIX2AR: base evolution runner not callable","metric_changes":[],"debug":{"fix2ar":False}}
+
+        out = _FIX2AR_BASE(previous_data, web_context=web_context)
+        if not isinstance(out, dict):
+            return out
+
+        out.setdefault('code_version', CODE_VERSION)
+
+        # -------------------------------
+        # 1) Schema rehydration (authoritative)
+        # -------------------------------
+        schema = {}
+        try:
+            if isinstance(out.get('metric_schema_frozen'), dict) and out.get('metric_schema_frozen'):
+                schema = out.get('metric_schema_frozen') or {}
+            else:
+                schema = _fix2ar_get_schema_from_baseline(previous_data)
+                if isinstance(schema, dict) and schema:
+                    out['metric_schema_frozen'] = schema
+        except Exception:
+            schema = {}
+
+        # Ensure baseline_sources_cache is available for spine candidate collection
+        try:
+            if not isinstance(out.get('baseline_sources_cache'), list) or not out.get('baseline_sources_cache'):
+                bsc = out.get('baseline_sources_cache_current')
+                if isinstance(bsc, list) and bsc:
+                    out['baseline_sources_cache'] = bsc
+        except Exception:
+            pass
+
+        # -------------------------------
+        # 2) Force-run spine (schema bind + phase2 normalization)
+        # -------------------------------
+        spine_applied = False
+        spine_err = ''
+        try:
+            if isinstance(schema, dict) and schema:
+                spine_applied = bool(spine_v1_maybe_schema_bind_and_publish(previous_data or {}, out))
+        except Exception as e:
+            spine_applied = False
+            spine_err = str(e)
+
+        # -------------------------------
+        # 3) Phase 4 enforce schema keys
+        # -------------------------------
+        try:
+            if isinstance(schema, dict) and schema:
+                out = spine_v1_phase4_enforce_schema_keys(previous_data or {}, out) or out
+        except Exception:
+            pass
+
+        # -------------------------------
+        # 4) Rebuild Evolution output contract mirrors
+        # -------------------------------
+        try:
+            if '_fix2ap_rebuild_evo_output_contract' in globals():
+                out = _fix2ap_rebuild_evo_output_contract(out) or out
+        except Exception:
+            pass
+
+        # Phase 4.3 rebuild metric_changes (schema-keyed) if helper exists
+        try:
+            if '_fix2aq_rebuild_metric_changes_from_pmc' in globals():
+                out = _fix2aq_rebuild_metric_changes_from_pmc(out) or out
+        except Exception:
+            pass
+
+        # -------------------------------
+        # 5) Explicit markers for observability
+        # -------------------------------
+        try:
+            out.setdefault('debug', {})
+            if isinstance(out.get('debug'), dict):
+                out['debug'].setdefault('fix2ar_phase4_4', {})
+                if isinstance(out['debug'].get('fix2ar_phase4_4'), dict):
+                    pmc = out.get('primary_metrics_canonical') if isinstance(out.get('primary_metrics_canonical'), dict) else {}
+                    out['debug']['fix2ar_phase4_4'].update({
+                        'schema_found': bool(isinstance(schema, dict) and schema),
+                        'schema_key_count': _fix2ar_safe_len(schema),
+                        'spine_applied': bool(spine_applied),
+                        'pmc_count': _fix2ar_safe_len(pmc),
+                        'spine_error': spine_err,
+                    })
+        except Exception:
+            pass
+
+        # Also mirror marker into results.output_debug for UI parity
+        try:
+            out.setdefault('results', {})
+            if isinstance(out.get('results'), dict):
+                out['results'].setdefault('output_debug', {})
+                if isinstance(out['results'].get('output_debug'), dict):
+                    out['results']['output_debug'].setdefault('fix2ar_phase4_4', {})
+                    if isinstance(out['results']['output_debug'].get('fix2ar_phase4_4'), dict):
+                        out['results']['output_debug']['fix2ar_phase4_4'].update({
+                            'applied': True,
+                            'schema_found': bool(isinstance(schema, dict) and schema),
+                            'spine_applied': bool(spine_applied),
+                        })
+        except Exception:
+            pass
+
+        return out
+
+    except Exception as e:
+        try:
+            if callable(_FIX2AR_BASE):
+                out0 = _FIX2AR_BASE(previous_data, web_context=web_context)
+                if isinstance(out0, dict):
+                    out0.setdefault('code_version', CODE_VERSION)
+                    out0.setdefault('debug', {})
+                    if isinstance(out0.get('debug'), dict):
+                        out0['debug'].setdefault('fix2ar_phase4_4', {})
+                        if isinstance(out0['debug'].get('fix2ar_phase4_4'), dict):
+                            out0['debug']['fix2ar_phase4_4'].update({'error': str(e)})
+                return out0
+        except Exception:
+            pass
+        return {"status":"failed","message":"FIX2AR: exception in wrapper","metric_changes":[],"debug":{"fix2ar":False,"error":str(e)}}
+
+# END PATCH FIX2AR_SPINE_PHASE4_4_EVO_SCHEMA_REHYDRATE_FORCE_SPINE_V1
+# ==============================================================================
+
+
+# PATCH FIX2AR_CODE_VERSION (ADDITIVE)
+CODE_VERSION = "fix2ar_spine_phase4_4_evo_schema_rehydrate_force_spine_v1"
+# END PATCH FIX2AR_CODE_VERSION
+
+# PATCH FIX2AR_PATCH_TRACKER (ADDITIVE)
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AR_SPINE_PHASE4_4_EVO_SCHEMA_REHYDRATE_FORCE_SPINE_V1",
+            "code_version": "fix2ar_spine_phase4_4_evo_schema_rehydrate_force_spine_v1",
+            "adds": [
+                "Explicit schema rehydration from baseline previous_data primary_response paths",
+                "Force-run spine_v1 schema-bind + phase2 normalization + phase4 schema-key enforcement for Evolution outputs",
+                "Rebuild Evolution output contract and emit fix2ar_phase4_4 markers for UI hydration",
+            ],
+            "safety": "Additive post-processing wrapper only; no fetch/hashing/fastpath changes.",
+        })
+except Exception:
+    pass
+# END PATCH FIX2AR_PATCH_TRACKER
