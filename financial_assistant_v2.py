@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2am_spine_phase3_2_fetch_text_hardening_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2an_spine_phase4_schema_key_enforce_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -34663,3 +34663,323 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2AL_SPINE_PHASE3_1_METRIC_CHANGES_ADAPTER_V1
 # =====================================================================
+
+
+
+# =====================================================================
+# PATCH FIX2AN_SPINE_PHASE4_SCHEMA_KEY_ENFORCE_V1 (ADDITIVE)
+# Objective:
+# - Enforce that Evolution publishes a schema-authoritative canonical current
+#   metrics map: only keys present in metric_schema_frozen are allowed to drive
+#   render/diff tables.
+# - Bridge situations where upstream/legacy canonical keys (e.g.
+#   "2024_global_sales__unknown") exist but the UI is schema-driven and expects
+#   schema keys (e.g. "global_ev_sales_2024__unit_sales"), leading to Current=N/A.
+# Approach:
+# - Post-process cur_response["primary_metrics_canonical"] (PMC) after Phase 1/2.
+# - For each schema_key, prefer exact PMC match; else select best candidate from
+#   existing PMC entries by deterministic scoring (id/year/dimension/keywords).
+# - Publish schema-keyed PMC back to cur_response["primary_metrics_canonical"] and
+#   keep legacy PMC in debug for audit.
+# Controls:
+# - Disable via YUREEKA_SPINE_V1_PHASE4_SCHEMA_ENFORCE=0
+# Safety:
+# - Additive override wrapper; does not modify extraction/fetch/fastpath/hashing.
+# =====================================================================
+
+try:
+    _FIX2AN_LEGACY_SPINE_MAYBE_SCHEMA_BIND_AND_PUBLISH = spine_v1_maybe_schema_bind_and_publish
+except Exception:
+    _FIX2AN_LEGACY_SPINE_MAYBE_SCHEMA_BIND_AND_PUBLISH = None
+
+
+def _fix2an__norm_tokens(s: str) -> list:
+    try:
+        import re as _re
+        s = (s or "").lower()
+        s = _re.sub(r"[^a-z0-9]+", " ", s).strip()
+        toks = [t for t in s.split() if t and len(t) >= 3]
+        return toks
+    except Exception:
+        return []
+
+
+def _fix2an__extract_year_hints(obj: dict) -> set:
+    yrs = set()
+    try:
+        import re as _re
+        for k in ("canonical_key", "canonical_id", "name", "original_name", "context_snippet", "source_url"):
+            v = obj.get(k)
+            if isinstance(v, str) and v:
+                for m in _re.findall(r"(19\d{2}|20\d{2})", v):
+                    try:
+                        yrs.add(int(m))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return yrs
+
+
+def _fix2an__candidate_score(schema_spec: dict, cand_key: str, cand: dict) -> tuple:
+    """
+    Deterministic scoring tuple (higher is better) to map an existing PMC entry to a schema key.
+    Returns tuple so tie-breakers are stable.
+    """
+    score = 0.0
+    # Strong matches
+    try:
+        if cand.get("canonical_id") and schema_spec.get("canonical_id") and cand.get("canonical_id") == schema_spec.get("canonical_id"):
+            score += 100.0
+    except Exception:
+        pass
+    try:
+        if cand_key == schema_spec.get("canonical_key"):
+            score += 120.0  # exact key, should win
+    except Exception:
+        pass
+
+    # Year alignment
+    try:
+        schema_years = _fix2an__extract_year_hints(schema_spec)
+        cand_years = _fix2an__extract_year_hints(cand)
+        if schema_years and cand_years:
+            if len(schema_years.intersection(cand_years)) > 0:
+                score += 35.0
+            else:
+                # if both have years but none match, penalize slightly (do not hard-drop)
+                score -= 10.0
+    except Exception:
+        pass
+
+    # Dimension / unit family alignment (soft)
+    try:
+        sd = (schema_spec.get("dimension") or "").strip().lower()
+        cd = (cand.get("dimension") or "").strip().lower()
+        if sd and cd and sd == cd:
+            score += 25.0
+        # unit_family is inconsistently populated; use both schema and cand hints
+        suf = (schema_spec.get("unit_family") or "").strip().lower()
+        cuf = (cand.get("unit_family") or "").strip().lower()
+        if suf and cuf and suf == cuf:
+            score += 18.0
+    except Exception:
+        pass
+
+    # Keyword overlap (deterministic)
+    try:
+        kws = schema_spec.get("keywords") or []
+        if not isinstance(kws, list):
+            kws = []
+        kws = [str(x).lower() for x in kws if x]
+        cand_text = " ".join([
+            str(cand.get("original_name") or ""),
+            str(cand.get("name") or ""),
+            str(cand.get("context_snippet") or ""),
+        ])
+        cand_toks = set(_fix2an__norm_tokens(cand_text))
+        hit = 0
+        for kw in kws:
+            if not kw or len(kw) < 3:
+                continue
+            # treat multi-token keywords as any token hit
+            kw_toks = set(_fix2an__norm_tokens(kw))
+            if kw_toks and len(kw_toks.intersection(cand_toks)) > 0:
+                hit += 1
+        score += float(min(hit, 10)) * 2.0
+    except Exception:
+        pass
+
+    # Tie-breakers: stable identifiers
+    t_cand_id = str(cand.get("candidate_id") or "")
+    t_anchor = str(cand.get("anchor_hash") or "")
+    t_key = str(cand_key or "")
+    return (score, t_key, t_cand_id, t_anchor)
+
+
+def spine_v1_phase4_enforce_schema_keys(prev_response: dict, cur_response: dict) -> dict:
+    """
+    Enforce schema-keyed PMC in-place on cur_response.
+    Returns diagnostic dict (also written into debug.spine_v1.phase4_schema_key_enforce).
+    """
+    diag = {
+        "enabled": True,
+        "schema_keys_total": 0,
+        "schema_keys_populated": 0,
+        "schema_keys_missing": 0,
+        "selected_from_non_schema": 0,
+        "examples": {},
+    }
+
+    # toggle
+    flag = str(os.environ.get("YUREEKA_SPINE_V1_PHASE4_SCHEMA_ENFORCE") or "").strip().lower()
+    if flag in ("0", "false", "no", "n", "off"):
+        diag["enabled"] = False
+        return diag
+
+    schema = cur_response.get("metric_schema_frozen") or prev_response.get("metric_schema_frozen")
+    if not isinstance(schema, dict) or not schema:
+        diag["enabled"] = False
+        diag["error"] = "missing_metric_schema_frozen"
+        return diag
+
+    pmc = cur_response.get("primary_metrics_canonical")
+    if not isinstance(pmc, dict) or not pmc:
+        diag["enabled"] = False
+        diag["error"] = "missing_primary_metrics_canonical"
+        return diag
+
+    # Build schema index using existing helper if available
+    try:
+        schema_index = spine_v1_build_schema_index(schema)
+    except Exception:
+        schema_index = {}
+    if not isinstance(schema_index, dict) or not schema_index:
+        # fall back: assume schema already in desired format keyed by canonical_key
+        schema_index = {}
+        for sk, spec in schema.items():
+            if isinstance(spec, dict):
+                schema_index[str(sk)] = dict(spec)
+                schema_index[str(sk)].setdefault("canonical_key", str(sk))
+
+    diag["schema_keys_total"] = int(len(schema_index))
+
+    # audit: keep legacy pmc snapshot (shallow) before enforcement
+    try:
+        cur_response.setdefault("debug", {})
+        if isinstance(cur_response.get("debug"), dict):
+            cur_response["debug"].setdefault("spine_v1", {})
+            if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                cur_response["debug"]["spine_v1"].setdefault("phase4_pmc_legacy", pmc)
+    except Exception:
+        pass
+
+    # Construct schema-keyed PMC
+    schema_pmc = {}
+    missing = 0
+    populated = 0
+    selected_from_non_schema = 0
+
+    # Precompute candidate list
+    cand_items = []
+    for ck, cv in pmc.items():
+        if isinstance(cv, dict):
+            cand_items.append((str(ck), cv))
+
+    for sk, spec in schema_index.items():
+        sk = str(sk)
+        if not isinstance(spec, dict):
+            continue
+        spec = dict(spec)
+        spec.setdefault("canonical_key", sk)
+
+        if sk in pmc and isinstance(pmc.get(sk), dict):
+            schema_pmc[sk] = pmc[sk]
+            populated += 1
+            continue
+
+        # choose best candidate from pmc
+        scored = []
+        for ck, cv in cand_items:
+            scored.append((_fix2an__candidate_score(spec, ck, cv), ck, cv))
+        scored.sort(reverse=True)
+
+        if scored and scored[0][0][0] > 0.0:
+            _, ck_sel, cv_sel = scored[0]
+            # copy and stamp schema key/id
+            out = dict(cv_sel)
+            out["canonical_key"] = sk
+            if spec.get("canonical_id"):
+                out["canonical_id"] = spec.get("canonical_id")
+            # keep provenance of remap
+            out.setdefault("debug", {})
+            if isinstance(out.get("debug"), dict):
+                out["debug"].setdefault("phase4_remap", {})
+                if isinstance(out["debug"].get("phase4_remap"), dict):
+                    out["debug"]["phase4_remap"] = {
+                        "from_key": ck_sel,
+                        "score": float(scored[0][0][0]),
+                    }
+            schema_pmc[sk] = out
+            populated += 1
+            if ck_sel != sk:
+                selected_from_non_schema += 1
+                if len(diag["examples"]) < 8:
+                    diag["examples"][sk] = {"from_key": ck_sel, "score": float(scored[0][0][0])}
+        else:
+            missing += 1
+
+    diag["schema_keys_populated"] = int(populated)
+    diag["schema_keys_missing"] = int(missing)
+    diag["selected_from_non_schema"] = int(selected_from_non_schema)
+
+    # publish enforced PMC
+    cur_response["primary_metrics_canonical"] = schema_pmc
+
+    # mark render contract presence (used by some legacy dashboards)
+    try:
+        cur_response.setdefault("output_debug", {})
+        if isinstance(cur_response.get("output_debug"), dict):
+            cur_response["output_debug"].setdefault("canonical_for_render_v1", {})
+            if isinstance(cur_response["output_debug"].get("canonical_for_render_v1"), dict):
+                cur_response["output_debug"]["canonical_for_render_v1"] = {
+                    "present": True,
+                    "pmc_keys": int(len(schema_pmc)),
+                    "method": "fix2an_phase4_schema_key_enforce",
+                }
+    except Exception:
+        pass
+
+    # write diag
+    try:
+        cur_response.setdefault("debug", {})
+        if isinstance(cur_response.get("debug"), dict):
+            cur_response["debug"].setdefault("spine_v1", {})
+            if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                cur_response["debug"]["spine_v1"]["phase4_schema_key_enforce"] = diag
+    except Exception:
+        pass
+
+    return diag
+
+
+def spine_v1_maybe_schema_bind_and_publish(prev_response: Dict[str, Any], cur_response: Dict[str, Any]) -> bool:
+    """
+    Wrapper override that runs legacy Phase1/2 driver (if present) and then applies Phase 4
+    schema-key enforcement to ensure render/diff tables cannot miss values due to key mismatch.
+    """
+    ok = False
+    try:
+        if _FIX2AN_LEGACY_SPINE_MAYBE_SCHEMA_BIND_AND_PUBLISH:
+            ok = bool(_FIX2AN_LEGACY_SPINE_MAYBE_SCHEMA_BIND_AND_PUBLISH(prev_response, cur_response))
+    except Exception:
+        ok = False
+
+    try:
+        spine_v1_phase4_enforce_schema_keys(prev_response, cur_response)
+    except Exception:
+        pass
+
+    return ok
+
+# END PATCH FIX2AN_SPINE_PHASE4_SCHEMA_KEY_ENFORCE_V1
+
+
+
+# PATCH_TRACKER entry (additive)
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AN_SPINE_PHASE4_SCHEMA_KEY_ENFORCE_V1",
+            "code_version": "fix2an_spine_phase4_schema_key_enforce_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "Phase 4 schema-key enforcement for primary_metrics_canonical",
+                "Deterministic remap from non-schema canonical keys to schema keys",
+                "output_debug.canonical_for_render_v1 present marker and spine_v1 phase4 diagnostics",
+            ],
+            "risk": "Low (post-processing publish map; legacy preserved in debug)",
+        })
+except Exception:
+    pass
+
