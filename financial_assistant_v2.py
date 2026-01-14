@@ -36572,3 +36572,148 @@ try:
         })
 except Exception:
     pass
+
+# ==============================================================================
+# PATCH FIX2AW_SPINE_PHASE4_7_EVO_FAIL_CONTRACT_V1 (ADDITIVE)
+#
+# Purpose:
+# - Your latest Evolution download JSON shows an empty `results` object and blank `interpretation`.
+#   That only happens when the Streamlit UI's try/except around `run_source_anchored_evolution()`
+#   trips and returns early, leaving `results` unset/empty.
+#
+# Fix:
+# - Wrap the Evolution entrypoint so it can *never* raise, and it always returns a
+#   renderer-compatible dict (status/message/metric_changes/summary/interpretation).
+# - Include an explicit debug payload with exception + traceback so failures are observable.
+#
+# Safety:
+# - Additive only: does not refactor UI code; only makes the called function exception-proof.
+# - If the base runner already returns a dict, we pass it through unchanged.
+#
+# =====================================================================
+
+try:
+    import traceback as _fix2aw_tb
+except Exception:
+    _fix2aw_tb = None
+
+try:
+    _FIX2AW_BASE_RUN_SOURCE_ANCHORED_EVOLUTION = run_source_anchored_evolution
+except Exception:
+    _FIX2AW_BASE_RUN_SOURCE_ANCHORED_EVOLUTION = None
+
+
+def _fix2aw_fail_payload(msg: str, exc: Exception = None) -> dict:
+    tb = ""
+    try:
+        if _fix2aw_tb is not None:
+            tb = _fix2aw_tb.format_exc() or ""
+    except Exception:
+        tb = ""
+
+    out = {
+        "status": "failed",
+        "message": str(msg or "Evolution failed"),
+        "sources_checked": 0,
+        "sources_fetched": 0,
+        "numbers_extracted_total": 0,
+        "stability_score": 0.0,
+        "summary": {
+            "total_metrics": 0,
+            "metrics_found": 0,
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_unchanged": 0,
+        },
+        "metric_changes": [],
+        "source_results": [],
+        "interpretation": "Evolution failed.",
+        "code_version": globals().get("CODE_VERSION"),
+        "debug": {
+            "fix2aw_phase4_7": {
+                "error": str(exc) if exc else str(msg or ""),
+                "traceback": tb,
+                "base_callable": bool(callable(_FIX2AW_BASE_RUN_SOURCE_ANCHORED_EVOLUTION)),
+            }
+        },
+    }
+    return out
+
+
+def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:  # noqa: F811
+    """FIX2AW: exception-proof wrapper for Evolution UI entrypoint."""
+    try:
+        if callable(_FIX2AW_BASE_RUN_SOURCE_ANCHORED_EVOLUTION):
+            out = _FIX2AW_BASE_RUN_SOURCE_ANCHORED_EVOLUTION(previous_data, web_context=web_context)
+        else:
+            return _fix2aw_fail_payload("FIX2AW: base run_source_anchored_evolution not callable")
+
+        if not isinstance(out, dict):
+            return _fix2aw_fail_payload("FIX2AW: base run_source_anchored_evolution returned non-dict")
+
+        # Ensure contract keys exist
+        out.setdefault("status", "success")
+        out.setdefault("message", "")
+        out.setdefault("summary", {})
+        if isinstance(out.get("summary"), dict):
+            out["summary"].setdefault("total_metrics", int(len(out.get("metric_changes") or [])))
+            out["summary"].setdefault("metrics_found", 0)
+            out["summary"].setdefault("metrics_increased", 0)
+            out["summary"].setdefault("metrics_decreased", 0)
+            out["summary"].setdefault("metrics_unchanged", 0)
+        out.setdefault("metric_changes", [])
+        out.setdefault("source_results", [])
+        out.setdefault("interpretation", out.get("interpretation") or "")
+        out.setdefault("code_version", globals().get("CODE_VERSION"))
+
+        # mark wrapper ran
+        try:
+            out.setdefault("debug", {})
+            if isinstance(out.get("debug"), dict):
+                out["debug"].setdefault("fix2aw_phase4_7", {})
+                if isinstance(out["debug"].get("fix2aw_phase4_7"), dict):
+                    out["debug"]["fix2aw_phase4_7"].update({
+                        "wrapped": True,
+                        "base_status": str(out.get("status") or ""),
+                    })
+        except Exception:
+            pass
+
+        return out
+
+    except Exception as e:
+        return _fix2aw_fail_payload("FIX2AW: wrapper exception", exc=e)
+
+
+# PATCH FIX2AW_CODE_VERSION (ADDITIVE)
+try:
+    CODE_VERSION = "fix2aw_spine_phase4_7_evo_fail_contract_v1"
+except Exception:
+    pass
+# END PATCH FIX2AW_CODE_VERSION
+
+
+# PATCH FIX2AW_PATCH_TRACKER (ADDITIVE)
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AW_SPINE_PHASE4_7_EVO_FAIL_CONTRACT_V1",
+            "code_version": "fix2aw_spine_phase4_7_evo_fail_contract_v1",
+            "adds": [
+                "Hardens Evolution UI entrypoint run_source_anchored_evolution so it never raises.",
+                "On failure, returns renderer-compatible contract with explicit debug + traceback.",
+                "Ensures code_version is present even on failures for auditability."
+            ],
+            "safety": "Additive wrapper only; does not change UI logic; prevents early-return empty results payloads.",
+        })
+except Exception:
+    pass
+# END PATCH FIX2AW_PATCH_TRACKER
+
+# ==============================================================================
+# END PATCH FIX2AW_SPINE_PHASE4_7_EVO_FAIL_CONTRACT_V1
+# ==============================================================================
