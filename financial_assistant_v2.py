@@ -24308,70 +24308,65 @@ def render_source_anchored_results(results, query: str):
         st.info("No metric changes to display.")
         return
 
+    # =====================================================================
+    # PATCH FIX2AY_RENDER_SMOKE_ROW_V2 (ADDITIVE)
+    #
+    # Fix for FIX2AX:
+    # - The prior smoke-test block was mistakenly injected at module scope,
+    #   causing NameError: rows not defined. This version is correctly scoped
+    #   inside render_source_anchored_results() AFTER rows is defined.
+    #
+    # Purpose:
+    # - Deterministic render-layer smoke test to confirm the Streamlit table
+    #   wiring displays the "Current" column (sourced from r["current_value"]).
+    #
+    # Activation:
+    # - ONLY when ALL existing rows have empty/"N/A"/"-" current_value.
+    # =====================================================================
+    try:
+        _fix2ay_rows = rows if isinstance(rows, list) else []
+        _fix2ay_all_empty = True
+        for _rr in _fix2ay_rows:
+            if not isinstance(_rr, dict):
+                continue
+            _cv = _rr.get("current_value")
+            _cv_s = str(_cv or "").strip()
+            if _cv_s and _cv_s.upper() != "N/A" and _cv_s != "-":
+                _fix2ay_all_empty = False
+                break
 
-
-# =====================================================================
-# PATCH FIX2AX_RENDER_SMOKE_ROW_V1 (ADDITIVE)
-#
-# Purpose:
-# - Provide a deterministic render-layer smoke test to confirm the Streamlit
-#   dashboard table is correctly wiring and displaying the "Current" column.
-# - ONLY activates when ALL rows have empty/"N/A" current_value.
-#
-# Behavior:
-# - Appends one synthetic row to results["metric_changes"] with a clearly
-#   recognizable Current value so the UI must display it if wiring is correct.
-# - Also records a small marker under results["debug"]["fix2ax_render_smoke"].
-#
-# Safety:
-# - Additive only. Does not modify any existing rows.
-# - Never raises; falls back silently.
-# =====================================================================
-try:
-    _fix2ax_rows = rows if isinstance(rows, list) else []
-    _fix2ax_all_empty = True
-    for _rr in _fix2ax_rows:
-        if not isinstance(_rr, dict):
-            continue
-        _cv = _rr.get("current_value")
-        _cv_s = str(_cv or "").strip()
-        if _cv_s and _cv_s.upper() != "N/A" and _cv_s != "-":
-            _fix2ax_all_empty = False
-            break
-
-    if _fix2ax_rows and _fix2ax_all_empty:
-        _smoke_row = {
-            "metric": "SMOKE_TEST_RENDER_CURRENT",
-            "canonical_key": "__smoke_test_render_current__",
-            "match_stage": "debug_hardcode_smoke",
-            "previous_value": "",
-            "current_value": "12345.67",
-            "change_pct": None,
-            "status": "debug",
-            "match_confidence": 100.0,
-            "match_score": 999.99,
-            "anchor_used": True,
-        }
-        # Append for UI rendering only
-        rows.append(_smoke_row)
-
-        try:
+        if _fix2ay_rows and _fix2ay_all_empty:
+            _smoke_row = {
+                "metric": "SMOKE_TEST_RENDER_CURRENT",
+                "canonical_key": "__smoke_test_render_current__",
+                "match_stage": "debug_hardcode_smoke",
+                "previous_value": "",
+                "current_value": "12345.67",
+                "change_pct": None,
+                "status": "debug",
+                "match_confidence": 1.0,
+                "match_score": 999.0,
+                "anchor_used": True,
+            }
+            rows.append(_smoke_row)
             if isinstance(results, dict):
                 results.setdefault("debug", {})
                 if isinstance(results.get("debug"), dict):
-                    results["debug"].setdefault("fix2ax_render_smoke", {})
-                    if isinstance(results["debug"].get("fix2ax_render_smoke"), dict):
-                        results["debug"]["fix2ax_render_smoke"].update({
+                    results["debug"].setdefault("fix2ay_render_smoke", {})
+                    if isinstance(results["debug"].get("fix2ay_render_smoke"), dict):
+                        results["debug"]["fix2ay_render_smoke"].update({
                             "activated": True,
-                            "rows_before": int(len(_fix2ax_rows)),
+                            "rows_before": int(len(_fix2ay_rows)),
                             "rows_after": int(len(rows)),
                             "reason": "all_rows_empty_current_value",
                         })
-        except Exception:
-            pass
-except Exception:
-    pass
-# =====================================================================
+    except Exception:
+        pass
+    # =====================================================================
+
+
+
+
     table_rows = []
     for r in rows:
         if not isinstance(r, dict):
@@ -37336,10 +37331,15 @@ CODE_VERSION = "fix2av_evo_diff_panel_v2_summary_guard_v1"
 # Ensure CODE_VERSION reflects the filename even if older blocks reset it.
 # =====================================================================
 try:
-    CODE_VERSION = "fix2ax_evo_render_smoke_v1"
+    CODE_VERSION = "fix2ay_evo_render_smoke_v2"
 except Exception:
     pass
 # =====================================================================
 
 # PATCH TRACKER (append-only)
 # - fix2ax_evo_render_smoke_v1: FIX2AX render-layer smoke row to validate dashboard Current column wiring.
+
+# =====================================================================
+# PATCH TRACKER (append-only)
+# - fix2ay_evo_render_smoke_v2: Fix smoke-test injection scope (rows defined) and keep render smoke row deterministic.
+# =====================================================================
