@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2aq_evo_emit_canonical_metrics_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2as_evo_emit_canonical_for_render_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -34420,6 +34420,7 @@ except Exception:
 # - FIX2AM: Injected fetch assurance + syntaxfix (tracker comment) (no placeholder), fix fallback double-call, deterministic GitHub raw retry + injected fetch diagnostics
 
 # ---------------------------------------------------------------------
+# - FIX2AS: Emit output_debug.canonical_for_render_v1 and hydrate metric_changes current_value (dashboard parity)
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
@@ -36349,6 +36350,51 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
                 pass
         # PATCH FIX2AQ END
 
+        # PATCH FIX2AR START: Ensure Evolution current snapshot exposes schema-bound canonical metrics
+        # Why: the dashboard "Current" column ultimately comes from results.metric_changes[].current_value,
+        # and diff_metrics_by_name_BASE reads cur_response["primary_metrics_canonical"].
+        # Earlier FIX2AQ attempted to emit out["canonical_metrics"] but had a typo; this block
+        # deterministically reconstructs and emits:
+        #   - out["primary_metrics_canonical"] (full objects)
+        #   - out["canonical_metrics"] (schema-keyed numeric dict: value_norm)
+        #   - out["metric_schema_frozen"] (for downstream consumers/debug)
+        try:
+            # 1) Ensure schema-bound full canonical objects are present
+            if isinstance(schema, dict) and isinstance(cur_metrics_recon, dict):
+                if not isinstance(out.get("primary_metrics_canonical"), dict) or not out.get("primary_metrics_canonical"):
+                    out["primary_metrics_canonical"] = cur_metrics_recon
+
+                # 2) Ensure numeric dict exists for any legacy consumers
+                if not isinstance(out.get("canonical_metrics"), dict) or not out.get("canonical_metrics"):
+                    _fix2ar_cm = {}
+                    for _ck in sorted(set(list(schema.keys()) + list(cur_metrics_recon.keys()))):
+                        _cm = cur_metrics_recon.get(_ck)
+                        _v = None
+                        if isinstance(_cm, dict):
+                            _v = _cm.get("value_norm")
+                            if _v is None:
+                                _v = _cm.get("value")
+                        if _v is None:
+                            _v = 0.0
+                        try:
+                            _fix2ar_cm[_ck] = float(_v)
+                        except Exception:
+                            _fix2ar_cm[_ck] = 0.0
+                    out["canonical_metrics"] = _fix2ar_cm
+
+                # 3) Expose schema (frozen) for diff + debug
+                if not isinstance(out.get("metric_schema_frozen"), dict) or not out.get("metric_schema_frozen"):
+                    out["metric_schema_frozen"] = schema
+        except Exception as _e_fix2ar:
+            try:
+                out.setdefault("output_debug", {})
+                out["output_debug"].setdefault("warnings", [])
+                out["output_debug"]["warnings"].append("fix2ar_emit_current_failed:" + type(_e_fix2ar).__name__)
+            except Exception:
+                pass
+        # PATCH FIX2AR END
+
+
         out["output_debug"].setdefault("bind", {})
         out["output_debug"]["bind"].update({
             "candidates_total": bind_dbg.get("candidates_total"),
@@ -36558,3 +36604,180 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
     return out
 
 # PATCH FIX2AP END
+
+# - fix2ar_evo_emit_current_v2: FIX2AR ensure evolution emits primary_metrics_canonical + canonical_metrics + metric_schema_frozen for dashboard current column
+
+
+# PATCH FIX2AS (ADDITIVE) START
+# Purpose: Emit results.output_debug.canonical_for_render_v1 (and hydrate metric_changes current_value)
+# so the Evolution dashboard can populate the 'current' column deterministically.
+try:
+    _fix2as_prev_run_evolutionary_runner = run_evolutionary_runner  # type: ignore
+except Exception:
+    _fix2as_prev_run_evolutionary_runner = None  # type: ignore
+
+
+def _fix2as_safe_float(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, bool):
+            return float(int(x))
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip()
+        if s == "":
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _fix2as_build_canonical_for_render_v1(cur_metrics: dict, schema: dict = None) -> dict:
+    """Build schema-keyed render payload: canonical_for_render_v1[canonical_key] -> render dict."""
+    out = {}
+    if not isinstance(cur_metrics, dict):
+        return out
+    for k, v in cur_metrics.items():
+        if not isinstance(k, str) or not k:
+            continue
+        if not isinstance(v, dict):
+            # allow numeric scalar
+            fv = _fix2as_safe_float(v)
+            out[k] = {
+                "canonical_key": k,
+                "current_value": "" if fv is None else str(fv),
+                "current_value_norm": fv,
+                "cur_unit_cmp": None,
+                "anchor_hash": None,
+                "source_url": None,
+                "diag": {"from_scalar": True},
+            }
+            continue
+
+        vn = v.get("value_norm", None)
+        fv = _fix2as_safe_float(vn)
+        if fv is None:
+            fv = _fix2as_safe_float(v.get("value", None))
+        unit = v.get("unit_tag", None) or v.get("unit", None) or v.get("unit_family", None)
+        source_url = v.get("source_url", None) or v.get("source", None)
+        anchor_hash = v.get("anchor_hash", None) or v.get("anchor", None)
+
+        # evidence snippet (best effort, short)
+        ev = v.get("evidence", None)
+        snippet = None
+        try:
+            if isinstance(ev, list) and ev:
+                e0 = ev[0]
+                if isinstance(e0, dict):
+                    snippet = e0.get("snippet") or e0.get("context") or e0.get("text")
+                else:
+                    snippet = str(e0)
+        except Exception:
+            snippet = None
+        if isinstance(snippet, str) and len(snippet) > 240:
+            snippet = snippet[:237] + "..."
+
+        out[k] = {
+            "canonical_key": k,
+            "current_value": "" if fv is None else str(fv),
+            "current_value_norm": fv,
+            "cur_unit_cmp": unit,
+            "anchor_hash": anchor_hash,
+            "source_url": source_url,
+            "evidence_snippet": snippet,
+            "diag": {
+                "had_value_norm": ("value_norm" in v),
+                "had_value": ("value" in v),
+                "schema_present": bool(isinstance(schema, dict) and schema),
+            },
+        }
+    return out
+
+
+def _fix2as_get_dict_path(root: dict, *path: str):
+    cur = root
+    for p in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(p)
+    return cur
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    # Delegate to prior runner
+    if callable(_fix2as_prev_run_evolutionary_runner):
+        out = _fix2as_prev_run_evolutionary_runner(previous_data, web_context)  # type: ignore
+    else:
+        out = {}
+    if not isinstance(out, dict):
+        return out
+
+    # Normalize contract containers
+    results = out.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        out["results"] = results
+
+    output_debug = results.get("output_debug")
+    if not isinstance(output_debug, dict):
+        output_debug = {}
+        results["output_debug"] = output_debug
+
+    # Locate current canonical metrics dict (best-effort across variants)
+    cur_metrics = (
+        out.get("primary_metrics_canonical")
+        or results.get("primary_metrics_canonical")
+        or out.get("current_snapshot", {}).get("primary_metrics_canonical") if isinstance(out.get("current_snapshot"), dict) else None
+        or out.get("canonical_metrics_current")
+        or results.get("canonical_metrics_current")
+        or out.get("cur_metrics_recon")
+        or results.get("cur_metrics_recon")
+    )
+    if not isinstance(cur_metrics, dict):
+        cur_metrics = {}
+
+    schema = (
+        out.get("metric_schema_frozen")
+        or results.get("metric_schema_frozen")
+        or output_debug.get("metric_schema_frozen")
+    )
+    if not isinstance(schema, dict):
+        schema = {}
+
+    # Build canonical_for_render_v1
+    cfr = _fix2as_build_canonical_for_render_v1(cur_metrics, schema)
+    output_debug["canonical_for_render_v1"] = cfr
+
+    # Hydrate metric_changes current_value (legacy dashboard parity)
+    metric_changes = results.get("metric_changes")
+    if isinstance(metric_changes, list) and metric_changes:
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+            ck = row.get("canonical_key") or row.get("metric") or row.get("key") or row.get("metric_key")
+            if not isinstance(ck, str) or not ck:
+                continue
+            r = cfr.get(ck)
+            if not isinstance(r, dict):
+                continue
+            # only overwrite if empty/N/A-ish
+            curv = row.get("current_value")
+            if curv in (None, "", "N/A", "NA"):
+                row["current_value"] = r.get("current_value", "")
+                row["current_value_norm"] = r.get("current_value_norm", None)
+                row["cur_unit_cmp"] = r.get("cur_unit_cmp", None)
+
+    # Minimal debug counters
+    try:
+        output_debug.setdefault("canonical_for_render_stats_v1", {})
+        output_debug["canonical_for_render_stats_v1"].update({
+            "keys": len(cfr),
+            "nonempty": sum(1 for _k, _v in cfr.items() if isinstance(_v, dict) and (_v.get("current_value") not in (None, "", "N/A"))),
+        })
+    except Exception:
+        pass
+
+    return out
+
+# PATCH FIX2AS (ADDITIVE) END
