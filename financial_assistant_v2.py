@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2av_spine_phase4_6_preui_wrap_v3"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = 'fix2ay_spine_phase4_9_evo_entry_guard_v1'  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36937,3 +36937,130 @@ except Exception:
 
 # Ensure CODE_VERSION matches filename (override additive)
 CODE_VERSION = "fix2ax_spine_phase4_8_strict_evo_contract_v1"
+
+
+# =====================================================================
+# PATCH FIX2AY (ADDITIVE): Evolution entrypoint hard-guard (no empty results)
+# Objective:
+#   - Ensure Streamlit Evolution UI never receives an empty dict / None for results
+#   - Always return a structurally-valid Evolution contract (success or failed)
+#   - Surface crash diagnostics deterministically (error_type, error_message, traceback)
+#
+# Rationale:
+#   Multiple legacy additive wrappers have created several layered definitions of
+#   run_source_anchored_evolution(). In some disabled-paths, those wrappers can
+#   return {} (empty dict) or non-dict payloads, which causes the Evolution
+#   report to have results={} and the UI to show Current=N/A with no visibility.
+# =====================================================================
+
+try:
+    _FIX2AY_BASE_RUN_SOURCE_ANCHORED_EVOLUTION = run_source_anchored_evolution  # type: ignore[name-defined]
+except Exception:
+    _FIX2AY_BASE_RUN_SOURCE_ANCHORED_EVOLUTION = None
+
+def _fix2ay_build_fail_payload(error_type: str, error_message: str, traceback_text: str, stage: str) -> dict:
+    return {
+        "status": "failed",
+        "message": f"Evolution failed at {stage}: {error_type}: {error_message}",
+        "sources_checked": 0,
+        "sources_fetched": 0,
+        "numbers_extracted_total": 0,
+        "stability_score": 0.0,
+        "summary": {
+            "total_metrics": 0,
+            "metrics_found": 0,
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_unchanged": 0,
+        },
+        "metric_changes": [],
+        "source_results": [],
+        "interpretation": "Evolution failed.",
+        "debug": {
+            "fix2ay": {
+                "stage": stage,
+                "error_type": error_type,
+                "error_message": error_message,
+                "traceback": (traceback_text or "")[:20000],
+                "base_callable_present": bool(_FIX2AY_BASE_RUN_SOURCE_ANCHORED_EVOLUTION),
+                "code_version": CODE_VERSION if isinstance(globals().get("CODE_VERSION"), str) else "",
+            }
+        },
+    }
+
+def _fix2ay_is_empty_or_invalid_results(obj) -> bool:
+    if not isinstance(obj, dict):
+        return True
+    if len(obj) == 0:
+        return True
+    # If a wrapper returned a dict but omitted the core contract keys, treat as invalid.
+    # (We still accept partial dicts as long as status/message/metric_changes exist after defaults.)
+    return False
+
+def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX2AY override: hard-guard contract + crash visibility."""
+    import traceback as _fix2ay_tb  # local import to avoid global shadowing
+
+    base = _FIX2AY_BASE_RUN_SOURCE_ANCHORED_EVOLUTION
+    if not callable(base):
+        return _fix2ay_build_fail_payload("MissingBaseCallable", "run_source_anchored_evolution base callable is not defined", "", "missing_base")
+
+    try:
+        # Support both signatures
+        try:
+            out = base(previous_data, web_context=web_context)
+        except TypeError:
+            out = base(previous_data)
+    except Exception as e:
+        return _fix2ay_build_fail_payload(type(e).__name__, str(e), _fix2ay_tb.format_exc(), "base_call_exception")
+
+    # Normalize invalid/empty returns into a fail contract (never silent).
+    if _fix2ay_is_empty_or_invalid_results(out):
+        return _fix2ay_build_fail_payload("InvalidReturn", f"base returned {type(out).__name__} / empty dict", "", "invalid_return")
+
+    # Ensure required renderer keys exist (defaults).
+    try:
+        out.setdefault("status", "success")
+        out.setdefault("message", "")
+        out.setdefault("sources_checked", 0)
+        out.setdefault("sources_fetched", 0)
+        out.setdefault("numbers_extracted_total", 0)
+        out.setdefault("stability_score", 0.0)
+        out.setdefault("summary", {})
+        out["summary"].setdefault("total_metrics", len(out.get("metric_changes") or []))
+        out["summary"].setdefault("metrics_found", 0)
+        out["summary"].setdefault("metrics_increased", 0)
+        out["summary"].setdefault("metrics_decreased", 0)
+        out["summary"].setdefault("metrics_unchanged", 0)
+        out.setdefault("metric_changes", [])
+        out.setdefault("source_results", [])
+        out.setdefault("interpretation", "")
+        out.setdefault("debug", {})
+        out["debug"].setdefault("fix2ay", {})
+        out["debug"]["fix2ay"].update({
+            "base_callable_present": True,
+            "code_version": CODE_VERSION if isinstance(globals().get("CODE_VERSION"), str) else "",
+        })
+    except Exception:
+        # If even defaulting fails, return fail payload
+        return _fix2ay_build_fail_payload("DefaultingError", "failed to apply defaults to evolution output", "", "defaulting")
+
+    # If base returned a failure contract but omitted debug, keep it; if success, keep it.
+    return out
+
+# PATCH_TRACKER append
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AY_SPINE_PHASE4_9_EVO_ENTRY_GUARD_V1",
+            "code_version": "fix2ay_spine_phase4_9_evo_entry_guard_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "final override for run_source_anchored_evolution to prevent empty results",
+                "always publish a structurally valid Evolution contract (success/failed)",
+                "embed deterministic crash diagnostics into results.debug.fix2ay",
+            ],
+        })
+except Exception:
+    pass
+
