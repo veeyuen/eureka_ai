@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2al_evo_runner_injected_fetch_assure_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2am_inj_fetch_assure_v2"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -34410,14 +34410,14 @@ except Exception:
     pass
 
 
-PATCH TRACKER (append-only)
+# PATCH TRACKER (append-only)
 # ---------------------------------------------------------------------
 # - FIX2AG: Clean evolutionary runner (single authoritative execution path)
 # - FIX2AH: Deterministic schema targeting fallback + v2 emitter + always-on output_debug
 # - FIX2AI: Answer metric selection + roles; keep best candidate even on unit_mismatch (Current no longer blank)
 # - FIX2AJ: Injected URL priority in binding + injected harvesting trace
 # - FIX2AK: Injected windowing / paragraph targeting
-# - FIX2AL: Injected fetch assurance (no placeholder), fix fallback double-call, deterministic GitHub raw retry + injected fetch diagnostics
+# - FIX2AM: Injected fetch assurance + syntaxfix (tracker comment) (no placeholder), fix fallback double-call, deterministic GitHub raw retry + injected fetch diagnostics
 
 # ---------------------------------------------------------------------
 # Final CODE_VERSION bump (short filename)
@@ -34429,7 +34429,7 @@ except Exception:
 
 # PATCH FIX2AL (ADD): ensure CODE_VERSION reflects latest issued file
 try:
-    CODE_VERSION = "fix2al_evo_runner_injected_fetch_assure_v1"
+    CODE_VERSION = "fix2am_inj_fetch_assure_v2"
 except Exception:
     pass
 
