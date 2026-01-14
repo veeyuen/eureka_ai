@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BA"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2BB"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -253,37 +253,37 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = "FIX2BA"
+#CODE_VERSION = "FIX2BB"
 
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = "FIX2BA"
+#CODE_VERSION = "FIX2BB"
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "FIX2BA"
+#CODE_VERSION = "FIX2BB"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "FIX2BA"
+#CODE_VERSION = "FIX2BB"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "FIX2BA"
+#CODE_VERSION = "FIX2BB"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2BA"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2BA"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2BB"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2BB"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "FIX2BA"
+#CODE_VERSION = "FIX2BB"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -17629,51 +17629,29 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         
-    # =====================================================================
-    # PATCH FIX2BA_ATTACH_CANONICAL_METRICS_TO_OUTPUT_V1 (ADDITIVE)
-    # Goal: Expose canonical-for-render (or current canonical) metrics at the
-    #       top-level Evolution output so renderers/viewers can hydrate Current
-    #       (Option A) without relying on legacy matchers.
-    #
-    # Safe placement: immediately before returning `output` (post-processing done).
-    # =====================================================================
-    try:
-        _fix2ba_cm = None
+# =====================================================================
+# PATCH FIX2BB_ATTACH_CANONICAL_METRICS_AT_RETURN (ADDITIVE)
+# Indentation-safe: attach canonical metrics immediately before returning
+# from compute_source_anchored_diff().
+# =====================================================================
+try:
+    _fix2bb_cm = None
+    if isinstance(locals().get("canonical_metrics"), dict):
+        _fix2bb_cm = locals().get("canonical_metrics")
+    elif isinstance(locals().get("primary_metrics_canonical"), dict):
+        _fix2bb_cm = locals().get("primary_metrics_canonical")
 
-        # Prefer canonical-for-render dict if present in output_debug (common in this pipeline)
-        if "output_debug" in locals() and isinstance(locals().get("output_debug"), dict):
-            _cand = locals().get("output_debug").get("canonical_for_render_v1")
-            if isinstance(_cand, dict) and _cand:
-                _fix2ba_cm = _cand
-
-        # Fallback to common locals if present
-        if _fix2ba_cm is None:
-            for _k in ("canonical_metrics", "primary_metrics_canonical", "cur_metrics"):
-                if _k in locals() and isinstance(locals().get(_k), dict) and locals().get(_k):
-                    _fix2ba_cm = locals().get(_k)
-                    break
-
-        if isinstance(_fix2ba_cm, dict) and _fix2ba_cm:
-            output.setdefault("primary_metrics_canonical", _fix2ba_cm)
-            output.setdefault("canonical_metrics", output.get("primary_metrics_canonical"))
-            output.setdefault("debug", {})
-            if isinstance(output.get("debug"), dict):
-                output["debug"]["fix2ba_attach_canonical_metrics"] = {
-                    "attached": True,
-                    "keys": int(len(output.get("canonical_metrics") or {})),
-                    "source": ("output_debug.canonical_for_render_v1" if (isinstance(locals().get("output_debug"), dict) and isinstance(locals().get("output_debug").get("canonical_for_render_v1"), dict)) else "locals_fallback"),
-                }
-        else:
-            output.setdefault("debug", {})
-            if isinstance(output.get("debug"), dict):
-                output["debug"]["fix2ba_attach_canonical_metrics"] = {
-                    "attached": False,
-                    "keys": 0,
-                    "note": "no canonical metrics dict found at return time",
-                }
-    except Exception:
-        pass
-    # =====================================================================
+    if isinstance(_fix2bb_cm, dict) and _fix2bb_cm:
+        output.setdefault("primary_metrics_canonical", _fix2bb_cm)
+        output.setdefault("canonical_metrics", _fix2bb_cm)
+        output.setdefault("debug", {})
+        output["debug"]["fix2bb_attach_canonical_metrics"] = {
+            "attached": True,
+            "keys": int(len(_fix2bb_cm)),
+        }
+except Exception:
+    pass
+# =====================================================================
 return output
 
 
@@ -22611,45 +22589,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         output.setdefault("debug", {})
         if isinstance(output.get("debug"), dict):
-    try:
-        _fix2b9_cm = None
-
-        # Prefer canonical-for-render map if present in local scope
-        if "_canonical_for_render" in locals() and isinstance(locals().get("_canonical_for_render"), dict):
-            _fix2b9_cm = locals().get("_canonical_for_render")
-        elif "_canonical_for_render_payload" in locals() and isinstance(locals().get("_canonical_for_render_payload"), dict):
-            _fix2b9_cm = locals().get("_canonical_for_render_payload")
-        elif "_canonical_for_render_map" in locals() and isinstance(locals().get("_canonical_for_render_map"), dict):
-            _fix2b9_cm = locals().get("_canonical_for_render_map")
-
-        # Fallbacks
-        if _fix2b9_cm is None:
-            for _k in ("canonical_metrics", "primary_metrics_canonical"):
-                if _k in locals() and isinstance(locals().get(_k), dict):
-                    _fix2b9_cm = locals().get(_k)
-                    break
-
-        if isinstance(_fix2b9_cm, dict) and _fix2b9_cm:
-            output.setdefault("primary_metrics_canonical", _fix2b9_cm)
-            output.setdefault("canonical_metrics", output.get("primary_metrics_canonical"))
-            output.setdefault("debug", {})
-            if isinstance(output.get("debug"), dict):
-                output["debug"]["fix2b9_attach_canonical_metrics"] = {
-                    "attached": True,
-                    "keys": int(len(output.get("canonical_metrics") or {})),
-                }
-        else:
-            output.setdefault("debug", {})
-            if isinstance(output.get("debug"), dict):
-                output["debug"]["fix2b9_attach_canonical_metrics"] = {
-                    "attached": False,
-                    "keys": 0,
-                    "note": "no canonical-for-render map found",
-                }
-    except Exception:
-        pass
-    # =====================================================================
- = {
+            output["debug"]["canonical_for_render_v1"] = {
                 "applied": bool(_canonical_for_render_applied),
                 "reason": str(_canonical_for_render_reason or ""),
                 "fn": str(_canonical_for_render_fn or ""),
@@ -30214,7 +30154,7 @@ except Exception:
 
 # PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -30365,7 +30305,7 @@ except Exception:
 
 # PATCH V24_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -30374,7 +30314,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # =====================================================================
@@ -30385,7 +30325,7 @@ except Exception:
 # =====================================================================
 # PATCH CODE_VERSION_V26 (ADDITIVE)
 # =====================================================================
-CODE_VERSION = "FIX2BA"
+CODE_VERSION = "FIX2BB"
 # =====================================================================
 # END PATCH CODE_VERSION_V26
 # =====================================================================
@@ -30394,7 +30334,7 @@ CODE_VERSION = "FIX2BA"
 # PATCH V27_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # =====================================================================
@@ -30405,7 +30345,7 @@ except Exception:
 # PATCH V28_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # =====================================================================
@@ -30416,7 +30356,7 @@ except Exception:
 # =====================================================================
 # PATCH V29_CODE_VERSION_BUMP (ADDITIVE)
 # =====================================================================
-CODE_VERSION = "FIX2BA"
+CODE_VERSION = "FIX2BB"
 # =====================================================================
 # END PATCH V29_CODE_VERSION_BUMP
 # =====================================================================
@@ -30595,7 +30535,7 @@ except Exception:
 
 # PATCH V32_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -30854,7 +30794,7 @@ except Exception:
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -30903,7 +30843,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, sn
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -31041,7 +30981,7 @@ except Exception:
 
 # PATCH V34C_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -31054,7 +30994,7 @@ except Exception:
 # PATCH V34F_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -31356,7 +31296,7 @@ except Exception:
 
 # Version bump (additive)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -31648,7 +31588,7 @@ except Exception:
 
 # Final version bump (additive) — ensure this is the last CODE_VERSION assignment.
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -31658,7 +31598,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2F_CODE_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -31666,7 +31606,7 @@ except Exception:
 # PATCH FIX2H_CODE_VERSION_FINAL (ADDITIVE)
 # Ensure CODE_VERSION reflects this build for audit/debug.
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # =====================================================================
@@ -31702,13 +31642,13 @@ except Exception:
 try:
     CODE_VERSION = str(globals().get('CODE_VERSION') or '')
 except Exception:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 
 try:
     if CODE_VERSION and 'fix2j' not in CODE_VERSION:
         CODE_VERSION = f"{CODE_VERSION}_fix2j_diffpanel_v2_unit_mismatch_split_and_raw_current_rows"
     elif not CODE_VERSION:
-        CODE_VERSION = "FIX2BA"
+        CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -33154,7 +33094,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2BA"
+        CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -33186,7 +33126,7 @@ try:
     if _CV and 'fix2k' not in _CV:
         CODE_VERSION = f"{_CV}_fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only"
     elif not _CV:
-        CODE_VERSION = "FIX2BA"
+        CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -33502,7 +33442,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -33514,7 +33454,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # =====================================================================
@@ -34189,7 +34129,7 @@ except Exception:
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -34926,13 +34866,13 @@ except Exception:
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
 # PATCH FIX2AL (ADD): ensure CODE_VERSION reflects latest issued file
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -35842,7 +35782,7 @@ except Exception:
 
 # PATCH FIX2AN (ADD): bump CODE_VERSION to new patch filename
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -36194,7 +36134,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 #   to use it (additive-only; legacy binders remain intact).
 
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -36558,7 +36498,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 # so the diff/join (and thus the UI Current column) can populate deterministically.
 
 # PATCH FIX2AO (ADDITIVE): bump CODE_VERSION to new patch filename
-CODE_VERSION = "FIX2BA"
+CODE_VERSION = "FIX2BB"
 
 
 def _fix2ao_norm_key_base(canonical_key: str) -> str:
@@ -37506,7 +37446,7 @@ if _fix2at__orig_run_evolutionary_runner is not None:
 # - FIX2AT: Hydrate results.metric_changes[].current_value deterministically from emitted canonical metrics + frozen schema.
 
 # Ensure CODE_VERSION matches this file (override any stale bump blocks)
-CODE_VERSION = "FIX2BA"
+CODE_VERSION = "FIX2BB"
 
 
 # =====================================================================
@@ -37514,7 +37454,7 @@ CODE_VERSION = "FIX2BA"
 # Ensure CODE_VERSION reflects the latest issued file (append-only override).
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # =====================================================================
@@ -37670,7 +37610,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     return rows, summary
 
 # Hard override CODE_VERSION at EOF (authoritative)
-CODE_VERSION = "FIX2BA"
+CODE_VERSION = "FIX2BB"
 # PATCH TRACKER (append-only)
 # - FIX2AV: Guard DIFF_PANEL_V2 summary UnboundLocalError + deterministic fallback rows to populate Current column.
 # =================== END PATCH FIX2AV (ADDITIVE) ====================
@@ -37687,7 +37627,7 @@ CODE_VERSION = "FIX2BA"
 # Ensure CODE_VERSION reflects the filename even if older blocks reset it.
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # =====================================================================
@@ -37961,7 +37901,7 @@ def run_unified_poc(question: str,
 
 # CODE_VERSION (authoritative at EOF)
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 
@@ -37978,7 +37918,7 @@ except Exception:
 # This final assignment is authoritative for this patched file.
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BA"
+    CODE_VERSION = "FIX2BB"
 except Exception:
     pass
 # =====================================================================
