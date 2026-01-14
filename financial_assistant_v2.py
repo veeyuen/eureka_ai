@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2aj_spine_norm_v2"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -33950,7 +33950,7 @@ except Exception:
 
 # Version bump (additive)
 try:
-    CODE_VERSION = "fix2aj_spine_norm_v2"
+    CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"
 except Exception:
     pass
 
@@ -33982,6 +33982,184 @@ except Exception:
 try:
     _cv = str(globals().get("CODE_VERSION") or "")
     if "fix2aj" not in _cv.lower():
-        CODE_VERSION = "fix2aj_spine_norm_v2"
+        CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"
 except Exception:
     pass
+
+
+# =====================================================================
+# PATCH FIX2AK_SPINE_PHASE3_V2_WIRING_V1 (ADDITIVE)
+# Objective:
+# - Ensure Evolution's render/diff path that calls build_diff_metrics_panel_v2()
+#   receives a cur_response that has:
+#     (a) metric_schema_frozen attached, and
+#     (b) primary_metrics_canonical re-published by the new spine (Phase 1+2)
+#   so the Diff Panel V2 "Current" side is hydrated deterministically.
+# Why:
+# - In practice, the evolution builder often passes a minimal _cur_for_v2 dict
+#   that lacks metric_schema_frozen, causing Phase1/2 to be skipped.
+# Safety:
+# - Additive wrapper only; does not modify extraction, caching, fastpath, hashing,
+#   or legacy diff logic. If spine errors, fall back to legacy behavior.
+# Controls:
+# - Disable via YUREEKA_SPINE_V1_V2_WIRING=0
+# =====================================================================
+
+try:
+    _FIX2AK_LEGACY_BUILD_DIFF_V2 = build_diff_metrics_panel_v2  # capture current entrypoint
+except Exception:
+    _FIX2AK_LEGACY_BUILD_DIFF_V2 = None
+
+
+def _spine_v1__attach_schema_if_missing(prev_response: dict, cur_response: dict) -> dict:
+    """Attach metric_schema_frozen to cur_response if missing; prefer prev_response schema."""
+    try:
+        if not isinstance(cur_response, dict):
+            return cur_response
+        if isinstance(cur_response.get("metric_schema_frozen"), dict) and cur_response.get("metric_schema_frozen"):
+            return cur_response
+
+        schema = None
+        try:
+            if isinstance(prev_response, dict):
+                schema = prev_response.get("metric_schema_frozen")
+                if not isinstance(schema, dict) or not schema:
+                    schema = (prev_response.get("primary_response") or {}).get("metric_schema_frozen") if isinstance(prev_response.get("primary_response"), dict) else schema
+                if not isinstance(schema, dict) or not schema:
+                    schema = (prev_response.get("results") or {}).get("metric_schema_frozen") if isinstance(prev_response.get("results"), dict) else schema
+        except Exception:
+            schema = None
+
+        if isinstance(schema, dict) and schema:
+            cur_response["metric_schema_frozen"] = schema
+            # mild provenance
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"].setdefault("spine_v1", {})
+                if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                    cur_response["debug"]["spine_v1"].setdefault("phase3_v2_wiring", {})
+                    cur_response["debug"]["spine_v1"]["phase3_v2_wiring"]["schema_attached"] = True
+                    cur_response["debug"]["spine_v1"]["phase3_v2_wiring"]["schema_source"] = "prev_response"
+        return cur_response
+    except Exception:
+        return cur_response
+
+
+def build_diff_metrics_panel_v2_FIX2AK_SPINE_WIRE(prev_response: dict, cur_response: dict):  # noqa: F811
+    """
+    Additive wrapper around build_diff_metrics_panel_v2:
+      - Attaches metric_schema_frozen to cur_response if missing
+      - Runs spine Phase1+2 publish into cur_response['primary_metrics_canonical']
+      - Emits debug.spine_v1.phase3_v2_wiring diagnostics
+      - Calls legacy build_diff_metrics_panel_v2
+    """
+    try:
+        # Disable switch
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_V2_WIRING") or "").strip().lower()
+        if flag in ("0", "false", "no", "n", "off"):
+            if callable(_FIX2AK_LEGACY_BUILD_DIFF_V2):
+                return _FIX2AK_LEGACY_BUILD_DIFF_V2(prev_response, cur_response)
+            return ([], None)
+
+        if isinstance(cur_response, dict):
+            pre_keys = 0
+            try:
+                pmc = cur_response.get("primary_metrics_canonical")
+                pre_keys = int(len(pmc)) if isinstance(pmc, dict) else 0
+            except Exception:
+                pre_keys = 0
+
+            # Attach schema if needed
+            cur_response = _spine_v1__attach_schema_if_missing(prev_response, cur_response)
+
+            # Run spine (Phase1+2) into this cur_response (best-effort)
+            try:
+                spine_v1_maybe_schema_bind_and_publish(prev_response, cur_response)
+            except Exception as _e_sp:
+                try:
+                    cur_response.setdefault("debug", {})
+                    if isinstance(cur_response.get("debug"), dict):
+                        cur_response["debug"].setdefault("spine_v1", {})
+                        if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                            cur_response["debug"]["spine_v1"].setdefault("phase3_v2_wiring", {})
+                            cur_response["debug"]["spine_v1"]["phase3_v2_wiring"]["spine_error"] = f"{type(_e_sp).__name__}: {_e_sp}"
+                except Exception:
+                    pass
+
+            post_keys = 0
+            try:
+                pmc2 = cur_response.get("primary_metrics_canonical")
+                post_keys = int(len(pmc2)) if isinstance(pmc2, dict) else 0
+            except Exception:
+                post_keys = 0
+
+            # Wiring diag
+            try:
+                cur_response.setdefault("debug", {})
+                if isinstance(cur_response.get("debug"), dict):
+                    cur_response["debug"].setdefault("spine_v1", {})
+                    if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                        cur_response["debug"]["spine_v1"].setdefault("phase3_v2_wiring", {})
+                        cur_response["debug"]["spine_v1"]["phase3_v2_wiring"].update({
+                            "v2_wiring_enabled": True,
+                            "pmc_pre_keys": int(pre_keys),
+                            "pmc_post_keys": int(post_keys),
+                            "pmc_growth": int(post_keys - pre_keys),
+                        })
+            except Exception:
+                pass
+
+        if callable(_FIX2AK_LEGACY_BUILD_DIFF_V2):
+            return _FIX2AK_LEGACY_BUILD_DIFF_V2(prev_response, cur_response)
+
+        return ([], None)
+    except Exception:
+        try:
+            if callable(_FIX2AK_LEGACY_BUILD_DIFF_V2):
+                return _FIX2AK_LEGACY_BUILD_DIFF_V2(prev_response, cur_response)
+        except Exception:
+            pass
+        return ([], None)
+
+
+try:
+    build_diff_metrics_panel_v2 = build_diff_metrics_panel_v2_FIX2AK_SPINE_WIRE  # type: ignore
+except Exception:
+    pass
+
+
+# -------------------------
+# PATCH TRACKER (ADDITIVE): FIX2AK
+# -------------------------
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AK_SPINE_PHASE3_V2_WIRING_V1",
+            "code_version": "fix2ak_spine_phase3_wiring_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "Wrap build_diff_metrics_panel_v2 to attach metric_schema_frozen when missing",
+                "Invoke spine Phase1+2 publish before V2 diff so Current side hydrates deterministically",
+                "Emit debug.spine_v1.phase3_v2_wiring with pre/post key counts and schema attachment provenance",
+                "Disable switch: YUREEKA_SPINE_V1_V2_WIRING=0",
+            ],
+            "risk": "low",
+            "scope": "render/diff wiring only; additive",
+        })
+except Exception:
+    pass
+
+# VERSION STAMP (ADDITIVE): ensure CODE_VERSION matches filename
+try:
+    _cv = str(globals().get("CODE_VERSION") or "")
+    if "fix2ak" not in _cv.lower():
+        CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX2AK_SPINE_PHASE3_V2_WIRING_V1
+# =====================================================================
