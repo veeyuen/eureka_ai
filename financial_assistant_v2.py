@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2as_evo_emit_canonical_for_render_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2au_evo_inj_disable_replay_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -29218,7 +29218,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 'reason': _reason,
                 'content_len': int(_clen) if str(_clen).isdigit() else 0,
             })
-            if (_st or '').lower() in ('success','ok','fetched'):
+            _st_norm = str(_st or '').strip().lower()
+            if (_st_norm in ('success','ok')) or _st_norm.startswith('fetched'):
                 _inj_success_urls.add(_u)
 
         # Ensure success injected urls are represented in cur_bsc (hash identity)
@@ -29307,6 +29308,58 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     else:
         _fix41_force_rebuild_honored = False
     # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX2AU (ADDITIVE): Disable replay fastpath when injected URLs are present
+    #
+    # Problem:
+    # - When hashes match, FIX24 returns a replay payload early, which can preserve
+    #   stale/empty metric_changes.current_value and makes injected URLs ineffective.
+    #
+    # Policy:
+    # - If the caller provided injected URLs (web_context['extra_urls'] after recovery),
+    #   bypass the unchanged replay fastpath and force the "changed" compute path.
+    #
+    # Safety:
+    # - No effect when no injection is present.
+    # - Deterministic: does not change hashing, only the branch selection.
+    # =====================================================================
+    try:
+        _fix2au_inj_present = bool(_inj_extra_urls or [])
+    except Exception:
+        _fix2au_inj_present = False
+
+    if _fix2au_inj_present:
+        unchanged = False
+        try:
+            if isinstance(web_context, dict):
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("fix2au", {})
+                    if isinstance(web_context["debug"].get("fix2au"), dict):
+                        web_context["debug"]["fix2au"].update({
+                            "injection_present": True,
+                            "bypass_replay_fastpath": True,
+                            "inj_count": int(len(_inj_extra_urls or [])),
+                        })
+        except Exception:
+            pass
+    else:
+        try:
+            if isinstance(web_context, dict):
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("fix2au", {})
+                    if isinstance(web_context["debug"].get("fix2au"), dict):
+                        web_context["debug"]["fix2au"].update({
+                            "injection_present": False,
+                            "bypass_replay_fastpath": False,
+                            "inj_count": 0,
+                        })
+        except Exception:
+            pass
+    # =====================================================================
+
 
     if unchanged:
         hashes = {
@@ -36982,3 +37035,15 @@ if _fix2at__orig_run_evolutionary_runner is not None:
 
 # Ensure CODE_VERSION matches this file (override any stale bump blocks)
 CODE_VERSION = "fix2at_evo_hydrate_metric_changes_v1"
+
+
+# =====================================================================
+# PATCH FIX2AU_FINAL_CODE_VERSION_BUMP (ADDITIVE)
+# Ensure CODE_VERSION reflects the latest issued file (append-only override).
+# =====================================================================
+try:
+    CODE_VERSION = "fix2au_evo_inj_disable_replay_v1"
+except Exception:
+    pass
+# =====================================================================
+
