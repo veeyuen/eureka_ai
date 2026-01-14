@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2au_evo_inj_disable_replay_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2av_evo_diff_panel_v2_summary_guard_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -37047,3 +37047,158 @@ except Exception:
     pass
 # =====================================================================
 
+
+
+# ===================== PATCH FIX2AV (ADDITIVE) =====================
+# Goal:
+# - Fix Diff Metrics Panel V2 crash: UnboundLocalError on local 'summary'
+#   (observed when observed-rows promotion error path calls summary.setdefault
+#   before summary is defined).
+# - Ensure Evolution dashboard "Current" column can populate by guaranteeing
+#   build_diff_metrics_panel_v2 returns rows with current_value, even if the
+#   original V2 builder throws.
+#
+# Approach (safe, additive):
+# - Preserve the existing build_diff_metrics_panel_v2 as build_diff_metrics_panel_v2_BASE.
+# - Install a guarded wrapper that:
+#     1) calls BASE normally
+#     2) on any exception, emits a minimal deterministic V2 table using only
+#        schema-aligned primary_metrics_canonical / canonical_metrics already present
+#        in the prev/cur responses (no inference).
+# - Also hard-override CODE_VERSION at the end of file to prevent older patches
+#   from reassigning it (some prior patches append their own override blocks).
+# ===================================================================
+try:
+    if callable(globals().get("build_diff_metrics_panel_v2")) and not callable(globals().get("build_diff_metrics_panel_v2_BASE")):
+        build_diff_metrics_panel_v2_BASE = build_diff_metrics_panel_v2
+except Exception:
+    pass
+
+
+def _fix2av__unwrap_metrics_dict(resp: dict) -> dict:
+    """Best-effort unwrap for schema-aligned metrics dicts (no inference)."""
+    if not isinstance(resp, dict):
+        return {}
+    # Prefer schema-aligned container used by analysis/evolution
+    for k in ("primary_metrics_canonical", "canonical_metrics"):
+        v = resp.get(k)
+        if isinstance(v, dict) and v:
+            return v or {}
+    pr = resp.get("primary_response")
+    if isinstance(pr, dict):
+        for k in ("primary_metrics_canonical", "canonical_metrics"):
+            v = pr.get(k)
+            if isinstance(v, dict) and v:
+                return v or {}
+        res = pr.get("results")
+        if isinstance(res, dict):
+            for k in ("primary_metrics_canonical", "canonical_metrics"):
+                v = res.get(k)
+                if isinstance(v, dict) and v:
+                    return v or {}
+    res2 = resp.get("results")
+    if isinstance(res2, dict):
+        for k in ("primary_metrics_canonical", "canonical_metrics"):
+            v = res2.get(k)
+            if isinstance(v, dict) and v:
+                return v or {}
+    return {}
+
+
+def _fix2av__value_from_metric_obj(obj):
+    """Extract value_norm/value deterministically from schema metric object or raw."""
+    if isinstance(obj, dict):
+        for k in ("value_norm", "value", "point_estimate", "current_value", "previous_value"):
+            if obj.get(k) is not None and obj.get(k) != "":
+                return obj.get(k)
+        vr = obj.get("value_range")
+        if isinstance(vr, dict):
+            lo = vr.get("low")
+            hi = vr.get("high")
+            if lo is not None or hi is not None:
+                return {"low": lo, "high": hi}
+    return obj
+
+
+def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
+    """
+    FIX2AV wrapper around DIFF_PANEL_V2.
+    Always returns (rows, summary) and never raises.
+    """
+    base = globals().get("build_diff_metrics_panel_v2_BASE")
+    _err = None
+    if callable(base):
+        try:
+            rows, summary = base(prev_response, cur_response)
+            if not isinstance(summary, dict):
+                summary = {}
+            if not isinstance(rows, list):
+                rows = []
+            summary.setdefault("fix2av_wrapper", True)
+            summary.setdefault("fix2av_fallback_used", False)
+            return rows, summary
+        except Exception as _e:
+            _err = str(_e)
+    else:
+        _err = "no_base"
+
+    prev_m = _fix2av__unwrap_metrics_dict(prev_response) or {}
+    cur_m = _fix2av__unwrap_metrics_dict(cur_response) or {}
+
+    schema = {}
+    try:
+        schema = globals().get("FROZEN_METRIC_SCHEMA") or globals().get("METRIC_SCHEMA_FROZEN") or {}
+    except Exception:
+        schema = {}
+
+    keys = []
+    try:
+        if isinstance(schema, dict) and schema:
+            keys = [k for k in schema.keys()]
+    except Exception:
+        keys = []
+    if not keys:
+        keys = list(prev_m.keys())
+        for k in cur_m.keys():
+            if k not in prev_m:
+                keys.append(k)
+
+    rows = []
+    joined_by_ck = 0
+    for k in keys:
+        pv = _fix2av__value_from_metric_obj(prev_m.get(k))
+        cv = _fix2av__value_from_metric_obj(cur_m.get(k))
+        if pv is None and cv is None:
+            continue
+        if k in prev_m and k in cur_m:
+            joined_by_ck += 1
+        rows.append({
+            "name": (schema.get(k, {}).get("label") if isinstance(schema.get(k), dict) else "") or k,
+            "canonical_key": k,
+            "match_stage": "canonical_key_fallback" if (k in prev_m and k in cur_m) else ("current_only" if k in cur_m else "previous_only"),
+            "previous_value": pv if pv is not None else "N/A",
+            "current_value": cv if cv is not None else "N/A",
+            "change_pct": None,
+            "change_type": "unknown",
+            "match_confidence": 0.0,
+            "matched_candidate": None,
+            "diag": {
+                "fix2av": True,
+                "fix2av_error": _err,
+            },
+        })
+
+    summary = {
+        "fix2av_wrapper": True,
+        "fix2av_fallback_used": True,
+        "fix2av_error": _err,
+        "rows_total": int(len(rows)),
+        "joined_by_canonical_key": int(joined_by_ck),
+    }
+    return rows, summary
+
+# Hard override CODE_VERSION at EOF (authoritative)
+CODE_VERSION = "fix2av_evo_diff_panel_v2_summary_guard_v1"
+# PATCH TRACKER (append-only)
+# - FIX2AV: Guard DIFF_PANEL_V2 summary UnboundLocalError + deterministic fallback rows to populate Current column.
+# =================== END PATCH FIX2AV (ADDITIVE) ====================
