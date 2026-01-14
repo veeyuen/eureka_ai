@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2aj_evo_runner_injected_priority_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2ak_evo_runner_injected_window_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -34743,3 +34743,342 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 
 # PATCH FIX2AJ END
 
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - FIX2AI: Answer metric selection + keep best candidate on unit mismatch for display
+# - FIX2AJ: Injected URL priority in bind scoring + injected harvesting trace
+# - FIX2AK: Injected windowing / paragraph targeting (context-window boost)
+
+
+# PATCH FIX2AK START
+# ---------------------------------------------------------------------
+# FIX2AK: Injected windowing / paragraph targeting
+# - When injected URLs are present, identify the most relevant injected "window"
+#   using deterministic keyword overlap with schema keywords (and stable seed terms),
+#   then boost candidates in that window during binding.
+# - Surfaces windowing decisions in bind debug under output_debug.bind.injected.windowing.
+#
+# Rationale:
+#   Even with injected priority, pages can contain multiple similar figures; this
+#   patch deterministically narrows attention to the injected paragraph most relevant
+#   to the targeted schema slice, improving the odds that e.g. "19.2 million units"
+#   wins over a baseline "17.8 million units" when it is actually present in the injected page.
+
+try:
+    from typing import List as _FIX2AK_List, Tuple as _FIX2AK_Tuple, Dict as _FIX2AK_Dict
+except Exception:
+    _FIX2AK_List = list
+    _FIX2AK_Tuple = tuple
+    _FIX2AK_Dict = dict
+
+
+def _fix2ak_norm_token(s: str) -> str:
+    try:
+        return str(s or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _fix2ak_keywords_from_schema(schema: dict, max_n: int = 24) -> _FIX2AK_List[str]:
+    kws = []
+    if isinstance(schema, dict):
+        for k, md in schema.items():
+            if not isinstance(md, dict):
+                continue
+            for w in (md.get("keywords") or []):
+                wt = _fix2ak_norm_token(w)
+                if wt and wt not in kws:
+                    kws.append(wt)
+            # include metric name tokens lightly
+            nm = _fix2ak_norm_token(md.get("name") or md.get("metric_name") or "")
+            for wt in nm.split():
+                if wt and wt not in kws:
+                    kws.append(wt)
+            if len(kws) >= max_n:
+                break
+    # stable seeds (ensure basic intent words are always considered)
+    seeds = ["global", "worldwide", "ev", "electric", "vehicle", "vehicles", "sales", "market", "revenue", "share", "2024", "2025", "2026"]
+    for s in seeds:
+        st = _fix2ak_norm_token(s)
+        if st and st not in kws:
+            kws.append(st)
+    return kws[:max_n]
+
+
+def _fix2ak_window_score(context: str, kws: _FIX2AK_List[str]) -> int:
+    c = _fix2ak_norm_token(context)
+    if not c:
+        return 0
+    score = 0
+    # deterministic: count distinct keyword hits
+    for w in (kws or []):
+        if not w:
+            continue
+        if w in c:
+            score += 1
+    return int(score)
+
+
+def _fix2ak_apply_injected_windowing(tagged: _FIX2AK_List[dict], injected_urls_set: set, schema: dict) -> _FIX2AK_Tuple[_FIX2AK_List[dict], dict]:
+    """Tag candidates with _inj_window_boost for injected URLs based on max context overlap."""
+    dbg = {"urls": {}, "kws": []}
+    if not injected_urls_set:
+        return tagged, dbg
+
+    kws = _fix2ak_keywords_from_schema(schema or {}, max_n=24)
+    dbg["kws"] = kws[:]
+
+    # Compute max score per injected url
+    max_by_url = {}
+    for c in (tagged or []):
+        if not isinstance(c, dict):
+            continue
+        u = str(c.get("url") or c.get("source_url") or "")
+        if not u or u not in injected_urls_set:
+            continue
+        if bool(c.get("is_junk")):
+            continue
+        ctx = c.get("context") or c.get("context_snippet") or ""
+        # ignore ultra-short contexts (often nav)
+        if isinstance(ctx, str) and len(ctx.strip()) < 40:
+            continue
+        sc = _fix2ak_window_score(ctx, kws)
+        if sc <= 0:
+            continue
+        if (u not in max_by_url) or (sc > max_by_url[u]):
+            max_by_url[u] = sc
+
+    # Apply boost: candidates at max score for that url
+    out = []
+    for c in (tagged or []):
+        if not isinstance(c, dict):
+            continue
+        c2 = dict(c)
+        u = str(c2.get("url") or c2.get("source_url") or "")
+        boost = 0
+        if u and u in injected_urls_set and u in max_by_url:
+            if not bool(c2.get("is_junk")):
+                ctx = c2.get("context") or c2.get("context_snippet") or ""
+                if isinstance(ctx, str) and len(ctx.strip()) >= 40:
+                    sc = _fix2ak_window_score(ctx, kws)
+                    if sc == max_by_url.get(u):
+                        boost = 1
+        c2["_inj_window_boost"] = int(boost)
+        out.append(c2)
+
+    # Debug summary (deterministic, small)
+    for u, mx in sorted(max_by_url.items()):
+        chosen = []
+        for c in out:
+            uu = str(c.get("url") or c.get("source_url") or "")
+            if uu != u:
+                continue
+            if int(c.get("_inj_window_boost") or 0) != 1:
+                continue
+            cid = str(c.get("candidate_id") or "")
+            ah = str(c.get("anchor_hash") or "")
+            key = cid or (ah[:16] if ah else "")
+            if key:
+                chosen.append(key)
+            if len(chosen) >= 6:
+                break
+        dbg["urls"][u] = {"max_score": int(mx), "chosen": chosen[:6]}
+
+    return out, dbg
+
+
+def _fix2ak_candidate_score(cand: dict, kws: _FIX2AK_List[str], expect_uf: str) -> _FIX2AK_Tuple[int, int, int, int, str]:
+    """Deterministic score tuple:
+    (inj_priority, inj_window_boost, keyword_hits, unit_match, anchor_hash)
+    """
+    try:
+        injp = 1 if int(cand.get("_inj_priority") or 0) == 1 else 0
+    except Exception:
+        injp = 0
+    try:
+        wboost = 1 if int(cand.get("_inj_window_boost") or 0) == 1 else 0
+    except Exception:
+        wboost = 0
+    try:
+        hits, unit_match, ah = _fix2ag_candidate_score(cand, kws, expect_uf)
+        try:
+            hits = int(hits)
+        except Exception:
+            hits = 0
+        try:
+            unit_match = int(unit_match)
+        except Exception:
+            unit_match = 0
+        ah = str(ah or "")
+        return injp, wboost, hits, unit_match, ah
+    except Exception:
+        return injp, wboost, 0, 0, str(cand.get("anchor_hash") or "")
+
+
+def _fix2ak_bind_candidates_to_schema(schema: dict, candidates: list, injected_urls_set: set = None) -> _FIX2AK_Tuple[dict, dict]:
+    """FIX2AK bind: FIX2AJ + injected windowing boost."""
+    if injected_urls_set is None:
+        injected_urls_set = set()
+
+    # Ensure injected tag
+    tagged = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            tagged.append(c2)
+        except Exception:
+            tagged.append(c)
+
+    # Apply windowing boost for injected
+    tagged2, wnd_dbg = _fix2ak_apply_injected_windowing(tagged, injected_urls_set, schema or {})
+
+    dbg = {"candidates_total": int(len(tagged2)), "bound": 0, "not_found": 0, "unit_mismatch": 0, "rows": {}, "injected": {}}
+    try:
+        inj_cnt = 0
+        for c in tagged2:
+            try:
+                if int(c.get("_inj_priority") or 0) == 1:
+                    inj_cnt += 1
+            except Exception:
+                pass
+        dbg["injected"] = {"urls_count": int(len(injected_urls_set)), "candidates_total": int(inj_cnt), "bound": 0, "windowing": wnd_dbg}
+    except Exception:
+        dbg["injected"] = {"urls_count": int(len(injected_urls_set)), "candidates_total": 0, "bound": 0, "windowing": wnd_dbg}
+
+    cur = {}
+    if not isinstance(schema, dict):
+        return cur, dbg
+
+    for ck, md in (schema or {}).items():
+        try:
+            ckey = str(md.get("canonical_key") or ck)
+            label = str(md.get("name") or md.get("metric_name") or ckey)
+
+            kws = md.get("keywords") or []
+            if not isinstance(kws, list):
+                kws = []
+            kws = [str(x).strip().lower() for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            expect_uf = str(md.get("unit_family") or md.get("dimension") or "").strip().lower()
+            if expect_uf in ("unit_sales", "units", "count_units"):
+                expect_uf = "magnitude"
+            if expect_uf == "percent":
+                expect_uf = "percent"
+
+            best = None
+            best_score = (-1, -1, -1, -1, "")
+            for cand in (tagged2 or []):
+                if not isinstance(cand, dict):
+                    continue
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+                score = _fix2ak_candidate_score(cand, kws, expect_uf)
+                if score > best_score:
+                    best_score = score
+                    best = cand
+
+            if best is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {"status": "not_found", "expect_unit_family": expect_uf, "keywords": kws[:10]}
+                continue
+
+            # Normalize / extract value_norm
+            v_norm = best.get("value_norm")
+            if v_norm is None:
+                v_norm = best.get("value")
+            try:
+                v_norm = float(v_norm)
+            except Exception:
+                v_norm = v_norm
+
+            # Unit mismatch handling: keep best for display (as FIX2AI/FIX2AJ)
+            cand_uf = str(best.get("unit_family") or "").strip().lower()
+            if expect_uf and cand_uf and cand_uf != expect_uf:
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "chosen": {
+                        "url": best.get("url") or best.get("source_url"),
+                        "raw": (best.get("raw") or "")[:120],
+                        "context": (best.get("context") or best.get("context_snippet") or "")[:160],
+                        "unit_tag": best.get("unit_tag"),
+                        "unit_family": best.get("unit_family"),
+                        "inj_priority": int(best.get("_inj_priority") or 0),
+                        "inj_window_boost": int(best.get("_inj_window_boost") or 0),
+                    },
+                    "score": {"inj_priority": best_score[0], "inj_window_boost": best_score[1], "keyword_hits": best_score[2], "unit_match": best_score[3]},
+                }
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": best.get("raw") or "",
+                    "unit_family": best.get("unit_family"),
+                    "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                    "source_url": best.get("url") or best.get("source_url"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "context": best.get("context") or best.get("context_snippet") or "",
+                    "unit_mismatch": True,
+                    "inj_priority": int(best.get("_inj_priority") or 0),
+                    "inj_window_boost": int(best.get("_inj_window_boost") or 0),
+                }
+                continue
+
+            dbg["bound"] += 1
+            if int(best.get("_inj_priority") or 0) == 1:
+                try:
+                    dbg["injected"]["bound"] = int(dbg["injected"].get("bound") or 0) + 1
+                except Exception:
+                    pass
+
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "chosen": {
+                    "url": best.get("url") or best.get("source_url"),
+                    "raw": (best.get("raw") or "")[:120],
+                    "unit_family": best.get("unit_family"),
+                    "inj_priority": int(best.get("_inj_priority") or 0),
+                    "inj_window_boost": int(best.get("_inj_window_boost") or 0),
+                },
+                "score": {"inj_priority": best_score[0], "inj_window_boost": best_score[1], "keyword_hits": best_score[2], "unit_match": best_score[3]},
+            }
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": best.get("raw") or "",
+                "unit_family": best.get("unit_family"),
+                "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                "source_url": best.get("url") or best.get("source_url"),
+                "anchor_hash": best.get("anchor_hash"),
+                "context": best.get("context") or best.get("context_snippet") or "",
+                "unit_mismatch": False,
+                "inj_priority": int(best.get("_inj_priority") or 0),
+                "inj_window_boost": int(best.get("_inj_window_boost") or 0),
+            }
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "exception", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    return cur, dbg
+
+
+# Activate FIX2AK by monkeypatching the bind function used by the runner
+try:
+    globals()["_fix2aj_bind_candidates_to_schema"] = _fix2ak_bind_candidates_to_schema
+    globals()["_FIX2AK_ACTIVE"] = True
+except Exception:
+    pass
+
+# PATCH FIX2AK END
