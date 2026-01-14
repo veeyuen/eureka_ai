@@ -35489,3 +35489,370 @@ except Exception:
 
 
 # ==============================================================================
+
+
+
+# ==============================================================================
+# PATCH FIX2AQ_SPINE_PHASE4_3_METRIC_CHANGES_REBUILD_V1 (ADDITIVE)
+#
+# Goal: "UI rebuild" strictly for Evolutionary output contract:
+#   - deterministically rebuild results.metric_changes from metric_schema_frozen + primary_metrics_canonical
+#   - keep Streamlit/UI untouched; only reshape Evolution output JSON.
+#
+# This patch is intentionally post-processing only.
+
+try:
+    _FIX2AQ_BASE = run_source_anchored_evolution  # may already be wrapped by FIX2AP etc.
+except Exception:
+    _FIX2AQ_BASE = None
+
+
+def _fix2aq_safe_float(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip()
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _fix2aq_norm_na(v) -> bool:
+    if v is None:
+        return True
+    s = str(v).strip().lower()
+    return (not s) or (s in ("n/a", "na", "none", "null", "-", "nan"))
+
+
+def _fix2aq_extract_schema_items(schema_obj):
+    """
+    Return a list of schema metric dicts in deterministic order.
+    Supports:
+      - list of dicts
+      - dict with 'metrics' / 'rows' / 'schema' list
+      - dict keyed by canonical_key
+    """
+    if isinstance(schema_obj, list):
+        return [m for m in schema_obj if isinstance(m, dict)]
+    if isinstance(schema_obj, dict):
+        for k in ("metrics", "rows", "schema", "items"):
+            v = schema_obj.get(k)
+            if isinstance(v, list):
+                return [m for m in v if isinstance(m, dict)]
+        # dict keyed by canonical key -> spec dict
+        out = []
+        for ck, spec in schema_obj.items():
+            if isinstance(spec, dict):
+                d = dict(spec)
+                d.setdefault("canonical_key", ck)
+                out.append(d)
+        # deterministic order by canonical_key if no explicit list
+        out.sort(key=lambda d: str(d.get("canonical_key") or ""))
+        return out
+    return []
+
+
+def _fix2aq_get_pmc(out: dict) -> dict:
+    if not isinstance(out, dict):
+        return {}
+    pmc = out.get("primary_metrics_canonical") if isinstance(out.get("primary_metrics_canonical"), dict) else None
+    if pmc is None and isinstance(out.get("results"), dict):
+        pmc = out["results"].get("primary_metrics_canonical") if isinstance(out["results"].get("primary_metrics_canonical"), dict) else None
+    if pmc is None and isinstance(out.get("debug"), dict):
+        dbg = out["debug"].get("canonical_for_render_v1")
+        if isinstance(dbg, dict) and isinstance(dbg.get("primary_metrics_canonical"), dict):
+            pmc = dbg.get("primary_metrics_canonical")
+    return pmc if isinstance(pmc, dict) else {}
+
+
+def _fix2aq_set_canonical_for_render(out: dict, pmc: dict):
+    try:
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"].setdefault("canonical_for_render_v1", {})
+            if isinstance(out["debug"].get("canonical_for_render_v1"), dict):
+                out["debug"]["canonical_for_render_v1"].update({
+                    "present": True,
+                    "applied": True,
+                    "reason": "fix2aq_metric_changes_rebuild",
+                    "rebuilt_count": int(len(pmc or {})),
+                    "keys_sample": list(sorted(list((pmc or {}).keys())))[:12],
+                })
+    except Exception:
+        pass
+
+    try:
+        out.setdefault("results", {})
+        if not isinstance(out.get("results"), dict):
+            out["results"] = {}
+        out["results"].setdefault("output_debug", {})
+        if isinstance(out["results"].get("output_debug"), dict):
+            out["results"]["output_debug"].setdefault("canonical_for_render_v1", {})
+            if isinstance(out["results"]["output_debug"].get("canonical_for_render_v1"), dict):
+                out["results"]["output_debug"]["canonical_for_render_v1"].update({
+                    "present": True,
+                    "applied": True,
+                    "reason": "fix2aq_metric_changes_rebuild",
+                    "rebuilt_count": int(len(pmc or {})),
+                    "keys_sample": list(sorted(list((pmc or {}).keys())))[:12],
+                })
+    except Exception:
+        pass
+
+
+def _fix2aq_format_current(m: dict):
+    """
+    Return (current_value, current_unit, current_value_norm) from a pmc metric dict.
+    Keep current_value as number when possible (UI can format), else string.
+    """
+    if not isinstance(m, dict):
+        return ("N/A", "", None)
+    v = m.get("value_norm")
+    if v is None:
+        v = m.get("value")
+    u = m.get("unit") or m.get("unit_tag") or m.get("base_unit") or ""
+    v_norm = _fix2aq_safe_float(v)
+    if v is None or _fix2aq_norm_na(v):
+        return ("N/A", u, v_norm)
+    # keep numeric types if already numeric
+    if isinstance(v, (int, float)):
+        return (v, u, v_norm)
+    # if numeric-like string, return float for stability
+    if v_norm is not None and str(v).strip().replace(".","",1).replace("-","",1).isdigit() is False:
+        # non-trivial string (e.g., "30.03 M") keep as string
+        return (str(v).strip(), u, v_norm)
+    if v_norm is not None:
+        return (v_norm, u, v_norm)
+    return (str(v).strip(), u, v_norm)
+
+
+def _fix2aq_build_prev_map(out: dict) -> dict:
+    """
+    Extract previous_value / display fields from existing metric_changes, if present.
+    """
+    prev_map = {}
+    rows = None
+    if isinstance(out.get("results"), dict) and isinstance(out["results"].get("metric_changes"), list):
+        rows = out["results"].get("metric_changes")
+    elif isinstance(out.get("metric_changes"), list):
+        rows = out.get("metric_changes")
+    if not isinstance(rows, list):
+        return prev_map
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        ck = r.get("canonical_key") or r.get("canonical") or r.get("key")
+        if not ck:
+            continue
+        prev_map[str(ck)] = r
+    return prev_map
+
+
+def _fix2aq_rebuild_metric_changes(out: dict) -> dict:
+    if not isinstance(out, dict):
+        return out
+    out.setdefault("results", {})
+    if not isinstance(out.get("results"), dict):
+        out["results"] = {}
+
+    schema = out.get("metric_schema_frozen")
+    if schema is None and isinstance(out.get("results"), dict):
+        schema = out["results"].get("metric_schema_frozen")
+    schema_items = _fix2aq_extract_schema_items(schema)
+    pmc = _fix2aq_get_pmc(out)
+
+    # Publish pmc into both locations for maximum compatibility
+    try:
+        if pmc and not (isinstance(out.get("primary_metrics_canonical"), dict) and out.get("primary_metrics_canonical")):
+            out["primary_metrics_canonical"] = pmc
+        if pmc and not (isinstance(out["results"].get("primary_metrics_canonical"), dict) and out["results"].get("primary_metrics_canonical")):
+            out["results"]["primary_metrics_canonical"] = pmc
+    except Exception:
+        pass
+
+    prev_map = _fix2aq_build_prev_map(out)
+
+    new_rows = []
+    hydrated = 0
+    total = 0
+    # Deterministic rebuild from schema order; if schema missing, fall back to pmc keys
+    if schema_items:
+        ordered = schema_items
+    else:
+        ordered = [{"canonical_key": ck, "display_name": ck} for ck in sorted(list(pmc.keys()))]
+
+    for spec in ordered:
+        if not isinstance(spec, dict):
+            continue
+        ck = spec.get("canonical_key") or spec.get("key") or spec.get("id") or ""
+        if not ck:
+            continue
+        ck = str(ck)
+
+        base_row = prev_map.get(ck, {})
+        metric_name = spec.get("metric_name") or spec.get("display_name") or spec.get("name") or base_row.get("metric_name") or base_row.get("label") or ck
+
+        m = pmc.get(ck)
+        cur_val, cur_unit, cur_val_norm = _fix2aq_format_current(m)
+
+        # previous fields best-effort
+        prev_val = base_row.get("previous_value")
+        prev_unit = base_row.get("previous_unit") or base_row.get("prev_unit")
+        prev_norm = _fix2aq_safe_float(base_row.get("previous_value_norm") or base_row.get("prev_value_norm") or prev_val)
+
+        # compute change_type deterministically
+        change_type = base_row.get("change_type") or base_row.get("status")
+        if _fix2aq_norm_na(cur_val):
+            change_type = "not_found"
+        else:
+            if prev_val is None or _fix2aq_norm_na(prev_val):
+                change_type = "current_only"
+            else:
+                if (cur_val_norm is not None) and (prev_norm is not None):
+                    change_type = "unchanged" if abs(cur_val_norm - prev_norm) < 1e-12 else "changed"
+                else:
+                    change_type = "unchanged" if str(cur_val).strip() == str(prev_val).strip() else "changed"
+
+        row = {
+            "metric_name": metric_name,
+            "canonical_key": ck,
+            "previous_value": prev_val if prev_val is not None else base_row.get("previous") or base_row.get("prev_value"),
+            "previous_unit": prev_unit,
+            "current_value": cur_val,
+            "current_unit": cur_unit,
+            "change_type": change_type,
+        }
+
+        # keep extra fields from base_row if present (audit-safe)
+        for k in ("group", "category", "unit_mismatch", "notes", "source_url", "year"):
+            if k in base_row and k not in row:
+                row[k] = base_row.get(k)
+
+        row.setdefault("diag", {})
+        if isinstance(row.get("diag"), dict):
+            row["diag"].setdefault("fix2aq", {})
+            if isinstance(row["diag"].get("fix2aq"), dict):
+                row["diag"]["fix2aq"].update({
+                    "rebuilt_from_schema": bool(schema_items),
+                    "had_pmc_value": bool(isinstance(m, dict) and not _fix2aq_norm_na(cur_val)),
+                    "pmc_unit": cur_unit,
+                })
+
+        total += 1
+        if not _fix2aq_norm_na(cur_val):
+            hydrated += 1
+        new_rows.append(row)
+
+    # publish rebuilt rows where the UI reads
+    out["results"]["metric_changes"] = new_rows
+    out["metric_changes"] = new_rows  # compatibility
+
+    # canonical_for_render markers (stop "missing_output_debug" diagnoses)
+    _fix2aq_set_canonical_for_render(out, pmc)
+
+    # update summary
+    try:
+        out["results"].setdefault("summary", {})
+        if isinstance(out["results"].get("summary"), dict):
+            out["results"]["summary"].update({
+                "total_metrics": int(total),
+                "metrics_found": int(hydrated),
+            })
+    except Exception:
+        pass
+
+    # audit debug counters
+    try:
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"].setdefault("fix2aq_phase4_3", {})
+            if isinstance(out["debug"].get("fix2aq_phase4_3"), dict):
+                out["debug"]["fix2aq_phase4_3"].update({
+                    "schema_items": int(len(schema_items or [])),
+                    "pmc_count": int(len(pmc or {})),
+                    "rebuilt_rows": int(total),
+                    "rebuilt_rows_with_current": int(hydrated),
+                    "wrote_results_metric_changes": True,
+                })
+    except Exception:
+        pass
+
+    return out
+
+
+def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+    """
+    Phase 4.3: rebuild Evolution output rows deterministically from schema + pmc.
+    This intentionally leaves Streamlit/UI unchanged; it only rebuilds the Evolution output contract.
+    """
+    try:
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_PHASE4_3_EVO_METRIC_CHANGES_REBUILD") or "").strip().lower()
+        if flag in ("0", "false", "no", "n", "off"):
+            if callable(_FIX2AQ_BASE):
+                out0 = _FIX2AQ_BASE(previous_data, web_context=web_context)
+                if isinstance(out0, dict):
+                    out0.setdefault("code_version", CODE_VERSION)
+                return out0
+            return {"status":"failed","message":"FIX2AQ: base evolution runner not callable","results":{"metric_changes":[]}}
+
+        if not callable(_FIX2AQ_BASE):
+            return {"status":"failed","message":"FIX2AQ: base evolution runner not callable","results":{"metric_changes":[]}}
+
+        out = _FIX2AQ_BASE(previous_data, web_context=web_context)
+        if not isinstance(out, dict):
+            return out
+
+        out.setdefault("code_version", CODE_VERSION)
+        out = _fix2aq_rebuild_metric_changes(out)
+        return out
+
+    except Exception as e:
+        try:
+            if callable(_FIX2AQ_BASE):
+                out0 = _FIX2AQ_BASE(previous_data, web_context=web_context)
+                if isinstance(out0, dict):
+                    out0.setdefault("code_version", CODE_VERSION)
+                    out0.setdefault("debug", {})
+                    if isinstance(out0.get("debug"), dict):
+                        out0["debug"].setdefault("fix2aq_phase4_3", {})
+                        if isinstance(out0["debug"].get("fix2aq_phase4_3"), dict):
+                            out0["debug"]["fix2aq_phase4_3"].update({"error": str(e)})
+                    return _fix2aq_rebuild_metric_changes(out0)
+        except Exception:
+            pass
+        return {"status":"failed","message":"FIX2AQ: exception in wrapper","results":{"metric_changes":[]},"debug":{"error":str(e)}}
+
+# END PATCH FIX2AQ_SPINE_PHASE4_3_METRIC_CHANGES_REBUILD_V1
+# ==============================================================================
+
+
+# PATCH FIX2AQ_CODE_VERSION (ADDITIVE)
+CODE_VERSION = "fix2aq_spine_phase4_3_evo_metric_changes_rebuild_v1"
+# END PATCH FIX2AQ_CODE_VERSION
+
+
+# PATCH FIX2AQ_PATCH_TRACKER (ADDITIVE)
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AQ_SPINE_PHASE4_3_METRIC_CHANGES_REBUILD_V1",
+            "code_version": "fix2aq_spine_phase4_3_evo_metric_changes_rebuild_v1",
+            "adds": [
+                "Deterministically rebuild results.metric_changes from metric_schema_frozen + primary_metrics_canonical (Evolution output-only UI rebuild).",
+                "Publish canonical_for_render_v1 markers into both out.debug and out.results.output_debug.",
+                "Mirror primary_metrics_canonical into results.primary_metrics_canonical for compatibility.",
+                "Update results.summary.total_metrics and results.summary.metrics_found based on rebuilt rows."
+            ],
+            "safety": "Post-processing only; does not alter fetch/extraction; does not touch Streamlit UI; only rebuilds Evolution output contract.",
+        })
+except Exception:
+    pass
+# END PATCH FIX2AQ_PATCH_TRACKER
