@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2ak_evo_runner_injected_window_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2al_evo_runner_injected_fetch_assure_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -34193,16 +34193,243 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 
 
 # ---------------------------------------------------------------------
-# PATCH TRACKER (append-only)
+# 
+# =====================================================================
+# PATCH FIX2AL_EVO_RUNNER_INJECTED_FETCH_ASSURE_V1 (ADDITIVE)
+# Purpose:
+#   - Eliminate injected-url "prehash_placeholder" / empty-text cases from silently producing 0 candidates.
+#   - Fix fallback fetch wrapper double-call bug (fetch_url_content called twice).
+#   - Add deterministic injected refetch retry path (GitHub blob/raw hint).
+#   - Surface injected fetch diagnostics (text_len, retries, final status) in fetch dbg.
+# Notes:
+#   - Additive-only: we override _fix2ag_fetch_sources via globals() assignment so the runner stays unchanged.
+# =====================================================================
+
+def _fix2al_maybe_github_raw(u: str) -> str:
+    try:
+        s = str(u or "").strip()
+        if not s:
+            return s
+        # GitHub HTML "blob" page -> add raw=1 as a safe deterministic hint (still same page, server returns raw content).
+        if "github.com/" in s and "/blob/" in s and "raw=1" not in s:
+            if "?" in s:
+                return s + "&raw=1"
+            return s + "?raw=1"
+        return s
+    except Exception:
+        return str(u or "").strip()
+
+
+def _fix2al_fetch_sources(urls: List[str], timeout: int = 25, injected_urls: List[str] = None) -> Tuple[Dict[str, str], List[dict], dict]:
+    scraped_content: Dict[str, str] = {}
+    source_results: List[dict] = []
+
+    inj_set = set()
+    try:
+        inj_set = set([str(x).strip() for x in (injected_urls or []) if str(x).strip()])
+    except Exception:
+        inj_set = set()
+    # If caller didn't provide injected_urls (runner calls _fix2ag_fetch_sources(urls,...)), infer injected as urls not in last baseline set.
+    if not inj_set:
+        try:
+            _base = set([str(x).strip() for x in (globals().get('_fix2al_last_baseline_urls') or []) if str(x).strip()])
+            _all = set([str(x).strip() for x in (urls or []) if str(x).strip()])
+            _guess = sorted(list(_all.difference(_base)))
+            inj_set = set(_guess)
+        except Exception:
+            pass
+
+    dbg = {
+        "urls_requested": int(len(urls or [])),
+        "urls_fetched": 0,
+        "status_counts": {},
+        "samples": [],
+        # Injected-specific diagnostics
+        "injected": {
+            "urls_expected": sorted(list(inj_set))[:20],
+            "attempted": [],
+            "refetch_attempts": 0,
+            "refetch_success": 0,
+            "refetch_fail": 0,
+        },
+    }
+
+    # Prefer an existing status-aware fetcher.
+    fn_fetch = globals().get("fetch_url_content_with_status")
+    if not callable(fn_fetch):
+        # Minimal fallback: try fetch_url_content if it exists (ensure we call only once per URL).
+        fn_simple = globals().get("fetch_url_content")
+        if callable(fn_simple):
+            def _one_shot(u: str, timeout: int = timeout):
+                _t = fn_simple(u)
+                return (_t, "success" if (_t is not None and str(_t).strip()) else "failed:no_text")
+            fn_fetch = _one_shot
+
+    def _record_status(detail: str):
+        try:
+            dbg["status_counts"][detail] = int(dbg["status_counts"].get(detail, 0)) + 1
+        except Exception:
+            pass
+
+    def _fetch_one(u: str) -> Tuple[str, str]:
+        txt = None
+        status_detail = "missing_fetcher"
+        try:
+            if callable(fn_fetch):
+                txt, status_detail = fn_fetch(u, timeout=timeout)
+            else:
+                txt, status_detail = None, "missing_fetcher"
+        except Exception as e:
+            txt, status_detail = None, f"exception:{type(e).__name__}"
+        if not status_detail:
+            status_detail = "unknown"
+        return txt, status_detail
+
+    # First pass
+    for u in (urls or []):
+        u = str(u or "").strip()
+        if not u:
+            continue
+
+        txt, status_detail = _fetch_one(u)
+        _record_status(status_detail)
+
+        clean_len = int(len(txt)) if isinstance(txt, str) else 0
+        if isinstance(txt, str) and txt.strip() and len(txt.strip()) >= 200:
+            scraped_content[u] = txt
+            dbg["urls_fetched"] += 1
+
+        sr = {
+            "source_url": u,
+            "status_detail": status_detail,
+            "clean_text_len": clean_len,
+            "is_injected": bool(u in inj_set),
+        }
+        source_results.append(sr)
+        if len(dbg["samples"]) < 6:
+            dbg["samples"].append(sr)
+
+        # Injected trace row
+        if u in inj_set:
+            try:
+                dbg["injected"]["attempted"].append({
+                    "url": u,
+                    "status_detail": status_detail,
+                    "text_len": clean_len,
+                })
+            except Exception:
+                pass
+
+    # Second pass: injected assurance (only for injected URLs with empty/too-short text)
+    # This is intentionally conservative and deterministic.
+    if inj_set:
+        # Build quick index to update source_results entries in-place.
+        idx = {}
+        for i, sr in enumerate(source_results):
+            try:
+                idx[str(sr.get("source_url") or "")] = i
+            except Exception:
+                pass
+
+        for u in sorted(list(inj_set)):
+            try:
+                sr_i = idx.get(u)
+                if sr_i is None:
+                    continue
+                sr = source_results[sr_i]
+                if int(sr.get("clean_text_len") or 0) >= 200:
+                    continue  # already good
+            except Exception:
+                continue
+
+            # Attempt deterministic GitHub raw hint
+            u2 = _fix2al_maybe_github_raw(u)
+            if u2 and u2 != u:
+                dbg["injected"]["refetch_attempts"] += 1
+                txt2, detail2 = _fetch_one(u2)
+                _record_status(detail2)
+                clean2 = int(len(txt2)) if isinstance(txt2, str) else 0
+
+                # Update debug record
+                try:
+                    dbg["injected"]["attempted"].append({
+                        "url": u2,
+                        "status_detail": detail2,
+                        "text_len": clean2,
+                        "refetch_of": u,
+                    })
+                except Exception:
+                    pass
+
+                if isinstance(txt2, str) and txt2.strip() and len(txt2.strip()) >= 200:
+                    scraped_content[u2] = txt2
+                    dbg["urls_fetched"] += 1
+                    dbg["injected"]["refetch_success"] += 1
+                    # Update source_results entry to reflect that injected content was recovered via u2.
+                    try:
+                        source_results[sr_i].update({
+                            "status_detail": f"{source_results[sr_i].get('status_detail')}|refetch:{detail2}",
+                            "clean_text_len": max(int(source_results[sr_i].get("clean_text_len") or 0), clean2),
+                            "refetch_url": u2,
+                        })
+                    except Exception:
+                        pass
+                else:
+                    dbg["injected"]["refetch_fail"] += 1
+
+    return scraped_content, source_results, dbg
+
+
+
+# Track baseline URLs used by the runner so fetch layer can infer which URLs are injected.
+try:
+    if callable(globals().get("_fix2ag_get_baseline_urls")) and not callable(globals().get("_fix2al_get_baseline_urls_wrapped")):
+        _fix2al_orig_get_baseline_urls = globals().get("_fix2ag_get_baseline_urls")
+        def _fix2al_get_baseline_urls_wrapped(previous_data: dict) -> List[str]:
+            _out = []
+            try:
+                _out = _fix2al_orig_get_baseline_urls(previous_data)
+            except Exception:
+                _out = []
+            try:
+                globals()["_fix2al_last_baseline_urls"] = list(_out or [])
+            except Exception:
+                pass
+            return _out
+        globals()["_fix2al_get_baseline_urls_wrapped"] = _fix2al_get_baseline_urls_wrapped
+        globals()["_fix2ag_get_baseline_urls"] = _fix2al_get_baseline_urls_wrapped
+except Exception:
+    pass
+
+
+# Override the runner's fetch implementation without touching the runner itself.
+try:
+    if callable(globals().get("_fix2ag_fetch_sources")):
+        globals()["_fix2ag_fetch_sources"] = _fix2al_fetch_sources
+except Exception:
+    pass
+
+
+PATCH TRACKER (append-only)
 # ---------------------------------------------------------------------
 # - FIX2AG: Clean evolutionary runner (single authoritative execution path)
 # - FIX2AH: Deterministic schema targeting fallback + v2 emitter + always-on output_debug
+# - FIX2AI: Answer metric selection + roles; keep best candidate even on unit_mismatch (Current no longer blank)
+# - FIX2AJ: Injected URL priority in binding + injected harvesting trace
+# - FIX2AK: Injected windowing / paragraph targeting
+# - FIX2AL: Injected fetch assurance (no placeholder), fix fallback double-call, deterministic GitHub raw retry + injected fetch diagnostics
 
 # ---------------------------------------------------------------------
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
     CODE_VERSION = "fix2ah_evo_runner_schema_target_v1"
+except Exception:
+    pass
+
+# PATCH FIX2AL (ADD): ensure CODE_VERSION reflects latest issued file
+try:
+    CODE_VERSION = "fix2al_evo_runner_injected_fetch_assure_v1"
 except Exception:
     pass
 
