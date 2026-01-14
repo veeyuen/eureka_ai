@@ -34983,3 +34983,239 @@ try:
 except Exception:
     pass
 
+
+
+# ==============================================================================
+# PATCH FIX2AO_SPINE_PHASE4_1_RENDER_CONTRACT_PUBLISH_V1 (ADDITIVE)
+#
+# Purpose:
+# - Evolution UI still reads "Current" primarily from results.metric_changes[*].current_value
+#   and from debug-derived canonical_for_render signals.
+# - Our spine output (primary_metrics_canonical) was not being built/published for Evolution
+#   runs because metric_schema_frozen is not attached to the dict returned by Evolution runner.
+# - This patch post-processes Evolution outputs to:
+#     1) attach metric_schema_frozen from previous_data (rehydrated) when missing
+#     2) ensure baseline_sources_cache is available for candidate collection
+#     3) run spine_v1 schema-bind + phase2 normalization + phase4 schema-key enforcement
+#     4) publish canonical_for_render_v1 in BOTH output.debug and output.results.output_debug
+#     5) hydrate metric_changes[*].current_value/current_unit from primary_metrics_canonical
+#
+# Safety:
+# - Additive wrapper only; does not modify fetch/hashing/fastpath logic.
+# - Only enriches the returned Evolution output dict (render/publish contract).
+#
+# Toggle:
+# - Disable with YUREEKA_SPINE_V1_PHASE4_1_PUBLISH=0
+# ==============================================================================
+
+try:
+    _FIX2AO_BASE = run_source_anchored_evolution
+except Exception:
+    _FIX2AO_BASE = None
+
+def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+    try:
+        # Allow disable
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_PHASE4_1_PUBLISH") or "").strip().lower()
+        if flag in ("0", "false", "no", "n", "off"):
+            if callable(_FIX2AO_BASE):
+                out0 = _FIX2AO_BASE(previous_data, web_context=web_context)
+                if isinstance(out0, dict):
+                    out0.setdefault("code_version", CODE_VERSION)
+                return out0
+            return {"status":"failed","message":"FIX2AO: base evolution runner not callable","metric_changes":[],"debug":{"fix2ao":False}}
+
+        if not callable(_FIX2AO_BASE):
+            return {"status":"failed","message":"FIX2AO: base evolution runner not callable","metric_changes":[],"debug":{"fix2ao":False}}
+
+        out = _FIX2AO_BASE(previous_data, web_context=web_context)
+        if not isinstance(out, dict):
+            return out
+
+        out.setdefault("code_version", CODE_VERSION)
+
+        # Rehydrate prev_full (contains metric_schema_frozen) for parity
+        prev_full = None
+        try:
+            prev_full = _fix24_get_prev_full_payload(previous_data or {})
+        except Exception:
+            prev_full = None
+
+        schema = None
+        try:
+            if isinstance(out.get("metric_schema_frozen"), dict) and out.get("metric_schema_frozen"):
+                schema = out.get("metric_schema_frozen")
+            elif isinstance(prev_full, dict) and isinstance(prev_full.get("metric_schema_frozen"), dict) and prev_full.get("metric_schema_frozen"):
+                schema = prev_full.get("metric_schema_frozen")
+                out["metric_schema_frozen"] = schema
+        except Exception:
+            pass
+
+        # Ensure baseline_sources_cache is available for spine candidate collection
+        try:
+            if not isinstance(out.get("baseline_sources_cache"), list) or not out.get("baseline_sources_cache"):
+                bsc = out.get("baseline_sources_cache_current")
+                if isinstance(bsc, list) and bsc:
+                    out["baseline_sources_cache"] = bsc
+        except Exception:
+            pass
+
+        # Run spine (Phase 1+2) if schema is present
+        _spine_applied = False
+        try:
+            if isinstance(schema, dict) and schema:
+                # Ensure spine sees schema
+                out["metric_schema_frozen"] = schema
+                _spine_applied = bool(spine_v1_maybe_schema_bind_and_publish(prev_full or {}, out))
+        except Exception:
+            _spine_applied = False
+
+        # Phase 4 enforce schema keys (schema-authoritative pmc)
+        try:
+            if isinstance(schema, dict) and schema:
+                out = spine_v1_phase4_enforce_schema_keys(prev_full or {}, out) or out
+        except Exception:
+            pass
+
+        pmc = out.get("primary_metrics_canonical") if isinstance(out.get("primary_metrics_canonical"), dict) else {}
+
+        # Publish canonical_for_render_v1 into output.debug (used by existing diagnosis blocks)
+        try:
+            out.setdefault("debug", {})
+            if isinstance(out.get("debug"), dict):
+                out["debug"]["canonical_for_render_v1"] = {
+                    "applied": True,
+                    "reason": "fix2ao_publish_from_spine_primary_metrics_canonical",
+                    "rebuilt_count": int(len(pmc or {})),
+                    "keys_sample": list(sorted(list((pmc or {}).keys())))[:12],
+                    "spine_applied": bool(_spine_applied),
+                }
+        except Exception:
+            pass
+
+        # Publish canonical_for_render_v1 into output.results.output_debug (older UI expectations)
+        try:
+            out.setdefault("results", {})
+            if isinstance(out.get("results"), dict):
+                out["results"].setdefault("output_debug", {})
+                if isinstance(out["results"].get("output_debug"), dict):
+                    out["results"]["output_debug"]["canonical_for_render_v1"] = {
+                        "present": True,
+                        "applied": True,
+                        "reason": "fix2ao_publish_from_spine_primary_metrics_canonical",
+                        "rebuilt_count": int(len(pmc or {})),
+                        "keys_sample": list(sorted(list((pmc or {}).keys())))[:12],
+                    }
+        except Exception:
+            pass
+
+        # Hydrate metric_changes current_value from schema-keyed pmc (final-mile fix)
+        hydrated = 0
+        missed = 0
+        try:
+            rows = out.get("metric_changes")
+            if isinstance(rows, list) and isinstance(pmc, dict) and pmc:
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    ck = row.get("canonical_key") or row.get("canonical") or row.get("key") or ""
+                    if not ck:
+                        continue
+                    curv = row.get("current_value")
+                    if curv is None:
+                        curv = ""
+                    curv_s = str(curv).strip().lower()
+                    needs = (not curv_s) or (curv_s in ("n/a","na","none","null","-"))
+                    if not needs:
+                        continue
+                    m = pmc.get(ck)
+                    if not isinstance(m, dict):
+                        missed += 1
+                        continue
+                    # prefer normalized numeric
+                    v = m.get("value_norm")
+                    if v is None:
+                        v = m.get("value")
+                    if v is None:
+                        missed += 1
+                        continue
+                    # write
+                    row["current_value"] = v
+                    # best-effort unit field
+                    u = m.get("unit") or m.get("unit_tag") or m.get("base_unit") or ""
+                    if u and not row.get("current_unit"):
+                        row["current_unit"] = u
+                    # trace
+                    row.setdefault("diag", {})
+                    if isinstance(row.get("diag"), dict):
+                        row["diag"].setdefault("canonical_for_render_v1", {})
+                        if isinstance(row["diag"].get("canonical_for_render_v1"), dict):
+                            row["diag"]["canonical_for_render_v1"].update({
+                                "applied": True,
+                                "fn": "fix2ao_metric_changes_hydrate_from_pmc",
+                                "reason": "hydrated_from_primary_metrics_canonical",
+                            })
+                    hydrated += 1
+        except Exception:
+            pass
+
+        # Small audit summary
+        try:
+            out.setdefault("debug", {})
+            if isinstance(out.get("debug"), dict):
+                out["debug"].setdefault("fix2ao_phase4_1", {})
+                if isinstance(out["debug"].get("fix2ao_phase4_1"), dict):
+                    out["debug"]["fix2ao_phase4_1"].update({
+                        "spine_applied": bool(_spine_applied),
+                        "pmc_count": int(len(pmc or {})),
+                        "metric_changes_hydrated": int(hydrated),
+                        "metric_changes_missed": int(missed),
+                    })
+        except Exception:
+            pass
+
+        return out
+    except Exception as e:
+        try:
+            if callable(_FIX2AO_BASE):
+                out0 = _FIX2AO_BASE(previous_data, web_context=web_context)
+                if isinstance(out0, dict):
+                    out0.setdefault("code_version", CODE_VERSION)
+                    out0.setdefault("debug", {})
+                    if isinstance(out0.get("debug"), dict):
+                        out0["debug"].setdefault("fix2ao_phase4_1", {})
+                        if isinstance(out0["debug"].get("fix2ao_phase4_1"), dict):
+                            out0["debug"]["fix2ao_phase4_1"].update({"error": str(e)})
+                return out0
+        except Exception:
+            pass
+        return {"status":"failed","message":"FIX2AO: exception in wrapper","metric_changes":[],"debug":{"fix2ao":False,"error":str(e)}}
+
+# END PATCH FIX2AO_SPINE_PHASE4_1_RENDER_CONTRACT_PUBLISH_V1
+# ==============================================================================
+
+
+# PATCH FIX2AO_CODE_VERSION (ADDITIVE)
+CODE_VERSION = "fix2ao_spine_phase4_1_render_contract_publish_v1"
+# END PATCH FIX2AO_CODE_VERSION
+
+# PATCH FIX2AO_PATCH_TRACKER (ADDITIVE)
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AO_SPINE_PHASE4_1_RENDER_CONTRACT_PUBLISH_V1",
+            "code_version": "fix2ao_spine_phase4_1_render_contract_publish_v1",
+            "adds": [
+                "Wrap run_source_anchored_evolution to attach schema and build spine primary_metrics_canonical for Evolution outputs",
+                "Publish canonical_for_render_v1 into output.debug and output.results.output_debug",
+                "Hydrate metric_changes current_value from schema-keyed primary_metrics_canonical"
+            ],
+            "safety": "Additive post-processing only; does not change fetch/hashing/fastpath; render-contract bridge.",
+        })
+except Exception:
+    pass
+# END PATCH FIX2AO_PATCH_TRACKER
