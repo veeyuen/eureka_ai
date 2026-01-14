@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ae_injected_fetch_urls_merge_v1_fix2af_fetch_visibility_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2ai_evo_runner_answer_select_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -33140,7 +33140,7 @@ def _fix2ag_contract_template(status: str = "success", message: str = "") -> dic
             "metrics_unit_mismatch": 0,
         },
         "output_debug": {
-            "runner": "fix2ag_evo_runner_clean_v1",
+            "runner": "fix2ai_evo_runner_answer_select_v1",
             "ts_utc": _fix2ag_now_iso(),
         },
     }
@@ -33383,6 +33383,19 @@ def _fix2ag_bind_candidates_to_schema(schema: dict, candidates: List[dict]) -> T
                         "unit_family": best.get("unit_family"),
                     },
                     "score": {"keyword_hits": best_score[0], "unit_match": best_score[1]},
+                }
+                # PATCH FIX2AI: keep best candidate even on unit mismatch (for display + diagnostics)
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": best.get("raw") or "",
+                    "unit_family": best.get("unit_family"),
+                    "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                    "source_url": best.get("url"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "unit_mismatch": True,
+                    "expect_unit_family": expect_uf,
                 }
                 continue
 
@@ -34196,3 +34209,195 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2AH_EVO_RUNNER_SCHEMA_TARGET_V1
 # =====================================================================
+
+
+# ============================================================
+# PATCH FIX2AI START
+# Purpose: Runner Patch #2 — deterministic answer metric selection + role assignment,
+#          plus keep unit-mismatch candidates for display (Current column), and populate metric_changes_v2.
+# ============================================================
+
+def _fix2ai_get_question_text(previous_data: dict, web_context: dict) -> str:
+    try:
+        wc = web_context or {}
+        if isinstance(wc.get("question"), str) and wc.get("question").strip():
+            return wc.get("question").strip()
+        if isinstance(wc.get("user_question"), str) and wc.get("user_question").strip():
+            return wc.get("user_question").strip()
+    except Exception:
+        pass
+    try:
+        pd = previous_data or {}
+        if isinstance(pd.get("question"), str) and pd.get("question").strip():
+            return pd.get("question").strip()
+        qp = pd.get("question_profile") or {}
+        if isinstance(qp, dict):
+            q = qp.get("question") or qp.get("raw_question") or qp.get("text")
+            if isinstance(q, str) and q.strip():
+                return q.strip()
+        r = pd.get("results") or {}
+        if isinstance(r, dict):
+            q = r.get("question") or r.get("raw_question") or r.get("text")
+            if isinstance(q, str) and q.strip():
+                return q.strip()
+    except Exception:
+        pass
+    return ""
+
+def _fix2ai_norm_text(s: str) -> str:
+    try:
+        import re as _re
+        s = (s or "").lower()
+        s = _re.sub(r"[^a-z0-9%$ ]+", " ", s)
+        s = _re.sub(r"\s+", " ", s).strip()
+        return s
+    except Exception:
+        return (s or "").strip().lower()
+
+def _fix2ai_unit_family(unit: str) -> str:
+    u = _fix2ai_norm_text(unit)
+    if not u:
+        return ""
+    # currency
+    if ("$" in unit) or ("usd" in u) or ("eur" in u) or ("sgd" in u) or ("s$" in u) or ("gbp" in u) or ("cny" in u) or ("rmb" in u):
+        return "currency"
+    if "%" in u or "percent" in u:
+        return "percent"
+    if "unit" in u or "sale" in u or "vehicle" in u or "car" in u:
+        return "unit_sales"
+    return ""
+
+def _fix2ai_intent_prefers_currency(question_text: str) -> bool:
+    qt = _fix2ai_norm_text(question_text)
+    if not qt:
+        return False
+    return any(k in qt for k in [
+        "market size",
+        "market worth",
+        "market value",
+        "worth",
+        "value",
+        "revenue",
+        "valuation",
+        "market is worth",
+    ])
+
+def _fix2ai_select_answer_metrics(v2_rows: list, question_text: str) -> list:
+    """Return canonical_keys of answer metrics in deterministic priority order."""
+    qt = _fix2ai_norm_text(question_text)
+    prefer_currency = _fix2ai_intent_prefers_currency(qt)
+
+    def _has_value(row):
+        cur = row.get("current", {}) if isinstance(row.get("current"), dict) else {}
+        cur_v = cur.get("value_norm")
+        return not (cur_v is None or cur_v == "" or cur_v == "N/A")
+
+    def score(row):
+        ck = _fix2ai_norm_text(row.get("canonical_key") or "")
+        name = _fix2ai_norm_text(row.get("name") or row.get("metric_label") or "")
+        unit_f = _fix2ai_unit_family(row.get("unit") or row.get("unit_expected") or "")
+        s = 0.0
+        if _has_value(row):
+            s += 10.0
+        if prefer_currency and unit_f == "currency":
+            s += 8.0
+        if (not prefer_currency) and unit_f == "unit_sales":
+            s += 6.0
+        if "market" in qt and ("revenue" in ck or "revenue" in name or "market" in ck or "market" in name):
+            s += 2.0
+        if row.get("unit_mismatch") or ((row.get("current") or {}).get("unit_mismatch") is True):
+            s -= 2.0
+        return (-s, ck, name)
+
+    rows = [r for r in (v2_rows or []) if isinstance(r, dict)]
+    rows.sort(key=score)
+
+    picks = []
+    for r in rows:
+        if _has_value(r):
+            picks.append(r.get("canonical_key"))
+            break
+    return [p for p in picks if isinstance(p, str) and p.strip()]
+
+def _fix2ai_build_metric_changes_v2(legacy_rows: list, question_text: str) -> list:
+    v2 = []
+    for r in (legacy_rows or []):
+        if not isinstance(r, dict):
+            continue
+        unit = r.get("unit") or (r.get("metric_definition") or {}).get("unit") or ""
+        entry = {
+            "canonical_key": r.get("canonical_key") or "",
+            "name": r.get("name") or r.get("metric_label") or (r.get("metric_definition") or {}).get("name") or "",
+            "unit_expected": (r.get("metric_definition") or {}).get("unit") or unit,
+            "unit": unit,
+            "previous": {"value_norm": r.get("previous_value"), "raw": r.get("previous_raw"), "unit": unit},
+            "current": {
+                "value_norm": r.get("current_value"),
+                "raw": r.get("current_raw"),
+                "unit": unit,
+                "source_url": r.get("source_url"),
+                "anchor_hash": r.get("anchor_hash"),
+                "unit_mismatch": bool(r.get("unit_mismatch")),
+            },
+            "change_type": r.get("change_type"),
+            "pct_change": r.get("change_pct") if "change_pct" in r else r.get("pct_change"),
+            "delta": r.get("delta"),
+            "unit_mismatch": bool(r.get("unit_mismatch")),
+            "match_confidence": r.get("match_confidence"),
+            "context_snippet": r.get("context_snippet"),
+        }
+        v2.append(entry)
+
+    answer_keys = set(_fix2ai_select_answer_metrics(v2, question_text))
+    for e in v2:
+        ck = e.get("canonical_key")
+        if ck in answer_keys:
+            e["role"] = "answer"
+        else:
+            cur_v = (e.get("current") or {}).get("value_norm")
+            if cur_v is None or cur_v == "" or cur_v == "N/A":
+                e["role"] = "context_only"
+            else:
+                e["role"] = "supporting"
+    return v2
+
+# Wrap runner to populate v2 + answer selection deterministically
+try:
+    _fix2ai_prev_run_evolutionary_runner = run_evolutionary_runner
+except Exception:
+    _fix2ai_prev_run_evolutionary_runner = None
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    out = {}
+    if callable(_fix2ai_prev_run_evolutionary_runner):
+        out = _fix2ai_prev_run_evolutionary_runner(previous_data, web_context)
+    else:
+        out = _fix2ag_contract_template(status="failed", message="missing_runner")
+
+    try:
+        qtext = _fix2ai_get_question_text(previous_data or {}, web_context or {})
+        out.setdefault("output_debug", {})
+        if isinstance(out.get("output_debug"), dict):
+            out["output_debug"]["question_text"] = qtext
+            out["output_debug"]["runner_patch"] = "FIX2AI"
+
+        legacy = out.get("metric_changes") or []
+        v2 = _fix2ai_build_metric_changes_v2(legacy, qtext)
+
+        out["metric_changes_v2"] = v2
+        out["metric_changes_legacy"] = legacy  # explicit for contract consumers
+
+        out.setdefault("summary", {})
+        if isinstance(out.get("summary"), dict):
+            out["summary"]["answer_metrics"] = [r.get("canonical_key") for r in v2 if r.get("role") == "answer"]
+    except Exception as _e:
+        try:
+            out["status"] = "failed"
+            out["message"] = f"runner_patch_fix2ai_exception:{type(_e).__name__}: {_e}"
+        except Exception:
+            pass
+    return out
+
+# ============================================================
+# PATCH FIX2AI END
+# ============================================================
