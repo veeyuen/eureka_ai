@@ -17628,16 +17628,16 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["status"] = "failed"
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
-        
-    # =====================================================================
-    # PATCH FIX2BD_OPTION_A_ATTACH_CANONICAL_METRICS (ADDITIVE)
-    # Option A: expose canonical metrics to renderers/viewers.
-    # Safe placement: immediately before return output (inside compute_source_anchored_diff).
-    # =====================================================================
-    output["canonical_metrics"] = canonical_metrics if isinstance(canonical_metrics, dict) else {}
-    output["primary_metrics_canonical"] = output["canonical_metrics"]
-    # =====================================================================
-return output
+
+        # =====================================================================
+        # PATCH FIX2BD_OPTION_A_ATTACH_CANONICAL_METRICS (ADDITIVE)
+        # Option A: expose canonical metrics to renderers/viewers.
+        # Safe placement: immediately before return output (inside compute_source_anchored_diff).
+        # =====================================================================
+        output["canonical_metrics"] = canonical_metrics if isinstance(canonical_metrics, dict) else {}
+        output["primary_metrics_canonical"] = output["canonical_metrics"]
+        # =====================================================================
+        return output
 
 
     # =====================================================================
