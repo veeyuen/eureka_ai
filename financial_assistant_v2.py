@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2an_spine_phase4_schema_key_enforce_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2as_spine_phase4_5_render_contract_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36092,3 +36092,354 @@ try:
 except Exception:
     pass
 # END PATCH FIX2AR_PATCH_TRACKER
+
+
+# ============================================================
+# PATCH FIX2AS_SPINE_PHASE4_5_RENDER_CONTRACT_V1 (ADDITIVE)
+#
+# Purpose:
+# - Evolution dashboard "Current" column reads from:
+#     results.metric_changes[].current_value
+# - Diagnostics show canonical_for_render_present=false due to:
+#     missing_output_debug.canonical_for_render_v1
+# - Even when spine produces primary_metrics_canonical, downstream gates (e.g., FIX39)
+#   can invalidate values if cur_unit_cmp is null.
+#
+# This patch completes the final-mile render contract by:
+#   1) Publishing canonical_for_render_v1 into BOTH:
+#        - out['debug']['canonical_for_render_v1']
+#        - out['results']['output_debug']['canonical_for_render_v1']
+#   2) Rebuilding out['results']['metric_changes'] deterministically from:
+#        metric_schema_frozen + primary_metrics_canonical (schema-keyed)
+#      and best-effort previous canonical map from baseline (for change_type).
+#   3) Ensuring per-row unit compare metadata is present:
+#        cur_unit_cmp, current_unit (best-effort) so downstream validators do not
+#        nuke values purely due to missing unit compare fields.
+#
+# Safety:
+# - Additive wrapper only; no refactor of UI or upstream fetch/extraction.
+# - If schema/pmc not present, this patch is a no-op (but publishes debug markers).
+#
+# Toggle:
+# - Set env YUREEKA_SPINE_V1_PHASE4_5_RENDER_CONTRACT=0 to disable.
+# ============================================================
+
+import os as _fix2as_os
+import time as _fix2as_time
+
+def _fix2as_enabled() -> bool:
+    try:
+        v = _fix2as_os.environ.get("YUREEKA_SPINE_V1_PHASE4_5_RENDER_CONTRACT", "").strip()
+        if v == "":
+            return True
+        return v not in ("0", "false", "False", "no", "NO")
+    except Exception:
+        return True
+
+
+def _fix2as_get_schema_from_any(out: dict, previous_data: dict) -> dict:
+    # Prefer the schema already attached to out; fall back to baseline extraction helpers.
+    try:
+        if isinstance(out, dict) and isinstance(out.get("metric_schema_frozen"), dict) and out.get("metric_schema_frozen"):
+            return out["metric_schema_frozen"]
+    except Exception:
+        pass
+    try:
+        if "_fix2ar_get_schema_from_baseline" in globals() and callable(globals().get("_fix2ar_get_schema_from_baseline")):
+            sch = globals()["_fix2ar_get_schema_from_baseline"](previous_data or {})
+            if isinstance(sch, dict) and sch:
+                return sch
+    except Exception:
+        pass
+    try:
+        pd = previous_data or {}
+        if isinstance(pd, dict):
+            # common baseline locations
+            for path in [
+                ("metric_schema_frozen",),
+                ("primary_response","metric_schema_frozen"),
+                ("primary_response","results","metric_schema_frozen"),
+                ("results","metric_schema_frozen"),
+            ]:
+                cur = pd
+                ok = True
+                for k in path:
+                    if not isinstance(cur, dict) or k not in cur:
+                        ok = False
+                        break
+                    cur = cur[k]
+                if ok and isinstance(cur, dict) and cur:
+                    return cur
+    except Exception:
+        pass
+    return {}
+
+
+def _fix2as_get_pmc_from_any(out: dict) -> dict:
+    try:
+        if isinstance(out, dict) and isinstance(out.get("primary_metrics_canonical"), dict):
+            pmc = out.get("primary_metrics_canonical") or {}
+            if pmc:
+                return pmc
+    except Exception:
+        pass
+    try:
+        if isinstance(out, dict) and isinstance(out.get("results"), dict) and isinstance(out["results"].get("primary_metrics_canonical"), dict):
+            pmc = out["results"].get("primary_metrics_canonical") or {}
+            if pmc:
+                return pmc
+    except Exception:
+        pass
+    return {}
+
+
+def _fix2as_get_prev_pmc(previous_data: dict) -> dict:
+    pd = previous_data or {}
+    if not isinstance(pd, dict):
+        return {}
+    for path in [
+        ("primary_metrics_canonical",),
+        ("primary_response","primary_metrics_canonical"),
+        ("primary_response","results","primary_metrics_canonical"),
+        ("results","primary_metrics_canonical"),
+    ]:
+        cur = pd
+        ok = True
+        for k in path:
+            if not isinstance(cur, dict) or k not in cur:
+                ok = False
+                break
+            cur = cur[k]
+        if ok and isinstance(cur, dict):
+            return cur or {}
+    return {}
+
+
+def _fix2as_schema_iter(schema: dict):
+    # Accept both list- and dict-shaped schema. Yield (canonical_key, spec) in stable order.
+    if not isinstance(schema, dict):
+        return []
+    # Heuristic: schema may expose 'metrics' list/dict
+    metrics = None
+    for k in ("metrics", "metric_schema", "schema", "items"):
+        if isinstance(schema.get(k), (list, dict)):
+            metrics = schema.get(k)
+            break
+    if metrics is None:
+        metrics = schema
+    if isinstance(metrics, list):
+        out = []
+        for item in metrics:
+            if isinstance(item, dict):
+                ck = item.get("canonical_key") or item.get("id") or item.get("key")
+                if isinstance(ck, str) and ck.strip():
+                    out.append((ck.strip(), item))
+        return out
+    if isinstance(metrics, dict):
+        # stable sort by key
+        out = []
+        for ck in sorted([k for k in metrics.keys() if isinstance(k, str)]):
+            spec = metrics.get(ck)
+            out.append((ck, spec if isinstance(spec, dict) else {}))
+        return out
+    return []
+
+
+def _fix2as_format_value(pmc_entry: dict):
+    # returns (value_str, value_norm, unit_cmp, unit_display)
+    if not isinstance(pmc_entry, dict):
+        return ("N/A", None, None, None)
+    vnorm = pmc_entry.get("value_norm")
+    if vnorm is None:
+        vnorm = pmc_entry.get("value")
+    unit_cmp = (
+        pmc_entry.get("cur_unit_cmp")
+        or pmc_entry.get("unit_cmp")
+        or pmc_entry.get("unit_tag")
+        or pmc_entry.get("unit_norm")
+        or pmc_entry.get("unit")
+        or pmc_entry.get("base_unit")
+    )
+    unit_disp = pmc_entry.get("unit_tag") or pmc_entry.get("unit") or pmc_entry.get("unit_norm") or pmc_entry.get("base_unit")
+    try:
+        if vnorm is None:
+            return ("N/A", None, unit_cmp, unit_disp)
+        if isinstance(vnorm, (int, float)):
+            # keep simple deterministic string
+            return (str(vnorm), float(vnorm), unit_cmp, unit_disp)
+        return (str(vnorm), None, unit_cmp, unit_disp)
+    except Exception:
+        return ("N/A", None, unit_cmp, unit_disp)
+
+
+def _fix2as_compute_change_type(prev_val, cur_val_str: str):
+    # Deterministic, minimal: not_found / current_only / unchanged / changed
+    if cur_val_str in ("", "N/A", None):
+        return "not_found"
+    if prev_val in ("", "N/A", None):
+        return "current_only"
+    try:
+        if str(prev_val) == str(cur_val_str):
+            return "unchanged"
+    except Exception:
+        pass
+    return "changed"
+
+
+def _fix2as_rebuild_results_metric_changes(out: dict, schema: dict, pmc: dict, prev_pmc: dict) -> dict:
+    if not isinstance(out, dict):
+        return out
+    results = out.setdefault("results", {})
+    if not isinstance(results, dict):
+        return out
+
+    rows = []
+    schema_items = _fix2as_schema_iter(schema)
+    for ck, spec in schema_items:
+        prev_entry = prev_pmc.get(ck) if isinstance(prev_pmc, dict) else None
+        prev_val = None
+        if isinstance(prev_entry, dict):
+            prev_val = prev_entry.get("value_norm")
+            if prev_val is None:
+                prev_val = prev_entry.get("value")
+        cur_entry = pmc.get(ck) if isinstance(pmc, dict) else None
+        cur_str, cur_norm, unit_cmp, unit_disp = _fix2as_format_value(cur_entry if isinstance(cur_entry, dict) else {})
+
+        metric_name = None
+        if isinstance(spec, dict):
+            metric_name = spec.get("name") or spec.get("label") or spec.get("display_name")
+        row = {
+            "metric_name": metric_name or ck,
+            "canonical_key": ck,
+            "previous_value": "" if prev_val is None else str(prev_val),
+            "current_value": cur_str,
+            "current_value_norm": cur_norm,
+            "current_unit": unit_disp,
+            "cur_unit_cmp": unit_cmp,
+            "anchor_used": bool(isinstance(cur_entry, dict) and cur_entry.get("anchor_hash")),
+            "change_type": _fix2as_compute_change_type("" if prev_val is None else str(prev_val), cur_str),
+        }
+        rows.append(row)
+
+    results["metric_changes"] = rows
+    # also mirror top-level for backward compat
+    out["metric_changes"] = rows
+
+    # update summary counts
+    try:
+        summary = results.setdefault("summary", {})
+        if isinstance(summary, dict):
+            found = sum(1 for r in rows if isinstance(r, dict) and r.get("current_value") not in ("", "N/A", None))
+            summary["total_metrics"] = len(rows)
+            summary["metrics_found"] = found
+    except Exception:
+        pass
+
+    return out
+
+
+def _fix2as_publish_canonical_for_render(out: dict, schema: dict, pmc: dict) -> dict:
+    if not isinstance(out, dict):
+        return out
+    ts = None
+    try:
+        ts = int(_fix2as_time.time())
+    except Exception:
+        ts = None
+
+    payload = {
+        "present": True,
+        "schema_count": len(_fix2as_schema_iter(schema)) if isinstance(schema, dict) else 0,
+        "pmc_count": len(pmc) if isinstance(pmc, dict) else 0,
+        "published_by": CODE_VERSION,
+        "ts": ts,
+    }
+
+    try:
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"]["canonical_for_render_v1"] = payload
+    except Exception:
+        pass
+
+    try:
+        results = out.setdefault("results", {})
+        if isinstance(results, dict):
+            od = results.setdefault("output_debug", {})
+            if isinstance(od, dict):
+                od["canonical_for_render_v1"] = payload
+    except Exception:
+        pass
+
+    return out
+
+
+# Wrap Evolution runner (stack on top of FIX2AR wrapper)
+try:
+    _FIX2AS_BASE = run_source_anchored_evolution
+except Exception:
+    _FIX2AS_BASE = None
+
+
+def run_source_anchored_evolution(previous_data, web_context=None):
+    out = None
+    try:
+        out = _FIX2AS_BASE(previous_data, web_context=web_context) if callable(_FIX2AS_BASE) else {}
+    except Exception:
+        out = {}
+
+    try:
+        if not _fix2as_enabled():
+            return out
+    except Exception:
+        pass
+
+    # We only touch the output contracts; upstream remains untouched.
+    try:
+        schema = _fix2as_get_schema_from_any(out, previous_data if isinstance(previous_data, dict) else {})
+        pmc = _fix2as_get_pmc_from_any(out)
+        prev_pmc = _fix2as_get_prev_pmc(previous_data if isinstance(previous_data, dict) else {})
+
+        # Ensure render marker exists even if we can't rebuild rows
+        out = _fix2as_publish_canonical_for_render(out, schema, pmc) or out
+
+        # Rebuild results.metric_changes deterministically if we have schema
+        if isinstance(schema, dict) and schema:
+            out = _fix2as_rebuild_results_metric_changes(out, schema, pmc, prev_pmc) or out
+
+        # explicit debug marker
+        try:
+            out.setdefault("debug", {})
+            if isinstance(out.get("debug"), dict):
+                out["debug"].setdefault("fix2as_phase4_5", {})
+                if isinstance(out["debug"].get("fix2as_phase4_5"), dict):
+                    out["debug"]["fix2as_phase4_5"].update({
+                        "applied": True,
+                        "schema_present": bool(isinstance(schema, dict) and schema),
+                        "pmc_present": bool(isinstance(pmc, dict) and pmc),
+                        "results_metric_changes_len": len(out.get("results", {}).get("metric_changes") or []) if isinstance(out.get("results"), dict) else 0,
+                    })
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    return out
+
+
+# PATCH_TRACKER append
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AS_SPINE_PHASE4_5_RENDER_CONTRACT_V1",
+            "code_version": "fix2as_spine_phase4_5_render_contract_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "publish output_debug.canonical_for_render_v1",
+                "rebuild results.metric_changes from schema+pmc",
+                "ensure per-row unit compare fields (cur_unit_cmp/current_unit)"
+            ],
+        })
+except Exception:
+    pass
