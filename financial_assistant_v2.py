@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2av_evo_diff_panel_v2_summary_guard_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2aw_github_fetch_fallback_v1"  # PATCH FIX2AW (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -28308,6 +28308,63 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
             else:
                 text, status = (None, "no_fetch_fn")
 
+            # =====================================================================
+            # PATCH FIX2AW_GITHUB_RAW_FALLBACK_V1 (ADDITIVE)
+            #
+            # Problem:
+            # - Injected URLs that point to GitHub "blob" pages can fetch as HTML wrappers,
+            #   or be blocked/empty under some conditions, resulting in empty snapshot_text
+            #   and no extracted numbers (Current column stays blank/N/A).
+            #
+            # Goal:
+            # - If the initial fetch fails/empty AND the URL looks like a GitHub blob URL,
+            #   deterministically convert it to raw.githubusercontent.com and retry once.
+            #
+            # Safety:
+            # - Only triggers for github.com/*/blob/* URLs and only when the first fetch
+            #   produced empty text or an http_/empty/exception status.
+            # - Single retry. Never raises; falls back to original status/text.
+            # =====================================================================
+            try:
+                _fix2aw_txt0 = _fix2af_scraped_text_accessor(text)
+                _fix2aw_status0 = str(status or "")
+                _fix2aw_need = (not _fix2aw_txt0 or not str(_fix2aw_txt0).strip()) and (
+                    _fix2aw_status0.startswith("http_")
+                    or _fix2aw_status0 in ("empty", "no_fetch_fn")
+                    or _fix2aw_status0.startswith("exception:")
+                )
+                _fix2aw_raw_url = ""
+                if _fix2aw_need and isinstance(url, str):
+                    _u = url.strip()
+                    _ul = _u.lower()
+                    if "github.com/" in _ul and "/blob/" in _ul:
+                        # https://github.com/{owner}/{repo}/blob/{branch}/{path}
+                        try:
+                            _parts = _u.split("github.com/", 1)[1].split("/")
+                            if len(_parts) >= 5:
+                                _owner, _repo, _blob, _branch = _parts[0], _parts[1], _parts[2], _parts[3]
+                                _path = "/".join(_parts[4:])
+                                if _owner and _repo and _branch and _path:
+                                    _fix2aw_raw_url = f"https://raw.githubusercontent.com/{_owner}/{_repo}/{_branch}/{_path}"
+                        except Exception:
+                            _fix2aw_raw_url = ""
+                if _fix2aw_raw_url:
+                    try:
+                        _t2, _s2 = fetch_url_content_with_status(_fix2aw_raw_url)
+                        if _t2 and str(_t2).strip():
+                            text = _t2
+                            status = "success_github_raw_fallback"
+                            try:
+                                _fix2af_ledger_put(_fix2af_ledger, url, stage="fetched_fallback", reason="github_raw", extra={"raw_url": _fix2aw_raw_url, "status2": _s2})
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # END PATCH FIX2AW_GITHUB_RAW_FALLBACK_V1
+            # =====================================================================
+
             # PATCH FIX2AF_SCRAPED_TEXT_ACCESSOR_V1 (ADDITIVE)
             txt = _fix2af_scraped_text_accessor(text)
             # END PATCH FIX2AF_SCRAPED_TEXT_ACCESSOR_V1
@@ -37202,3 +37259,8 @@ CODE_VERSION = "fix2av_evo_diff_panel_v2_summary_guard_v1"
 # PATCH TRACKER (append-only)
 # - FIX2AV: Guard DIFF_PANEL_V2 summary UnboundLocalError + deterministic fallback rows to populate Current column.
 # =================== END PATCH FIX2AV (ADDITIVE) ====================
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - fix2aw_github_fetch_fallback_v1: add GitHub blob→raw fetch fallback for injected URLs to prevent empty snapshot_text and enable extraction/canonicalisation for Evolution Current column.
+
