@@ -36717,3 +36717,223 @@ except Exception:
 # ==============================================================================
 # END PATCH FIX2AW_SPINE_PHASE4_7_EVO_FAIL_CONTRACT_V1
 # ==============================================================================
+
+
+# =====================================================================
+# PATCH FIX2AX_SPINE_PHASE4_8_STRICT_EVO_CONTRACT_V1 (ADDITIVE)
+# Purpose:
+#   Phase 4.7 wrapped run_source_anchored_evolution() to return a failure
+#   contract on exceptions, but Evolution can still "fail" by returning an
+#   EMPTY dict (or structurally invalid dict) without raising.
+#
+#   This patch makes Evolution contract-preserving and observable by:
+#     1) Treating empty/invalid return dicts as failure (with reason tags)
+#     2) Ensuring the returned object ALWAYS contains a non-empty results/debug
+#        subtree so the exported JSON is never "results: {}"
+#     3) Preserving additive-only behavior: wrapper only; no refactors.
+#
+# Toggle:
+#   Set env var YUREEKA_SPINE_V1_STRICT_EVO_CONTRACT=0 to disable.
+# =====================================================================
+
+try:
+    import os as _fix2ax_os
+    import traceback as _fix2ax_traceback
+    from datetime import datetime as _fix2ax_datetime
+except Exception:
+    _fix2ax_os = None
+    _fix2ax_traceback = None
+    _fix2ax_datetime = None
+
+def _fix2ax_env_enabled() -> bool:
+    try:
+        v = (_fix2ax_os.getenv("YUREEKA_SPINE_V1_STRICT_EVO_CONTRACT", "1") if _fix2ax_os else "1")
+        return str(v).strip().lower() not in ("0", "false", "no", "off")
+    except Exception:
+        return True
+
+def _fix2ax_now_iso() -> str:
+    try:
+        return (_fix2ax_datetime.now().isoformat() if _fix2ax_datetime else "")
+    except Exception:
+        return ""
+
+def _fix2ax_build_fail_payload(exc_type: str, exc_msg: str, tb: str, reason: str, base_return_type: str = "", base_keys: list | None = None) -> dict:
+    # Contract-preserving failure object (Evolution export safe)
+    return {
+        "status": "failed",
+        "results": {
+            "summary": {
+                "total_metrics": 0,
+                "metrics_found": 0,
+                "diagnosis": reason,
+            },
+            "metric_changes": [],
+            "output_debug": {
+                "canonical_for_render_v1": {
+                    "present": False,
+                    "reason": reason,
+                    "ts": _fix2ax_now_iso(),
+                }
+            },
+            "debug": {
+                "fix2ax_phase4_8": {
+                    "applied": True,
+                    "reason": reason,
+                    "exception_type": exc_type,
+                    "exception_msg": exc_msg,
+                    "traceback": tb,
+                    "base_return_type": base_return_type,
+                    "base_return_keys": base_keys or [],
+                }
+            },
+        },
+        "debug": {
+            "fix2ax_phase4_8": {
+                "applied": True,
+                "reason": reason,
+                "exception_type": exc_type,
+                "exception_msg": exc_msg,
+                "traceback": tb,
+                "base_return_type": base_return_type,
+                "base_return_keys": base_keys or [],
+            }
+        },
+    }
+
+def _fix2ax_is_structurally_valid_evo_return(out: object) -> tuple[bool, str]:
+    # Returns: (is_valid, reason_if_invalid)
+    if not isinstance(out, dict):
+        return False, "return_not_dict"
+    if len(out.keys()) == 0:
+        return False, "return_empty_dict"
+    # Accept either a top-level "results" dict, or the old "metric_changes" top-level list.
+    res = out.get("results")
+    if isinstance(res, dict):
+        # results must at least have metric_changes list (even empty is ok IF summary exists)
+        mc = res.get("metric_changes")
+        summ = res.get("summary")
+        if mc is None and isinstance(out.get("metric_changes"), list):
+            return True, "ok_top_level_metric_changes"
+        if not isinstance(mc, list):
+            return False, "results.metric_changes_missing_or_not_list"
+        if summ is None or not isinstance(summ, dict):
+            return False, "results.summary_missing_or_not_dict"
+        return True, "ok_results"
+    # No results dict: allow legacy top-level metric_changes list
+    if isinstance(out.get("metric_changes"), list):
+        return True, "ok_top_level_metric_changes"
+    return False, "missing_results_and_metric_changes"
+
+def _fix2ax_ensure_nonempty_results_contract(out: dict, invalid_reason: str) -> dict:
+    # If out is dict but missing/empty results, inject a minimal contract-preserving subtree.
+    try:
+        if not isinstance(out, dict):
+            return out
+        if "results" not in out or not isinstance(out.get("results"), dict) or not out.get("results"):
+            out["results"] = {
+                "summary": {
+                    "total_metrics": 0,
+                    "metrics_found": 0,
+                    "diagnosis": invalid_reason,
+                },
+                "metric_changes": [],
+                "output_debug": {
+                    "canonical_for_render_v1": {
+                        "present": False,
+                        "reason": invalid_reason,
+                        "ts": _fix2ax_now_iso(),
+                    }
+                },
+                "debug": {
+                    "fix2ax_phase4_8": {
+                        "applied": True,
+                        "reason": invalid_reason,
+                        "ts": _fix2ax_now_iso(),
+                    }
+                },
+            }
+        # Also ensure top-level debug marker
+        if "debug" not in out or not isinstance(out.get("debug"), dict):
+            out["debug"] = {}
+        out["debug"].setdefault("fix2ax_phase4_8", {})
+        if isinstance(out["debug"]["fix2ax_phase4_8"], dict):
+            out["debug"]["fix2ax_phase4_8"].setdefault("applied", True)
+            out["debug"]["fix2ax_phase4_8"].setdefault("reason", invalid_reason)
+            out["debug"]["fix2ax_phase4_8"].setdefault("ts", _fix2ax_now_iso())
+        return out
+    except Exception:
+        return out
+
+# Wrap run_source_anchored_evolution with strict validation
+try:
+    _FIX2AX_BASE_RUN_EVO = run_source_anchored_evolution  # type: ignore
+except Exception:
+    _FIX2AX_BASE_RUN_EVO = None  # type: ignore
+
+def run_source_anchored_evolution(*args, **kwargs):  # type: ignore
+    # STRICT wrapper: never raises; never returns empty dict; returns failure contract instead.
+    if not _fix2ax_env_enabled() or _FIX2AX_BASE_RUN_EVO is None:
+        try:
+            return _FIX2AX_BASE_RUN_EVO(*args, **kwargs) if _FIX2AX_BASE_RUN_EVO else {}
+        except Exception as _e:
+            # last resort failure
+            tb = ""
+            try:
+                tb = _fix2ax_traceback.format_exc() if _fix2ax_traceback else ""
+            except Exception:
+                tb = ""
+            return _fix2ax_build_fail_payload(type(_e).__name__, str(_e), tb, "base_call_exception")
+    try:
+        out = _FIX2AX_BASE_RUN_EVO(*args, **kwargs)
+        valid, reason = _fix2ax_is_structurally_valid_evo_return(out)
+        if not valid:
+            # Convert silent-invalid into explicit failure payload, but preserve debug data if any
+            base_type = type(out).__name__
+            base_keys = list(out.keys()) if isinstance(out, dict) else []
+            tb = ""
+            return _fix2ax_build_fail_payload("SilentInvalidReturn", reason, tb, reason, base_return_type=base_type, base_keys=base_keys)
+        # Ensure "results" subtree exists for export even in legacy shape
+        if isinstance(out, dict):
+            out = _fix2ax_ensure_nonempty_results_contract(out, "ok_or_legacy_shape")
+            # Stamp marker
+            try:
+                res = out.get("results")
+                if isinstance(res, dict):
+                    dbg = res.get("debug")
+                    if not isinstance(dbg, dict):
+                        res["debug"] = {}
+                        dbg = res["debug"]
+                    dbg.setdefault("fix2ax_phase4_8", {})
+                    if isinstance(dbg["fix2ax_phase4_8"], dict):
+                        dbg["fix2ax_phase4_8"].setdefault("applied", True)
+                        dbg["fix2ax_phase4_8"].setdefault("reason", "ok")
+                        dbg["fix2ax_phase4_8"].setdefault("ts", _fix2ax_now_iso())
+            except Exception:
+                pass
+        return out
+    except Exception as _e:
+        tb = ""
+        try:
+            tb = _fix2ax_traceback.format_exc() if _fix2ax_traceback else ""
+        except Exception:
+            tb = ""
+        return _fix2ax_build_fail_payload(type(_e).__name__, str(_e), tb, "exception")
+
+# Patch tracker (additive)
+try:
+    PATCH_TRACKER  # type: ignore
+except Exception:
+    PATCH_TRACKER = []  # type: ignore
+
+try:
+    PATCH_TRACKER.append({
+        "patch_id": "FIX2AX_SPINE_PHASE4_8_STRICT_EVO_CONTRACT_V1",
+        "code_version": "fix2ax_spine_phase4_8_strict_evo_contract_v1",
+        "intent": "Phase 4.8: strict Evolution contract; treat empty/invalid dict returns as failure; ensure results/debug subtree always present; prevent UI skeleton exports.",
+    })
+except Exception:
+    pass
+
+# Ensure CODE_VERSION matches filename (override additive)
+CODE_VERSION = "fix2ax_spine_phase4_8_strict_evo_contract_v1"
