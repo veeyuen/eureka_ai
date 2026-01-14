@@ -37703,7 +37703,7 @@ def run_unified_poc(question: str,
         "metric_changes_count": int(len(metric_changes)),
         "populated_current_count": int(sum(1 for r in (metric_changes or []) if isinstance(r, dict) and str(r.get("current_value") or "").strip() not in ("", "N/A", "—", "-"))),
     }
-out = {
+    out = {
         'status': 'success',
         'message': 'PoC unified engine executed (baseline+injected fetch → extract → bind → metric_changes).',
         'sources_checked': int(len(urls)),
@@ -37727,23 +37727,15 @@ out = {
     return out
 
 
+
 # CODE_VERSION (authoritative at EOF)
-CODE_VERSION = "fix2b3_unified_poc_hook_v2"
-
-# PATCH TRACKER (append-only)
-# - fix2b2_unified_poc_hook_v1: Flag-gated hook to call PoC unified engine from evolution path (embedded PoC code; caused blank UI risk)
-# - fix2b3_unified_poc_hook_v2: Replace embedded large PoC block with lazy minimal PoC; remove mid-file CODE_VERSION override; safer Streamlit startup
-
-
-# =========================
-# PATCH TRACKER (append-only)
-# =========================
-# - fix2b4_unified_poc_alias_keys_v1: Option-1 PoC: emit alias canonical keys to match legacy/dashboard key shapes; add PoC coverage stats; bump CODE_VERSION.
-
-# =========================
-# VERSION STAMP (AUTHORITATIVE)
-# =========================
 try:
-    CODE_VERSION = "fix2b4_unified_poc_alias_keys_v1"
+    CODE_VERSION = "fix2b6_unified_poc_alias_keys_v3"
 except Exception:
     pass
+
+# PATCH TRACKER (append-only)
+# - fix2b3_unified_poc_hook_v2: Minimal PoC hook (flag-gated) for unified engine; safe Streamlit startup
+# - fix2b4_unified_poc_alias_keys_v1: Added alias canonical keys + PoC stats (had syntax/indent issues)
+# - fix2b5_unified_poc_alias_keys_v2: Fix try/except indentation (still had out/return indent issue)
+# - fix2b6_unified_poc_alias_keys_v3: Fix out/return indentation; set authoritative CODE_VERSION at EOF
