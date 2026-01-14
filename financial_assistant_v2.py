@@ -35219,3 +35219,273 @@ try:
 except Exception:
     pass
 # END PATCH FIX2AO_PATCH_TRACKER
+
+
+# ==============================================================================
+# PATCH FIX2AP_SPINE_PHASE4_2_EVO_OUTPUT_REBUILD_V1 (ADDITIVE)
+#
+# Purpose:
+# - User requested 'rebuild the UI' strictly meaning: rebuild the *evolutionary output* contract
+#   that the Streamlit Evolution dashboard reads.
+# - Empirically, Evolution UI reads from nested wrappers (out['results'][...]) rather than top-level.
+# - Prior Phase 4.1 hydrated top-level out['metric_changes'] and published some debug markers,
+#   but runs still show Current=N/A when the UI is bound to out['results']['metric_changes'].
+#
+# This patch guarantees (post-run, additive) that:
+#   1) primary_metrics_canonical is present in BOTH top-level and results-level locations
+#   2) canonical_for_render_v1 marker is present in BOTH out.debug and out.results.output_debug
+#   3) results.metric_changes is present and hydrated from the canonical map (schema-keyed pmc)
+#   4) summary counters are updated to reflect hydrated current values
+#
+# Safety:
+# - Additive wrapper on run_source_anchored_evolution only.
+# - Does NOT change fetch/extraction/canonicalization logic.
+# - Only rebuilds the returned Evolution output shape ("evolutionary output UI").
+#
+# Toggle:
+# - Disable with YUREEKA_SPINE_V1_PHASE4_2_EVO_OUTPUT=0
+# ==============================================================================
+
+try:
+    _FIX2AP_BASE = run_source_anchored_evolution
+except Exception:
+    _FIX2AP_BASE = None
+
+
+def _fix2ap_get_nested(d: dict, path: list):
+    cur = d
+    for k in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def _fix2ap_set_nested(d: dict, path: list, value):
+    cur = d
+    for k in path[:-1]:
+        if not isinstance(cur.get(k), dict):
+            cur[k] = {}
+        cur = cur[k]
+    cur[path[-1]] = value
+
+
+def _fix2ap_norm_na(v) -> bool:
+    if v is None:
+        return True
+    s = str(v).strip().lower()
+    return (not s) or (s in ("n/a", "na", "none", "null", "-"))
+
+
+def _fix2ap_rebuild_evo_output_contract(out: dict) -> dict:
+    if not isinstance(out, dict):
+        return out
+
+    # Ensure results wrapper exists
+    out.setdefault("results", {})
+    if not isinstance(out.get("results"), dict):
+        out["results"] = {}
+
+    # Determine canonical map source
+    pmc = out.get("primary_metrics_canonical") if isinstance(out.get("primary_metrics_canonical"), dict) else None
+    if pmc is None:
+        pmc = out["results"].get("primary_metrics_canonical") if isinstance(out["results"].get("primary_metrics_canonical"), dict) else None
+    if pmc is None:
+        # Best-effort: sometimes stored under debug canonical_for_render_v1
+        _dbg_map = _fix2ap_get_nested(out, ["debug", "canonical_for_render_v1", "primary_metrics_canonical"]) if isinstance(out.get("debug"), dict) else None
+        if isinstance(_dbg_map, dict) and _dbg_map:
+            pmc = _dbg_map
+    if not isinstance(pmc, dict):
+        pmc = {}
+
+    # Publish pmc into both locations (do not drop whichever already exists)
+    try:
+        if isinstance(pmc, dict) and pmc:
+            if not (isinstance(out.get("primary_metrics_canonical"), dict) and out.get("primary_metrics_canonical")):
+                out["primary_metrics_canonical"] = pmc
+            if not (isinstance(out["results"].get("primary_metrics_canonical"), dict) and out["results"].get("primary_metrics_canonical")):
+                out["results"]["primary_metrics_canonical"] = pmc
+    except Exception:
+        pass
+
+    # Ensure canonical_for_render_v1 markers exist where UI/diagnostics expect them
+    try:
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"].setdefault("canonical_for_render_v1", {})
+            if isinstance(out["debug"].get("canonical_for_render_v1"), dict):
+                out["debug"]["canonical_for_render_v1"].update({
+                    "present": True,
+                    "applied": True,
+                    "reason": "fix2ap_rebuild_evo_output_contract",
+                    "rebuilt_count": int(len(pmc or {})),
+                    "keys_sample": list(sorted(list((pmc or {}).keys())))[:12],
+                })
+    except Exception:
+        pass
+
+    try:
+        out["results"].setdefault("output_debug", {})
+        if isinstance(out["results"].get("output_debug"), dict):
+            out["results"]["output_debug"].setdefault("canonical_for_render_v1", {})
+            if isinstance(out["results"]["output_debug"].get("canonical_for_render_v1"), dict):
+                out["results"]["output_debug"]["canonical_for_render_v1"].update({
+                    "present": True,
+                    "applied": True,
+                    "reason": "fix2ap_rebuild_evo_output_contract",
+                    "rebuilt_count": int(len(pmc or {})),
+                    "keys_sample": list(sorted(list((pmc or {}).keys())))[:12],
+                })
+    except Exception:
+        pass
+
+    # Locate metric_changes list (prefer results.metric_changes since UI uses it)
+    rows = out["results"].get("metric_changes")
+    if not isinstance(rows, list) or not rows:
+        rows = out.get("metric_changes")
+    if not isinstance(rows, list):
+        rows = []
+
+    hydrated = 0
+    missed = 0
+    # Hydrate row.current_value from pmc by canonical_key
+    if isinstance(rows, list) and rows and isinstance(pmc, dict) and pmc:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ck = row.get("canonical_key") or row.get("canonical") or row.get("key") or ""
+            if not ck:
+                continue
+            if not _fix2ap_norm_na(row.get("current_value")):
+                continue
+            m = pmc.get(ck)
+            if not isinstance(m, dict):
+                missed += 1
+                continue
+            v = m.get("value_norm")
+            if v is None:
+                v = m.get("value")
+            if v is None:
+                missed += 1
+                continue
+            row["current_value"] = v
+            u = m.get("unit") or m.get("unit_tag") or m.get("base_unit") or ""
+            if u and not row.get("current_unit"):
+                row["current_unit"] = u
+            row.setdefault("diag", {})
+            if isinstance(row.get("diag"), dict):
+                row["diag"].setdefault("fix2ap", {})
+                if isinstance(row["diag"].get("fix2ap"), dict):
+                    row["diag"]["fix2ap"].update({
+                        "hydrated": True,
+                        "from": "primary_metrics_canonical",
+                    })
+            hydrated += 1
+
+    # Re-publish rows into results.metric_changes deterministically
+    try:
+        out["results"]["metric_changes"] = rows
+    except Exception:
+        pass
+
+    # Update summary counters to match UI expectations
+    try:
+        out["results"].setdefault("summary", {})
+        if isinstance(out["results"].get("summary"), dict):
+            out["results"]["summary"].update({
+                "metrics_found": int(sum(0 if _fix2ap_norm_na((r or {}).get("current_value")) else 1 for r in (rows or []) if isinstance(r, dict))),
+                "total_metrics": int(len(rows or [])),
+            })
+    except Exception:
+        pass
+
+    # Add audit debug
+    try:
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"].setdefault("fix2ap_phase4_2", {})
+            if isinstance(out["debug"].get("fix2ap_phase4_2"), dict):
+                out["debug"]["fix2ap_phase4_2"].update({
+                    "pmc_count": int(len(pmc or {})),
+                    "rows_in": int(len(rows or [])),
+                    "metric_changes_hydrated": int(hydrated),
+                    "metric_changes_missed": int(missed),
+                    "wrote_results_metric_changes": True,
+                })
+    except Exception:
+        pass
+
+    return out
+
+
+def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+    try:
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_PHASE4_2_EVO_OUTPUT") or "").strip().lower()
+        if flag in ("0", "false", "no", "n", "off"):
+            if callable(_FIX2AP_BASE):
+                out0 = _FIX2AP_BASE(previous_data, web_context=web_context)
+                if isinstance(out0, dict):
+                    out0.setdefault("code_version", CODE_VERSION)
+                return out0
+            return {"status":"failed","message":"FIX2AP: base evolution runner not callable","results":{"metric_changes":[]}}
+
+        if not callable(_FIX2AP_BASE):
+            return {"status":"failed","message":"FIX2AP: base evolution runner not callable","results":{"metric_changes":[]}}
+
+        out = _FIX2AP_BASE(previous_data, web_context=web_context)
+        if not isinstance(out, dict):
+            return out
+
+        out.setdefault("code_version", CODE_VERSION)
+        out = _fix2ap_rebuild_evo_output_contract(out)
+        return out
+
+    except Exception as e:
+        try:
+            if callable(_FIX2AP_BASE):
+                out0 = _FIX2AP_BASE(previous_data, web_context=web_context)
+                if isinstance(out0, dict):
+                    out0.setdefault("code_version", CODE_VERSION)
+                    out0.setdefault("debug", {})
+                    if isinstance(out0.get("debug"), dict):
+                        out0["debug"].setdefault("fix2ap_phase4_2", {})
+                        if isinstance(out0["debug"].get("fix2ap_phase4_2"), dict):
+                            out0["debug"]["fix2ap_phase4_2"].update({"error": str(e)})
+                    return _fix2ap_rebuild_evo_output_contract(out0)
+        except Exception:
+            pass
+        return {"status":"failed","message":"FIX2AP: exception in wrapper","results":{"metric_changes":[]},"debug":{"fix2ap":False,"error":str(e)}}
+
+# END PATCH FIX2AP_SPINE_PHASE4_2_EVO_OUTPUT_REBUILD_V1
+# ==============================================================================
+
+
+# PATCH FIX2AP_CODE_VERSION (ADDITIVE)
+CODE_VERSION = "fix2ap_spine_phase4_2_evo_output_rebuild_v1"
+# END PATCH FIX2AP_CODE_VERSION
+
+
+# PATCH FIX2AP_PATCH_TRACKER (ADDITIVE)
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AP_SPINE_PHASE4_2_EVO_OUTPUT_REBUILD_V1",
+            "code_version": "fix2ap_spine_phase4_2_evo_output_rebuild_v1",
+            "adds": [
+                "Rebuild Evolution output contract so UI reads schema-keyed current values (results.metric_changes.current_value)",
+                "Publish canonical_for_render_v1 marker into both out.debug and out.results.output_debug",
+                "Ensure primary_metrics_canonical exists in both top-level and results wrapper",
+                "Update results.summary counters based on hydrated current values"
+            ],
+            "safety": "Additive post-processing only; no fetch/extraction/canonicalization changes; focuses on evolutionary output UI contract.",
+        })
+except Exception:
+    pass
+# END PATCH FIX2AP_PATCH_TRACKER
+
+
+# ==============================================================================
