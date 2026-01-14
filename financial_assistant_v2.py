@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2am_inj_fetch_assure_v2"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2ap_evo_inj_handoff_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36369,3 +36369,164 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 # =========================
 # PATCH FIX2AO END
 # =========================
+
+# - FIX2AP: Injected URL handoff into Evolution runner (collect keys, force web_context['extra_urls'], inj_diag)
+
+
+# PATCH FIX2AP START
+# Purpose: Ensure injected URLs are propagated into the Evolution runner deterministically.
+# - Streamlit / caller may provide injected URLs under different keys; unify into web_context["extra_urls"].
+# - If injection appears expected but no injected URLs are present, emit explicit diagnostics (no silent omission).
+# - Preserve additive-only behavior by wrapping the existing run_evolutionary_runner entrypoint.
+
+def _fix2ap_collect_injected_urls(previous_data: dict, web_context: dict) -> list:
+    """Collect injected URLs from multiple possible handoff locations (deterministic, safe)."""
+    urls = []
+
+    def _add(v):
+        if not v:
+            return
+        if isinstance(v, (list, tuple)):
+            for x in v:
+                _add(x)
+            return
+        s = str(v).strip()
+        if s:
+            urls.append(s)
+
+    wc = web_context if isinstance(web_context, dict) else {}
+    # Common keys used by various UI/runner variants
+    for k in ("extra_urls", "injected_urls", "injected_url", "injection_urls", "urls_injected", "inject_urls", "injected"):
+        try:
+            _add(wc.get(k))
+        except Exception:
+            continue
+
+    pd = previous_data if isinstance(previous_data, dict) else {}
+    # Previous data sometimes carries injection hints (rare but supported)
+    for k in ("injected_urls", "extra_urls", "urls_injected"):
+        try:
+            _add(pd.get(k))
+        except Exception:
+            continue
+    # Nested debug / results carriers
+    try:
+        _add((((pd.get("results") or {}).get("debug") or {}).get("injected_urls")))
+    except Exception:
+        pass
+    try:
+        _add((((pd.get("debug") or {}).get("injected_urls"))))
+    except Exception:
+        pass
+
+    # Normalize + dedupe deterministically
+    norm_fn = globals().get("_fix2af_norm_url")
+    out = []
+    seen = set()
+    for u in urls:
+        try:
+            nu = norm_fn(u) if callable(norm_fn) else str(u).strip()
+        except Exception:
+            nu = str(u).strip()
+        if not nu:
+            continue
+        if nu in seen:
+            continue
+        seen.add(nu)
+        out.append(nu)
+    return out
+
+
+def _fix2ap_injection_expected(web_context: dict) -> bool:
+    """Heuristic-free: treat injection as expected only if caller provided any injection-shaped key."""
+    if not isinstance(web_context, dict):
+        return False
+    for k in ("injected_url", "injected_urls", "injection_urls", "urls_injected", "inject_urls"):
+        if k in web_context:
+            return True
+    # Streamlit sometimes passes a boolean hint
+    try:
+        if bool(web_context.get("injection_mode")):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# Wrap the existing runner (defined earlier in file). Keep a stable handle.
+_fix2ap__prior_run_evolutionary_runner = run_evolutionary_runner
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """PATCH FIX2AP: Ensure injected URL handoff into Evolution runner."""
+    wc = web_context if isinstance(web_context, dict) else {}
+
+    injected_urls = _fix2ap_collect_injected_urls(previous_data, wc)
+    baseline_urls = []
+    try:
+        baseline_urls = list(_fix2ag_get_baseline_urls(previous_data or {}) or [])
+    except Exception:
+        baseline_urls = []
+
+    # Ensure extra_urls exists and includes injected_urls (minus baseline)
+    extra = []
+    try:
+        extra = list(wc.get("extra_urls") or [])
+    except Exception:
+        extra = []
+    norm_fn = globals().get("_fix2af_norm_url")
+    merged = []
+    seen = set()
+    for u in (extra + injected_urls):
+        try:
+            nu = norm_fn(u) if callable(norm_fn) else str(u).strip()
+        except Exception:
+            nu = str(u).strip()
+        if not nu:
+            continue
+        if nu in seen:
+            continue
+        seen.add(nu)
+        merged.append(nu)
+
+    # Remove any baseline URLs from extra_urls to preserve intent
+    base_set = set()
+    for u in baseline_urls:
+        try:
+            bu = norm_fn(u) if callable(norm_fn) else str(u).strip()
+        except Exception:
+            bu = str(u).strip()
+        if bu:
+            base_set.add(bu)
+    merged = [u for u in merged if u not in base_set]
+
+    wc["extra_urls"] = merged
+
+    # Run prior implementation
+    out = _fix2ap__prior_run_evolutionary_runner(previous_data, wc)
+
+    # Ensure diagnostics are always visible
+    try:
+        out.setdefault("output_debug", {})
+        out["output_debug"]["runner"] = CODE_VERSION
+        out["output_debug"].setdefault("inj_diag", {})
+        out["output_debug"]["inj_diag"].update({
+            "injected_urls": merged,
+            "baseline_urls_count": int(len(base_set)),
+            "injected_count": int(len(merged)),
+            "injection_expected": bool(_fix2ap_injection_expected(wc)),
+        })
+        # Legacy location some earlier JSONs used
+        out.setdefault("debug", {})
+        out["debug"].setdefault("inj_diag", {})
+        out["debug"]["inj_diag"].update(out["output_debug"]["inj_diag"])
+        if _fix2ap_injection_expected(wc) and not merged:
+            # Explicit structured notice: injection was expected but not present
+            out.setdefault("warnings", [])
+            out["warnings"].append("expected_injection_but_no_injected_urls")
+    except Exception:
+        pass
+
+    return out
+
+# PATCH FIX2AP END
