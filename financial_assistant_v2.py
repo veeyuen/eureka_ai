@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2ap_evo_inj_handoff_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2aq_evo_emit_canonical_metrics_v1"  # PATCH FIX2AL (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -36322,6 +36322,33 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
         cur_metrics_recon, recon_dbg = _fix2ao_reconcile_current_metrics_keys(schema, cur_metrics)
         out["output_debug"]["key_reconcile"] = recon_dbg
 
+        # PATCH FIX2AQ START: Emit canonical_metrics dict for dashboard hydration
+        # The legacy dashboard reads current["canonical_metrics"][canonical_key] as the "Current" column.
+        # We emit a schema-keyed numeric dict (value_norm) so downstream diff_canonical_metrics can hydrate.
+        try:
+            canonical_metrics = {}
+            # Prefer schema keys (stable ordering), then include any extra reconciled keys for debugging.
+            for ck in sorted(set(list(schema.keys()) + list(cur_metrics_recon.keys()))):
+                cm = cur_metrics_recon.get(ck)
+                v = None
+                if isinstance(cm, dict):
+                    v = cm.get("value_norm")
+                    if v is None:
+                        v = cm.get("value")
+                else:
+                    v = cm
+                fv = _fix2ag_safe_float(v)
+                canonical_metrics[ck] = float(fv) if fv is not None else 0.0
+            out["canonical_metrics"] = canonical_metrics
+        except Exception as _e_fix2aq:
+            try:
+                out.setdefault("output_debug", {})
+                out["output_debug"].setdefault("warnings", [])
+                out["output_debug"]["warnings"].append("canonical_metrics_emit_failed:" + type(_e_fix2aq).__name__)
+            except Exception:
+                pass
+        # PATCH FIX2AQ END
+
         out["output_debug"].setdefault("bind", {})
         out["output_debug"]["bind"].update({
             "candidates_total": bind_dbg.get("candidates_total"),
@@ -36371,6 +36398,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 # =========================
 
 # - FIX2AP: Injected URL handoff into Evolution runner (collect keys, force web_context['extra_urls'], inj_diag)
+# - FIX2AQ: Emit results["canonical_metrics"] (schema-keyed numeric dict) to hydrate dashboard Current column
 
 
 # PATCH FIX2AP START
