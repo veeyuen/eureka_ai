@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2at_spine_phase4_6_preui_wrap_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2av_spine_phase4_6_preui_wrap_v3"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -25787,155 +25787,155 @@ def main():
 
 
                         
-# =====================================================================
-# PATCH FIX2AT_SPINE_PHASE4_6_PREUI_WRAP_V1 (ADDITIVE)
-# Goal: ensure Evolution's dashboard contract sees canonical_for_render marker
-# BEFORE the Streamlit UI calls run_source_anchored_evolution().
-#
-# Root cause observed in JSON:
-# - results.debug.canonical_for_render_present_v25=false
-# - reason=missing_output_debug.canonical_for_render_v1
-# This happens because later wrappers (phase4.5) are defined AFTER the UI call site,
-# so they never execute in that run.
-#
-# This patch installs a lightweight pre-UI wrapper right here (above the UI call),
-# publishing:
-#   results.output_debug.canonical_for_render_v1
-# and updating:
-#   results.debug.canonical_for_render_present_v25
-#   results.debug.canonical_for_render_diagnosis_fix2ac_v1
-# =====================================================================
-
-try:
-    _FIX2AT_BASE_RUN_EVO = run_source_anchored_evolution  # type: ignore
-except Exception:
-    _FIX2AT_BASE_RUN_EVO = None  # type: ignore
-
-
-def _fix2at_publish_output_debug_marker(out: dict) -> dict:
-    try:
-        if not isinstance(out, dict):
-            return out
-        res = out.get("results") if isinstance(out.get("results"), dict) else None
-        if not isinstance(res, dict):
-            return out
-
-        # derive a minimal payload for observability (do not change semantics)
-        try:
-            sch = None
-            # tolerate several schema locations
-            for path in [
-                ("metric_schema_frozen",),
-                ("results", "metric_schema_frozen"),
-                ("primary_response", "metric_schema_frozen"),
-                ("primary_response", "results", "metric_schema_frozen"),
-            ]:
-                cur = out
-                ok = True
-                for k in path:
-                    if not isinstance(cur, dict) or k not in cur:
-                        ok = False
-                        break
-                    cur = cur.get(k)
-                if ok and isinstance(cur, dict) and cur:
-                    sch = cur
-                    break
-            if sch is None and isinstance(res.get("metric_schema_frozen"), dict) and res.get("metric_schema_frozen"):
-                sch = res.get("metric_schema_frozen")
-        except Exception:
-            sch = None
-
-        payload = {
-            "present": True,
-            "published_by": CODE_VERSION,
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "schema_count": (len(sch) if isinstance(sch, dict) else 0),
-        }
-
-        # publish to results.output_debug (this is what the dashboard diagnosis expects)
-        try:
-            od = res.setdefault("output_debug", {})
-            if isinstance(od, dict):
-                od["canonical_for_render_v1"] = payload
-        except Exception:
-            pass
-
-        # update the existing dashboard diagnosis flags (keep existing keys)
-        try:
-            d = res.setdefault("debug", {})
-            if isinstance(d, dict):
-                d["canonical_for_render_present_v25"] = True
-                if isinstance(d.get("canonical_for_render_diagnosis_fix2ac_v1"), dict):
-                    d["canonical_for_render_diagnosis_fix2ac_v1"]["reason"] = "ok"
-                    d["canonical_for_render_diagnosis_fix2ac_v1"]["published_by"] = CODE_VERSION
-                else:
-                    d["canonical_for_render_diagnosis_fix2ac_v1"] = {
-                        "reason": "ok",
-                        "published_by": CODE_VERSION,
-                    }
-                d.setdefault("fix2at_phase4_6", {})
-                if isinstance(d.get("fix2at_phase4_6"), dict):
-                    d["fix2at_phase4_6"].update({
-                        "applied": True,
-                        "published_to": "results.output_debug.canonical_for_render_v1",
-                    })
-        except Exception:
-            pass
-
-        return out
-    except Exception:
-        return out
-
-
-def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
-    out = {}
-    try:
-        out = _FIX2AT_BASE_RUN_EVO(previous_data, web_context=web_context) if callable(_FIX2AT_BASE_RUN_EVO) else {}
-    except Exception:
-        out = {}
-    try:
-        out = _fix2at_publish_output_debug_marker(out) or out
-    except Exception:
-        pass
-    return out
-
-# PATCH_TRACKER append
-try:
-    if isinstance(PATCH_TRACKER, list):
-        PATCH_TRACKER.append({
-            "patch_id": "FIX2AT_SPINE_PHASE4_6_PREUI_WRAP_V1",
-            "code_version": "fix2at_spine_phase4_6_preui_wrap_v1",
-            "date": "2026-01-14",
-            "adds": [
-                "install pre-UI wrapper for run_source_anchored_evolution",
-                "publish results.output_debug.canonical_for_render_v1 before UI call site",
-                "set results.debug.canonical_for_render_present_v25=true (diagnostic parity)",
-            ],
-        })
-except Exception:
-    pass
-
-results = run_source_anchored_evolution(
-
-                            baseline_data,
-
-                            web_context={
-
-                                "force_rebuild": bool(force_rebuild),
-
-                                "extra_urls": _extra_urls_evo,
-
-                                "diag_run_id": _evo_run_id,
-
-                                "diag_extra_urls_ui_raw": (extra_sources_text or ""),
-
-                            },
-
-                        )
-
-                        # ============================================================
-
-
+                        # =====================================================================
+                        # PATCH FIX2AT_SPINE_PHASE4_6_PREUI_WRAP_V1 (ADDITIVE)
+                        # Goal: ensure Evolution's dashboard contract sees canonical_for_render marker
+                        # BEFORE the Streamlit UI calls run_source_anchored_evolution().
+                        #
+                        # Root cause observed in JSON:
+                        # - results.debug.canonical_for_render_present_v25=false
+                        # - reason=missing_output_debug.canonical_for_render_v1
+                        # This happens because later wrappers (phase4.5) are defined AFTER the UI call site,
+                        # so they never execute in that run.
+                        #
+                        # This patch installs a lightweight pre-UI wrapper right here (above the UI call),
+                        # publishing:
+                        #   results.output_debug.canonical_for_render_v1
+                        # and updating:
+                        #   results.debug.canonical_for_render_present_v25
+                        #   results.debug.canonical_for_render_diagnosis_fix2ac_v1
+                        # =====================================================================
+                        
+                        try:
+                            _FIX2AT_BASE_RUN_EVO = run_source_anchored_evolution  # type: ignore
+                        except Exception:
+                            _FIX2AT_BASE_RUN_EVO = None  # type: ignore
+                        
+                        
+                        def _fix2at_publish_output_debug_marker(out: dict) -> dict:
+                            try:
+                                if not isinstance(out, dict):
+                                    return out
+                                res = out.get("results") if isinstance(out.get("results"), dict) else None
+                                if not isinstance(res, dict):
+                                    return out
+                        
+                                # derive a minimal payload for observability (do not change semantics)
+                                try:
+                                    sch = None
+                                    # tolerate several schema locations
+                                    for path in [
+                                        ("metric_schema_frozen",),
+                                        ("results", "metric_schema_frozen"),
+                                        ("primary_response", "metric_schema_frozen"),
+                                        ("primary_response", "results", "metric_schema_frozen"),
+                                    ]:
+                                        cur = out
+                                        ok = True
+                                        for k in path:
+                                            if not isinstance(cur, dict) or k not in cur:
+                                                ok = False
+                                                break
+                                            cur = cur.get(k)
+                                        if ok and isinstance(cur, dict) and cur:
+                                            sch = cur
+                                            break
+                                    if sch is None and isinstance(res.get("metric_schema_frozen"), dict) and res.get("metric_schema_frozen"):
+                                        sch = res.get("metric_schema_frozen")
+                                except Exception:
+                                    sch = None
+                        
+                                payload = {
+                                    "present": True,
+                                    "published_by": CODE_VERSION,
+                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                    "schema_count": (len(sch) if isinstance(sch, dict) else 0),
+                                }
+                        
+                                # publish to results.output_debug (this is what the dashboard diagnosis expects)
+                                try:
+                                    od = res.setdefault("output_debug", {})
+                                    if isinstance(od, dict):
+                                        od["canonical_for_render_v1"] = payload
+                                except Exception:
+                                    pass
+                        
+                                # update the existing dashboard diagnosis flags (keep existing keys)
+                                try:
+                                    d = res.setdefault("debug", {})
+                                    if isinstance(d, dict):
+                                        d["canonical_for_render_present_v25"] = True
+                                        if isinstance(d.get("canonical_for_render_diagnosis_fix2ac_v1"), dict):
+                                            d["canonical_for_render_diagnosis_fix2ac_v1"]["reason"] = "ok"
+                                            d["canonical_for_render_diagnosis_fix2ac_v1"]["published_by"] = CODE_VERSION
+                                        else:
+                                            d["canonical_for_render_diagnosis_fix2ac_v1"] = {
+                                                "reason": "ok",
+                                                "published_by": CODE_VERSION,
+                                            }
+                                        d.setdefault("fix2at_phase4_6", {})
+                                        if isinstance(d.get("fix2at_phase4_6"), dict):
+                                            d["fix2at_phase4_6"].update({
+                                                "applied": True,
+                                                "published_to": "results.output_debug.canonical_for_render_v1",
+                                            })
+                                except Exception:
+                                    pass
+                        
+                                return out
+                            except Exception:
+                                return out
+                        
+                        
+                        def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+                            out = {}
+                            try:
+                                out = _FIX2AT_BASE_RUN_EVO(previous_data, web_context=web_context) if callable(_FIX2AT_BASE_RUN_EVO) else {}
+                            except Exception:
+                                out = {}
+                            try:
+                                out = _fix2at_publish_output_debug_marker(out) or out
+                            except Exception:
+                                pass
+                            return out
+                        
+                        # PATCH_TRACKER append
+                        try:
+                            if isinstance(PATCH_TRACKER, list):
+                                PATCH_TRACKER.append({
+                                    "patch_id": "FIX2AT_SPINE_PHASE4_6_PREUI_WRAP_V1",
+                                    "code_version": "fix2av_spine_phase4_6_preui_wrap_v3",
+                                    "date": "2026-01-14",
+                                    "adds": [
+                                        "install pre-UI wrapper for run_source_anchored_evolution",
+                                        "publish results.output_debug.canonical_for_render_v1 before UI call site",
+                                        "set results.debug.canonical_for_render_present_v25=true (diagnostic parity)",
+                                    ],
+                                })
+                        except Exception:
+                            pass
+                        
+                        results = run_source_anchored_evolution(
+                        
+                                                    baseline_data,
+                        
+                                                    web_context={
+                        
+                                                        "force_rebuild": bool(force_rebuild),
+                        
+                                                        "extra_urls": _extra_urls_evo,
+                        
+                                                        "diag_run_id": _evo_run_id,
+                        
+                                                        "diag_extra_urls_ui_raw": (extra_sources_text or ""),
+                        
+                                                    },
+                        
+                                                )
+                        
+                                                # ============================================================
+                        
+                        
                     except Exception as e:
 
                         st.error(f"❌ Evolution failed: {e}")
