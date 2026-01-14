@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ae_injected_fetch_urls_merge_v1_fix2af_fetch_visibility_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2b4_unified_poc_alias_keys_v1"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -24308,6 +24308,65 @@ def render_source_anchored_results(results, query: str):
         st.info("No metric changes to display.")
         return
 
+    # =====================================================================
+    # PATCH FIX2AY_RENDER_SMOKE_ROW_V2 (ADDITIVE)
+    #
+    # Fix for FIX2AX:
+    # - The prior smoke-test block was mistakenly injected at module scope,
+    #   causing NameError: rows not defined. This version is correctly scoped
+    #   inside render_source_anchored_results() AFTER rows is defined.
+    #
+    # Purpose:
+    # - Deterministic render-layer smoke test to confirm the Streamlit table
+    #   wiring displays the "Current" column (sourced from r["current_value"]).
+    #
+    # Activation:
+    # - ONLY when ALL existing rows have empty/"N/A"/"-" current_value.
+    # =====================================================================
+    try:
+        _fix2ay_rows = rows if isinstance(rows, list) else []
+        _fix2ay_all_empty = True
+        for _rr in _fix2ay_rows:
+            if not isinstance(_rr, dict):
+                continue
+            _cv = _rr.get("current_value")
+            _cv_s = str(_cv or "").strip()
+            if _cv_s and _cv_s.upper() != "N/A" and _cv_s != "-":
+                _fix2ay_all_empty = False
+                break
+
+        if _fix2ay_rows and _fix2ay_all_empty:
+            _smoke_row = {
+                "metric": "SMOKE_TEST_RENDER_CURRENT",
+                "canonical_key": "__smoke_test_render_current__",
+                "match_stage": "debug_hardcode_smoke",
+                "previous_value": "",
+                "current_value": "12345.67",
+                "change_pct": None,
+                "status": "debug",
+                "match_confidence": 1.0,
+                "match_score": 999.0,
+                "anchor_used": True,
+            }
+            rows.append(_smoke_row)
+            if isinstance(results, dict):
+                results.setdefault("debug", {})
+                if isinstance(results.get("debug"), dict):
+                    results["debug"].setdefault("fix2ay_render_smoke", {})
+                    if isinstance(results["debug"].get("fix2ay_render_smoke"), dict):
+                        results["debug"]["fix2ay_render_smoke"].update({
+                            "activated": True,
+                            "rows_before": int(len(_fix2ay_rows)),
+                            "rows_after": int(len(rows)),
+                            "reason": "all_rows_empty_current_value",
+                        })
+    except Exception:
+        pass
+    # =====================================================================
+
+
+
+
     table_rows = []
     for r in rows:
         if not isinstance(r, dict):
@@ -28308,6 +28367,63 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
             else:
                 text, status = (None, "no_fetch_fn")
 
+            # =====================================================================
+            # PATCH FIX2AW_GITHUB_RAW_FALLBACK_V1 (ADDITIVE)
+            #
+            # Problem:
+            # - Injected URLs that point to GitHub "blob" pages can fetch as HTML wrappers,
+            #   or be blocked/empty under some conditions, resulting in empty snapshot_text
+            #   and no extracted numbers (Current column stays blank/N/A).
+            #
+            # Goal:
+            # - If the initial fetch fails/empty AND the URL looks like a GitHub blob URL,
+            #   deterministically convert it to raw.githubusercontent.com and retry once.
+            #
+            # Safety:
+            # - Only triggers for github.com/*/blob/* URLs and only when the first fetch
+            #   produced empty text or an http_/empty/exception status.
+            # - Single retry. Never raises; falls back to original status/text.
+            # =====================================================================
+            try:
+                _fix2aw_txt0 = _fix2af_scraped_text_accessor(text)
+                _fix2aw_status0 = str(status or "")
+                _fix2aw_need = (not _fix2aw_txt0 or not str(_fix2aw_txt0).strip()) and (
+                    _fix2aw_status0.startswith("http_")
+                    or _fix2aw_status0 in ("empty", "no_fetch_fn")
+                    or _fix2aw_status0.startswith("exception:")
+                )
+                _fix2aw_raw_url = ""
+                if _fix2aw_need and isinstance(url, str):
+                    _u = url.strip()
+                    _ul = _u.lower()
+                    if "github.com/" in _ul and "/blob/" in _ul:
+                        # https://github.com/{owner}/{repo}/blob/{branch}/{path}
+                        try:
+                            _parts = _u.split("github.com/", 1)[1].split("/")
+                            if len(_parts) >= 5:
+                                _owner, _repo, _blob, _branch = _parts[0], _parts[1], _parts[2], _parts[3]
+                                _path = "/".join(_parts[4:])
+                                if _owner and _repo and _branch and _path:
+                                    _fix2aw_raw_url = f"https://raw.githubusercontent.com/{_owner}/{_repo}/{_branch}/{_path}"
+                        except Exception:
+                            _fix2aw_raw_url = ""
+                if _fix2aw_raw_url:
+                    try:
+                        _t2, _s2 = fetch_url_content_with_status(_fix2aw_raw_url)
+                        if _t2 and str(_t2).strip():
+                            text = _t2
+                            status = "success_github_raw_fallback"
+                            try:
+                                _fix2af_ledger_put(_fix2af_ledger, url, stage="fetched_fallback", reason="github_raw", extra={"raw_url": _fix2aw_raw_url, "status2": _s2})
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # END PATCH FIX2AW_GITHUB_RAW_FALLBACK_V1
+            # =====================================================================
+
             # PATCH FIX2AF_SCRAPED_TEXT_ACCESSOR_V1 (ADDITIVE)
             txt = _fix2af_scraped_text_accessor(text)
             # END PATCH FIX2AF_SCRAPED_TEXT_ACCESSOR_V1
@@ -28494,6 +28610,107 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     Note: This does NOT refactor existing evolution code; it wraps it.
     """
+    # =====================================================================
+    # PATCH FIX2B2_UNIFIED_POC_HOOK_V1 (ADDITIVE): Option-1 Unified Engine PoC Hook
+    #
+    # Goal:
+    # - Allow Streamlit Evolution tab to run a clean, minimal unified engine
+    #   path (PoC) end-to-end, bypassing legacy replay/fastpath/selection
+    #   complexity, to validate injected URL fetching + canonical binding
+    #   + dashboard hydration (metric_changes[].current_value).
+    #
+    # Activation:
+    # - Set web_context['use_unified_poc']=True (or 'use_unified_engine_poc'=True).
+    #
+    # Safety:
+    # - When flag is absent/false, existing behavior is unchanged.
+    # - Never raises; falls back to existing evolution path on any error.
+    # =====================================================================
+    try:
+        _wc_poc = web_context if isinstance(web_context, dict) else {}
+        _use_poc = bool(_wc_poc.get("use_unified_poc") or _wc_poc.get("use_unified_engine_poc"))
+        if _use_poc and callable(globals().get("run_unified_poc")):
+            _poc_prev_full = _fix24_get_prev_full_payload(previous_data or {}) if callable(globals().get("_fix24_get_prev_full_payload")) else (previous_data or {})
+            _poc_q = str((_poc_prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+            # Baseline URLs: source universe from previous snapshot (if any)
+            _poc_base_urls = []
+            try:
+                if callable(globals().get("_fix24_extract_source_urls")):
+                    _poc_base_urls = list(_fix24_extract_source_urls(_poc_prev_full) or [])
+            except Exception:
+                _poc_base_urls = []
+            # Injected URLs: prefer web_context['extra_urls'], else recover from UI diag fields
+            _poc_inj_raw = []
+            try:
+                if isinstance(_wc_poc.get("extra_urls"), (list, tuple)) and _wc_poc.get("extra_urls"):
+                    _poc_inj_raw = list(_wc_poc.get("extra_urls") or [])
+                elif isinstance(_wc_poc.get("diag_extra_urls_ui"), (list, tuple)) and _wc_poc.get("diag_extra_urls_ui"):
+                    _poc_inj_raw = list(_wc_poc.get("diag_extra_urls_ui") or [])
+                elif isinstance(_wc_poc.get("diag_extra_urls_ui_raw"), str) and (_wc_poc.get("diag_extra_urls_ui_raw") or "").strip():
+                    _raw = str(_wc_poc.get("diag_extra_urls_ui_raw") or "")
+                    _parts = []
+                    for _line in _raw.splitlines():
+                        _line = (_line or "").strip()
+                        if not _line:
+                            continue
+                        for _p in _line.split(","):
+                            _p = (_p or "").strip()
+                            if _p:
+                                _parts.append(_p)
+                    _poc_inj_raw = _parts
+            except Exception:
+                _poc_inj_raw = []
+            try:
+                _poc_inj_urls = _inj_diag_norm_url_list(_poc_inj_raw) if callable(globals().get("_inj_diag_norm_url_list")) else list(_poc_inj_raw or [])
+            except Exception:
+                _poc_inj_urls = list(_poc_inj_raw or [])
+
+            # Build a minimal prev_snapshot canonical_metrics numeric map for PoC diffing
+            _poc_prev_cm = {}
+            try:
+                _pmc = (_poc_prev_full or {}).get("primary_metrics_canonical") or (_poc_prev_full or {}).get("canonical_metrics") or {}
+                if isinstance(_pmc, dict):
+                    for _k, _v in _pmc.items():
+                        if isinstance(_v, dict):
+                            _vv = _v.get("value_norm")
+                            if _vv is None:
+                                _vv = _v.get("value")
+                            try:
+                                _poc_prev_cm[str(_k)] = float(_vv)
+                            except Exception:
+                                continue
+                        else:
+                            try:
+                                _poc_prev_cm[str(_k)] = float(_v)
+                            except Exception:
+                                continue
+            except Exception:
+                _poc_prev_cm = {}
+
+            _poc_prev_snapshot = {"canonical_metrics": _poc_prev_cm}
+
+            _poc_out = run_unified_poc(
+                question=_poc_q or "unified_poc",
+                baseline_urls=_poc_base_urls,
+                injected_urls=_poc_inj_urls,
+                prev_snapshot=_poc_prev_snapshot,
+            )
+            if isinstance(_poc_out, dict):
+                _poc_out.setdefault("code_version", CODE_VERSION)
+                _poc_out.setdefault("debug", {})
+                if isinstance(_poc_out.get("debug"), dict):
+                    _poc_out["debug"].setdefault("fix2b2", {})
+                    if isinstance(_poc_out["debug"].get("fix2b2"), dict):
+                        _poc_out["debug"]["fix2b2"].update({
+                            "used_unified_poc": True,
+                            "baseline_urls_count": int(len(_poc_base_urls or [])),
+                            "injected_urls_count": int(len(_poc_inj_urls or [])),
+                        })
+                return _poc_out
+    except Exception:
+        pass
+    # =====================================================================
+
     # Step 1: Rehydrate prior payload
     prev_full = _fix24_get_prev_full_payload(previous_data or {})
     prev_hashes = _fix24_get_prev_hashes(prev_full)
@@ -29218,7 +29435,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 'reason': _reason,
                 'content_len': int(_clen) if str(_clen).isdigit() else 0,
             })
-            if (_st or '').lower() in ('success','ok','fetched'):
+            _st_norm = str(_st or '').strip().lower()
+            if (_st_norm in ('success','ok')) or _st_norm.startswith('fetched'):
                 _inj_success_urls.add(_u)
 
         # Ensure success injected urls are represented in cur_bsc (hash identity)
@@ -29307,6 +29525,58 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     else:
         _fix41_force_rebuild_honored = False
     # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX2AU (ADDITIVE): Disable replay fastpath when injected URLs are present
+    #
+    # Problem:
+    # - When hashes match, FIX24 returns a replay payload early, which can preserve
+    #   stale/empty metric_changes.current_value and makes injected URLs ineffective.
+    #
+    # Policy:
+    # - If the caller provided injected URLs (web_context['extra_urls'] after recovery),
+    #   bypass the unchanged replay fastpath and force the "changed" compute path.
+    #
+    # Safety:
+    # - No effect when no injection is present.
+    # - Deterministic: does not change hashing, only the branch selection.
+    # =====================================================================
+    try:
+        _fix2au_inj_present = bool(_inj_extra_urls or [])
+    except Exception:
+        _fix2au_inj_present = False
+
+    if _fix2au_inj_present:
+        unchanged = False
+        try:
+            if isinstance(web_context, dict):
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("fix2au", {})
+                    if isinstance(web_context["debug"].get("fix2au"), dict):
+                        web_context["debug"]["fix2au"].update({
+                            "injection_present": True,
+                            "bypass_replay_fastpath": True,
+                            "inj_count": int(len(_inj_extra_urls or [])),
+                        })
+        except Exception:
+            pass
+    else:
+        try:
+            if isinstance(web_context, dict):
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("fix2au", {})
+                    if isinstance(web_context["debug"].get("fix2au"), dict):
+                        web_context["debug"]["fix2au"].update({
+                            "injection_present": False,
+                            "bypass_replay_fastpath": False,
+                            "inj_count": 0,
+                        })
+        except Exception:
+            pass
+    # =====================================================================
+
 
     if unchanged:
         hashes = {
@@ -33049,3 +33319,4418 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2Y_VERSION_BUMP
 # =====================================================================
+
+# =====================================================================
+# PATCH FIX2AG_EVO_RUNNER_CLEAN_REBUILD_V1 (ADDITIVE)
+# Goal:
+# - Clean, single authoritative execution path for Evolution on top of FIX2AF
+# - Deterministic: schema-first binding + numeric normalization
+# - Always returns a valid Evolution output contract:
+#     results.metric_changes, results.summary, results.output_debug
+# - Eliminates silent {} returns and "Current = N/A" surprises by emitting
+#   structured failures with diagnostics.
+# - Does NOT depend on UI wrappers / publish adapters / legacy diff objects.
+# =====================================================================
+
+# -------------------------
+# Patch tracker (additive)
+# -------------------------
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+
+try:
+    PATCH_TRACKER.append({
+        "patch_id": "FIX2AG_EVO_RUNNER_CLEAN_REBUILD_V1",
+        "code_version": "fix2ag_evo_runner_clean_v1",
+        "applies_to": "evolution",
+        "intent": "Clean deterministic Evolution runner that emits results.metric_changes/summary/output_debug (always structured).",
+    })
+except Exception:
+    pass
+
+
+def _fix2ag_now_iso() -> str:
+    try:
+        return datetime.now(timezone.utc).isoformat()
+    except Exception:
+        try:
+            return datetime.utcnow().isoformat() + "Z"
+        except Exception:
+            return ""
+
+
+def _fix2ag_safe_float(x) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip().replace(",", "")
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _fix2ag_get_nested(d: Any, path: List[str], default=None):
+    try:
+        cur = d
+        for k in path:
+            if not isinstance(cur, dict):
+                return default
+            cur = cur.get(k)
+        return cur if cur is not None else default
+    except Exception:
+        return default
+
+
+def _fix2ag_first_present(d: dict, paths: List[List[str]], default=None):
+    for p in paths:
+        v = _fix2ag_get_nested(d, p, None)
+        if v is not None:
+            return v
+    return default
+
+
+def _fix2ag_contract_template(status: str = "success", message: str = "") -> dict:
+    return {
+        "status": status,
+        "message": message or "",
+        "metric_changes": [],
+        "summary": {
+            "total_metrics": 0,
+            "metrics_found": 0,
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_unchanged": 0,
+            "metrics_not_found": 0,
+            "metrics_unit_mismatch": 0,
+        },
+        "output_debug": {
+            "runner": "fix2ai_evo_runner_answer_select_v1",
+            "ts_utc": _fix2ag_now_iso(),
+        },
+    }
+
+
+def _fix2ag_get_metric_schema_frozen(previous_data: dict) -> dict:
+    paths = [
+        ["metric_schema_frozen"],
+        ["primary_response", "metric_schema_frozen"],
+        ["results", "metric_schema_frozen"],
+        ["primary_response", "results", "metric_schema_frozen"],
+        ["results", "primary_response", "metric_schema_frozen"],
+    ]
+    schema = _fix2ag_first_present(previous_data or {}, paths, default={})
+    return schema if isinstance(schema, dict) else {}
+
+
+def _fix2ag_get_prev_metrics_canonical(previous_data: dict) -> dict:
+    paths = [
+        ["primary_metrics_canonical"],
+        ["primary_response", "primary_metrics_canonical"],
+        ["results", "primary_metrics_canonical"],
+        ["primary_response", "results", "primary_metrics_canonical"],
+        ["results", "primary_response", "primary_metrics_canonical"],
+    ]
+    m = _fix2ag_first_present(previous_data or {}, paths, default={})
+    return m if isinstance(m, dict) else {}
+
+
+def _fix2ag_get_baseline_urls(previous_data: dict) -> List[str]:
+    urls = []
+    try:
+        # Prefer baseline_sources_cache (analysis snapshots)
+        bsc = _fix2ag_first_present(previous_data or {}, [
+            ["results", "baseline_sources_cache"],
+            ["baseline_sources_cache"],
+            ["primary_response", "baseline_sources_cache"],
+            ["primary_response", "results", "baseline_sources_cache"],
+        ], default=[])
+        if isinstance(bsc, list):
+            for s in bsc:
+                if not isinstance(s, dict):
+                    continue
+                u = s.get("source_url") or s.get("url")
+                if u:
+                    urls.append(str(u))
+
+        # Fallback to source_results
+        if not urls:
+            sr = _fix2ag_first_present(previous_data or {}, [
+                ["results", "source_results"],
+                ["source_results"],
+                ["primary_response", "results", "source_results"],
+            ], default=[])
+            if isinstance(sr, list):
+                for s in sr:
+                    if not isinstance(s, dict):
+                        continue
+                    u = s.get("source_url") or s.get("url")
+                    if u:
+                        urls.append(str(u))
+
+    except Exception:
+        urls = []
+
+    # Normalize + stable order
+    out = []
+    seen = set()
+    for u in urls:
+        nu = ""
+        try:
+            fn = globals().get("_fix2af_norm_url")
+            nu = fn(u) if callable(fn) else str(u).strip()
+        except Exception:
+            nu = str(u).strip()
+        if not nu:
+            continue
+        if nu in seen:
+            continue
+        seen.add(nu)
+        out.append(nu)
+    out.sort()
+    return out
+
+
+def _fix2ag_fetch_sources(urls: List[str], timeout: int = 25) -> Tuple[Dict[str, str], List[dict], dict]:
+    scraped_content: Dict[str, str] = {}
+    source_results: List[dict] = []
+    dbg = {
+        "urls_requested": int(len(urls or [])),
+        "urls_fetched": 0,
+        "status_counts": {},
+        "samples": [],
+    }
+
+    fn_fetch = globals().get("fetch_url_content_with_status")
+    if not callable(fn_fetch):
+        # Minimal fallback: try fetch_url_content if it exists
+        fn_simple = globals().get("fetch_url_content")
+        if callable(fn_simple):
+            fn_fetch = lambda u, timeout=timeout: (fn_simple(u), "success" if fn_simple(u) else "empty")
+
+    for u in (urls or []):
+        txt = None
+        status_detail = "missing_fetcher"
+        try:
+            if callable(fn_fetch):
+                txt, status_detail = fn_fetch(u, timeout=timeout)
+            else:
+                txt, status_detail = None, "missing_fetcher"
+        except Exception as e:
+            txt, status_detail = None, f"exception:{type(e).__name__}"
+
+        try:
+            dbg["status_counts"][status_detail] = int(dbg["status_counts"].get(status_detail, 0)) + 1
+        except Exception:
+            pass
+
+        if isinstance(txt, str) and txt.strip() and len(txt.strip()) >= 200:
+            scraped_content[u] = txt
+            dbg["urls_fetched"] += 1
+
+        sr = {
+            "source_url": u,
+            "status_detail": status_detail,
+            "clean_text_len": int(len(txt)) if isinstance(txt, str) else 0,
+        }
+        source_results.append(sr)
+        if len(dbg["samples"]) < 6:
+            dbg["samples"].append(sr)
+
+    return scraped_content, source_results, dbg
+
+
+def _fix2ag_expected_unit_family(schema_entry: dict, canonical_key: str) -> str:
+    try:
+        if not isinstance(schema_entry, dict):
+            schema_entry = {}
+        uf = schema_entry.get("unit_family") or schema_entry.get("unit_family_norm")
+        if uf:
+            return str(uf).strip().lower()
+        # Derive from canonical_key suffix
+        ck = str(canonical_key or "")
+        if ck.endswith("__percent"):
+            return "percent"
+        if ck.endswith("__currency"):
+            return "currency"
+        if ck.endswith("__unit_sales"):
+            return "unit_sales"
+        if ck.endswith("__count"):
+            return "count"
+        return ""
+    except Exception:
+        return ""
+
+
+def _fix2ag_candidate_score(cand: dict, kws: List[str], expect_uf: str) -> Tuple[int, int, str]:
+    """Deterministic score tuple: (keyword_hits, unit_match, anchor_hash)"""
+    try:
+        ctx = (cand.get("context") or cand.get("context_snippet") or "")
+        raw = (cand.get("raw") or "")
+        blob = (str(ctx) + " " + str(raw)).lower()
+        hits = 0
+        for k in (kws or []):
+            kk = str(k or "").strip().lower()
+            if kk and kk in blob:
+                hits += 1
+        uf = str(cand.get("unit_family") or "").strip().lower()
+        unit_match = 1 if (expect_uf and uf and uf == expect_uf) else 0
+        ah = str(cand.get("anchor_hash") or "")
+        return hits, unit_match, ah
+    except Exception:
+        return 0, 0, ""
+
+
+def _fix2ag_bind_candidates_to_schema(schema: dict, candidates: List[dict]) -> Tuple[dict, dict]:
+    """Return (current_metrics_canonical, bind_debug)"""
+    cur = {}
+    dbg = {
+        "candidates_total": int(len(candidates or [])),
+        "bound": 0,
+        "not_found": 0,
+        "unit_mismatch": 0,
+        "rows": {},
+    }
+
+    for ck, entry in (schema or {}).items():
+        try:
+            ckey = str(ck)
+            md = entry if isinstance(entry, dict) else {}
+            label = md.get("metric_label") or md.get("metric_name") or ckey
+
+            expect_uf = _fix2ag_expected_unit_family(md, ckey)
+            kws = build_metric_keywords(str(label)) if callable(globals().get("build_metric_keywords")) else []
+            # Ensure determinism
+            kws = [str(x) for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            # Score candidates
+            best = None
+            best_score = (-1, -1, "")
+            best_diag = {}
+            for cand in (candidates or []):
+                if not isinstance(cand, dict):
+                    continue
+                # Hard gate: if schema has unit_family and candidate has one, require match
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+                score = _fix2ag_candidate_score(cand, kws, expect_uf)
+                if score > best_score:
+                    best_score = score
+                    best = cand
+
+            if best is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "not_found",
+                    "expect_unit_family": expect_uf,
+                    "keywords": kws[:12],
+                }
+                continue
+
+            v_norm = best.get("value_norm")
+            if v_norm is None:
+                v_norm = best.get("value")
+            v_norm = _fix2ag_safe_float(v_norm)
+
+            # Unit-family evidence gate: if schema expects a unit family but best lacks it, mark mismatch
+            if expect_uf and not str(best.get("unit_family") or "").strip():
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "chosen": {
+                        "url": best.get("url"),
+                        "raw": (best.get("raw") or "")[:120],
+                        "context": (best.get("context") or "")[:160],
+                        "unit_tag": best.get("unit_tag"),
+                        "unit_family": best.get("unit_family"),
+                    },
+                    "score": {"keyword_hits": best_score[0], "unit_match": best_score[1]},
+                }
+                # PATCH FIX2AI: keep best candidate even on unit mismatch (for display + diagnostics)
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": best.get("raw") or "",
+                    "unit_family": best.get("unit_family"),
+                    "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                    "source_url": best.get("url"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "unit_mismatch": True,
+                    "expect_unit_family": expect_uf,
+                }
+                continue
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": best.get("raw") or "",
+                "unit_family": best.get("unit_family"),
+                "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                "source_url": best.get("url"),
+                "anchor_hash": best.get("anchor_hash"),
+                "context": best.get("context") or best.get("context_snippet") or "",
+            }
+            dbg["bound"] += 1
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "expect_unit_family": expect_uf,
+                "chosen": {
+                    "url": best.get("url"),
+                    "raw": (best.get("raw") or "")[:120],
+                    "unit_family": best.get("unit_family"),
+                    "value_norm": v_norm,
+                    "anchor_hash": best.get("anchor_hash"),
+                },
+                "score": {"keyword_hits": best_score[0], "unit_match": best_score[1]},
+            }
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    return cur, dbg
+
+
+def _fix2ag_compute_metric_changes(prev_metrics: dict, cur_metrics: dict, schema: dict) -> Tuple[List[dict], dict]:
+    rows = []
+    summary = {
+        "total_metrics": 0,
+        "metrics_found": 0,
+        "metrics_increased": 0,
+        "metrics_decreased": 0,
+        "metrics_unchanged": 0,
+        "metrics_not_found": 0,
+        "metrics_unit_mismatch": 0,
+    }
+
+    # Stable key universe: schema keys
+    keys = list((schema or {}).keys())
+    keys = [str(k) for k in keys]
+    keys.sort()
+
+    for ck in keys:
+        md = (schema or {}).get(ck) if isinstance(schema, dict) else {}
+        label = (md or {}).get("metric_label") or (md or {}).get("metric_name") or ck
+
+        prev = (prev_metrics or {}).get(ck) if isinstance(prev_metrics, dict) else None
+        if isinstance(prev, dict):
+            prev_v = _fix2ag_safe_float(prev.get("value_norm") if prev.get("value_norm") is not None else prev.get("value"))
+            prev_raw = prev.get("raw") or prev.get("value_raw") or ""
+            prev_unit = prev.get("base_unit") or prev.get("unit") or prev.get("unit_tag") or ""
+        else:
+            prev_v = _fix2ag_safe_float(prev)
+            prev_raw = ""
+            prev_unit = ""
+
+        cur = (cur_metrics or {}).get(ck) if isinstance(cur_metrics, dict) else None
+
+        if cur is None:
+            # distinguish not_found vs unit_mismatch via cur_metrics missing; binding debug handles mismatch
+            summary["metrics_not_found"] += 1
+            rows.append({
+                "canonical_key": ck,
+                "metric_label": label,
+                "previous_value": prev_v,
+                "current_value": None,
+                "unit": prev_unit or (md or {}).get("unit") or "",
+                "change_type": "not_found",
+                "status": "not_found",
+            })
+            continue
+
+        cur_v = _fix2ag_safe_float(cur.get("value_norm") if isinstance(cur, dict) else cur)
+        cur_raw = cur.get("raw") if isinstance(cur, dict) else ""
+        cur_unit = (cur.get("base_unit") if isinstance(cur, dict) else "") or prev_unit or (md or {}).get("unit") or ""
+
+        change_type = "unchanged"
+        delta = None
+        pct = None
+        if prev_v is None or cur_v is None:
+            change_type = "found"
+        else:
+            try:
+                delta = float(cur_v) - float(prev_v)
+                if abs(delta) < 1e-12:
+                    change_type = "unchanged"
+                elif delta > 0:
+                    change_type = "increased"
+                else:
+                    change_type = "decreased"
+                if prev_v != 0:
+                    pct = (delta / float(prev_v)) * 100.0
+            except Exception:
+                delta = None
+                pct = None
+                change_type = "found"
+
+        summary["metrics_found"] += 1
+        if change_type == "increased":
+            summary["metrics_increased"] += 1
+        elif change_type == "decreased":
+            summary["metrics_decreased"] += 1
+        elif change_type == "unchanged":
+            summary["metrics_unchanged"] += 1
+
+        rows.append({
+            "canonical_key": ck,
+            "metric_label": label,
+            "previous_value": prev_v,
+            "previous_raw": prev_raw,
+            "current_value": cur_v,
+            "current_raw": cur_raw,
+            "unit": cur_unit,
+            "change_type": change_type,
+            "delta": delta,
+            "pct_change": pct,
+            "source_url": cur.get("source_url") if isinstance(cur, dict) else None,
+            "anchor_hash": cur.get("anchor_hash") if isinstance(cur, dict) else None,
+        })
+
+    summary["total_metrics"] = int(len(keys))
+    return rows, summary
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """Clean deterministic Evolution runner (FIX2AG)."""
+    out = _fix2ag_contract_template(status="success", message="")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        out["output_debug"].update({
+            "diag_run_id": web_context.get("diag_run_id"),
+            "force_rebuild": bool(web_context.get("force_rebuild")),
+        })
+
+        schema = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        if not schema:
+            out["status"] = "failed"
+            out["message"] = "missing_metric_schema_frozen"
+            out["output_debug"].update({
+                "prev_keys": sorted(list((previous_data or {}).keys()))[:60] if isinstance(previous_data, dict) else [],
+            })
+            return out
+
+        # URLs: baseline + optional injected
+        urls = _fix2ag_get_baseline_urls(previous_data or {})
+        extra_urls = []
+        try:
+            extra_urls = list(web_context.get("extra_urls") or [])
+        except Exception:
+            extra_urls = []
+        for u in extra_urls:
+            try:
+                nu = globals().get("_fix2af_norm_url")(u) if callable(globals().get("_fix2af_norm_url")) else str(u).strip()
+            except Exception:
+                nu = str(u).strip()
+            if nu and nu not in urls:
+                urls.append(nu)
+        urls = [u for u in urls if u]
+        urls = sorted(set(urls))
+
+        out["output_debug"]["urls_baseline_count"] = int(len(_fix2ag_get_baseline_urls(previous_data or {})))
+        out["output_debug"]["urls_total_count"] = int(len(urls))
+        out["output_debug"]["urls_sample"] = urls[:8]
+
+        # Fetch + extract
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout", 25) or 25))
+        out["output_debug"]["fetch"] = fetch_dbg
+        out["source_results"] = source_results
+
+        if not scraped_content:
+            out["status"] = "failed"
+            out["message"] = "no_sources_fetched"
+            out["output_debug"]["note"] = "All sources empty/failed; see output_debug.fetch.status_counts and source_results."
+            return out
+
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            # Last-ditch fallback: minimal extractor if helper missing
+            for url, txt in scraped_content.items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(txt, source_url=url) or []):
+                            n2 = dict(n)
+                            n2.setdefault("url", url)
+                            candidates.append(n2)
+                except Exception:
+                    continue
+
+        # Ensure deterministic candidate ordering (url, anchor_hash, value_norm, raw)
+        def _cand_key(c):
+            try:
+                return (
+                    str(c.get("url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    str(c.get("value_norm") if c.get("value_norm") is not None else c.get("value") or ""),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return ("", "", "", "")
+        candidates = [c for c in candidates if isinstance(c, dict)]
+        candidates.sort(key=_cand_key)
+
+        out["output_debug"]["candidates_total"] = int(len(candidates))
+
+        # Bind
+        cur_metrics, bind_dbg = _fix2ag_bind_candidates_to_schema(schema, candidates)
+        out["output_debug"]["bind"] = {
+            "candidates_total": bind_dbg.get("candidates_total"),
+            "bound": bind_dbg.get("bound"),
+            "not_found": bind_dbg.get("not_found"),
+            "unit_mismatch": bind_dbg.get("unit_mismatch"),
+            # keep the detailed per-metric binding rows trimmed (UI/debug safe)
+            "rows_sample": {k: bind_dbg.get("rows", {}).get(k) for k in list(sorted((bind_dbg.get("rows", {}) or {}).keys()))[:10]},
+        }
+
+        # Diff
+        metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics, schema)
+
+        out["metric_changes"] = metric_changes
+        out["summary"] = summary
+
+        # Renderer-required sanity defaults (some UI code expects these)
+        out.setdefault("sources_checked", int(len(urls)))
+        out.setdefault("sources_fetched", int(fetch_dbg.get("urls_fetched") or 0))
+        out.setdefault("numbers_extracted_total", int(len(candidates)))
+        try:
+            out.setdefault("stability_score", float(summary.get("metrics_found", 0)) / float(max(1, summary.get("total_metrics", 1))))
+        except Exception:
+            out.setdefault("stability_score", 0.0)
+
+        # Harden contract under results.* naming (explicit)
+        # (UI reads top-level keys today; report contract wants results.metric_changes/summary/output_debug)
+        out["output_debug"].update({
+            "schema_keys_count": int(len(schema)),
+            "prev_metrics_keys_count": int(len(prev_metrics or {})),
+        })
+
+        # Keep FIX39 sanitizer if present (additive safety)
+        try:
+            fn_san = globals().get("_fix39_sanitize_metric_change_rows")
+            if callable(fn_san):
+                fn_san(out)
+        except Exception:
+            pass
+
+        return out
+
+    except Exception as e:
+        out["status"] = "failed"
+        out["message"] = f"runner_exception:{type(e).__name__}: {e}"
+        try:
+            out["output_debug"]["exception_type"] = type(e).__name__
+        except Exception:
+            pass
+        return out
+
+
+# ---------------------------------------------------------------------
+# Wiring: override UI entrypoint to use clean runner (additive override)
+# ---------------------------------------------------------------------
+try:
+    def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+        """UI entrypoint override: uses FIX2AG clean runner."""
+        return run_evolutionary_runner(previous_data, web_context=web_context)
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------
+# Final CODE_VERSION bump (short filename)
+# ---------------------------------------------------------------------
+try:
+    CODE_VERSION = "fix2ag_evo_runner_clean_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AG_EVO_RUNNER_CLEAN_REBUILD_V1
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2AH_EVO_RUNNER_SCHEMA_TARGET_V1
+# - Adds deterministic schema-targeting fallback when expected_metric_ids is empty
+# - Emits metric_changes_v2 as source-of-truth and derives legacy rows from v2
+# - Always populates results.output_debug (even on failure)
+# - Wraps contract under results.* while preserving top-level compatibility
+# =====================================================================
+
+try:
+    from typing import Dict as _FIX2AH_Dict, List as _FIX2AH_List, Tuple as _FIX2AH_Tuple, Any as _FIX2AH_Any
+except Exception:
+    _FIX2AH_Dict = dict
+    _FIX2AH_List = list
+    _FIX2AH_Tuple = tuple
+    _FIX2AH_Any = object
+
+
+def _fix2ah_norm_text(s: str) -> str:
+    try:
+        import re as _re
+        return _re.sub(r'[^a-z0-9%]+', ' ', (s or '').lower()).strip()
+    except Exception:
+        return (s or '').lower().strip()
+
+
+def _fix2ah_tokens(s: str) -> _FIX2AH_List[str]:
+    s2 = _fix2ah_norm_text(s)
+    toks = [t for t in (s2 or "").split() if t]
+    # deterministic de-dup (preserve order)
+    seen = set()
+    out = []
+    for t in toks:
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _fix2ah_get_question_and_expected(previous_data: dict, web_context: dict) -> _FIX2AH_Tuple[str, _FIX2AH_List[str], dict]:
+    """
+    Return (question_text, expected_metric_ids, qprofile_debug)
+    Deterministically scans common locations without relying on legacy wrappers.
+    """
+    wc = web_context if isinstance(web_context, dict) else {}
+    qtext = wc.get("question") or wc.get("question_text") or wc.get("query") or ""
+    expected = wc.get("expected_metric_ids") or wc.get("expected_metrics") or []
+
+    qprofile = {}
+    try:
+        # Prefer any existing question_profile if upstream produced it (but do not require it)
+        qprofile = (wc.get("question_profile") if isinstance(wc.get("question_profile"), dict) else {}) or {}
+        if not qprofile and isinstance(previous_data, dict):
+            for p in (
+                ["question_profile"],
+                ["results", "question_profile"],
+                ["primary_response", "question_profile"],
+                ["primary_response", "results", "question_profile"],
+            ):
+                node = previous_data
+                ok = True
+                for k in p:
+                    if not isinstance(node, dict) or k not in node:
+                        ok = False
+                        break
+                    node = node.get(k)
+                if ok and isinstance(node, dict):
+                    qprofile = node
+                    break
+    except Exception:
+        qprofile = {}
+
+    # If expected not explicitly provided, attempt to pull from qprofile.signals.expected_metric_ids
+    if not expected:
+        try:
+            sig = qprofile.get("signals") if isinstance(qprofile.get("signals"), dict) else {}
+            expected = sig.get("expected_metric_ids") or []
+        except Exception:
+            expected = []
+
+    # Normalize expected to list[str]
+    out_expected = []
+    try:
+        for e in (expected or []):
+            if e is None:
+                continue
+            out_expected.append(str(e))
+    except Exception:
+        out_expected = []
+
+    # question text fallback from qprofile
+    if not (qtext or "").strip():
+        try:
+            qtext = qprofile.get("question") or qprofile.get("question_text") or ""
+        except Exception:
+            qtext = ""
+
+    qdbg = {
+        "question_text": (qtext or "")[:280],
+        "expected_metric_ids_count": int(len(out_expected)),
+        "expected_metric_ids_preview": out_expected[:12],
+        "question_profile_present": bool(qprofile),
+    }
+    return (qtext or ""), out_expected, qdbg
+
+
+def _fix2ah_select_target_metric_ids(schema: dict, question_text: str, max_n: int = 20) -> _FIX2AH_Tuple[_FIX2AH_List[str], dict]:
+    """
+    Deterministic schema targeting based on token overlap between question and schema metadata.
+    Stable scoring + tie-break by canonical_key.
+    """
+    q_toks = _fix2ah_tokens(question_text)
+    q_set = set(q_toks)
+
+    # Lightweight boosts for common EV-market intents (still deterministic and generic)
+    boosts = {
+        "market": 2.0,
+        "size": 2.0,
+        "revenue": 2.0,
+        "sales": 2.0,
+        "share": 1.5,
+        "cagr": 1.5,
+        "units": 1.5,
+        "unit": 1.0,
+        "charging": 1.0,
+        "charger": 1.0,
+        "investment": 1.0,
+        "global": 0.5,
+    }
+
+    scored = []
+    for ck, entry in (schema or {}).items():
+        try:
+            ckey = str(ck)
+            md = entry if isinstance(entry, dict) else {}
+            text_parts = [
+                ckey,
+                md.get("metric_label") or "",
+                md.get("metric_name") or "",
+                md.get("description") or md.get("metric_description") or "",
+                " ".join(md.get("keywords") or []) if isinstance(md.get("keywords"), list) else "",
+                " ".join(md.get("tags") or []) if isinstance(md.get("tags"), list) else "",
+                str(md.get("unit_family") or ""),
+                str(md.get("unit") or md.get("base_unit") or ""),
+            ]
+            blob = " ".join([p for p in text_parts if p])
+            toks = _fix2ah_tokens(blob)
+            tset = set(toks)
+            overlap = q_set.intersection(tset)
+            score = float(len(overlap))
+
+            # apply deterministic boosts if those words are present in both
+            for w, b in boosts.items():
+                if w in q_set and w in tset:
+                    score += float(b)
+
+            # tiny boost if metric key contains core question tokens (substring)
+            if q_toks:
+                key_l = ckey.lower()
+                if any(t in key_l for t in q_toks[:6]):
+                    score += 0.25
+
+            scored.append((score, ckey))
+        except Exception:
+            continue
+
+    # Sort by score desc, then key asc for stability
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    # Filter: keep >0 first, else fallback to top-N by stable key ordering
+    positives = [k for s, k in scored if s > 0.0]
+    if positives:
+        targets = positives[: int(max_n or 20)]
+        mode = "overlap_scored"
+    else:
+        # stable fallback
+        keys = sorted([str(k) for k in (schema or {}).keys()])
+        targets = keys[: int(max_n or 20)]
+        mode = "fallback_first_keys"
+
+    dbg = {
+        "mode": mode,
+        "question_tokens": q_toks[:24],
+        "targets_count": int(len(targets)),
+        "targets_preview": targets[:12],
+        "top_scores_preview": [{"canonical_key": k, "score": float(s)} for (s, k) in scored[:12]],
+    }
+    return targets, dbg
+
+
+def _fix2ah_schema_subset(schema: dict, target_ids: _FIX2AH_List[str]) -> dict:
+    if not (schema and isinstance(schema, dict)):
+        return {}
+    if not target_ids:
+        return dict(schema)
+    tset = set([str(x) for x in target_ids if x is not None])
+    out = {}
+    for k, v in schema.items():
+        ks = str(k)
+        if ks in tset:
+            out[ks] = v
+    return out
+
+
+def _fix2ah_compute_metric_changes_v2(prev_metrics: dict, cur_metrics: dict, schema: dict, bind_debug: dict = None) -> _FIX2AH_Tuple[_FIX2AH_List[dict], dict]:
+    """
+    v2 rows: canonical_key + previous/current + status + reason + unit info.
+    Deterministic ordering by canonical_key.
+    """
+    prev_metrics = prev_metrics if isinstance(prev_metrics, dict) else {}
+    cur_metrics = cur_metrics if isinstance(cur_metrics, dict) else {}
+    schema = schema if isinstance(schema, dict) else {}
+    bdbg_rows = (bind_debug.get("rows") if isinstance(bind_debug, dict) else {}) if isinstance(bind_debug, dict) else {}
+
+    keys = sorted(set(list(schema.keys()) + list(prev_metrics.keys()) + list(cur_metrics.keys())))
+    rows = []
+
+    counts = {
+        "total_metrics": int(len(keys)),
+        "metrics_found": 0,
+        "metrics_not_found": 0,
+        "metrics_unit_mismatch": 0,
+        "metrics_changed": 0,
+        "metrics_unchanged": 0,
+        "metrics_failed": 0,
+    }
+
+    for ck in keys:
+        md = schema.get(ck) if isinstance(schema.get(ck), dict) else {}
+        prev = prev_metrics.get(ck)
+        cur = cur_metrics.get(ck)
+
+        prev_v = _fix2ag_safe_float(prev.get("value_norm") if isinstance(prev, dict) else prev)
+        cur_v = _fix2ag_safe_float(cur.get("value_norm") if isinstance(cur, dict) else cur)
+        prev_raw = prev.get("raw") if isinstance(prev, dict) else ("" if prev is None else str(prev))
+        cur_raw = cur.get("raw") if isinstance(cur, dict) else ("" if cur is None else str(cur))
+
+        unit = (cur.get("base_unit") if isinstance(cur, dict) else "") or (prev.get("base_unit") if isinstance(prev, dict) else "") or (md.get("unit") or md.get("base_unit") or "")
+        unit_family = (cur.get("unit_family") if isinstance(cur, dict) else "") or (prev.get("unit_family") if isinstance(prev, dict) else "") or (md.get("unit_family") or "")
+
+        # Determine status/reason using bind debug first
+        binfo = bdbg_rows.get(ck) if isinstance(bdbg_rows, dict) else None
+        status = None
+        reason = None
+        if isinstance(binfo, dict):
+            status = binfo.get("status")
+            reason = binfo.get("status")
+
+        if not status:
+            if cur is None:
+                status = "not_found"
+                reason = "not_found"
+            else:
+                status = "found"
+                reason = "found"
+
+        change_type = "unchanged"
+        delta = None
+        pct = None
+        if prev_v is None and cur_v is not None:
+            change_type = "added"
+        elif prev_v is not None and cur_v is None:
+            change_type = "removed"
+        elif prev_v is None and cur_v is None:
+            change_type = "not_found"
+        else:
+            try:
+                if abs(cur_v - prev_v) < 1e-12:
+                    change_type = "unchanged"
+                else:
+                    change_type = "modified"
+                    delta = cur_v - prev_v
+                    if prev_v not in (0.0, None):
+                        pct = (delta / prev_v) * 100.0
+            except Exception:
+                change_type = "modified"
+
+        # Counters
+        if status == "found":
+            counts["metrics_found"] += 1
+        if status == "not_found":
+            counts["metrics_not_found"] += 1
+        if status == "unit_mismatch":
+            counts["metrics_unit_mismatch"] += 1
+        if change_type in ("added", "modified", "removed"):
+            counts["metrics_changed"] += 1
+        if change_type == "unchanged":
+            counts["metrics_unchanged"] += 1
+        if status not in ("found", "not_found", "unit_mismatch"):
+            counts["metrics_failed"] += 1
+
+        rows.append({
+            "canonical_key": ck,
+            "metric_label": md.get("metric_label") or md.get("metric_name") or ck,
+            "previous_value_norm": prev_v,
+            "previous_raw": prev_raw,
+            "current_value_norm": cur_v,
+            "current_raw": cur_raw,
+            "unit": unit,
+            "unit_family": unit_family,
+            "status": status,
+            "reason": reason,
+            "change_type": change_type,
+            "delta": delta,
+            "pct_change": pct,
+            "source_url": cur.get("source_url") if isinstance(cur, dict) else None,
+            "anchor_hash": cur.get("anchor_hash") if isinstance(cur, dict) else None,
+        })
+
+    summary_v2 = dict(counts)
+    return rows, summary_v2
+
+
+def _fix2ah_legacy_from_v2(rows_v2: _FIX2AH_List[dict]) -> _FIX2AH_List[dict]:
+    """Derive legacy row shape from v2 so UI continues to work."""
+    out = []
+    for r in (rows_v2 or []):
+        try:
+            out.append({
+                "canonical_key": r.get("canonical_key"),
+                "metric_label": r.get("metric_label"),
+                "previous_value": r.get("previous_value_norm"),
+                "previous_raw": r.get("previous_raw"),
+                "current_value": r.get("current_value_norm"),
+                "current_raw": r.get("current_raw"),
+                "unit": r.get("unit"),
+                "change_type": r.get("status") if r.get("status") in ("unit_mismatch", "not_found") else (r.get("change_type") or "found"),
+                "status": r.get("status") or "found",
+                "source_url": r.get("source_url"),
+                "anchor_hash": r.get("anchor_hash"),
+                "delta": r.get("delta"),
+                "pct_change": r.get("pct_change"),
+            })
+        except Exception:
+            continue
+    return out
+
+
+def _fix2ah_contract_wrap(out_top: dict) -> dict:
+    """Ensure results.* contract exists and is consistent with top-level keys."""
+    out_top = out_top if isinstance(out_top, dict) else {}
+    res = out_top.get("results")
+    if not isinstance(res, dict):
+        res = {}
+    mc = out_top.get("metric_changes_v2")
+    if not isinstance(mc, list):
+        mc = out_top.get("metric_changes") if isinstance(out_top.get("metric_changes"), list) else []
+    summ = out_top.get("summary") if isinstance(out_top.get("summary"), dict) else {}
+    odbg = out_top.get("output_debug") if isinstance(out_top.get("output_debug"), dict) else {}
+    res.update({
+        "metric_changes": mc,
+        "summary": summ,
+        "output_debug": odbg,
+        "status": out_top.get("status") or res.get("status") or "success",
+        "message": out_top.get("message") or res.get("message") or "",
+    })
+    out_top["results"] = res
+    return out_top
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """
+    Clean deterministic Evolution runner (FIX2AH).
+    Implements schema targeting fallback + v2 emission + always-on output_debug.
+    """
+    out = _fix2ag_contract_template(status="success", message="")
+    out.setdefault("metric_changes_v2", [])
+    out.setdefault("metric_changes_legacy", [])
+    out.setdefault("output_debug", {})
+    out["output_debug"].setdefault("runner", "fix2ah_evo_runner_schema_target_v1")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        qtext, expected_ids, qdbg = _fix2ah_get_question_and_expected(previous_data or {}, web_context or {})
+        out["output_debug"]["question"] = qdbg
+
+        schema_full = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        target_ids = list(expected_ids or [])
+        targeting_dbg = {"mode": "expected_metric_ids", "targets_count": int(len(target_ids)), "targets_preview": target_ids[:12]}
+        if not target_ids:
+            target_ids, targeting_dbg = _fix2ah_select_target_metric_ids(schema_full, qtext, max_n=int(web_context.get("schema_target_max", 20) or 20))
+        out["output_debug"]["schema_targeting"] = targeting_dbg
+
+        schema = _fix2ah_schema_subset(schema_full, target_ids)
+
+        out["output_debug"].update({
+            "schema_keys_count_full": int(len(schema_full or {})),
+            "schema_keys_count_targeted": int(len(schema or {})),
+            "prev_metrics_keys_count": int(len(prev_metrics or {})),
+        })
+
+        urls = []
+        try:
+            urls = _fix2ag_get_urls_from_context(previous_data or {}, web_context or {})
+        except Exception:
+            urls = []
+        out.setdefault("sources_checked", int(len(urls)))
+
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout", 25) or 25))
+        out["source_results"] = source_results
+        out.setdefault("sources_fetched", int(fetch_dbg.get("urls_fetched") or 0))
+        out["output_debug"]["fetch"] = fetch_dbg
+
+        if not scraped_content:
+            out["status"] = "failed"
+            out["message"] = "no_sources_fetched"
+            out["summary"] = {"total_metrics": int(len(schema or {})), "metrics_found": 0, "metrics_not_found": int(len(schema or {})), "metrics_unit_mismatch": 0}
+            out["output_debug"]["failure_stage"] = "fetch"
+            out["output_debug"]["note"] = "All sources empty/failed; see output_debug.fetch.status_counts and source_results."
+            return _fix2ah_contract_wrap(out)
+
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            for url, txt in scraped_content.items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(txt, source_url=url) or []):
+                            n2 = dict(n)
+                            n2.setdefault("url", url)
+                            candidates.append(n2)
+                except Exception:
+                    continue
+
+        def _cand_key(c):
+            try:
+                return (
+                    str(c.get("url") or c.get("source_url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    float(_fix2ag_safe_float(c.get("value_norm") if c.get("value_norm") is not None else c.get("value")) or 0.0),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return ("", "", 0.0, "")
+
+        try:
+            candidates = sorted(list(candidates or []), key=_cand_key)
+        except Exception:
+            candidates = list(candidates or [])
+
+        out.setdefault("numbers_extracted_total", int(len(candidates)))
+
+        try:
+            fn_norm = globals().get("_fix2af_normalize_number_candidates") or globals().get("_fix2ag_normalize_number_candidates")
+            if callable(fn_norm):
+                candidates = fn_norm(candidates) or candidates
+        except Exception:
+            pass
+
+        cur_metrics, bind_dbg = _fix2ag_bind_candidates_to_schema(schema, candidates)
+        out["output_debug"]["binding"] = bind_dbg
+
+        rows_v2, summ_v2 = _fix2ah_compute_metric_changes_v2(prev_metrics, cur_metrics, schema, bind_debug=bind_dbg)
+        out["metric_changes_v2"] = rows_v2
+        out["summary"] = summ_v2
+
+        legacy = _fix2ah_legacy_from_v2(rows_v2)
+        out["metric_changes_legacy"] = legacy
+        out["metric_changes"] = legacy
+
+        try:
+            tot = float(max(1, int(summ_v2.get("total_metrics", 1))))
+            found = float(int(summ_v2.get("metrics_found", 0)))
+            out["stability_score"] = found / tot
+        except Exception:
+            out["stability_score"] = 0.0
+
+        try:
+            fn_san = globals().get("_fix39_sanitize_metric_change_rows")
+            if callable(fn_san):
+                fn_san(out)
+        except Exception:
+            pass
+
+        return _fix2ah_contract_wrap(out)
+
+    except Exception as e:
+        try:
+            out["status"] = "failed"
+            out["message"] = "runner_exception"
+            out["output_debug"]["failure_stage"] = "exception"
+            out["output_debug"]["exception_type"] = str(type(e).__name__)
+            out["output_debug"]["exception_str"] = str(e)[:500]
+        except Exception:
+            pass
+        return _fix2ah_contract_wrap(out)
+
+
+
+# ---------------------------------------------------------------------
+# 
+# =====================================================================
+# PATCH FIX2AL_EVO_RUNNER_INJECTED_FETCH_ASSURE_V1 (ADDITIVE)
+# Purpose:
+#   - Eliminate injected-url "prehash_placeholder" / empty-text cases from silently producing 0 candidates.
+#   - Fix fallback fetch wrapper double-call bug (fetch_url_content called twice).
+#   - Add deterministic injected refetch retry path (GitHub blob/raw hint).
+#   - Surface injected fetch diagnostics (text_len, retries, final status) in fetch dbg.
+# Notes:
+#   - Additive-only: we override _fix2ag_fetch_sources via globals() assignment so the runner stays unchanged.
+# =====================================================================
+
+def _fix2al_maybe_github_raw(u: str) -> str:
+    try:
+        s = str(u or "").strip()
+        if not s:
+            return s
+        # GitHub HTML "blob" page -> add raw=1 as a safe deterministic hint (still same page, server returns raw content).
+        if "github.com/" in s and "/blob/" in s and "raw=1" not in s:
+            if "?" in s:
+                return s + "&raw=1"
+            return s + "?raw=1"
+        return s
+    except Exception:
+        return str(u or "").strip()
+
+
+def _fix2al_fetch_sources(urls: List[str], timeout: int = 25, injected_urls: List[str] = None) -> Tuple[Dict[str, str], List[dict], dict]:
+    scraped_content: Dict[str, str] = {}
+    source_results: List[dict] = []
+
+    inj_set = set()
+    try:
+        inj_set = set([str(x).strip() for x in (injected_urls or []) if str(x).strip()])
+    except Exception:
+        inj_set = set()
+    # If caller didn't provide injected_urls (runner calls _fix2ag_fetch_sources(urls,...)), infer injected as urls not in last baseline set.
+    if not inj_set:
+        try:
+            _base = set([str(x).strip() for x in (globals().get('_fix2al_last_baseline_urls') or []) if str(x).strip()])
+            _all = set([str(x).strip() for x in (urls or []) if str(x).strip()])
+            _guess = sorted(list(_all.difference(_base)))
+            inj_set = set(_guess)
+        except Exception:
+            pass
+
+    dbg = {
+        "urls_requested": int(len(urls or [])),
+        "urls_fetched": 0,
+        "status_counts": {},
+        "samples": [],
+        # Injected-specific diagnostics
+        "injected": {
+            "urls_expected": sorted(list(inj_set))[:20],
+            "attempted": [],
+            "refetch_attempts": 0,
+            "refetch_success": 0,
+            "refetch_fail": 0,
+        },
+    }
+
+    # Prefer an existing status-aware fetcher.
+    fn_fetch = globals().get("fetch_url_content_with_status")
+    if not callable(fn_fetch):
+        # Minimal fallback: try fetch_url_content if it exists (ensure we call only once per URL).
+        fn_simple = globals().get("fetch_url_content")
+        if callable(fn_simple):
+            def _one_shot(u: str, timeout: int = timeout):
+                _t = fn_simple(u)
+                return (_t, "success" if (_t is not None and str(_t).strip()) else "failed:no_text")
+            fn_fetch = _one_shot
+
+    def _record_status(detail: str):
+        try:
+            dbg["status_counts"][detail] = int(dbg["status_counts"].get(detail, 0)) + 1
+        except Exception:
+            pass
+
+    def _fetch_one(u: str) -> Tuple[str, str]:
+        txt = None
+        status_detail = "missing_fetcher"
+        try:
+            if callable(fn_fetch):
+                txt, status_detail = fn_fetch(u, timeout=timeout)
+            else:
+                txt, status_detail = None, "missing_fetcher"
+        except Exception as e:
+            txt, status_detail = None, f"exception:{type(e).__name__}"
+        if not status_detail:
+            status_detail = "unknown"
+        return txt, status_detail
+
+    # First pass
+    for u in (urls or []):
+        u = str(u or "").strip()
+        if not u:
+            continue
+
+        txt, status_detail = _fetch_one(u)
+        _record_status(status_detail)
+
+        clean_len = int(len(txt)) if isinstance(txt, str) else 0
+        if isinstance(txt, str) and txt.strip() and len(txt.strip()) >= 200:
+            scraped_content[u] = txt
+            dbg["urls_fetched"] += 1
+
+        sr = {
+            "source_url": u,
+            "status_detail": status_detail,
+            "clean_text_len": clean_len,
+            "is_injected": bool(u in inj_set),
+        }
+        source_results.append(sr)
+        if len(dbg["samples"]) < 6:
+            dbg["samples"].append(sr)
+
+        # Injected trace row
+        if u in inj_set:
+            try:
+                dbg["injected"]["attempted"].append({
+                    "url": u,
+                    "status_detail": status_detail,
+                    "text_len": clean_len,
+                })
+            except Exception:
+                pass
+
+    # Second pass: injected assurance (only for injected URLs with empty/too-short text)
+    # This is intentionally conservative and deterministic.
+    if inj_set:
+        # Build quick index to update source_results entries in-place.
+        idx = {}
+        for i, sr in enumerate(source_results):
+            try:
+                idx[str(sr.get("source_url") or "")] = i
+            except Exception:
+                pass
+
+        for u in sorted(list(inj_set)):
+            try:
+                sr_i = idx.get(u)
+                if sr_i is None:
+                    continue
+                sr = source_results[sr_i]
+                if int(sr.get("clean_text_len") or 0) >= 200:
+                    continue  # already good
+            except Exception:
+                continue
+
+            # Attempt deterministic GitHub raw hint
+            u2 = _fix2al_maybe_github_raw(u)
+            if u2 and u2 != u:
+                dbg["injected"]["refetch_attempts"] += 1
+                txt2, detail2 = _fetch_one(u2)
+                _record_status(detail2)
+                clean2 = int(len(txt2)) if isinstance(txt2, str) else 0
+
+                # Update debug record
+                try:
+                    dbg["injected"]["attempted"].append({
+                        "url": u2,
+                        "status_detail": detail2,
+                        "text_len": clean2,
+                        "refetch_of": u,
+                    })
+                except Exception:
+                    pass
+
+                if isinstance(txt2, str) and txt2.strip() and len(txt2.strip()) >= 200:
+                    scraped_content[u2] = txt2
+                    dbg["urls_fetched"] += 1
+                    dbg["injected"]["refetch_success"] += 1
+                    # Update source_results entry to reflect that injected content was recovered via u2.
+                    try:
+                        source_results[sr_i].update({
+                            "status_detail": f"{source_results[sr_i].get('status_detail')}|refetch:{detail2}",
+                            "clean_text_len": max(int(source_results[sr_i].get("clean_text_len") or 0), clean2),
+                            "refetch_url": u2,
+                        })
+                    except Exception:
+                        pass
+                else:
+                    dbg["injected"]["refetch_fail"] += 1
+
+    return scraped_content, source_results, dbg
+
+
+
+# Track baseline URLs used by the runner so fetch layer can infer which URLs are injected.
+try:
+    if callable(globals().get("_fix2ag_get_baseline_urls")) and not callable(globals().get("_fix2al_get_baseline_urls_wrapped")):
+        _fix2al_orig_get_baseline_urls = globals().get("_fix2ag_get_baseline_urls")
+        def _fix2al_get_baseline_urls_wrapped(previous_data: dict) -> List[str]:
+            _out = []
+            try:
+                _out = _fix2al_orig_get_baseline_urls(previous_data)
+            except Exception:
+                _out = []
+            try:
+                globals()["_fix2al_last_baseline_urls"] = list(_out or [])
+            except Exception:
+                pass
+            return _out
+        globals()["_fix2al_get_baseline_urls_wrapped"] = _fix2al_get_baseline_urls_wrapped
+        globals()["_fix2ag_get_baseline_urls"] = _fix2al_get_baseline_urls_wrapped
+except Exception:
+    pass
+
+
+# Override the runner's fetch implementation without touching the runner itself.
+try:
+    if callable(globals().get("_fix2ag_fetch_sources")):
+        globals()["_fix2ag_fetch_sources"] = _fix2al_fetch_sources
+except Exception:
+    pass
+
+
+# PATCH TRACKER (append-only)
+# - fix2b2_unified_poc_hook_v1: Option-1 PoC hook in run_source_anchored_evolution + embedded unified PoC engine
+# ---------------------------------------------------------------------
+# - FIX2AG: Clean evolutionary runner (single authoritative execution path)
+# - FIX2AH: Deterministic schema targeting fallback + v2 emitter + always-on output_debug
+# - FIX2AI: Answer metric selection + roles; keep best candidate even on unit_mismatch (Current no longer blank)
+# - FIX2AJ: Injected URL priority in binding + injected harvesting trace
+# - FIX2AK: Injected windowing / paragraph targeting
+# - FIX2AM: Injected fetch assurance + syntaxfix (tracker comment) (no placeholder), fix fallback double-call, deterministic GitHub raw retry + injected fetch diagnostics
+
+# ---------------------------------------------------------------------
+# - FIX2AS: Emit output_debug.canonical_for_render_v1 and hydrate metric_changes current_value (dashboard parity)
+# Final CODE_VERSION bump (short filename)
+# ---------------------------------------------------------------------
+try:
+    CODE_VERSION = "fix2ah_evo_runner_schema_target_v1"
+except Exception:
+    pass
+
+# PATCH FIX2AL (ADD): ensure CODE_VERSION reflects latest issued file
+try:
+    CODE_VERSION = "fix2am_inj_fetch_assure_v2"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AH_EVO_RUNNER_SCHEMA_TARGET_V1
+# =====================================================================
+
+
+# ============================================================
+# PATCH FIX2AI START
+# Purpose: Runner Patch #2 — deterministic answer metric selection + role assignment,
+#          plus keep unit-mismatch candidates for display (Current column), and populate metric_changes_v2.
+# ============================================================
+
+def _fix2ai_get_question_text(previous_data: dict, web_context: dict) -> str:
+    try:
+        wc = web_context or {}
+        if isinstance(wc.get("question"), str) and wc.get("question").strip():
+            return wc.get("question").strip()
+        if isinstance(wc.get("user_question"), str) and wc.get("user_question").strip():
+            return wc.get("user_question").strip()
+    except Exception:
+        pass
+    try:
+        pd = previous_data or {}
+        if isinstance(pd.get("question"), str) and pd.get("question").strip():
+            return pd.get("question").strip()
+        qp = pd.get("question_profile") or {}
+        if isinstance(qp, dict):
+            q = qp.get("question") or qp.get("raw_question") or qp.get("text")
+            if isinstance(q, str) and q.strip():
+                return q.strip()
+        r = pd.get("results") or {}
+        if isinstance(r, dict):
+            q = r.get("question") or r.get("raw_question") or r.get("text")
+            if isinstance(q, str) and q.strip():
+                return q.strip()
+    except Exception:
+        pass
+    return ""
+
+def _fix2ai_norm_text(s: str) -> str:
+    try:
+        import re as _re
+        s = (s or "").lower()
+        s = _re.sub(r"[^a-z0-9%$ ]+", " ", s)
+        s = _re.sub(r"\s+", " ", s).strip()
+        return s
+    except Exception:
+        return (s or "").strip().lower()
+
+def _fix2ai_unit_family(unit: str) -> str:
+    u = _fix2ai_norm_text(unit)
+    if not u:
+        return ""
+    # currency
+    if ("$" in unit) or ("usd" in u) or ("eur" in u) or ("sgd" in u) or ("s$" in u) or ("gbp" in u) or ("cny" in u) or ("rmb" in u):
+        return "currency"
+    if "%" in u or "percent" in u:
+        return "percent"
+    if "unit" in u or "sale" in u or "vehicle" in u or "car" in u:
+        return "unit_sales"
+    return ""
+
+def _fix2ai_intent_prefers_currency(question_text: str) -> bool:
+    qt = _fix2ai_norm_text(question_text)
+    if not qt:
+        return False
+    return any(k in qt for k in [
+        "market size",
+        "market worth",
+        "market value",
+        "worth",
+        "value",
+        "revenue",
+        "valuation",
+        "market is worth",
+    ])
+
+def _fix2ai_select_answer_metrics(v2_rows: list, question_text: str) -> list:
+    """Return canonical_keys of answer metrics in deterministic priority order."""
+    qt = _fix2ai_norm_text(question_text)
+    prefer_currency = _fix2ai_intent_prefers_currency(qt)
+
+    def _has_value(row):
+        cur = row.get("current", {}) if isinstance(row.get("current"), dict) else {}
+        cur_v = cur.get("value_norm")
+        return not (cur_v is None or cur_v == "" or cur_v == "N/A")
+
+    def score(row):
+        ck = _fix2ai_norm_text(row.get("canonical_key") or "")
+        name = _fix2ai_norm_text(row.get("name") or row.get("metric_label") or "")
+        unit_f = _fix2ai_unit_family(row.get("unit") or row.get("unit_expected") or "")
+        s = 0.0
+        if _has_value(row):
+            s += 10.0
+        if prefer_currency and unit_f == "currency":
+            s += 8.0
+        if (not prefer_currency) and unit_f == "unit_sales":
+            s += 6.0
+        if "market" in qt and ("revenue" in ck or "revenue" in name or "market" in ck or "market" in name):
+            s += 2.0
+        if row.get("unit_mismatch") or ((row.get("current") or {}).get("unit_mismatch") is True):
+            s -= 2.0
+        return (-s, ck, name)
+
+    rows = [r for r in (v2_rows or []) if isinstance(r, dict)]
+    rows.sort(key=score)
+
+    picks = []
+    for r in rows:
+        if _has_value(r):
+            picks.append(r.get("canonical_key"))
+            break
+    return [p for p in picks if isinstance(p, str) and p.strip()]
+
+def _fix2ai_build_metric_changes_v2(legacy_rows: list, question_text: str) -> list:
+    v2 = []
+    for r in (legacy_rows or []):
+        if not isinstance(r, dict):
+            continue
+        unit = r.get("unit") or (r.get("metric_definition") or {}).get("unit") or ""
+        entry = {
+            "canonical_key": r.get("canonical_key") or "",
+            "name": r.get("name") or r.get("metric_label") or (r.get("metric_definition") or {}).get("name") or "",
+            "unit_expected": (r.get("metric_definition") or {}).get("unit") or unit,
+            "unit": unit,
+            "previous": {"value_norm": r.get("previous_value"), "raw": r.get("previous_raw"), "unit": unit},
+            "current": {
+                "value_norm": r.get("current_value"),
+                "raw": r.get("current_raw"),
+                "unit": unit,
+                "source_url": r.get("source_url"),
+                "anchor_hash": r.get("anchor_hash"),
+                "unit_mismatch": bool(r.get("unit_mismatch")),
+            },
+            "change_type": r.get("change_type"),
+            "pct_change": r.get("change_pct") if "change_pct" in r else r.get("pct_change"),
+            "delta": r.get("delta"),
+            "unit_mismatch": bool(r.get("unit_mismatch")),
+            "match_confidence": r.get("match_confidence"),
+            "context_snippet": r.get("context_snippet"),
+        }
+        v2.append(entry)
+
+    answer_keys = set(_fix2ai_select_answer_metrics(v2, question_text))
+    for e in v2:
+        ck = e.get("canonical_key")
+        if ck in answer_keys:
+            e["role"] = "answer"
+        else:
+            cur_v = (e.get("current") or {}).get("value_norm")
+            if cur_v is None or cur_v == "" or cur_v == "N/A":
+                e["role"] = "context_only"
+            else:
+                e["role"] = "supporting"
+    return v2
+
+# Wrap runner to populate v2 + answer selection deterministically
+try:
+    _fix2ai_prev_run_evolutionary_runner = run_evolutionary_runner
+except Exception:
+    _fix2ai_prev_run_evolutionary_runner = None
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    out = {}
+    if callable(_fix2ai_prev_run_evolutionary_runner):
+        out = _fix2ai_prev_run_evolutionary_runner(previous_data, web_context)
+    else:
+        out = _fix2ag_contract_template(status="failed", message="missing_runner")
+
+    try:
+        qtext = _fix2ai_get_question_text(previous_data or {}, web_context or {})
+        out.setdefault("output_debug", {})
+        if isinstance(out.get("output_debug"), dict):
+            out["output_debug"]["question_text"] = qtext
+            out["output_debug"]["runner_patch"] = "FIX2AI"
+
+        legacy = out.get("metric_changes") or []
+        v2 = _fix2ai_build_metric_changes_v2(legacy, qtext)
+
+        out["metric_changes_v2"] = v2
+        out["metric_changes_legacy"] = legacy  # explicit for contract consumers
+
+        out.setdefault("summary", {})
+        if isinstance(out.get("summary"), dict):
+            out["summary"]["answer_metrics"] = [r.get("canonical_key") for r in v2 if r.get("role") == "answer"]
+    except Exception as _e:
+        try:
+            out["status"] = "failed"
+            out["message"] = f"runner_patch_fix2ai_exception:{type(_e).__name__}: {_e}"
+        except Exception:
+            pass
+    return out
+
+# ============================================================
+# PATCH FIX2AI END
+# ============================================================
+
+
+
+# PATCH FIX2AJ START
+# Purpose:
+#   - Prefer injected URL candidates over baseline sources when binding to schema (deterministic).
+#   - Emit explicit injected-source harvesting diagnostics so we can see whether injected content was used.
+#   - Preserve FIX2AF deterministic semantics; no legacy wrapper reliance.
+#
+# Notes:
+#   - We do NOT "force" injected to win if it fails unit-family hard gates; we only prioritize when comparable.
+#   - We tag candidates with _inj_priority (1 injected, 0 baseline) and incorporate that into the bind score.
+#
+try:
+    from typing import List as _FIX2AJ_List, Tuple as _FIX2AJ_Tuple, Dict as _FIX2AJ_Dict
+except Exception:
+    _FIX2AJ_List = list
+    _FIX2AJ_Tuple = tuple
+    _FIX2AJ_Dict = dict
+
+
+def _fix2aj_candidate_score(cand: dict, kws: _FIX2AJ_List[str], expect_uf: str) -> _FIX2AJ_Tuple[int, int, int, str]:
+    """Deterministic score tuple:
+    (inj_priority, keyword_hits, unit_match, anchor_hash)
+
+    Higher is better under tuple comparison.
+    """
+    try:
+        injp = 1 if int(cand.get("_inj_priority") or 0) == 1 else 0
+    except Exception:
+        injp = 0
+    try:
+        # Reuse FIX2AG scoring semantics
+        hits, unit_match, ah = _fix2ag_candidate_score(cand, kws, expect_uf)
+        try:
+            hits = int(hits)
+        except Exception:
+            hits = 0
+        try:
+            unit_match = int(unit_match)
+        except Exception:
+            unit_match = 0
+        ah = str(ah or "")
+        return injp, hits, unit_match, ah
+    except Exception:
+        return injp, 0, 0, str(cand.get("anchor_hash") or "")
+
+
+def _fix2aj_bind_candidates_to_schema(schema: dict, candidates: _FIX2AJ_List[dict], injected_urls_set: set = None) -> _FIX2AJ_Tuple[dict, dict]:
+    """FIX2AJ bind: identical to FIX2AG/FIX2AI, but with injected priority as the leading score component."""
+    if injected_urls_set is None:
+        injected_urls_set = set()
+
+    # Ensure candidate tag is present (stable)
+    tagged = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            tagged.append(c2)
+        except Exception:
+            tagged.append(c)
+
+    cur = {}
+    dbg = {
+        "candidates_total": int(len(tagged or [])),
+        "bound": 0,
+        "not_found": 0,
+        "unit_mismatch": 0,
+        "rows": {},
+        "injected": {
+            "urls": sorted(list(injected_urls_set))[:25],
+            "candidates_total": int(sum(1 for c in (tagged or []) if int(c.get("_inj_priority") or 0) == 1)),
+        }
+    }
+
+    for ck, entry in (schema or {}).items():
+        try:
+            ckey = str(ck)
+            md = entry if isinstance(entry, dict) else {}
+            label = md.get("metric_label") or md.get("metric_name") or ckey
+
+            kws = md.get("keywords") or md.get("tags") or []
+            if not isinstance(kws, list):
+                kws = []
+            kws = [str(x).strip().lower() for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            expect_uf = str(md.get("unit_family") or md.get("dimension") or "").strip().lower()
+            if expect_uf in ("unit_sales", "units", "count_units"):
+                expect_uf = "magnitude"
+            if expect_uf == "percent":
+                expect_uf = "percent"
+
+            best = None
+            best_score = (-1, -1, -1, "")
+            for cand in (tagged or []):
+                if not isinstance(cand, dict):
+                    continue
+                # Hard gate: if schema has unit_family and candidate has one, require match
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+                score = _fix2aj_candidate_score(cand, kws, expect_uf)
+                if score > best_score:
+                    best_score = score
+                    best = cand
+
+            if best is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "not_found",
+                    "expect_unit_family": expect_uf,
+                    "keywords": kws[:12],
+                }
+                continue
+
+            v_norm = best.get("value_norm")
+            if v_norm is None:
+                v_norm = best.get("value")
+            v_norm = _fix2ag_safe_float(v_norm)
+
+            # Unit-family evidence gate: if schema expects a unit family but best lacks it, mark mismatch
+            if expect_uf and not str(best.get("unit_family") or "").strip():
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "chosen": {
+                        "url": best.get("url") or best.get("source_url"),
+                        "raw": (best.get("raw") or "")[:120],
+                        "context": (best.get("context") or best.get("context_snippet") or "")[:160],
+                        "unit_tag": best.get("unit_tag"),
+                        "unit_family": best.get("unit_family"),
+                        "inj_priority": int(best.get("_inj_priority") or 0),
+                    },
+                    "score": {"inj_priority": best_score[0], "keyword_hits": best_score[1], "unit_match": best_score[2]},
+                }
+                # FIX2AI behavior: keep best candidate even on mismatch for display
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": best.get("raw") or "",
+                    "unit_family": best.get("unit_family"),
+                    "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                    "source_url": best.get("url") or best.get("source_url"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "context": best.get("context") or best.get("context_snippet") or "",
+                    "unit_mismatch": True,
+                    "inj_priority": int(best.get("_inj_priority") or 0),
+                }
+                continue
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": best.get("raw") or "",
+                "unit_family": best.get("unit_family"),
+                "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                "source_url": best.get("url") or best.get("source_url"),
+                "anchor_hash": best.get("anchor_hash"),
+                "context": best.get("context") or best.get("context_snippet") or "",
+                "inj_priority": int(best.get("_inj_priority") or 0),
+            }
+            dbg["bound"] += 1
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "chosen": {
+                    "url": cur[ckey].get("source_url"),
+                    "raw": (cur[ckey].get("raw") or "")[:120],
+                    "inj_priority": int(best.get("_inj_priority") or 0),
+                },
+                "score": {"inj_priority": best_score[0], "keyword_hits": best_score[1], "unit_match": best_score[2]},
+            }
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "exception", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    return cur, dbg
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX2AJ: Clean deterministic Evolution runner + injected priority binding + injected harvest diagnostics."""
+    out = _fix2ag_contract_template(status="success", message="")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        out["output_debug"].update({
+            "diag_run_id": web_context.get("diag_run_id"),
+            "force_rebuild": bool(web_context.get("force_rebuild")),
+            "code_version": CODE_VERSION,
+        })
+
+        schema = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        if not schema:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "schema_missing"
+            out["summary"]["message"] = "Missing frozen metric schema"
+            return out
+
+        # URLs: baseline + injected
+        urls = _fix2ag_get_baseline_urls(previous_data or {})
+        extra_urls = []
+        try:
+            extra_urls = list(web_context.get("extra_urls") or [])
+        except Exception:
+            extra_urls = []
+
+        injected_urls_set = set()
+        for u in (extra_urls or []):
+            try:
+                nu = globals().get("_fix2af_norm_url")(u) if callable(globals().get("_fix2af_norm_url")) else str(u).strip()
+            except Exception:
+                nu = str(u).strip()
+            if nu:
+                injected_urls_set.add(nu)
+                if nu not in urls:
+                    urls.append(nu)
+
+        out["output_debug"]["urls"] = {
+            "baseline_count": int(len(_fix2ag_get_baseline_urls(previous_data or {}) or [])),
+            "injected_count": int(len(injected_urls_set)),
+            "urls_total": int(len(urls or [])),
+            "injected_urls": sorted(list(injected_urls_set))[:25],
+        }
+
+        if not urls:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "no_urls"
+            out["summary"]["message"] = "No URLs available to fetch"
+            return out
+
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout") or 25))
+        out["output_debug"]["fetch"] = fetch_dbg
+        out["output_debug"]["sources_checked"] = int(fetch_dbg.get("urls_requested") or 0)
+        out["output_debug"]["sources_fetched"] = int(fetch_dbg.get("urls_fetched") or 0)
+        out["output_debug"]["baseline_sources_cache"] = source_results
+
+        # Candidate extraction
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            for url, t in (scraped_content or {}).items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(t, source_url=url) or []):
+                            n2 = dict(n) if isinstance(n, dict) else {}
+                            n2["url"] = url
+                            candidates.append(n2)
+                except Exception:
+                    pass
+
+        # Tag injected priority for diagnostics + binding (binding also tags again defensively)
+        tagged = []
+        inj_cnt = 0
+        for c in (candidates or []):
+            if not isinstance(c, dict):
+                continue
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            if c2["_inj_priority"] == 1:
+                inj_cnt += 1
+            tagged.append(c2)
+
+        # Deterministic sort
+        def _cand_key(c):
+            try:
+                return (
+                    -int(c.get("_inj_priority") or 0),  # injected first for stable order (does not override bind score)
+                    str(c.get("url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    str(c.get("value_norm") if c.get("value_norm") is not None else c.get("value") or ""),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return (0, "", "", "", "")
+        tagged.sort(key=_cand_key)
+
+        out["output_debug"]["candidates_total"] = int(len(tagged))
+        out["output_debug"]["injected_candidates_total"] = int(inj_cnt)
+
+        # Bind with injected priority
+        cur_metrics, bind_dbg = _fix2aj_bind_candidates_to_schema(schema, tagged, injected_urls_set=injected_urls_set)
+        out["output_debug"]["bind"] = {
+            "candidates_total": bind_dbg.get("candidates_total"),
+            "bound": bind_dbg.get("bound"),
+            "not_found": bind_dbg.get("not_found"),
+            "unit_mismatch": bind_dbg.get("unit_mismatch"),
+            "injected": bind_dbg.get("injected"),
+            "rows_sample": {k: (bind_dbg.get("rows", {}) or {}).get(k) for k in list(sorted((bind_dbg.get("rows", {}) or {}).keys()))[:10]},
+        }
+
+        # Diff
+        metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics, schema)
+        out["metric_changes"] = metric_changes
+        out["summary"] = summary
+
+        # Make answer selection deterministic (re-use FIX2AI answer selector if present)
+        try:
+            fn_ans = globals().get("_fix2ai_assign_roles_and_answer_metrics")
+            if callable(fn_ans):
+                out = fn_ans(out) or out
+        except Exception:
+            pass
+
+        # Ensure contract fields exist
+        out.setdefault("output_debug", {})
+        out.setdefault("metric_changes_v2", out.get("metric_changes_v2") or [])
+        out.setdefault("metric_changes_legacy", out.get("metric_changes_legacy") or out.get("metric_changes") or [])
+        out.setdefault("results", None)  # do not create nested results if UI expects top-level
+        return out
+
+    except Exception as e:
+        out["status"] = "failed"
+        out["summary"]["status"] = "failed"
+        out["summary"]["failure_stage"] = "runner_exception"
+        out["summary"]["message"] = f"{type(e).__name__}: {e}"
+        try:
+            out["output_debug"]["exception"] = {"type": type(e).__name__, "msg": str(e)}
+        except Exception:
+            pass
+        return out
+
+# PATCH FIX2AJ END
+
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - FIX2AI: Answer metric selection + keep best candidate on unit mismatch for display
+# - FIX2AJ: Injected URL priority in bind scoring + injected harvesting trace
+# - FIX2AK: Injected windowing / paragraph targeting (context-window boost)
+
+
+# PATCH FIX2AK START
+# ---------------------------------------------------------------------
+# FIX2AK: Injected windowing / paragraph targeting
+# - When injected URLs are present, identify the most relevant injected "window"
+#   using deterministic keyword overlap with schema keywords (and stable seed terms),
+#   then boost candidates in that window during binding.
+# - Surfaces windowing decisions in bind debug under output_debug.bind.injected.windowing.
+#
+# Rationale:
+#   Even with injected priority, pages can contain multiple similar figures; this
+#   patch deterministically narrows attention to the injected paragraph most relevant
+#   to the targeted schema slice, improving the odds that e.g. "19.2 million units"
+#   wins over a baseline "17.8 million units" when it is actually present in the injected page.
+
+try:
+    from typing import List as _FIX2AK_List, Tuple as _FIX2AK_Tuple, Dict as _FIX2AK_Dict
+except Exception:
+    _FIX2AK_List = list
+    _FIX2AK_Tuple = tuple
+    _FIX2AK_Dict = dict
+
+
+def _fix2ak_norm_token(s: str) -> str:
+    try:
+        return str(s or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _fix2ak_keywords_from_schema(schema: dict, max_n: int = 24) -> _FIX2AK_List[str]:
+    kws = []
+    if isinstance(schema, dict):
+        for k, md in schema.items():
+            if not isinstance(md, dict):
+                continue
+            for w in (md.get("keywords") or []):
+                wt = _fix2ak_norm_token(w)
+                if wt and wt not in kws:
+                    kws.append(wt)
+            # include metric name tokens lightly
+            nm = _fix2ak_norm_token(md.get("name") or md.get("metric_name") or "")
+            for wt in nm.split():
+                if wt and wt not in kws:
+                    kws.append(wt)
+            if len(kws) >= max_n:
+                break
+    # stable seeds (ensure basic intent words are always considered)
+    seeds = ["global", "worldwide", "ev", "electric", "vehicle", "vehicles", "sales", "market", "revenue", "share", "2024", "2025", "2026"]
+    for s in seeds:
+        st = _fix2ak_norm_token(s)
+        if st and st not in kws:
+            kws.append(st)
+    return kws[:max_n]
+
+
+def _fix2ak_window_score(context: str, kws: _FIX2AK_List[str]) -> int:
+    c = _fix2ak_norm_token(context)
+    if not c:
+        return 0
+    score = 0
+    # deterministic: count distinct keyword hits
+    for w in (kws or []):
+        if not w:
+            continue
+        if w in c:
+            score += 1
+    return int(score)
+
+
+def _fix2ak_apply_injected_windowing(tagged: _FIX2AK_List[dict], injected_urls_set: set, schema: dict) -> _FIX2AK_Tuple[_FIX2AK_List[dict], dict]:
+    """Tag candidates with _inj_window_boost for injected URLs based on max context overlap."""
+    dbg = {"urls": {}, "kws": []}
+    if not injected_urls_set:
+        return tagged, dbg
+
+    kws = _fix2ak_keywords_from_schema(schema or {}, max_n=24)
+    dbg["kws"] = kws[:]
+
+    # Compute max score per injected url
+    max_by_url = {}
+    for c in (tagged or []):
+        if not isinstance(c, dict):
+            continue
+        u = str(c.get("url") or c.get("source_url") or "")
+        if not u or u not in injected_urls_set:
+            continue
+        if bool(c.get("is_junk")):
+            continue
+        ctx = c.get("context") or c.get("context_snippet") or ""
+        # ignore ultra-short contexts (often nav)
+        if isinstance(ctx, str) and len(ctx.strip()) < 40:
+            continue
+        sc = _fix2ak_window_score(ctx, kws)
+        if sc <= 0:
+            continue
+        if (u not in max_by_url) or (sc > max_by_url[u]):
+            max_by_url[u] = sc
+
+    # Apply boost: candidates at max score for that url
+    out = []
+    for c in (tagged or []):
+        if not isinstance(c, dict):
+            continue
+        c2 = dict(c)
+        u = str(c2.get("url") or c2.get("source_url") or "")
+        boost = 0
+        if u and u in injected_urls_set and u in max_by_url:
+            if not bool(c2.get("is_junk")):
+                ctx = c2.get("context") or c2.get("context_snippet") or ""
+                if isinstance(ctx, str) and len(ctx.strip()) >= 40:
+                    sc = _fix2ak_window_score(ctx, kws)
+                    if sc == max_by_url.get(u):
+                        boost = 1
+        c2["_inj_window_boost"] = int(boost)
+        out.append(c2)
+
+    # Debug summary (deterministic, small)
+    for u, mx in sorted(max_by_url.items()):
+        chosen = []
+        for c in out:
+            uu = str(c.get("url") or c.get("source_url") or "")
+            if uu != u:
+                continue
+            if int(c.get("_inj_window_boost") or 0) != 1:
+                continue
+            cid = str(c.get("candidate_id") or "")
+            ah = str(c.get("anchor_hash") or "")
+            key = cid or (ah[:16] if ah else "")
+            if key:
+                chosen.append(key)
+            if len(chosen) >= 6:
+                break
+        dbg["urls"][u] = {"max_score": int(mx), "chosen": chosen[:6]}
+
+    return out, dbg
+
+
+def _fix2ak_candidate_score(cand: dict, kws: _FIX2AK_List[str], expect_uf: str) -> _FIX2AK_Tuple[int, int, int, int, str]:
+    """Deterministic score tuple:
+    (inj_priority, inj_window_boost, keyword_hits, unit_match, anchor_hash)
+    """
+    try:
+        injp = 1 if int(cand.get("_inj_priority") or 0) == 1 else 0
+    except Exception:
+        injp = 0
+    try:
+        wboost = 1 if int(cand.get("_inj_window_boost") or 0) == 1 else 0
+    except Exception:
+        wboost = 0
+    try:
+        hits, unit_match, ah = _fix2ag_candidate_score(cand, kws, expect_uf)
+        try:
+            hits = int(hits)
+        except Exception:
+            hits = 0
+        try:
+            unit_match = int(unit_match)
+        except Exception:
+            unit_match = 0
+        ah = str(ah or "")
+        return injp, wboost, hits, unit_match, ah
+    except Exception:
+        return injp, wboost, 0, 0, str(cand.get("anchor_hash") or "")
+
+
+def _fix2ak_bind_candidates_to_schema(schema: dict, candidates: list, injected_urls_set: set = None) -> _FIX2AK_Tuple[dict, dict]:
+    """FIX2AK bind: FIX2AJ + injected windowing boost."""
+    if injected_urls_set is None:
+        injected_urls_set = set()
+
+    # Ensure injected tag
+    tagged = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            tagged.append(c2)
+        except Exception:
+            tagged.append(c)
+
+    # Apply windowing boost for injected
+    tagged2, wnd_dbg = _fix2ak_apply_injected_windowing(tagged, injected_urls_set, schema or {})
+
+    dbg = {"candidates_total": int(len(tagged2)), "bound": 0, "not_found": 0, "unit_mismatch": 0, "rows": {}, "injected": {}}
+    try:
+        inj_cnt = 0
+        for c in tagged2:
+            try:
+                if int(c.get("_inj_priority") or 0) == 1:
+                    inj_cnt += 1
+            except Exception:
+                pass
+        dbg["injected"] = {"urls_count": int(len(injected_urls_set)), "candidates_total": int(inj_cnt), "bound": 0, "windowing": wnd_dbg}
+    except Exception:
+        dbg["injected"] = {"urls_count": int(len(injected_urls_set)), "candidates_total": 0, "bound": 0, "windowing": wnd_dbg}
+
+    cur = {}
+    if not isinstance(schema, dict):
+        return cur, dbg
+
+    for ck, md in (schema or {}).items():
+        try:
+            ckey = str(md.get("canonical_key") or ck)
+            label = str(md.get("name") or md.get("metric_name") or ckey)
+
+            kws = md.get("keywords") or []
+            if not isinstance(kws, list):
+                kws = []
+            kws = [str(x).strip().lower() for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            expect_uf = str(md.get("unit_family") or md.get("dimension") or "").strip().lower()
+            if expect_uf in ("unit_sales", "units", "count_units"):
+                expect_uf = "magnitude"
+            if expect_uf == "percent":
+                expect_uf = "percent"
+
+            best = None
+            best_score = (-1, -1, -1, -1, "")
+            for cand in (tagged2 or []):
+                if not isinstance(cand, dict):
+                    continue
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+                score = _fix2ak_candidate_score(cand, kws, expect_uf)
+                if score > best_score:
+                    best_score = score
+                    best = cand
+
+            if best is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {"status": "not_found", "expect_unit_family": expect_uf, "keywords": kws[:10]}
+                continue
+
+            # Normalize / extract value_norm
+            v_norm = best.get("value_norm")
+            if v_norm is None:
+                v_norm = best.get("value")
+            try:
+                v_norm = float(v_norm)
+            except Exception:
+                v_norm = v_norm
+
+            # Unit mismatch handling: keep best for display (as FIX2AI/FIX2AJ)
+            cand_uf = str(best.get("unit_family") or "").strip().lower()
+            if expect_uf and cand_uf and cand_uf != expect_uf:
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "chosen": {
+                        "url": best.get("url") or best.get("source_url"),
+                        "raw": (best.get("raw") or "")[:120],
+                        "context": (best.get("context") or best.get("context_snippet") or "")[:160],
+                        "unit_tag": best.get("unit_tag"),
+                        "unit_family": best.get("unit_family"),
+                        "inj_priority": int(best.get("_inj_priority") or 0),
+                        "inj_window_boost": int(best.get("_inj_window_boost") or 0),
+                    },
+                    "score": {"inj_priority": best_score[0], "inj_window_boost": best_score[1], "keyword_hits": best_score[2], "unit_match": best_score[3]},
+                }
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": best.get("raw") or "",
+                    "unit_family": best.get("unit_family"),
+                    "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                    "source_url": best.get("url") or best.get("source_url"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "context": best.get("context") or best.get("context_snippet") or "",
+                    "unit_mismatch": True,
+                    "inj_priority": int(best.get("_inj_priority") or 0),
+                    "inj_window_boost": int(best.get("_inj_window_boost") or 0),
+                }
+                continue
+
+            dbg["bound"] += 1
+            if int(best.get("_inj_priority") or 0) == 1:
+                try:
+                    dbg["injected"]["bound"] = int(dbg["injected"].get("bound") or 0) + 1
+                except Exception:
+                    pass
+
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "chosen": {
+                    "url": best.get("url") or best.get("source_url"),
+                    "raw": (best.get("raw") or "")[:120],
+                    "unit_family": best.get("unit_family"),
+                    "inj_priority": int(best.get("_inj_priority") or 0),
+                    "inj_window_boost": int(best.get("_inj_window_boost") or 0),
+                },
+                "score": {"inj_priority": best_score[0], "inj_window_boost": best_score[1], "keyword_hits": best_score[2], "unit_match": best_score[3]},
+            }
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": best.get("raw") or "",
+                "unit_family": best.get("unit_family"),
+                "base_unit": best.get("base_unit") or best.get("unit_tag") or md.get("unit") or "",
+                "source_url": best.get("url") or best.get("source_url"),
+                "anchor_hash": best.get("anchor_hash"),
+                "context": best.get("context") or best.get("context_snippet") or "",
+                "unit_mismatch": False,
+                "inj_priority": int(best.get("_inj_priority") or 0),
+                "inj_window_boost": int(best.get("_inj_window_boost") or 0),
+            }
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "exception", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    return cur, dbg
+
+
+# Activate FIX2AK by monkeypatching the bind function used by the runner
+try:
+    globals()["_fix2aj_bind_candidates_to_schema"] = _fix2ak_bind_candidates_to_schema
+    globals()["_FIX2AK_ACTIVE"] = True
+except Exception:
+    pass
+
+# PATCH FIX2AK END
+
+# PATCH FIX2AN START
+# ---------------------------------------------------------------------
+# FIX2AN: Injected-wins resolution policy (Option A)
+#
+# Problem addressed:
+#   When both baseline and injected sources contain plausible values for the same
+#   canonical metric (e.g., 17.8M vs 19.2M), Evolution must surface the injected
+#   value in "Current" to make injection testing and delta validation meaningful.
+#
+# Policy:
+#   If at least one injected candidate passes the schema hard gates (unit_family match
+#   where available), the best injected candidate MUST be selected for the metric,
+#   even if a baseline candidate has a higher non-injection score.
+#
+# Notes:
+#   - Deterministic: tie-breaking remains stable via the existing score tuple.
+#   - Auditability: emits output_debug.resolution.* diagnostics.
+#   - Additive-only: does not refactor existing binders; introduces a new binder
+#     and a final run_evolutionary_runner override that uses it.
+
+try:
+    from typing import List as _FIX2AN_List, Tuple as _FIX2AN_Tuple
+except Exception:
+    _FIX2AN_List = list
+    _FIX2AN_Tuple = tuple
+
+
+# PATCH FIX2AN (ADD): bump CODE_VERSION to new patch filename
+try:
+    CODE_VERSION = "fix2an_injected_wins_resolution_v1"
+except Exception:
+    pass
+
+
+def _fix2an_bind_candidates_to_schema_injected_wins(schema: dict, candidates: _FIX2AN_List[dict], injected_urls_set: set = None) -> _FIX2AN_Tuple[dict, dict]:
+    """Bind candidates to schema with injected-wins override (Option A)."""
+    if injected_urls_set is None:
+        injected_urls_set = set()
+
+    # Ensure candidate tag is present (stable)
+    tagged = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else int(c2.get("_inj_priority") or 0)
+            tagged.append(c2)
+        except Exception:
+            tagged.append(c)
+
+    cur = {}
+    dbg = {
+        "candidates_total": int(len(tagged or [])),
+        "bound": 0,
+        "not_found": 0,
+        "unit_mismatch": 0,
+        "rows": {},
+        "resolution": {
+            "policy": "injected_wins",
+            "override_applied_count": 0,
+        },
+        "injected": {
+            "urls": sorted(list(injected_urls_set))[:25],
+            "candidates_total": int(sum(1 for c in (tagged or []) if int(c.get("_inj_priority") or 0) == 1)),
+        },
+    }
+
+    for ck, entry in (schema or {}).items():
+        try:
+            ckey = str(ck)
+            md = entry if isinstance(entry, dict) else {}
+            label = md.get("metric_label") or md.get("metric_name") or ckey
+
+            kws = md.get("keywords") or md.get("tags") or []
+            if not isinstance(kws, list):
+                kws = []
+            kws = [str(x).strip().lower() for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            expect_uf = str(md.get("unit_family") or md.get("dimension") or "").strip().lower()
+            if expect_uf in ("unit_sales", "units", "count_units"):
+                expect_uf = "magnitude"
+            if expect_uf == "percent":
+                expect_uf = "percent"
+
+            best_any = None
+            best_any_score = (-1, -1, -1, "")
+            best_inj = None
+            best_inj_score = (-1, -1, -1, "")
+
+            for cand in (tagged or []):
+                if not isinstance(cand, dict):
+                    continue
+
+                # Hard gate: if schema has unit_family and candidate has one, require match
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+
+                score = _fix2aj_candidate_score(cand, kws, expect_uf)
+
+                if score > best_any_score:
+                    best_any_score = score
+                    best_any = cand
+
+                if int(cand.get("_inj_priority") or 0) == 1:
+                    if score > best_inj_score:
+                        best_inj_score = score
+                        best_inj = cand
+
+            if best_any is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "not_found",
+                    "expect_unit_family": expect_uf,
+                    "keywords": kws[:12],
+                }
+                continue
+
+            # Option A: injected wins if present
+            chosen = best_inj if best_inj is not None else best_any
+            chosen_score = best_inj_score if best_inj is not None else best_any_score
+            override_applied = bool(best_inj is not None and best_any is not None and best_inj is not best_any)
+            if override_applied:
+                dbg["resolution"]["override_applied_count"] += 1
+
+            v_norm = chosen.get("value_norm")
+            if v_norm is None:
+                v_norm = chosen.get("value")
+            v_norm = _fix2ag_safe_float(v_norm)
+
+            # Unit-family evidence gate: if schema expects a unit family but chosen lacks it, mark mismatch
+            if expect_uf and not str(chosen.get("unit_family") or "").strip():
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "override_applied": override_applied,
+                    "chosen": {
+                        "url": chosen.get("url") or chosen.get("source_url"),
+                        "raw": (chosen.get("raw") or "")[:120],
+                        "context": (chosen.get("context") or chosen.get("context_snippet") or "")[:160],
+                        "unit_tag": chosen.get("unit_tag"),
+                        "unit_family": chosen.get("unit_family"),
+                        "inj_priority": int(chosen.get("_inj_priority") or 0),
+                    },
+                    "score": {"inj_priority": chosen_score[0], "keyword_hits": chosen_score[1], "unit_match": chosen_score[2]},
+                }
+                # keep best even on mismatch for display
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": chosen.get("raw") or "",
+                    "unit_family": chosen.get("unit_family"),
+                    "base_unit": chosen.get("base_unit") or chosen.get("unit_tag") or md.get("unit") or "",
+                    "source_url": chosen.get("url") or chosen.get("source_url"),
+                    "anchor_hash": chosen.get("anchor_hash"),
+                    "context": chosen.get("context") or chosen.get("context_snippet") or "",
+                    "unit_mismatch": True,
+                    "inj_priority": int(chosen.get("_inj_priority") or 0),
+                    "resolution_override": bool(override_applied),
+                }
+                continue
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": chosen.get("raw") or "",
+                "unit_family": chosen.get("unit_family"),
+                "base_unit": chosen.get("base_unit") or chosen.get("unit_tag") or md.get("unit") or "",
+                "source_url": chosen.get("url") or chosen.get("source_url"),
+                "anchor_hash": chosen.get("anchor_hash"),
+                "context": chosen.get("context") or chosen.get("context_snippet") or "",
+                "inj_priority": int(chosen.get("_inj_priority") or 0),
+                "resolution_override": bool(override_applied),
+            }
+            dbg["bound"] += 1
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "override_applied": override_applied,
+                "chosen": {
+                    "url": cur[ckey].get("source_url"),
+                    "raw": (cur[ckey].get("raw") or "")[:120],
+                    "inj_priority": int(chosen.get("_inj_priority") or 0),
+                },
+                "score": {"inj_priority": chosen_score[0], "keyword_hits": chosen_score[1], "unit_match": chosen_score[2]},
+            }
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "exception", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    return cur, dbg
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX2AN: Evolution runner override using injected-wins binder."""
+    out = _fix2ag_contract_template(status="success", message="")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        out["output_debug"].update({
+            "diag_run_id": web_context.get("diag_run_id"),
+            "force_rebuild": bool(web_context.get("force_rebuild")),
+            "code_version": CODE_VERSION,
+        })
+
+        schema = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        if not schema:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "schema_missing"
+            out["summary"]["message"] = "Missing frozen metric schema"
+            return out
+
+        # URLs: baseline + injected
+        urls = _fix2ag_get_baseline_urls(previous_data or {})
+        extra_urls = []
+        try:
+            extra_urls = list(web_context.get("extra_urls") or [])
+        except Exception:
+            extra_urls = []
+
+        injected_urls_set = set()
+        for u in (extra_urls or []):
+            try:
+                nu = globals().get("_fix2af_norm_url")(u) if callable(globals().get("_fix2af_norm_url")) else str(u).strip()
+            except Exception:
+                nu = str(u).strip()
+            if nu:
+                injected_urls_set.add(nu)
+                if nu not in urls:
+                    urls.append(nu)
+
+        out["output_debug"]["urls"] = {
+            "baseline_count": int(len(_fix2ag_get_baseline_urls(previous_data or {}) or [])),
+            "injected_count": int(len(injected_urls_set)),
+            "urls_total": int(len(urls or [])),
+            "injected_urls": sorted(list(injected_urls_set))[:25],
+        }
+
+        if not urls:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "no_urls"
+            out["summary"]["message"] = "No URLs available to fetch"
+            return out
+
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout") or 25))
+        out["output_debug"]["fetch"] = fetch_dbg
+        out["output_debug"]["sources_checked"] = int(fetch_dbg.get("urls_requested") or 0)
+        out["output_debug"]["sources_fetched"] = int(fetch_dbg.get("urls_fetched") or 0)
+        out["output_debug"]["baseline_sources_cache"] = source_results
+
+        # Candidate extraction
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            for url, t in (scraped_content or {}).items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(t, source_url=url) or []):
+                            n2 = dict(n) if isinstance(n, dict) else {}
+                            n2["url"] = url
+                            candidates.append(n2)
+                except Exception:
+                    pass
+
+        # Tag injected priority for deterministic sort
+        tagged = []
+        inj_cnt = 0
+        for c in (candidates or []):
+            if not isinstance(c, dict):
+                continue
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            if c2["_inj_priority"] == 1:
+                inj_cnt += 1
+            tagged.append(c2)
+
+        def _cand_key(c):
+            try:
+                return (
+                    -int(c.get("_inj_priority") or 0),
+                    str(c.get("url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    str(c.get("value_norm") if c.get("value_norm") is not None else c.get("value") or ""),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return (0, "", "", "", "")
+
+        tagged.sort(key=_cand_key)
+
+        out["output_debug"]["candidates_total"] = int(len(tagged))
+        out["output_debug"]["injected_candidates_total"] = int(inj_cnt)
+
+        # Apply injected windowing (FIX2AK) if available
+        try:
+            fn_win = globals().get("_fix2ak_apply_injected_windowing")
+            if callable(fn_win):
+                tagged2, win_dbg = fn_win(tagged, injected_urls_set, schema)
+                tagged = tagged2 or tagged
+                out["output_debug"].setdefault("bind", {})
+                out["output_debug"]["bind"].setdefault("injected", {})
+                out["output_debug"]["bind"]["injected"]["windowing"] = win_dbg
+        except Exception:
+            pass
+
+        # Bind with injected-wins resolution
+        cur_metrics, bind_dbg = _fix2an_bind_candidates_to_schema_injected_wins(schema, tagged, injected_urls_set=injected_urls_set)
+        out["output_debug"]["bind"] = {
+            "candidates_total": bind_dbg.get("candidates_total"),
+            "bound": bind_dbg.get("bound"),
+            "not_found": bind_dbg.get("not_found"),
+            "unit_mismatch": bind_dbg.get("unit_mismatch"),
+            "injected": bind_dbg.get("injected"),
+            "resolution": bind_dbg.get("resolution"),
+            "rows_sample": {k: (bind_dbg.get("rows", {}) or {}).get(k) for k in list(sorted((bind_dbg.get("rows", {}) or {}).keys()))[:10]},
+        }
+
+        # Diff
+        metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics, schema)
+        out["metric_changes"] = metric_changes
+        out["summary"] = summary
+
+        # Optional answer selection
+        try:
+            fn_ans = globals().get("_fix2ai_assign_roles_and_answer_metrics")
+            if callable(fn_ans):
+                out = fn_ans(out) or out
+        except Exception:
+            pass
+
+        # Ensure contract fields exist
+        out.setdefault("output_debug", {})
+        out.setdefault("metric_changes_v2", out.get("metric_changes_v2") or [])
+        out.setdefault("metric_changes_legacy", out.get("metric_changes_legacy") or out.get("metric_changes") or [])
+        out.setdefault("results", None)
+        return out
+
+    except Exception as e:
+        out["status"] = "failed"
+        out["summary"]["status"] = "failed"
+        out["summary"]["failure_stage"] = "runner_exception"
+        out["summary"]["message"] = f"{type(e).__name__}: {e}"
+        try:
+            out["output_debug"]["exception"] = {"type": type(e).__name__, "msg": str(e)}
+        except Exception:
+            pass
+        return out
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - FIX2AN: Injected-wins resolution policy (Option A) + resolution diagnostics
+
+# PATCH FIX2AN END
+
+# PATCH FIX2AN START
+# ---------------------------------------------------------------------
+# FIX2AN: Injected-wins resolution policy (Option A)
+# - If at least one injected candidate passes hard gates for a schema metric,
+#   that injected candidate MUST win binding for "current".
+# - Adds explicit resolution diagnostics under output_debug.resolution.
+# - Implements by introducing a new binder and overriding the runner entrypoint
+#   to use it (additive-only; legacy binders remain intact).
+
+try:
+    CODE_VERSION = "fix2an_injected_wins_resolution_v1"
+except Exception:
+    pass
+
+try:
+    from typing import List as _FIX2AN_List, Tuple as _FIX2AN_Tuple
+except Exception:
+    _FIX2AN_List = list
+    _FIX2AN_Tuple = tuple
+
+
+def _fix2an_bind_candidates_to_schema(schema: dict, candidates: _FIX2AN_List[dict], injected_urls_set: set = None) -> _FIX2AN_Tuple[dict, dict]:
+    """Bind candidates to schema with injected-wins resolution."""
+    if injected_urls_set is None:
+        injected_urls_set = set()
+
+    # Ensure tag is present
+    tagged = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            tagged.append(c2)
+        except Exception:
+            tagged.append(c)
+
+    cur = {}
+    dbg = {
+        "candidates_total": int(len(tagged or [])),
+        "bound": 0,
+        "not_found": 0,
+        "unit_mismatch": 0,
+        "rows": {},
+        "resolution": {"policy": "injected_wins", "overrides": 0, "overridden_keys": []},
+        "injected": {
+            "urls": sorted(list(injected_urls_set))[:25],
+            "candidates_total": int(sum(1 for c in (tagged or []) if int(c.get("_inj_priority") or 0) == 1)),
+        },
+    }
+
+    for ck, entry in (schema or {}).items():
+        try:
+            ckey = str(ck)
+            md = entry if isinstance(entry, dict) else {}
+            label = md.get("metric_label") or md.get("metric_name") or ckey
+
+            kws = md.get("keywords") or md.get("tags") or []
+            if not isinstance(kws, list):
+                kws = []
+            kws = [str(x).strip().lower() for x in (kws or []) if str(x).strip()]
+            kws = kws[:25]
+
+            expect_uf = str(md.get("unit_family") or md.get("dimension") or "").strip().lower()
+            if expect_uf in ("unit_sales", "units", "count_units"):
+                expect_uf = "magnitude"
+            if expect_uf == "percent":
+                expect_uf = "percent"
+
+            best_any = None
+            best_any_score = (-1, -1, -1, "")
+            best_inj = None
+            best_inj_score = (-1, -1, -1, "")
+
+            for cand in (tagged or []):
+                if not isinstance(cand, dict):
+                    continue
+                # Hard gate: unit family match when both present
+                cand_uf = str(cand.get("unit_family") or "").strip().lower()
+                if expect_uf and cand_uf and cand_uf != expect_uf:
+                    continue
+
+                score = _fix2aj_candidate_score(cand, kws, expect_uf)
+                if score > best_any_score:
+                    best_any_score = score
+                    best_any = cand
+
+                if int(cand.get("_inj_priority") or 0) == 1:
+                    if score > best_inj_score:
+                        best_inj_score = score
+                        best_inj = cand
+
+            chosen = best_any
+            chosen_score = best_any_score
+            overridden = False
+            if best_inj is not None:
+                # Option A: injected wins if it exists and passes hard gates
+                chosen = best_inj
+                chosen_score = best_inj_score
+                if best_any is not None and (best_any is not best_inj):
+                    overridden = True
+
+            if chosen is None:
+                dbg["not_found"] += 1
+                dbg["rows"][ckey] = {"status": "not_found", "expect_unit_family": expect_uf, "keywords": kws[:12]}
+                continue
+
+            v_norm = chosen.get("value_norm")
+            if v_norm is None:
+                v_norm = chosen.get("value")
+            v_norm = _fix2ag_safe_float(v_norm)
+
+            # Unit-family evidence gate: if schema expects a unit family but chosen lacks it, mark mismatch
+            if expect_uf and not str(chosen.get("unit_family") or "").strip():
+                dbg["unit_mismatch"] += 1
+                dbg["rows"][ckey] = {
+                    "status": "unit_mismatch",
+                    "expect_unit_family": expect_uf,
+                    "chosen": {
+                        "url": chosen.get("url") or chosen.get("source_url"),
+                        "raw": (chosen.get("raw") or "")[:120],
+                        "context": (chosen.get("context") or chosen.get("context_snippet") or "")[:160],
+                        "unit_tag": chosen.get("unit_tag"),
+                        "unit_family": chosen.get("unit_family"),
+                        "inj_priority": int(chosen.get("_inj_priority") or 0),
+                    },
+                    "score": {"inj_priority": chosen_score[0], "keyword_hits": chosen_score[1], "unit_match": chosen_score[2]},
+                    "overridden": bool(overridden),
+                }
+                cur[ckey] = {
+                    "canonical_key": ckey,
+                    "metric_label": label,
+                    "value_norm": v_norm,
+                    "raw": chosen.get("raw") or "",
+                    "unit_family": chosen.get("unit_family"),
+                    "base_unit": chosen.get("base_unit") or chosen.get("unit_tag") or md.get("unit") or "",
+                    "source_url": chosen.get("url") or chosen.get("source_url"),
+                    "anchor_hash": chosen.get("anchor_hash"),
+                    "context": chosen.get("context") or chosen.get("context_snippet") or "",
+                    "unit_mismatch": True,
+                    "inj_priority": int(chosen.get("_inj_priority") or 0),
+                }
+                if overridden:
+                    dbg["resolution"]["overrides"] += 1
+                    dbg["resolution"]["overridden_keys"].append(ckey)
+                continue
+
+            cur[ckey] = {
+                "canonical_key": ckey,
+                "metric_label": label,
+                "value_norm": v_norm,
+                "raw": chosen.get("raw") or "",
+                "unit_family": chosen.get("unit_family"),
+                "base_unit": chosen.get("base_unit") or chosen.get("unit_tag") or md.get("unit") or "",
+                "source_url": chosen.get("url") or chosen.get("source_url"),
+                "anchor_hash": chosen.get("anchor_hash"),
+                "context": chosen.get("context") or chosen.get("context_snippet") or "",
+                "inj_priority": int(chosen.get("_inj_priority") or 0),
+            }
+            dbg["bound"] += 1
+            dbg["rows"][ckey] = {
+                "status": "bound",
+                "chosen": {
+                    "url": cur[ckey].get("source_url"),
+                    "raw": (cur[ckey].get("raw") or "")[:120],
+                    "inj_priority": int(chosen.get("_inj_priority") or 0),
+                },
+                "score": {"inj_priority": chosen_score[0], "keyword_hits": chosen_score[1], "unit_match": chosen_score[2]},
+                "overridden": bool(overridden),
+            }
+            if overridden:
+                dbg["resolution"]["overrides"] += 1
+                dbg["resolution"]["overridden_keys"].append(ckey)
+        except Exception as e:
+            try:
+                dbg["rows"][str(ck)] = {"status": "exception", "error": f"{type(e).__name__}: {e}"}
+            except Exception:
+                pass
+
+    # cap overridden_keys for payload size
+    try:
+        dbg["resolution"]["overridden_keys"] = (dbg["resolution"].get("overridden_keys") or [])[:50]
+    except Exception:
+        pass
+
+    return cur, dbg
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX2AN runner: same as FIX2AJ+FIX2AK+FIX2AM, but uses injected-wins resolution binder."""
+    out = _fix2ag_contract_template(status="success", message="")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        out["output_debug"].update({
+            "diag_run_id": web_context.get("diag_run_id"),
+            "force_rebuild": bool(web_context.get("force_rebuild")),
+            "code_version": CODE_VERSION,
+        })
+
+        schema = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        if not schema:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "schema_missing"
+            out["summary"]["message"] = "Missing frozen metric schema"
+            return out
+
+        urls = _fix2ag_get_baseline_urls(previous_data or {})
+        extra_urls = []
+        try:
+            extra_urls = list(web_context.get("extra_urls") or [])
+        except Exception:
+            extra_urls = []
+
+        injected_urls_set = set()
+        for u in (extra_urls or []):
+            try:
+                nu = globals().get("_fix2af_norm_url")(u) if callable(globals().get("_fix2af_norm_url")) else str(u).strip()
+            except Exception:
+                nu = str(u).strip()
+            if nu:
+                injected_urls_set.add(nu)
+                if nu not in urls:
+                    urls.append(nu)
+
+        out["output_debug"]["urls"] = {
+            "baseline_count": int(len(_fix2ag_get_baseline_urls(previous_data or {}) or [])),
+            "injected_count": int(len(injected_urls_set)),
+            "urls_total": int(len(urls or [])),
+            "injected_urls": sorted(list(injected_urls_set))[:25],
+        }
+
+        if not urls:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "no_urls"
+            out["summary"]["message"] = "No URLs available to fetch"
+            return out
+
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout") or 25))
+        out["output_debug"]["fetch"] = fetch_dbg
+        out["output_debug"]["sources_checked"] = int(fetch_dbg.get("urls_requested") or 0)
+        out["output_debug"]["sources_fetched"] = int(fetch_dbg.get("urls_fetched") or 0)
+        out["output_debug"]["baseline_sources_cache"] = source_results
+
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            for url, t in (scraped_content or {}).items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(t, source_url=url) or []):
+                            n2 = dict(n) if isinstance(n, dict) else {}
+                            n2["url"] = url
+                            candidates.append(n2)
+                except Exception:
+                    pass
+
+        # Tag injected priority; apply windowing tags if available
+        tagged = []
+        inj_cnt = 0
+        for c in (candidates or []):
+            if not isinstance(c, dict):
+                continue
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            if c2["_inj_priority"] == 1:
+                inj_cnt += 1
+            tagged.append(c2)
+
+        # Apply FIX2AK windowing if function exists
+        try:
+            fn_win = globals().get("_fix2ak_apply_injected_windowing")
+            if callable(fn_win):
+                tagged, win_dbg = fn_win(tagged, injected_urls_set, schema)
+                out["output_debug"].setdefault("bind", {})
+                out["output_debug"]["bind"].setdefault("injected", {})
+                out["output_debug"]["bind"]["injected"]["windowing"] = win_dbg
+        except Exception:
+            pass
+
+        # Deterministic sort
+        def _cand_key(c):
+            try:
+                return (
+                    -int(c.get("_inj_priority") or 0),
+                    -int(c.get("_inj_window_boost") or 0),
+                    str(c.get("url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    str(c.get("value_norm") if c.get("value_norm") is not None else c.get("value") or ""),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return (0, 0, "", "", "", "")
+
+        tagged.sort(key=_cand_key)
+
+        out["output_debug"]["candidates_total"] = int(len(tagged))
+        out["output_debug"]["injected_candidates_total"] = int(inj_cnt)
+
+        cur_metrics, bind_dbg = _fix2an_bind_candidates_to_schema(schema, tagged, injected_urls_set=injected_urls_set)
+
+        out["output_debug"].setdefault("bind", {})
+        out["output_debug"]["bind"].update({
+            "candidates_total": bind_dbg.get("candidates_total"),
+            "bound": bind_dbg.get("bound"),
+            "not_found": bind_dbg.get("not_found"),
+            "unit_mismatch": bind_dbg.get("unit_mismatch"),
+            "injected": bind_dbg.get("injected"),
+            "resolution": bind_dbg.get("resolution"),
+            "rows_sample": {k: (bind_dbg.get("rows", {}) or {}).get(k) for k in list(sorted((bind_dbg.get("rows", {}) or {}).keys()))[:10]},
+        })
+
+        metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics, schema)
+        out["metric_changes"] = metric_changes
+        out["summary"] = summary
+
+        # Answer selection (if present)
+        try:
+            fn_ans = globals().get("_fix2ai_assign_roles_and_answer_metrics")
+            if callable(fn_ans):
+                out = fn_ans(out) or out
+        except Exception:
+            pass
+
+        out.setdefault("output_debug", {})
+        out.setdefault("metric_changes_v2", out.get("metric_changes_v2") or [])
+        out.setdefault("metric_changes_legacy", out.get("metric_changes_legacy") or out.get("metric_changes") or [])
+        out.setdefault("results", None)
+        return out
+
+    except Exception as e:
+        out["status"] = "failed"
+        out["summary"]["status"] = "failed"
+        out["summary"]["failure_stage"] = "runner_exception"
+        out["summary"]["message"] = f"{type(e).__name__}: {e}"
+        try:
+            out["output_debug"]["exception"] = {"type": type(e).__name__, "msg": str(e)}
+        except Exception:
+            pass
+        return out
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - FIX2AN: Injected-wins resolution policy (Option A) + resolution diagnostics
+
+# PATCH FIX2AN END
+
+# =========================
+
+# =========================
+
+# =========================
+
+# =========================
+
+# =========================
+# PATCH FIX2AO START
+# =========================
+# Goal: Reconcile Evolution 'current' metric keys to the frozen schema keys used by Analysis,
+# so the diff/join (and thus the UI Current column) can populate deterministically.
+
+# PATCH FIX2AO (ADDITIVE): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2ao_evo_key_reconcile_v1"
+
+
+def _fix2ao_norm_key_base(canonical_key: str) -> str:
+    """Return the stable base for a canonical key (everything before the last '__')."""
+    try:
+        ck = str(canonical_key or "")
+    except Exception:
+        ck = ""
+    if "__" not in ck:
+        return ck
+    parts = ck.split("__")
+    if len(parts) <= 1:
+        return ck
+    return "__".join(parts[:-1])
+
+
+def _fix2ao_unit_hint_from_cur(cur_entry: dict) -> str:
+    """Infer schema suffix preference from a bound current metric entry."""
+    if not isinstance(cur_entry, dict):
+        return ""
+    u = ""
+    for k in ("unit", "unit_tag", "unit_label"):
+        try:
+            if cur_entry.get(k):
+                u = str(cur_entry.get(k))
+                break
+        except Exception:
+            pass
+    ul = (u or "").strip().lower()
+    if not ul:
+        return ""
+    if "%" in ul or "percent" in ul or ul.endswith("pct"):
+        return "percent"
+    if "usd" in ul or "sgd" in ul or "eur" in ul or "gbp" in ul or "$" in ul or "currency" in ul:
+        return "currency"
+    if "unit" in ul or "vehicle" in ul or "car" in ul or "sales" in ul:
+        return "unit_sales"
+    return ""
+
+
+def _fix2ao_build_schema_index(schema: list) -> dict:
+    """Build lookup maps for schema canonical keys."""
+    keys = set()
+    base_to_keys = {}
+    try:
+        for m in (schema or []):
+            if not isinstance(m, dict):
+                continue
+            ck = m.get("canonical_key") or m.get("key")
+            if not ck:
+                continue
+            ck = str(ck)
+            keys.add(ck)
+            base = _fix2ao_norm_key_base(ck)
+            base_to_keys.setdefault(base, []).append(ck)
+    except Exception:
+        pass
+    # stable sort for determinism
+    for b in list(base_to_keys.keys()):
+        try:
+            base_to_keys[b] = sorted(set(base_to_keys[b]))
+        except Exception:
+            pass
+    return {"schema_keys": keys, "base_to_keys": base_to_keys}
+
+
+def _fix2ao_reconcile_current_metrics_keys(schema: list, cur_metrics: dict) -> tuple:
+    """Map Evolution 'current' metric keys to schema keys when possible.
+
+    Primary use-case:
+      - Evolution binds to a key ending '__unknown' while schema expects '__unit_sales' (or other suffix).
+
+    Deterministic rules:
+      1) If cur_key already exists in schema: keep.
+      2) Else if cur_key base matches exactly one schema key: map.
+      3) Else if cur_key endswith '__unknown': choose schema key by unit hint (percent/currency/unit_sales).
+      4) Else: keep as-is (but it won't join).
+    """
+    idx = _fix2ao_build_schema_index(schema)
+    schema_keys = idx.get("schema_keys") or set()
+    base_to_keys = idx.get("base_to_keys") or {}
+
+    if not isinstance(cur_metrics, dict):
+        return cur_metrics, {"mapped": 0, "skipped": 0, "maps": []}
+
+    new_cur = {}
+    dbg_maps = []
+    mapped = 0
+    skipped = 0
+
+    for ck, v in cur_metrics.items():
+        ck_s = str(ck)
+        if ck_s in schema_keys:
+            new_cur[ck_s] = v
+            skipped += 1
+            continue
+
+        base = _fix2ao_norm_key_base(ck_s)
+        cands = list(base_to_keys.get(base) or [])
+
+        target = None
+        if len(cands) == 1:
+            target = cands[0]
+        else:
+            # only attempt suffix reconciliation when current is unknown-ish
+            if ck_s.endswith("__unknown") or ck_s.endswith("__UNK") or ck_s.endswith("__unk"):
+                hint = _fix2ao_unit_hint_from_cur(v if isinstance(v, dict) else {})
+                if hint:
+                    # prefer exact suffix match
+                    for cand in cands:
+                        if cand.endswith("__" + hint):
+                            target = cand
+                            break
+                if target is None:
+                    # deterministic fallback: prefer non-unknown, stable order
+                    for cand in cands:
+                        if not cand.endswith("__unknown"):
+                            target = cand
+                            break
+
+        if target and target in schema_keys:
+            # if target already exists in new_cur, prefer injected-wins semantics by keeping the later
+            new_cur[target] = v
+            mapped += 1
+            dbg_maps.append({"from": ck_s, "to": target})
+        else:
+            new_cur[ck_s] = v
+            skipped += 1
+
+    return new_cur, {"mapped": int(mapped), "skipped": int(skipped), "maps": dbg_maps[:50]}
+
+
+# PATCH FIX2AO (ADDITIVE): override runner to apply key reconciliation before diff
+try:
+    _fix2ao_prev_run_evolutionary_runner = run_evolutionary_runner
+except Exception:
+    _fix2ao_prev_run_evolutionary_runner = None
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """FIX2AO runner: FIX2AN + key reconciliation to schema before diff/join."""
+    out = _fix2ag_contract_template(status="success", message="")
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        out["output_debug"].update({
+            "diag_run_id": web_context.get("diag_run_id"),
+            "force_rebuild": bool(web_context.get("force_rebuild")),
+            "code_version": CODE_VERSION,
+        })
+
+        schema = _fix2ag_get_metric_schema_frozen(previous_data or {})
+        prev_metrics = _fix2ag_get_prev_metrics_canonical(previous_data or {})
+
+        if not schema:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "schema_missing"
+            out["summary"]["message"] = "Missing frozen metric schema"
+            return out
+
+        urls = _fix2ag_get_baseline_urls(previous_data or {})
+        extra_urls = []
+        try:
+            extra_urls = list(web_context.get("extra_urls") or [])
+        except Exception:
+            extra_urls = []
+
+        injected_urls_set = set()
+        for u in (extra_urls or []):
+            try:
+                nu = globals().get("_fix2af_norm_url")(u) if callable(globals().get("_fix2af_norm_url")) else str(u).strip()
+            except Exception:
+                nu = str(u).strip()
+            if nu:
+                injected_urls_set.add(nu)
+                if nu not in urls:
+                    urls.append(nu)
+
+        out["output_debug"]["urls"] = {
+            "baseline_count": int(len(_fix2ag_get_baseline_urls(previous_data or {}) or [])),
+            "injected_count": int(len(injected_urls_set)),
+            "urls_total": int(len(urls or [])),
+            "injected_urls": sorted(list(injected_urls_set))[:25],
+        }
+
+        if not urls:
+            out["status"] = "failed"
+            out["summary"]["status"] = "failed"
+            out["summary"]["failure_stage"] = "no_urls"
+            out["summary"]["message"] = "No URLs available to fetch"
+            return out
+
+        scraped_content, source_results, fetch_dbg = _fix2ag_fetch_sources(urls, timeout=int(web_context.get("timeout") or 25))
+        out["output_debug"]["fetch"] = fetch_dbg
+        out["output_debug"]["sources_checked"] = int(fetch_dbg.get("urls_requested") or 0)
+        out["output_debug"]["sources_fetched"] = int(fetch_dbg.get("urls_fetched") or 0)
+        out["output_debug"]["baseline_sources_cache"] = source_results
+
+        fn_extract = globals().get("extract_numbers_from_scraped_sources")
+        candidates = []
+        if callable(fn_extract):
+            candidates = fn_extract(scraped_content) or []
+        else:
+            for url, t in (scraped_content or {}).items():
+                try:
+                    fn = globals().get("extract_numbers_with_context")
+                    if callable(fn):
+                        for n in (fn(t, source_url=url) or []):
+                            n2 = dict(n) if isinstance(n, dict) else {}
+                            n2["url"] = url
+                            candidates.append(n2)
+                except Exception:
+                    pass
+
+        # Tag injected priority; apply windowing tags if available
+        tagged = []
+        inj_cnt = 0
+        for c in (candidates or []):
+            if not isinstance(c, dict):
+                continue
+            u = str(c.get("url") or c.get("source_url") or "")
+            c2 = dict(c)
+            c2["_inj_priority"] = 1 if u and u in injected_urls_set else 0
+            if c2["_inj_priority"] == 1:
+                inj_cnt += 1
+            tagged.append(c2)
+
+        # Apply windowing if function exists
+        try:
+            fn_win = globals().get("_fix2ak_apply_injected_windowing")
+            if callable(fn_win):
+                tagged, win_dbg = fn_win(tagged, injected_urls_set, schema)
+                out["output_debug"].setdefault("bind", {})
+                out["output_debug"]["bind"].setdefault("injected", {})
+                out["output_debug"]["bind"]["injected"]["windowing"] = win_dbg
+        except Exception:
+            pass
+
+        # Deterministic sort
+        def _cand_key(c):
+            try:
+                return (
+                    -int(c.get("_inj_priority") or 0),
+                    -int(c.get("_inj_window_boost") or 0),
+                    str(c.get("url") or ""),
+                    str(c.get("anchor_hash") or ""),
+                    str(c.get("value_norm") if c.get("value_norm") is not None else c.get("value") or ""),
+                    str(c.get("raw") or ""),
+                )
+            except Exception:
+                return (0, 0, "", "", "", "")
+
+        tagged.sort(key=_cand_key)
+
+        out["output_debug"]["candidates_total"] = int(len(tagged))
+        out["output_debug"]["injected_candidates_total"] = int(inj_cnt)
+
+        cur_metrics, bind_dbg = _fix2an_bind_candidates_to_schema(schema, tagged, injected_urls_set=injected_urls_set)
+
+        # Key reconciliation happens here
+        cur_metrics_recon, recon_dbg = _fix2ao_reconcile_current_metrics_keys(schema, cur_metrics)
+        out["output_debug"]["key_reconcile"] = recon_dbg
+
+        # PATCH FIX2AQ START: Emit canonical_metrics dict for dashboard hydration
+        # The legacy dashboard reads current["canonical_metrics"][canonical_key] as the "Current" column.
+        # We emit a schema-keyed numeric dict (value_norm) so downstream diff_canonical_metrics can hydrate.
+        try:
+            canonical_metrics = {}
+
+    def _set_cm(k: str, v):
+        try:
+            if k:
+                canonical_metrics[str(k)] = float(v)
+                for ak in (KEY_ALIASES.get(str(k)) or []):
+                    canonical_metrics[str(ak)] = float(v)
+        except Exception:
+            pass
+
+            # Prefer schema keys (stable ordering), then include any extra reconciled keys for debugging.
+            for ck in sorted(set(list(schema.keys()) + list(cur_metrics_recon.keys()))):
+                cm = cur_metrics_recon.get(ck)
+                v = None
+                if isinstance(cm, dict):
+                    v = cm.get("value_norm")
+                    if v is None:
+                        v = cm.get("value")
+                else:
+                    v = cm
+                fv = _fix2ag_safe_float(v)
+                canonical_metrics[ck] = float(fv) if fv is not None else 0.0
+            out["canonical_metrics"] = canonical_metrics
+        except Exception as _e_fix2aq:
+            try:
+                out.setdefault("output_debug", {})
+                out["output_debug"].setdefault("warnings", [])
+                out["output_debug"]["warnings"].append("canonical_metrics_emit_failed:" + type(_e_fix2aq).__name__)
+            except Exception:
+                pass
+        # PATCH FIX2AQ END
+
+        # PATCH FIX2AR START: Ensure Evolution current snapshot exposes schema-bound canonical metrics
+        # Why: the dashboard "Current" column ultimately comes from results.metric_changes[].current_value,
+        # and diff_metrics_by_name_BASE reads cur_response["primary_metrics_canonical"].
+        # Earlier FIX2AQ attempted to emit out["canonical_metrics"] but had a typo; this block
+        # deterministically reconstructs and emits:
+        #   - out["primary_metrics_canonical"] (full objects)
+        #   - out["canonical_metrics"] (schema-keyed numeric dict: value_norm)
+        #   - out["metric_schema_frozen"] (for downstream consumers/debug)
+        try:
+            # 1) Ensure schema-bound full canonical objects are present
+            if isinstance(schema, dict) and isinstance(cur_metrics_recon, dict):
+                if not isinstance(out.get("primary_metrics_canonical"), dict) or not out.get("primary_metrics_canonical"):
+                    out["primary_metrics_canonical"] = cur_metrics_recon
+
+                # 2) Ensure numeric dict exists for any legacy consumers
+                if not isinstance(out.get("canonical_metrics"), dict) or not out.get("canonical_metrics"):
+                    _fix2ar_cm = {}
+                    for _ck in sorted(set(list(schema.keys()) + list(cur_metrics_recon.keys()))):
+                        _cm = cur_metrics_recon.get(_ck)
+                        _v = None
+                        if isinstance(_cm, dict):
+                            _v = _cm.get("value_norm")
+                            if _v is None:
+                                _v = _cm.get("value")
+                        if _v is None:
+                            _v = 0.0
+                        try:
+                            _fix2ar_cm[_ck] = float(_v)
+                        except Exception:
+                            _fix2ar_cm[_ck] = 0.0
+                    out["canonical_metrics"] = _fix2ar_cm
+
+                # 3) Expose schema (frozen) for diff + debug
+                if not isinstance(out.get("metric_schema_frozen"), dict) or not out.get("metric_schema_frozen"):
+                    out["metric_schema_frozen"] = schema
+        except Exception as _e_fix2ar:
+            try:
+                out.setdefault("output_debug", {})
+                out["output_debug"].setdefault("warnings", [])
+                out["output_debug"]["warnings"].append("fix2ar_emit_current_failed:" + type(_e_fix2ar).__name__)
+            except Exception:
+                pass
+        # PATCH FIX2AR END
+
+
+        out["output_debug"].setdefault("bind", {})
+        out["output_debug"]["bind"].update({
+            "candidates_total": bind_dbg.get("candidates_total"),
+            "bound": bind_dbg.get("bound"),
+            "not_found": bind_dbg.get("not_found"),
+            "unit_mismatch": bind_dbg.get("unit_mismatch"),
+            "injected": bind_dbg.get("injected"),
+            "resolution": bind_dbg.get("resolution"),
+            "rows_sample": {k: (bind_dbg.get("rows", {}) or {}).get(k) for k in list(sorted((bind_dbg.get("rows", {}) or {}).keys()))[:10]},
+        })
+
+        metric_changes, summary = _fix2ag_compute_metric_changes(prev_metrics, cur_metrics_recon, schema)
+        out["metric_changes"] = metric_changes
+        out["summary"] = summary
+
+        # Answer selection (if present)
+        try:
+            fn_ans = globals().get("_fix2ai_assign_roles_and_answer_metrics")
+            if callable(fn_ans):
+                out = fn_ans(out) or out
+        except Exception:
+            pass
+
+        out.setdefault("output_debug", {})
+        out.setdefault("metric_changes_v2", out.get("metric_changes_v2") or [])
+        out.setdefault("metric_changes_legacy", out.get("metric_changes_legacy") or out.get("metric_changes") or [])
+        out.setdefault("results", None)
+        return out
+
+    except Exception as e:
+        out["status"] = "failed"
+        out["summary"]["status"] = "failed"
+        out["summary"]["failure_stage"] = "runner_exception"
+        out["summary"]["message"] = f"{type(e).__name__}: {e}"
+        try:
+            out["output_debug"]["exception"] = {"type": type(e).__name__, "msg": str(e)}
+        except Exception:
+            pass
+        return out
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - FIX2AO: Evolution key reconciliation shim (map __unknown -> schema suffix) to restore diff join + UI Current
+
+# =========================
+# PATCH FIX2AO END
+# =========================
+
+# - FIX2AP: Injected URL handoff into Evolution runner (collect keys, force web_context['extra_urls'], inj_diag)
+# - FIX2AQ: Emit results["canonical_metrics"] (schema-keyed numeric dict) to hydrate dashboard Current column
+
+
+# PATCH FIX2AP START
+# Purpose: Ensure injected URLs are propagated into the Evolution runner deterministically.
+# - Streamlit / caller may provide injected URLs under different keys; unify into web_context["extra_urls"].
+# - If injection appears expected but no injected URLs are present, emit explicit diagnostics (no silent omission).
+# - Preserve additive-only behavior by wrapping the existing run_evolutionary_runner entrypoint.
+
+def _fix2ap_collect_injected_urls(previous_data: dict, web_context: dict) -> list:
+    """Collect injected URLs from multiple possible handoff locations (deterministic, safe)."""
+    urls = []
+
+    def _add(v):
+        if not v:
+            return
+        if isinstance(v, (list, tuple)):
+            for x in v:
+                _add(x)
+            return
+        s = str(v).strip()
+        if s:
+            urls.append(s)
+
+    wc = web_context if isinstance(web_context, dict) else {}
+    # Common keys used by various UI/runner variants
+    for k in ("extra_urls", "injected_urls", "injected_url", "injection_urls", "urls_injected", "inject_urls", "injected"):
+        try:
+            _add(wc.get(k))
+        except Exception:
+            continue
+
+    pd = previous_data if isinstance(previous_data, dict) else {}
+    # Previous data sometimes carries injection hints (rare but supported)
+    for k in ("injected_urls", "extra_urls", "urls_injected"):
+        try:
+            _add(pd.get(k))
+        except Exception:
+            continue
+    # Nested debug / results carriers
+    try:
+        _add((((pd.get("results") or {}).get("debug") or {}).get("injected_urls")))
+    except Exception:
+        pass
+    try:
+        _add((((pd.get("debug") or {}).get("injected_urls"))))
+    except Exception:
+        pass
+
+    # Normalize + dedupe deterministically
+    norm_fn = globals().get("_fix2af_norm_url")
+    out = []
+    seen = set()
+    for u in urls:
+        try:
+            nu = norm_fn(u) if callable(norm_fn) else str(u).strip()
+        except Exception:
+            nu = str(u).strip()
+        if not nu:
+            continue
+        if nu in seen:
+            continue
+        seen.add(nu)
+        out.append(nu)
+    return out
+
+
+def _fix2ap_injection_expected(web_context: dict) -> bool:
+    """Heuristic-free: treat injection as expected only if caller provided any injection-shaped key."""
+    if not isinstance(web_context, dict):
+        return False
+    for k in ("injected_url", "injected_urls", "injection_urls", "urls_injected", "inject_urls"):
+        if k in web_context:
+            return True
+    # Streamlit sometimes passes a boolean hint
+    try:
+        if bool(web_context.get("injection_mode")):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# Wrap the existing runner (defined earlier in file). Keep a stable handle.
+_fix2ap__prior_run_evolutionary_runner = run_evolutionary_runner
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    """PATCH FIX2AP: Ensure injected URL handoff into Evolution runner."""
+    wc = web_context if isinstance(web_context, dict) else {}
+
+    injected_urls = _fix2ap_collect_injected_urls(previous_data, wc)
+    baseline_urls = []
+    try:
+        baseline_urls = list(_fix2ag_get_baseline_urls(previous_data or {}) or [])
+    except Exception:
+        baseline_urls = []
+
+    # Ensure extra_urls exists and includes injected_urls (minus baseline)
+    extra = []
+    try:
+        extra = list(wc.get("extra_urls") or [])
+    except Exception:
+        extra = []
+    norm_fn = globals().get("_fix2af_norm_url")
+    merged = []
+    seen = set()
+    for u in (extra + injected_urls):
+        try:
+            nu = norm_fn(u) if callable(norm_fn) else str(u).strip()
+        except Exception:
+            nu = str(u).strip()
+        if not nu:
+            continue
+        if nu in seen:
+            continue
+        seen.add(nu)
+        merged.append(nu)
+
+    # Remove any baseline URLs from extra_urls to preserve intent
+    base_set = set()
+    for u in baseline_urls:
+        try:
+            bu = norm_fn(u) if callable(norm_fn) else str(u).strip()
+        except Exception:
+            bu = str(u).strip()
+        if bu:
+            base_set.add(bu)
+    merged = [u for u in merged if u not in base_set]
+
+    wc["extra_urls"] = merged
+
+    # Run prior implementation
+    out = _fix2ap__prior_run_evolutionary_runner(previous_data, wc)
+
+    # Ensure diagnostics are always visible
+    try:
+        out.setdefault("output_debug", {})
+        out["output_debug"]["runner"] = CODE_VERSION
+        out["output_debug"].setdefault("inj_diag", {})
+        out["output_debug"]["inj_diag"].update({
+            "injected_urls": merged,
+            "baseline_urls_count": int(len(base_set)),
+            "injected_count": int(len(merged)),
+            "injection_expected": bool(_fix2ap_injection_expected(wc)),
+        })
+        # Legacy location some earlier JSONs used
+        out.setdefault("debug", {})
+        out["debug"].setdefault("inj_diag", {})
+        out["debug"]["inj_diag"].update(out["output_debug"]["inj_diag"])
+        if _fix2ap_injection_expected(wc) and not merged:
+            # Explicit structured notice: injection was expected but not present
+            out.setdefault("warnings", [])
+            out["warnings"].append("expected_injection_but_no_injected_urls")
+    except Exception:
+        pass
+
+    return out
+
+# PATCH FIX2AP END
+
+# - fix2ar_evo_emit_current_v2: FIX2AR ensure evolution emits primary_metrics_canonical + canonical_metrics + metric_schema_frozen for dashboard current column
+
+
+# PATCH FIX2AS (ADDITIVE) START
+# Purpose: Emit results.output_debug.canonical_for_render_v1 (and hydrate metric_changes current_value)
+# so the Evolution dashboard can populate the 'current' column deterministically.
+try:
+    _fix2as_prev_run_evolutionary_runner = run_evolutionary_runner  # type: ignore
+except Exception:
+    _fix2as_prev_run_evolutionary_runner = None  # type: ignore
+
+
+def _fix2as_safe_float(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, bool):
+            return float(int(x))
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip()
+        if s == "":
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _fix2as_build_canonical_for_render_v1(cur_metrics: dict, schema: dict = None) -> dict:
+    """Build schema-keyed render payload: canonical_for_render_v1[canonical_key] -> render dict."""
+    out = {}
+    if not isinstance(cur_metrics, dict):
+        return out
+    for k, v in cur_metrics.items():
+        if not isinstance(k, str) or not k:
+            continue
+        if not isinstance(v, dict):
+            # allow numeric scalar
+            fv = _fix2as_safe_float(v)
+            out[k] = {
+                "canonical_key": k,
+                "current_value": "" if fv is None else str(fv),
+                "current_value_norm": fv,
+                "cur_unit_cmp": None,
+                "anchor_hash": None,
+                "source_url": None,
+                "diag": {"from_scalar": True},
+            }
+            continue
+
+        vn = v.get("value_norm", None)
+        fv = _fix2as_safe_float(vn)
+        if fv is None:
+            fv = _fix2as_safe_float(v.get("value", None))
+        unit = v.get("unit_tag", None) or v.get("unit", None) or v.get("unit_family", None)
+        source_url = v.get("source_url", None) or v.get("source", None)
+        anchor_hash = v.get("anchor_hash", None) or v.get("anchor", None)
+
+        # evidence snippet (best effort, short)
+        ev = v.get("evidence", None)
+        snippet = None
+        try:
+            if isinstance(ev, list) and ev:
+                e0 = ev[0]
+                if isinstance(e0, dict):
+                    snippet = e0.get("snippet") or e0.get("context") or e0.get("text")
+                else:
+                    snippet = str(e0)
+        except Exception:
+            snippet = None
+        if isinstance(snippet, str) and len(snippet) > 240:
+            snippet = snippet[:237] + "..."
+
+        out[k] = {
+            "canonical_key": k,
+            "current_value": "" if fv is None else str(fv),
+            "current_value_norm": fv,
+            "cur_unit_cmp": unit,
+            "anchor_hash": anchor_hash,
+            "source_url": source_url,
+            "evidence_snippet": snippet,
+            "diag": {
+                "had_value_norm": ("value_norm" in v),
+                "had_value": ("value" in v),
+                "schema_present": bool(isinstance(schema, dict) and schema),
+            },
+        }
+    return out
+
+
+def _fix2as_get_dict_path(root: dict, *path: str):
+    cur = root
+    for p in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(p)
+    return cur
+
+
+def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> dict:
+    # Delegate to prior runner
+    if callable(_fix2as_prev_run_evolutionary_runner):
+        out = _fix2as_prev_run_evolutionary_runner(previous_data, web_context)  # type: ignore
+    else:
+        out = {}
+    if not isinstance(out, dict):
+        return out
+
+    # Normalize contract containers
+    results = out.get("results")
+    if not isinstance(results, dict):
+        results = {}
+        out["results"] = results
+
+    output_debug = results.get("output_debug")
+    if not isinstance(output_debug, dict):
+        output_debug = {}
+        results["output_debug"] = output_debug
+
+    # Locate current canonical metrics dict (best-effort across variants)
+    cur_metrics = (
+        out.get("primary_metrics_canonical")
+        or results.get("primary_metrics_canonical")
+        or out.get("current_snapshot", {}).get("primary_metrics_canonical") if isinstance(out.get("current_snapshot"), dict) else None
+        or out.get("canonical_metrics_current")
+        or results.get("canonical_metrics_current")
+        or out.get("cur_metrics_recon")
+        or results.get("cur_metrics_recon")
+    )
+    if not isinstance(cur_metrics, dict):
+        cur_metrics = {}
+
+    schema = (
+        out.get("metric_schema_frozen")
+        or results.get("metric_schema_frozen")
+        or output_debug.get("metric_schema_frozen")
+    )
+    if not isinstance(schema, dict):
+        schema = {}
+
+    # Build canonical_for_render_v1
+    cfr = _fix2as_build_canonical_for_render_v1(cur_metrics, schema)
+    output_debug["canonical_for_render_v1"] = cfr
+
+    # Hydrate metric_changes current_value (legacy dashboard parity)
+    metric_changes = results.get("metric_changes")
+    if isinstance(metric_changes, list) and metric_changes:
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+            ck = row.get("canonical_key") or row.get("metric") or row.get("key") or row.get("metric_key")
+            if not isinstance(ck, str) or not ck:
+                continue
+            r = cfr.get(ck)
+            if not isinstance(r, dict):
+                continue
+            # only overwrite if empty/N/A-ish
+            curv = row.get("current_value")
+            if curv in (None, "", "N/A", "NA"):
+                row["current_value"] = r.get("current_value", "")
+                row["current_value_norm"] = r.get("current_value_norm", None)
+                row["cur_unit_cmp"] = r.get("cur_unit_cmp", None)
+
+    # Minimal debug counters
+    try:
+        output_debug.setdefault("canonical_for_render_stats_v1", {})
+        output_debug["canonical_for_render_stats_v1"].update({
+            "keys": len(cfr),
+            "nonempty": sum(1 for _k, _v in cfr.items() if isinstance(_v, dict) and (_v.get("current_value") not in (None, "", "N/A"))),
+        })
+    except Exception:
+        pass
+
+    return out
+
+# PATCH FIX2AS (ADDITIVE) END
+
+# PATCH FIX2AT START
+# Purpose: Ensure the Evolution dashboard's 'Current' column is hydrated from results.metric_changes[].current_value.
+# The Streamlit renderer reads r.get('current_value') for each metric_changes row. Some paths may produce bound
+# canonical metrics but leave current_value empty/N/A. This patch deterministically rebuilds/repairs metric_changes
+# using the frozen schema + emitted canonical metrics, without relying on legacy wrappers.
+
+try:
+    _fix2at__orig_run_evolutionary_runner = run_evolutionary_runner  # type: ignore
+except Exception:
+    _fix2at__orig_run_evolutionary_runner = None
+
+def _fix2at__safe_float(x):
+    try:
+        if x is None or x == "":
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+def _fix2at__format_value(v_norm, unit_tag):
+    try:
+        if v_norm is None:
+            return ""
+        # Keep formatting minimal; UI already prints strings.
+        return str(v_norm)
+    except Exception:
+        return "" if v_norm is None else str(v_norm)
+
+def _fix2at__extract_current_map(res):
+    # Returns (current_value_map, current_unit_map, evidence_map)
+    cur_map = {}
+    unit_map = {}
+    ev_map = {}
+
+    # Prefer canonical_for_render_v1 (already schema-keyed)
+    try:
+        od = res.get("output_debug") if isinstance(res.get("output_debug"), dict) else {}
+        cfr = od.get("canonical_for_render_v1")
+        if isinstance(cfr, dict) and cfr:
+            for k, v in cfr.items():
+                if not isinstance(v, dict):
+                    continue
+                vnorm = v.get("current_value_norm", v.get("value_norm", v.get("value")))
+                vnorm = _fix2at__safe_float(vnorm) if vnorm is not None else None
+                unit = v.get("cur_unit_cmp") or v.get("unit") or v.get("unit_tag") or ""
+                cur_map[str(k)] = vnorm
+                unit_map[str(k)] = unit
+                ev_map[str(k)] = v.get("source_url") or v.get("matched_source") or ""
+            if cur_map:
+                return cur_map, unit_map, ev_map
+    except Exception:
+        pass
+
+    # Fallback: primary_metrics_canonical dict
+    pmc = res.get("primary_metrics_canonical")
+    if isinstance(pmc, dict) and pmc:
+        for k, v in pmc.items():
+            if isinstance(v, dict):
+                vnorm = v.get("value_norm", v.get("value"))
+                vnorm = _fix2at__safe_float(vnorm) if vnorm is not None else None
+                cur_map[str(k)] = vnorm
+                unit_map[str(k)] = v.get("unit_tag") or v.get("unit") or ""
+                ev_map[str(k)] = v.get("source_url") or ""
+            else:
+                vnorm = _fix2at__safe_float(v)
+                if vnorm is not None:
+                    cur_map[str(k)] = vnorm
+                    unit_map[str(k)] = ""
+                    ev_map[str(k)] = ""
+        return cur_map, unit_map, ev_map
+
+    # Fallback: canonical_metrics numeric dict
+    cm = res.get("canonical_metrics")
+    if isinstance(cm, dict) and cm:
+        for k, v in cm.items():
+            vnorm = _fix2at__safe_float(v)
+            if vnorm is not None:
+                cur_map[str(k)] = vnorm
+                unit_map[str(k)] = ""
+                ev_map[str(k)] = ""
+    return cur_map, unit_map, ev_map
+
+def _fix2at__extract_prev_map(previous_data):
+    prev_map = {}
+    if not isinstance(previous_data, dict):
+        return prev_map
+    pmc = previous_data.get("primary_metrics_canonical")
+    if isinstance(pmc, dict):
+        for k, v in pmc.items():
+            if isinstance(v, dict):
+                vnorm = v.get("value_norm", v.get("value"))
+                vnorm = _fix2at__safe_float(vnorm) if vnorm is not None else None
+                if vnorm is not None:
+                    prev_map[str(k)] = vnorm
+            else:
+                vnorm = _fix2at__safe_float(v)
+                if vnorm is not None:
+                    prev_map[str(k)] = vnorm
+    cm = previous_data.get("canonical_metrics")
+    if isinstance(cm, dict):
+        for k, v in cm.items():
+            vnorm = _fix2at__safe_float(v)
+            if vnorm is not None:
+                prev_map.setdefault(str(k), vnorm)
+    return prev_map
+
+def _fix2at__schema_keys(res, previous_data):
+    schema = res.get("metric_schema_frozen") or res.get("metric_schema") or (previous_data.get("metric_schema_frozen") if isinstance(previous_data, dict) else None) or (previous_data.get("metric_schema") if isinstance(previous_data, dict) else None) or {}
+    keys = []
+    if isinstance(schema, dict):
+        mets = schema.get("metrics")
+        if isinstance(mets, list):
+            for m in mets:
+                if isinstance(m, dict):
+                    ck = m.get("canonical_key") or m.get("id")
+                    if ck:
+                        keys.append(str(ck))
+                elif isinstance(m, str):
+                    keys.append(m)
+        elif isinstance(mets, dict):
+            keys.extend([str(k) for k in mets.keys()])
+    if not keys:
+        cur_map, _, _ = _fix2at__extract_current_map(res)
+        keys = sorted(cur_map.keys())
+    return keys
+
+def _fix2at__repair_metric_changes(res, previous_data):
+    rows = res.get("metric_changes")
+    needs_rebuild = True
+    if isinstance(rows, list) and rows:
+        non_empty = 0
+        for r in rows:
+            if isinstance(r, dict):
+                cv = r.get("current_value")
+                if cv not in (None, "", "N/A", "n/a", "-"):
+                    non_empty += 1
+        if non_empty >= max(1, int(0.2 * len(rows))):
+            needs_rebuild = False
+    if not needs_rebuild:
+        return res
+
+    cur_map, unit_map, ev_map = _fix2at__extract_current_map(res)
+    prev_map = _fix2at__extract_prev_map(previous_data)
+    keys = _fix2at__schema_keys(res, previous_data)
+
+    new_rows = []
+    for ck in keys:
+        cvn = cur_map.get(ck)
+        unit = unit_map.get(ck, "")
+        pv = prev_map.get(ck)
+        row = {
+            "metric": ck,
+            "canonical_key": ck,
+            "match_stage": "patch_fix2at_hydrate",
+            "previous_value": "" if pv is None else str(pv),
+            "current_value": _fix2at__format_value(cvn, unit),
+            "current_value_norm": cvn,
+            "cur_unit_cmp": unit,
+            "match_confidence": 100.0 if cvn is not None else 0.0,
+            "match_score": 1.0 if cvn is not None else 0.0,
+            "status": "matched" if cvn is not None else "not_found",
+            "matched_source": ev_map.get(ck, ""),
+        }
+        new_rows.append(row)
+
+    res["metric_changes"] = new_rows
+    try:
+        od = res.get("output_debug") if isinstance(res.get("output_debug"), dict) else {}
+        stats = od.get("canonical_for_render_stats_v1")
+        if not isinstance(stats, dict):
+            stats = {}
+        stats.update({
+            "fix2at_metric_changes_rebuilt": True,
+            "fix2at_schema_key_count": len(keys),
+            "fix2at_current_nonempty": sum(1 for r in new_rows if r.get("current_value")),
+        })
+        od["canonical_for_render_stats_v1"] = stats
+        res["output_debug"] = od
+    except Exception:
+        pass
+    return res
+
+if _fix2at__orig_run_evolutionary_runner is not None:
+    def run_evolutionary_runner(previous_data, web_context=None):  # type: ignore
+        out = _fix2at__orig_run_evolutionary_runner(previous_data, web_context)
+        try:
+            if isinstance(out, dict) and isinstance(out.get("results"), dict):
+                out["results"] = _fix2at__repair_metric_changes(out["results"], previous_data if isinstance(previous_data, dict) else {})
+            elif isinstance(out, dict):
+                out = _fix2at__repair_metric_changes(out, previous_data if isinstance(previous_data, dict) else {})
+        except Exception:
+            pass
+        return out
+# PATCH FIX2AT END
+
+# PATCH TRACKER (append-only)
+# - FIX2AT: Hydrate results.metric_changes[].current_value deterministically from emitted canonical metrics + frozen schema.
+
+# Ensure CODE_VERSION matches this file (override any stale bump blocks)
+CODE_VERSION = "fix2at_evo_hydrate_metric_changes_v1"
+
+
+# =====================================================================
+# PATCH FIX2AU_FINAL_CODE_VERSION_BUMP (ADDITIVE)
+# Ensure CODE_VERSION reflects the latest issued file (append-only override).
+# =====================================================================
+try:
+    CODE_VERSION = "fix2au_evo_inj_disable_replay_v1"
+except Exception:
+    pass
+# =====================================================================
+
+
+
+# ===================== PATCH FIX2AV (ADDITIVE) =====================
+# Goal:
+# - Fix Diff Metrics Panel V2 crash: UnboundLocalError on local 'summary'
+#   (observed when observed-rows promotion error path calls summary.setdefault
+#   before summary is defined).
+# - Ensure Evolution dashboard "Current" column can populate by guaranteeing
+#   build_diff_metrics_panel_v2 returns rows with current_value, even if the
+#   original V2 builder throws.
+#
+# Approach (safe, additive):
+# - Preserve the existing build_diff_metrics_panel_v2 as build_diff_metrics_panel_v2_BASE.
+# - Install a guarded wrapper that:
+#     1) calls BASE normally
+#     2) on any exception, emits a minimal deterministic V2 table using only
+#        schema-aligned primary_metrics_canonical / canonical_metrics already present
+#        in the prev/cur responses (no inference).
+# - Also hard-override CODE_VERSION at the end of file to prevent older patches
+#   from reassigning it (some prior patches append their own override blocks).
+# ===================================================================
+try:
+    if callable(globals().get("build_diff_metrics_panel_v2")) and not callable(globals().get("build_diff_metrics_panel_v2_BASE")):
+        build_diff_metrics_panel_v2_BASE = build_diff_metrics_panel_v2
+except Exception:
+    pass
+
+
+def _fix2av__unwrap_metrics_dict(resp: dict) -> dict:
+    """Best-effort unwrap for schema-aligned metrics dicts (no inference)."""
+    if not isinstance(resp, dict):
+        return {}
+    # Prefer schema-aligned container used by analysis/evolution
+    for k in ("primary_metrics_canonical", "canonical_metrics"):
+        v = resp.get(k)
+        if isinstance(v, dict) and v:
+            return v or {}
+    pr = resp.get("primary_response")
+    if isinstance(pr, dict):
+        for k in ("primary_metrics_canonical", "canonical_metrics"):
+            v = pr.get(k)
+            if isinstance(v, dict) and v:
+                return v or {}
+        res = pr.get("results")
+        if isinstance(res, dict):
+            for k in ("primary_metrics_canonical", "canonical_metrics"):
+                v = res.get(k)
+                if isinstance(v, dict) and v:
+                    return v or {}
+    res2 = resp.get("results")
+    if isinstance(res2, dict):
+        for k in ("primary_metrics_canonical", "canonical_metrics"):
+            v = res2.get(k)
+            if isinstance(v, dict) and v:
+                return v or {}
+    return {}
+
+
+def _fix2av__value_from_metric_obj(obj):
+    """Extract value_norm/value deterministically from schema metric object or raw."""
+    if isinstance(obj, dict):
+        for k in ("value_norm", "value", "point_estimate", "current_value", "previous_value"):
+            if obj.get(k) is not None and obj.get(k) != "":
+                return obj.get(k)
+        vr = obj.get("value_range")
+        if isinstance(vr, dict):
+            lo = vr.get("low")
+            hi = vr.get("high")
+            if lo is not None or hi is not None:
+                return {"low": lo, "high": hi}
+    return obj
+
+
+def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
+    """
+    FIX2AV wrapper around DIFF_PANEL_V2.
+    Always returns (rows, summary) and never raises.
+    """
+    base = globals().get("build_diff_metrics_panel_v2_BASE")
+    _err = None
+    if callable(base):
+        try:
+            rows, summary = base(prev_response, cur_response)
+            if not isinstance(summary, dict):
+                summary = {}
+            if not isinstance(rows, list):
+                rows = []
+            summary.setdefault("fix2av_wrapper", True)
+            summary.setdefault("fix2av_fallback_used", False)
+            return rows, summary
+        except Exception as _e:
+            _err = str(_e)
+    else:
+        _err = "no_base"
+
+    prev_m = _fix2av__unwrap_metrics_dict(prev_response) or {}
+    cur_m = _fix2av__unwrap_metrics_dict(cur_response) or {}
+
+    schema = {}
+    try:
+        schema = globals().get("FROZEN_METRIC_SCHEMA") or globals().get("METRIC_SCHEMA_FROZEN") or {}
+    except Exception:
+        schema = {}
+
+    keys = []
+    try:
+        if isinstance(schema, dict) and schema:
+            keys = [k for k in schema.keys()]
+    except Exception:
+        keys = []
+    if not keys:
+        keys = list(prev_m.keys())
+        for k in cur_m.keys():
+            if k not in prev_m:
+                keys.append(k)
+
+    rows = []
+    joined_by_ck = 0
+    for k in keys:
+        pv = _fix2av__value_from_metric_obj(prev_m.get(k))
+        cv = _fix2av__value_from_metric_obj(cur_m.get(k))
+        if pv is None and cv is None:
+            continue
+        if k in prev_m and k in cur_m:
+            joined_by_ck += 1
+        rows.append({
+            "name": (schema.get(k, {}).get("label") if isinstance(schema.get(k), dict) else "") or k,
+            "canonical_key": k,
+            "match_stage": "canonical_key_fallback" if (k in prev_m and k in cur_m) else ("current_only" if k in cur_m else "previous_only"),
+            "previous_value": pv if pv is not None else "N/A",
+            "current_value": cv if cv is not None else "N/A",
+            "change_pct": None,
+            "change_type": "unknown",
+            "match_confidence": 0.0,
+            "matched_candidate": None,
+            "diag": {
+                "fix2av": True,
+                "fix2av_error": _err,
+            },
+        })
+
+    summary = {
+        "fix2av_wrapper": True,
+        "fix2av_fallback_used": True,
+        "fix2av_error": _err,
+        "rows_total": int(len(rows)),
+        "joined_by_canonical_key": int(joined_by_ck),
+    }
+    return rows, summary
+
+# Hard override CODE_VERSION at EOF (authoritative)
+CODE_VERSION = "fix2av_evo_diff_panel_v2_summary_guard_v1"
+# PATCH TRACKER (append-only)
+# - FIX2AV: Guard DIFF_PANEL_V2 summary UnboundLocalError + deterministic fallback rows to populate Current column.
+# =================== END PATCH FIX2AV (ADDITIVE) ====================
+
+
+# PATCH TRACKER CONTINUED (append-only)
+# - fix2aw_github_fetch_fallback_v1: add GitHub blob→raw fetch fallback for injected URLs to prevent empty snapshot_text and enable extraction/canonicalisation for Evolution Current column.
+
+
+
+
+# =====================================================================
+# PATCH FIX2AX_CODE_VERSION_EOF_OVERRIDE_V1 (ADDITIVE)
+# Ensure CODE_VERSION reflects the filename even if older blocks reset it.
+# =====================================================================
+try:
+    CODE_VERSION = "fix2ay_evo_render_smoke_v2"
+except Exception:
+    pass
+# =====================================================================
+
+# PATCH TRACKER (append-only)
+# - fix2ax_evo_render_smoke_v1: FIX2AX render-layer smoke row to validate dashboard Current column wiring.
+
+# =====================================================================
+# # =====================================================================
+# =====================================================================
+# PATCH FIX2B3_UNIFIED_POC_HOOK_V2 (ADDITIVE): Minimal PoC engine (lazy, no CODE_VERSION override mid-file)
+#
+# Fixes:
+# - Avoids defining CODE_VERSION inside embedded PoC block (which can confuse downstream UI/versioning).
+# - Avoids large import-heavy blocks at module scope; PoC imports occur inside function.
+# - Keeps PoC small + deterministic, focused on injected URL fetch → extract → bind → metric_changes current_value.
+# =====================================================================
+
+def run_unified_poc(question: str,
+                    baseline_urls=None,
+                    injected_urls=None,
+                    prev_snapshot=None,
+                    timeout_s: int = 12) -> dict:
+    """Minimal unified-engine proof-of-life for Option 1.
+
+    Returns a dict compatible with render_source_anchored_results():
+      - status/message
+      - source_results[]
+      - canonical_metrics{canonical_key: float}
+      - metric_changes[] (with current_value populated when found)
+      - output_debug
+    """
+    import re, time, math, hashlib, urllib.request, urllib.error, html
+
+    def _now_ms():
+        return int(time.time() * 1000)
+
+    def _strip(u: str) -> str:
+        u = (u or '').strip()
+        if not u:
+            return ''
+        u = u.split('#', 1)[0]
+        u = u.split('?', 1)[0]
+        if u.startswith('http://'):
+            u = 'https://' + u[len('http://'):]
+        return u
+
+    _gh_blob = re.compile(r'^https?://github\.com/([^/]+)/([^/]+)/blob/(.+)$', re.I)
+    def _norm_url(u: str) -> str:
+        u = _strip(u)
+        m = _gh_blob.match(u)
+        if m:
+            owner, repo, path = m.group(1), m.group(2), m.group(3)
+            u = f'https://raw.githubusercontent.com/{owner}/{repo}/{path}'
+        return u
+
+    def _norm_list(lst):
+        out, seen = [], set()
+        for x in (lst or []):
+            nu = _norm_url(str(x or ''))
+            if not nu or nu in seen:
+                continue
+            seen.add(nu)
+            out.append(nu)
+        return out
+
+    def _fetch_text(url: str) -> tuple[str, str]:
+        # returns (status, text)
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (compatible; YureekaPoC/1.0)',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+                raw = resp.read()
+                # naive decode
+                try:
+                    txt = raw.decode('utf-8', errors='ignore')
+                except Exception:
+                    txt = raw.decode(errors='ignore')
+                return f'fetched_ok:{ctype or "unknown"}', txt
+        except Exception as e:
+            return f'failed:{type(e).__name__}', ''
+
+    # ---- metric schema slice (PoC)
+    SCHEMA = {
+        'global_ev_sales_2024__unit_sales': {'unit_family': 'units'},
+        'ev_share_of_global_light_vehicle_sales_2024__percent': {'unit_family': 'percent'},
+        'estimated_global_new_ev_revenue_2024__currency': {'unit_family': 'currency'},
+        'projected_global_ev_sales_2030__unit_sales': {'unit_family': 'units'},
+    }
+
+    # PATCH FIX2B4 (ADDITIVE): Alias legacy/dashboard canonical keys to PoC keys
+    KEY_ALIASES = {
+        "global_ev_sales_2024__unit_sales": [
+            "2024_global_ev_sales__unknown",
+            "2024_global_ev_sales__unit_sales",
+            "global_ev_sales_2024__unknown",
+        ],
+        "ev_share_of_global_light_vehicle_sales_2024__percent": [
+            "market_share_2024__percent",
+            "ev_market_share_2024__percent",
+        ],
+        "projected_global_ev_sales_2030__unit_sales": [
+            "2030_projected_units__unit_sales",
+            "projected_units_2030__unit_sales",
+        ],
+    }
+
+    # ---- very small extractor helpers
+    _re_pct = re.compile(r'(\b\d+(?:\.\d+)?\s*%\b)')
+    _re_num = re.compile(r'\b(\d+(?:\.\d+)?)\b', re.I)
+    _re_million_units_2024 = re.compile(r'\b(\d+(?:\.\d+)?)\s*million\s+units\b.*?\b2024\b|\b2024\b.*?\b(\d+(?:\.\d+)?)\s*million\s+units\b', re.I)
+    _re_project_2030_units = re.compile(r'\b(\d+(?:\.\d+)?)\s*million\s+units\b.*?\b2030\b|\b2030\b.*?\b(\d+(?:\.\d+)?)\s*million\s+units\b', re.I)
+    _re_revenue_2024 = re.compile(r'\b(?:revenue|revenues|market)\b[^\d]{0,50}(\d+(?:\.\d+)?)\s*(?:billion|bn)\b.*?\b2024\b|\b2024\b.*?\b(?:revenue|revenues|market)\b[^\d]{0,50}(\d+(?:\.\d+)?)\s*(?:billion|bn)\b', re.I)
+
+    def _to_float(s):
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    def _million_to_units(v):
+        return float(v) * 1_000_000.0
+
+    baseline_urls = _norm_list(baseline_urls)
+    injected_urls = _norm_list(injected_urls)
+    urls = _norm_list((baseline_urls or []) + (injected_urls or []))
+
+    source_results = []
+    all_text = ''
+    for u in urls:
+        st, txt = _fetch_text(u)
+        clean = txt
+        # very cheap HTML strip: remove tags
+        clean = re.sub(r'<script[\s\S]*?</script>', ' ', clean, flags=re.I)
+        clean = re.sub(r'<style[\s\S]*?</style>', ' ', clean, flags=re.I)
+        clean = re.sub(r'<[^>]+>', ' ', clean)
+        clean = html.unescape(clean)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        nfound = len(_re_num.findall(clean)) if clean else 0
+        source_results.append({
+            'url': u,
+            'status': st.split(':', 1)[0],
+            'status_detail': st,
+            'content_type': st.split(':', 1)[-1] if ':' in st else '',
+            'numbers_found': int(nfound),
+            'clean_text_len': int(len(clean or '')),
+            'snapshot_origin': 'poc_fetch',
+        })
+        if clean:
+            all_text += ' ' + clean
+
+    canonical_metrics = {}
+
+    # Bind: EV sales 2024 million units
+    m = _re_million_units_2024.search(all_text)
+    if m:
+        v = _to_float(m.group(1) or m.group(2))
+        if v is not None:
+            _set_cm('global_ev_sales_2024__unit_sales', _million_to_units(v))
+
+    # Bind: projected 2030 million units
+    m = _re_project_2030_units.search(all_text)
+    if m:
+        v = _to_float(m.group(1) or m.group(2))
+        if v is not None:
+            _set_cm('projected_global_ev_sales_2030__unit_sales', _million_to_units(v))
+
+    # Bind: share 2024 percent (take first % near 2024 if present, else first %)
+    pct_val = None
+    if '2024' in all_text:
+        # try within a window around '2024'
+        idx = all_text.lower().find('2024')
+        if idx >= 0:
+            win = all_text[max(0, idx-220): idx+220]
+            pm = _re_pct.search(win)
+            if pm:
+                pct_val = _to_float(pm.group(1).replace('%','').strip())
+    if pct_val is None:
+        pm = _re_pct.search(all_text)
+        if pm:
+            pct_val = _to_float(pm.group(1).replace('%','').strip())
+    if pct_val is not None:
+        _set_cm('ev_share_of_global_light_vehicle_sales_2024__percent', float(pct_val))
+
+    # Bind: revenue 2024 (very rough: X billion near revenue + 2024)
+    m = _re_revenue_2024.search(all_text)
+    if m:
+        v = _to_float(m.group(1) or m.group(2))
+        if v is not None:
+            # store as billions (PoC) – downstream can normalize currency later
+            _set_cm('estimated_global_new_ev_revenue_2024__currency', float(v))
+
+    # Prev snapshot
+    prev_cm = {}
+    try:
+        if isinstance(prev_snapshot, dict) and isinstance(prev_snapshot.get('canonical_metrics'), dict):
+            for k, v in prev_snapshot.get('canonical_metrics').items():
+                try:
+                    prev_cm[str(k)] = float(v)
+                except Exception:
+                    pass
+    except Exception:
+        prev_cm = {}
+
+    # Build metric_changes rows with current_value populated where found
+    metric_changes = []
+    keys = sorted(set(list(SCHEMA.keys()) + [a for ks in KEY_ALIASES.values() for a in (ks or [])] + list(prev_cm.keys()) + list(canonical_metrics.keys())))
+    for k in keys:
+        pv = prev_cm.get(k)
+        cv = canonical_metrics.get(k)
+        row = {
+            'metric': k,
+            'canonical_key': k,
+            'match_stage': 'poc_bind' if cv is not None else 'poc_not_found',
+            'previous_value': ('' if pv is None else str(pv)),
+            'current_value': ('' if cv is None else (f'{cv:.6g}' if isinstance(cv, (int,float)) else str(cv))),
+            'current_value_norm': (None if cv is None else float(cv)),
+            'status': ('not_found' if cv is None else 'ok'),
+            'match_confidence': (0 if cv is None else 100),
+            'match_score': (None if cv is None else 1.0),
+            'anchor_used': False,
+        }
+        if pv is not None and cv is not None and pv != 0:
+            try:
+                row['change_pct'] = ((float(cv) - float(pv)) / float(pv)) * 100.0
+            except Exception:
+                row['change_pct'] = None
+        else:
+            row['change_pct'] = None
+        metric_changes.append(row)
+
+    
+    # PATCH FIX2B4 (ADDITIVE): Coverage stats for PoC → dashboard hydration debugging
+    _poc_stats = {
+        "schema_keys": int(len(SCHEMA)),
+        "alias_keys": int(sum(len(v or []) for v in KEY_ALIASES.values())),
+        "canonical_metrics_count": int(len(canonical_metrics)),
+        "metric_changes_count": int(len(metric_changes)),
+        "populated_current_count": int(sum(1 for r in (metric_changes or []) if isinstance(r, dict) and str(r.get("current_value") or "").strip() not in ("", "N/A", "—", "-"))),
+    }
+out = {
+        'status': 'success',
+        'message': 'PoC unified engine executed (baseline+injected fetch → extract → bind → metric_changes).',
+        'sources_checked': int(len(urls)),
+        'sources_fetched': int(sum(1 for s in source_results if str(s.get('status') or '').startswith('fetched') or str(s.get('status') or '') == 'fetched_ok')),
+        'source_results': source_results,
+        'summary': {
+            'metrics_found': int(sum(1 for k in SCHEMA.keys() if k in canonical_metrics)),
+        },
+        'canonical_metrics': canonical_metrics,
+        'metric_changes': metric_changes,
+        'output_debug': {
+            'poc_stats': _poc_stats,
+            'poc': True,
+            'question': (question or ''),
+            'baseline_urls_count': int(len(baseline_urls or [])),
+            'injected_urls_count': int(len(injected_urls or [])),
+            'urls_count': int(len(urls)),
+            'canonical_metrics_keys': list(canonical_metrics.keys())[:50],
+        },
+    }
+    return out
+
+
+# CODE_VERSION (authoritative at EOF)
+CODE_VERSION = "fix2b3_unified_poc_hook_v2"
+
+# PATCH TRACKER (append-only)
+# - fix2b2_unified_poc_hook_v1: Flag-gated hook to call PoC unified engine from evolution path (embedded PoC code; caused blank UI risk)
+# - fix2b3_unified_poc_hook_v2: Replace embedded large PoC block with lazy minimal PoC; remove mid-file CODE_VERSION override; safer Streamlit startup
+
+
+# =========================
+# PATCH TRACKER (append-only)
+# =========================
+# - fix2b4_unified_poc_alias_keys_v1: Option-1 PoC: emit alias canonical keys to match legacy/dashboard key shapes; add PoC coverage stats; bump CODE_VERSION.
+
+# =========================
+# VERSION STAMP (AUTHORITATIVE)
+# =========================
+try:
+    CODE_VERSION = "fix2b4_unified_poc_alias_keys_v1"
+except Exception:
+    pass
