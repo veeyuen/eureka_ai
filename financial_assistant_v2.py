@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2am_spine_phase3_2_fetch_text_hardening_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -29168,6 +29168,262 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
 
     scraped_meta = _fix24_build_scraped_meta(urls)
+    # =====================================================================
+    # PATCH FIX2AM_PHASE3_2_FETCH_TEXT_HARDENING_V1 (ADDITIVE):
+    # Fetch-to-text hardening + zero-length retry ladder (Evolution/Injection parity)
+    #
+    # Why:
+    # - Evolution inj_trace_v2_postfetch shows multiple URLs with status "fetched"/"success" but content_len == 0.
+    # - This starves the spine candidate pool, so schema bind/normalize cannot populate canonical current metrics,
+    #   leaving dashboard Current as N/A.
+    #
+    # What:
+    # - Post-process scraped_meta immediately after _fix24_build_scraped_meta(urls):
+    #   1) If status indicates success but extracted text is empty, retry using alternate fetch function (if available).
+    #   2) If still empty and URL looks like a PDF, attempt byte-download + PDF text extraction (best-effort).
+    #   3) If still empty, downgrade to explicit failure "failed:empty_text" (no silent success).
+    #   4) Populate meta.clean_text_len/content_len deterministically and re-run number extraction if text becomes available.
+    #
+    # Safety:
+    # - Additive only. Default enabled. Never raises.
+    # - Does NOT change hashing/fastpath selection; only enriches scraped_meta text so downstream extraction can proceed.
+    # =====================================================================
+    try:
+        _fx2am_enable = True
+        try:
+            _fx2am_env = str(os.environ.get("YUREEKA_SPINE_V1_FETCH_TEXT_HARDENING") or "").strip().lower()
+            if _fx2am_env in ("0", "false", "off", "no"):
+                _fx2am_enable = False
+        except Exception:
+            _fx2am_enable = True
+
+        if _fx2am_enable and isinstance(scraped_meta, dict) and isinstance(urls, list):
+            _fx2am_fetch_with_status = globals().get("fetch_url_content_with_status")
+            _fx2am_fetch_plain = globals().get("fetch_url_content")
+            _fx2am_extract_fn = globals().get("extract_numbers_with_context")
+
+            def _fx2am_is_success(_st: str) -> bool:
+                try:
+                    s = (str(_st or "")).lower().strip()
+                    return (s in ("success", "ok", "fetched", "success_direct") or s.startswith("success"))
+                except Exception:
+                    return False
+
+            def _fx2am_strip_html(_s: str) -> str:
+                try:
+                    # Deterministic, lightweight tag-strip; keep digits/punctuation in text.
+                    t = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", _s or "")
+                    t = re.sub(r"(?is)<[^>]+>", " ", t)
+                    t = re.sub(r"\s+", " ", t).strip()
+                    return t
+                except Exception:
+                    return (_s or "").strip()
+
+            def _fx2am_text_fallback(_payload, _url: str) -> str:
+                # First: existing accessor
+                try:
+                    _t = _fix2af_scraped_text_accessor(_payload)
+                    if isinstance(_t, str) and _t.strip():
+                        return _t.strip()
+                except Exception:
+                    pass
+
+                # Dict payload: try common keys
+                if isinstance(_payload, dict):
+                    for k in ("text", "content", "html", "body", "raw", "data"):
+                        try:
+                            v = _payload.get(k)
+                        except Exception:
+                            v = None
+                        if isinstance(v, (bytes, bytearray)):
+                            try:
+                                v = v.decode("utf-8", errors="ignore")
+                            except Exception:
+                                v = ""
+                        if isinstance(v, str) and v.strip():
+                            # If looks like HTML, strip tags to improve numeric visibility.
+                            if "<html" in v.lower() or "<body" in v.lower() or "<div" in v.lower():
+                                v2 = _fx2am_strip_html(v)
+                                return v2 if v2.strip() else v.strip()
+                            return v.strip()
+
+                # Bytes payload: decode
+                if isinstance(_payload, (bytes, bytearray)):
+                    try:
+                        s = _payload.decode("utf-8", errors="ignore")
+                        return s.strip()
+                    except Exception:
+                        return ""
+
+                # String payload: may be raw HTML
+                if isinstance(_payload, str) and _payload.strip():
+                    s = _payload.strip()
+                    if "<html" in s.lower() or "<body" in s.lower() or "<div" in s.lower():
+                        s2 = _fx2am_strip_html(s)
+                        return s2 if s2.strip() else s
+                    return s
+
+                return ""
+
+            def _fx2am_pdf_text_from_url(_url: str, _max_chars: int = 180000) -> str:
+                # Best-effort PDF text extraction; only used when prior methods yielded empty text.
+                try:
+                    import urllib.request
+                    from io import BytesIO
+                    try:
+                        from pypdf import PdfReader
+                    except Exception:
+                        PdfReader = None
+                    if PdfReader is None:
+                        return ""
+                    req = urllib.request.Request(_url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        data = resp.read()
+                    if not data:
+                        return ""
+                    reader = PdfReader(BytesIO(data))
+                    parts = []
+                    for p in reader.pages[:50]:
+                        try:
+                            parts.append((p.extract_text() or ""))
+                        except Exception:
+                            parts.append("")
+                    txtp = "\n".join(parts).strip()
+                    if _max_chars and len(txtp) > int(_max_chars):
+                        txtp = txtp[: int(_max_chars)]
+                    return txtp
+                except Exception:
+                    return ""
+
+            _fx2am_summary = {
+                "enabled": True,
+                "urls_total": int(len(urls or [])),
+                "success_but_empty_detected": 0,
+                "retried": 0,
+                "pdf_extracted": 0,
+                "downgraded_to_failed_empty": 0,
+                "reextracted_numbers": 0,
+                "examples": [],
+            }
+
+            for _u in (urls or []):
+                _url = str(_u if not isinstance(_u, dict) else (_u.get("url") or "")).strip()
+                if not _url:
+                    continue
+                _meta = scraped_meta.get(_url)
+                if not isinstance(_meta, dict):
+                    continue
+
+                _st0 = _meta.get("status")
+                _txt0 = _meta.get("text") if isinstance(_meta.get("text"), str) else ""
+                _cl0 = len((_txt0 or "").strip())
+
+                # Ensure clean_text_len/content_len are present for downstream diagnostics
+                try:
+                    _meta["clean_text_len"] = int(_meta.get("clean_text_len") or _cl0)
+                    _meta["content_len"] = int(_meta.get("content_len") or _meta.get("clean_text_len") or _cl0)
+                except Exception:
+                    pass
+
+                if _fx2am_is_success(_st0) and _cl0 == 0:
+                    _fx2am_summary["success_but_empty_detected"] += 1
+                    _hard = {
+                        "url": _url,
+                        "status_before": str(_st0 or ""),
+                        "clean_text_len_before": int(_cl0),
+                        "retry_attempted": False,
+                        "retry_status": "",
+                        "pdf_attempted": False,
+                        "pdf_text_len": 0,
+                        "final_status": "",
+                        "final_clean_text_len": 0,
+                    }
+
+                    # Retry with alternate fetch
+                    _payload2, _st2 = None, None
+                    try:
+                        _hard["retry_attempted"] = True
+                        _fx2am_summary["retried"] += 1
+                        if callable(_fx2am_fetch_plain):
+                            _payload2 = _fx2am_fetch_plain(_url)
+                            _st2 = "success_plain" if (_payload2 and str(_payload2).strip()) else "empty_plain"
+                        elif callable(_fx2am_fetch_with_status):
+                            _payload2, _st2 = _fx2am_fetch_with_status(_url)
+                        else:
+                            _payload2, _st2 = (None, "no_fetch_fn")
+                    except Exception as _e:
+                        _payload2, _st2 = (None, f"exception:{type(_e).__name__}")
+                    _hard["retry_status"] = str(_st2 or "")
+
+                    _txt2 = _fx2am_text_fallback(_payload2, _url)
+                    if max_chars_per_source and isinstance(_txt2, str) and len(_txt2) > int(max_chars_per_source):
+                        _txt2 = _txt2[: int(max_chars_per_source)]
+                    _cl2 = len((_txt2 or "").strip())
+
+                    # If still empty and looks like PDF, try PDF extraction
+                    if _cl2 == 0 and _url.lower().endswith(".pdf"):
+                        _hard["pdf_attempted"] = True
+                        _txtp = _fx2am_pdf_text_from_url(_url, _max_chars=int(max_chars_per_source or 180000))
+                        _hard["pdf_text_len"] = int(len((_txtp or "").strip()))
+                        if _txtp and str(_txtp).strip():
+                            _fx2am_summary["pdf_extracted"] += 1
+                            _txt2 = _txtp
+                            _cl2 = len((_txt2 or "").strip())
+
+                    # Apply outcome
+                    if _cl2 > 0:
+                        _meta["text"] = _txt2
+                        try:
+                            _meta["clean_text_len"] = int(_cl2)
+                            _meta["content_len"] = int(_cl2)
+                        except Exception:
+                            pass
+
+                        # Re-run extraction now that text exists
+                        try:
+                            if callable(_fx2am_extract_fn):
+                                _nums2 = _fx2am_extract_fn(_txt2, source_url=_url)
+                                if _nums2 is None:
+                                    _nums2 = []
+                                if isinstance(_nums2, list):
+                                    _meta["extracted_numbers"] = _nums2
+                                    _fx2am_summary["reextracted_numbers"] += 1
+                        except Exception:
+                            pass
+                        _hard["final_status"] = str(_meta.get("status") or _st0 or "")
+                    else:
+                        # Downgrade to explicit failure (no silent success)
+                        try:
+                            _meta["status"] = "failed:empty_text"
+                            _meta["status_detail"] = "success_status_but_empty_text_after_retry"
+                        except Exception:
+                            pass
+                        _fx2am_summary["downgraded_to_failed_empty"] += 1
+                        _hard["final_status"] = str(_meta.get("status") or "")
+                    _hard["final_clean_text_len"] = int(_meta.get("clean_text_len") or 0)
+
+                    # Attach per-url hardening trace
+                    try:
+                        _meta.setdefault("fix2am_fetch_text_hardening_v1", {})
+                        if isinstance(_meta.get("fix2am_fetch_text_hardening_v1"), dict):
+                            _meta["fix2am_fetch_text_hardening_v1"].update(_hard)
+                    except Exception:
+                        pass
+
+                    if len(_fx2am_summary["examples"]) < 10:
+                        _fx2am_summary["examples"].append({k: _hard.get(k) for k in ("url", "status_before", "retry_status", "final_status", "final_clean_text_len")})
+
+            # Attach summary to web_context for audit visibility
+            try:
+                if isinstance(web_context, dict):
+                    web_context.setdefault("debug", {})
+                    if isinstance(web_context.get("debug"), dict):
+                        web_context["debug"]["fix2am_fetch_text_hardening_v1"] = _fx2am_summary
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # =====================================================================
 
     # PATCH FIX2AF_ATTACH_SCRAPE_LEDGER_TO_WEB_CONTEXT_V1 (ADDITIVE)
     try:
@@ -34382,6 +34638,19 @@ try:
             ],
             "risk": "low",
             "scope": "render adapter only; additive",
+        })
+
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AM_PHASE3_2_FETCH_TEXT_HARDENING_V1",
+            "code_version": "fix2am_spine_phase3_2_fetch_text_hardening_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "Fetch-to-text hardening for zero-length 'success' fetches (retry ladder + explicit failure downgrade)",
+                "Best-effort PDF text extraction when prior fetch yields no text",
+                "Per-url and summary diagnostics under web_context.debug.fix2am_fetch_text_hardening_v1 and scraped_meta[*].fix2am_fetch_text_hardening_v1",
+                "Populate scraped_meta clean_text_len/content_len deterministically and re-run extraction when text becomes available",
+            ],
+            "notes": "Phase 3.2: remove silent success with empty text so spine binding/normalization can actually see candidates.",
         })
 except Exception:
     pass
