@@ -36781,3 +36781,204 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
     return out
 
 # PATCH FIX2AS (ADDITIVE) END
+
+# PATCH FIX2AT START
+# Purpose: Ensure the Evolution dashboard's 'Current' column is hydrated from results.metric_changes[].current_value.
+# The Streamlit renderer reads r.get('current_value') for each metric_changes row. Some paths may produce bound
+# canonical metrics but leave current_value empty/N/A. This patch deterministically rebuilds/repairs metric_changes
+# using the frozen schema + emitted canonical metrics, without relying on legacy wrappers.
+
+try:
+    _fix2at__orig_run_evolutionary_runner = run_evolutionary_runner  # type: ignore
+except Exception:
+    _fix2at__orig_run_evolutionary_runner = None
+
+def _fix2at__safe_float(x):
+    try:
+        if x is None or x == "":
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+def _fix2at__format_value(v_norm, unit_tag):
+    try:
+        if v_norm is None:
+            return ""
+        # Keep formatting minimal; UI already prints strings.
+        return str(v_norm)
+    except Exception:
+        return "" if v_norm is None else str(v_norm)
+
+def _fix2at__extract_current_map(res):
+    # Returns (current_value_map, current_unit_map, evidence_map)
+    cur_map = {}
+    unit_map = {}
+    ev_map = {}
+
+    # Prefer canonical_for_render_v1 (already schema-keyed)
+    try:
+        od = res.get("output_debug") if isinstance(res.get("output_debug"), dict) else {}
+        cfr = od.get("canonical_for_render_v1")
+        if isinstance(cfr, dict) and cfr:
+            for k, v in cfr.items():
+                if not isinstance(v, dict):
+                    continue
+                vnorm = v.get("current_value_norm", v.get("value_norm", v.get("value")))
+                vnorm = _fix2at__safe_float(vnorm) if vnorm is not None else None
+                unit = v.get("cur_unit_cmp") or v.get("unit") or v.get("unit_tag") or ""
+                cur_map[str(k)] = vnorm
+                unit_map[str(k)] = unit
+                ev_map[str(k)] = v.get("source_url") or v.get("matched_source") or ""
+            if cur_map:
+                return cur_map, unit_map, ev_map
+    except Exception:
+        pass
+
+    # Fallback: primary_metrics_canonical dict
+    pmc = res.get("primary_metrics_canonical")
+    if isinstance(pmc, dict) and pmc:
+        for k, v in pmc.items():
+            if isinstance(v, dict):
+                vnorm = v.get("value_norm", v.get("value"))
+                vnorm = _fix2at__safe_float(vnorm) if vnorm is not None else None
+                cur_map[str(k)] = vnorm
+                unit_map[str(k)] = v.get("unit_tag") or v.get("unit") or ""
+                ev_map[str(k)] = v.get("source_url") or ""
+            else:
+                vnorm = _fix2at__safe_float(v)
+                if vnorm is not None:
+                    cur_map[str(k)] = vnorm
+                    unit_map[str(k)] = ""
+                    ev_map[str(k)] = ""
+        return cur_map, unit_map, ev_map
+
+    # Fallback: canonical_metrics numeric dict
+    cm = res.get("canonical_metrics")
+    if isinstance(cm, dict) and cm:
+        for k, v in cm.items():
+            vnorm = _fix2at__safe_float(v)
+            if vnorm is not None:
+                cur_map[str(k)] = vnorm
+                unit_map[str(k)] = ""
+                ev_map[str(k)] = ""
+    return cur_map, unit_map, ev_map
+
+def _fix2at__extract_prev_map(previous_data):
+    prev_map = {}
+    if not isinstance(previous_data, dict):
+        return prev_map
+    pmc = previous_data.get("primary_metrics_canonical")
+    if isinstance(pmc, dict):
+        for k, v in pmc.items():
+            if isinstance(v, dict):
+                vnorm = v.get("value_norm", v.get("value"))
+                vnorm = _fix2at__safe_float(vnorm) if vnorm is not None else None
+                if vnorm is not None:
+                    prev_map[str(k)] = vnorm
+            else:
+                vnorm = _fix2at__safe_float(v)
+                if vnorm is not None:
+                    prev_map[str(k)] = vnorm
+    cm = previous_data.get("canonical_metrics")
+    if isinstance(cm, dict):
+        for k, v in cm.items():
+            vnorm = _fix2at__safe_float(v)
+            if vnorm is not None:
+                prev_map.setdefault(str(k), vnorm)
+    return prev_map
+
+def _fix2at__schema_keys(res, previous_data):
+    schema = res.get("metric_schema_frozen") or res.get("metric_schema") or (previous_data.get("metric_schema_frozen") if isinstance(previous_data, dict) else None) or (previous_data.get("metric_schema") if isinstance(previous_data, dict) else None) or {}
+    keys = []
+    if isinstance(schema, dict):
+        mets = schema.get("metrics")
+        if isinstance(mets, list):
+            for m in mets:
+                if isinstance(m, dict):
+                    ck = m.get("canonical_key") or m.get("id")
+                    if ck:
+                        keys.append(str(ck))
+                elif isinstance(m, str):
+                    keys.append(m)
+        elif isinstance(mets, dict):
+            keys.extend([str(k) for k in mets.keys()])
+    if not keys:
+        cur_map, _, _ = _fix2at__extract_current_map(res)
+        keys = sorted(cur_map.keys())
+    return keys
+
+def _fix2at__repair_metric_changes(res, previous_data):
+    rows = res.get("metric_changes")
+    needs_rebuild = True
+    if isinstance(rows, list) and rows:
+        non_empty = 0
+        for r in rows:
+            if isinstance(r, dict):
+                cv = r.get("current_value")
+                if cv not in (None, "", "N/A", "n/a", "-"):
+                    non_empty += 1
+        if non_empty >= max(1, int(0.2 * len(rows))):
+            needs_rebuild = False
+    if not needs_rebuild:
+        return res
+
+    cur_map, unit_map, ev_map = _fix2at__extract_current_map(res)
+    prev_map = _fix2at__extract_prev_map(previous_data)
+    keys = _fix2at__schema_keys(res, previous_data)
+
+    new_rows = []
+    for ck in keys:
+        cvn = cur_map.get(ck)
+        unit = unit_map.get(ck, "")
+        pv = prev_map.get(ck)
+        row = {
+            "metric": ck,
+            "canonical_key": ck,
+            "match_stage": "patch_fix2at_hydrate",
+            "previous_value": "" if pv is None else str(pv),
+            "current_value": _fix2at__format_value(cvn, unit),
+            "current_value_norm": cvn,
+            "cur_unit_cmp": unit,
+            "match_confidence": 100.0 if cvn is not None else 0.0,
+            "match_score": 1.0 if cvn is not None else 0.0,
+            "status": "matched" if cvn is not None else "not_found",
+            "matched_source": ev_map.get(ck, ""),
+        }
+        new_rows.append(row)
+
+    res["metric_changes"] = new_rows
+    try:
+        od = res.get("output_debug") if isinstance(res.get("output_debug"), dict) else {}
+        stats = od.get("canonical_for_render_stats_v1")
+        if not isinstance(stats, dict):
+            stats = {}
+        stats.update({
+            "fix2at_metric_changes_rebuilt": True,
+            "fix2at_schema_key_count": len(keys),
+            "fix2at_current_nonempty": sum(1 for r in new_rows if r.get("current_value")),
+        })
+        od["canonical_for_render_stats_v1"] = stats
+        res["output_debug"] = od
+    except Exception:
+        pass
+    return res
+
+if _fix2at__orig_run_evolutionary_runner is not None:
+    def run_evolutionary_runner(previous_data, web_context=None):  # type: ignore
+        out = _fix2at__orig_run_evolutionary_runner(previous_data, web_context)
+        try:
+            if isinstance(out, dict) and isinstance(out.get("results"), dict):
+                out["results"] = _fix2at__repair_metric_changes(out["results"], previous_data if isinstance(previous_data, dict) else {})
+            elif isinstance(out, dict):
+                out = _fix2at__repair_metric_changes(out, previous_data if isinstance(previous_data, dict) else {})
+        except Exception:
+            pass
+        return out
+# PATCH FIX2AT END
+
+# PATCH TRACKER (append-only)
+# - FIX2AT: Hydrate results.metric_changes[].current_value deterministically from emitted canonical metrics + frozen schema.
+
+# Ensure CODE_VERSION matches this file (override any stale bump blocks)
+CODE_VERSION = "fix2at_evo_hydrate_metric_changes_v1"
