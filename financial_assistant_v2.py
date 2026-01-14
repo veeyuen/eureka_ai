@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix2b5_unified_poc_alias_keys_v2"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "fix2b7_evo_canonical_adapter_v1"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -24366,6 +24366,152 @@ def render_source_anchored_results(results, query: str):
 
 
 
+# =====================================================================
+# PATCH FIX2B7_EVO_CANONICAL_ADAPTER_V1 (ADDITIVE)
+#
+# Option A (Production Direction):
+# - Evolution UI should display CURRENT values from canonical_metrics (unified engine),
+#   not from legacy matcher-derived current_value fields.
+#
+# What this does (render-time safe adapter):
+# - If results contains canonical_metrics (top-level or nested) and rows contain
+#   empty/"N/A" current_value, hydrate r["current_value"] deterministically from
+#   canonical_metrics[r["canonical_key"]].
+# - If metric_changes is empty but canonical_metrics exists, synthesize rows from
+#   metric_schema_frozen when available (schema-first).
+#
+# Safety:
+# - Purely additive at render layer; does not change extraction, hashing, or storage.
+# - Never raises; falls back silently.
+# =====================================================================
+try:
+    def _fix2b7_get_canonical_metrics(_res: dict):
+        if not isinstance(_res, dict):
+            return {}
+        # preferred: top-level canonical_metrics
+        _cm = _res.get("canonical_metrics")
+        if isinstance(_cm, dict) and _cm:
+            return _cm
+        # sometimes nested
+        _r2 = _res.get("results")
+        if isinstance(_r2, dict):
+            _cm2 = _r2.get("canonical_metrics")
+            if isinstance(_cm2, dict) and _cm2:
+                return _cm2
+            _od = _r2.get("output_debug")
+            if isinstance(_od, dict):
+                _cm3 = _od.get("canonical_metrics")
+                if isinstance(_cm3, dict) and _cm3:
+                    return _cm3
+        _od = _res.get("output_debug")
+        if isinstance(_od, dict):
+            _cm4 = _od.get("canonical_metrics")
+            if isinstance(_cm4, dict) and _cm4:
+                return _cm4
+        return {}
+
+    def _fix2b7_cm_value_for_display(_v):
+        # allow either plain scalar or dict payloads
+        if isinstance(_v, dict):
+            # common shapes: {"value": x, ...} or {"value_norm": x, ...}
+            if "value" in _v:
+                return _v.get("value")
+            if "value_norm" in _v:
+                return _v.get("value_norm")
+            if "current_value" in _v:
+                return _v.get("current_value")
+            return None
+        return _v
+
+    _fix2b7_cm = _fix2b7_get_canonical_metrics(results)
+
+    # If rows empty but schema available, synthesize schema-first rows
+    if (not rows or not isinstance(rows, list)) and isinstance(_fix2b7_cm, dict) and _fix2b7_cm:
+        _schema = results.get("metric_schema_frozen") or results.get("schema") or {}
+        if isinstance(_schema, dict) and _schema:
+            _new_rows = []
+            for _ck, _meta in _schema.items():
+                if not _ck:
+                    continue
+                _label = ""
+                if isinstance(_meta, dict):
+                    _label = str(_meta.get("label") or _meta.get("name") or _meta.get("metric") or _ck)
+                else:
+                    _label = str(_ck)
+                _val = _fix2b7_cm_value_for_display(_fix2b7_cm.get(_ck))
+                _val_s = "" if _val is None else str(_val)
+                _new_rows.append({
+                    "metric": _label,
+                    "canonical_key": str(_ck),
+                    "match_stage": "canonical_schema_synth",
+                    "previous_value": "",
+                    "current_value": (_val_s if _val_s.strip() else "N/A"),
+                    "status": ("present" if _val_s.strip() else "not_found"),
+                    "match_confidence": (1.0 if _val_s.strip() else 0.0),
+                    "anchor_used": False,
+                })
+            if _new_rows:
+                rows = _new_rows
+
+    # Hydrate current_value for existing rows
+    if isinstance(rows, list) and rows and isinstance(_fix2b7_cm, dict) and _fix2b7_cm:
+        _hydrated = 0
+        _eligible = 0
+        for _r in rows:
+            if not isinstance(_r, dict):
+                continue
+            _ck = str(_r.get("canonical_key") or "").strip()
+            if not _ck:
+                continue
+            _eligible += 1
+            _cv = str(_r.get("current_value") or "").strip()
+            if _cv and _cv.upper() != "N/A" and _cv != "-" and _cv != "—":
+                continue
+            if _ck not in _fix2b7_cm:
+                continue
+            _val = _fix2b7_cm_value_for_display(_fix2b7_cm.get(_ck))
+            if _val is None:
+                continue
+            _val_s = str(_val).strip()
+            if not _val_s:
+                continue
+            _r["current_value"] = _val_s
+            if not str(_r.get("match_stage") or "").strip():
+                _r["match_stage"] = "canonical_hydrate"
+            # Do not clobber status if already meaningful; but upgrade not_found/unit_mismatch if now present
+            _st = str(_r.get("status") or _r.get("change_type") or "").strip().lower()
+            if _st in ("", "not_found", "unit_mismatch", "missing"):
+                _r["status"] = "present_canonical"
+            _hydrated += 1
+
+        if isinstance(results, dict):
+            results.setdefault("output_debug", {})
+            if isinstance(results.get("output_debug"), dict):
+                results["output_debug"].setdefault("fix2b7", {})
+                if isinstance(results["output_debug"].get("fix2b7"), dict):
+                    results["output_debug"]["fix2b7"].update({
+                        "canonical_metrics_present": True,
+                        "rows_hydration_eligible": int(_eligible),
+                        "rows_hydrated": int(_hydrated),
+                    })
+except Exception:
+    # Never break the dashboard
+    try:
+        if isinstance(results, dict):
+            results.setdefault("output_debug", {})
+            if isinstance(results.get("output_debug"), dict):
+                results["output_debug"].setdefault("fix2b7", {})
+                if isinstance(results["output_debug"].get("fix2b7"), dict):
+                    results["output_debug"]["fix2b7"].update({
+                        "canonical_metrics_present": False,
+                        "error": "exception_in_canonical_adapter",
+                    })
+    except Exception:
+        pass
+# =====================================================================
+
+
+
 
     table_rows = []
     for r in rows:
@@ -37730,7 +37876,7 @@ def run_unified_poc(question: str,
 
 # CODE_VERSION (authoritative at EOF)
 try:
-    CODE_VERSION = "fix2b6_unified_poc_alias_keys_v3"
+    CODE_VERSION = "fix2b7_evo_canonical_adapter_v1"
 except Exception:
     pass
 
@@ -37739,3 +37885,4 @@ except Exception:
 # - fix2b4_unified_poc_alias_keys_v1: Added alias canonical keys + PoC stats (had syntax/indent issues)
 # - fix2b5_unified_poc_alias_keys_v2: Fix try/except indentation (still had out/return indent issue)
 # - fix2b6_unified_poc_alias_keys_v3: Fix out/return indentation; set authoritative CODE_VERSION at EOF
+# - fix2b7_evo_canonical_adapter_v1: Option A adapter: hydrate metric_changes.current_value from canonical_metrics at render time
