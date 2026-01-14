@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BC"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2B8"  # PATCH FIX2B4 (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -253,37 +253,37 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = "FIX2BC"
+#CODE_VERSION = "FIX2B8"
 
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = "FIX2BC"
+#CODE_VERSION = "FIX2B8"
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "FIX2BC"
+#CODE_VERSION = "FIX2B8"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "FIX2BC"
+#CODE_VERSION = "FIX2B8"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "FIX2BC"
+#CODE_VERSION = "FIX2B8"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2BC"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2BC"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2B8"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2B8"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "FIX2BC"
+#CODE_VERSION = "FIX2B8"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -17628,31 +17628,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["status"] = "failed"
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
-        
-# =====================================================================
-# PATCH FIX2BB_ATTACH_CANONICAL_METRICS_AT_RETURN (ADDITIVE)
-# Indentation-safe: attach canonical metrics immediately before returning
-# from compute_source_anchored_diff().
-# =====================================================================
-try:
-    _fix2bb_cm = None
-    if isinstance(locals().get("canonical_metrics"), dict):
-        _fix2bb_cm = locals().get("canonical_metrics")
-    elif isinstance(locals().get("primary_metrics_canonical"), dict):
-        _fix2bb_cm = locals().get("primary_metrics_canonical")
-
-    if isinstance(_fix2bb_cm, dict) and _fix2bb_cm:
-        output.setdefault("primary_metrics_canonical", _fix2bb_cm)
-        output.setdefault("canonical_metrics", _fix2bb_cm)
-        output.setdefault("debug", {})
-        output["debug"]["fix2bb_attach_canonical_metrics"] = {
-            "attached": True,
-            "keys": int(len(_fix2bb_cm)),
-        }
-except Exception:
-    pass
-# =====================================================================
-return output
+        return output
 
 
     # =====================================================================
@@ -17669,1037 +17645,1042 @@ return output
     # - No change to normal (no-injection) behavior
     # - Additive only; no refactors
     # =====================================================================
-try:
-    _fix41afc10_injected_norm = []
     try:
-        # Robust extraction order (same intent as FIX41AFC9 lineage)
-        _fix41afc10_injected_norm = _inj_diag_norm_url_list(
-            (web_context or {}).get("extra_urls")
-            or (web_context or {}).get("diag_extra_urls_ui")
-            or []
-        )
-    except Exception:
         _fix41afc10_injected_norm = []
-
-    # If UI raw textarea is present, merge its parsed URLs (newline/comma separated)
-    try:
-        _fix41afc10_ui_raw = str((web_context or {}).get("diag_extra_urls_ui_raw") or (web_context or {}).get("extra_urls_ui_raw") or "")
-        if _fix41afc10_ui_raw.strip():
-            _fix41afc10_from_raw = _inj_diag_norm_url_list(_fix41afc10_ui_raw)
-            if _fix41afc10_from_raw:
-                _fix41afc10_injected_norm = _inj_diag_norm_url_list((_fix41afc10_injected_norm or []) + _fix41afc10_from_raw)
-    except Exception:
-        pass
-
-    # Only run when there is any injected URL present at all (do not affect normal runs)
-    if _fix41afc10_injected_norm:
-        # Build baseline URL set from existing snapshots
-        _fix41afc10_base_set = set()
         try:
-            for _s in (baseline_sources_cache or []):
-                if isinstance(_s, dict) and _s.get("url"):
-                    _fix41afc10_base_set.add(_normalize_url(_s.get("url")) or str(_s.get("url")))
+            # Robust extraction order (same intent as FIX41AFC9 lineage)
+            _fix41afc10_injected_norm = _inj_diag_norm_url_list(
+                (web_context or {}).get("extra_urls")
+                or (web_context or {}).get("diag_extra_urls_ui")
+                or []
+            )
+        except Exception:
+            _fix41afc10_injected_norm = []
+
+        # If UI raw textarea is present, merge its parsed URLs (newline/comma separated)
+        try:
+            _fix41afc10_ui_raw = str((web_context or {}).get("diag_extra_urls_ui_raw") or (web_context or {}).get("extra_urls_ui_raw") or "")
+            if _fix41afc10_ui_raw.strip():
+                _fix41afc10_from_raw = _inj_diag_norm_url_list(_fix41afc10_ui_raw)
+                if _fix41afc10_from_raw:
+                    _fix41afc10_injected_norm = _inj_diag_norm_url_list((_fix41afc10_injected_norm or []) + _fix41afc10_from_raw)
         except Exception:
             pass
 
-        _fix41afc10_missing = [u for u in _fix41afc10_injected_norm if (u and (u not in _fix41afc10_base_set))]
-        if _fix41afc10_missing:
-            _fix41afc10_attempted = []
-            _fix41afc10_persisted = []
-            for _u in _fix41afc10_missing:
-                try:
-                    _fix41afc10_attempted.append(_u)
-
-                    _txt = None
-                    try:
-                        _txt = fetch_url_content(_u)
-                    except Exception:
-                        _txt = None
-
-                    _status = "failed"
-                    _detail = "no_text"
-                    _nums = []
-                    if isinstance(_txt, str) and _txt.strip():
-                        _status = "success"
-                        _detail = "fetched"
-                        try:
-                            _nums = extract_numbers_with_context(_txt, source_url=_u) or []
-                        except Exception:
-                            _nums = []
-                    # fingerprint (best-effort; used only for determinism / debugging)
-                    _fp = ""
-                    try:
-                        if isinstance(_txt, str) and _txt:
-                            _fp = hashlib.sha256(_txt.encode("utf-8", errors="ignore")).hexdigest()
-                    except Exception:
-                        _fp = ""
-
-                    _snap = {
-                        "url": _u,
-                        "status": _status,
-                        "status_detail": _detail,
-                        "numbers_found": len(_nums or []),
-                        "fetched_at": _now(),
-                        "fingerprint": _fp,
-                        "extracted_numbers": _nums or [],
-                    }
-
-                    # Append snapshot (even if failed) so lifecycle is visible + deterministic
-                    try:
-                        if isinstance(baseline_sources_cache, list):
-                            baseline_sources_cache.append(_snap)
-                            _fix41afc10_persisted.append(_u)
-                    except Exception:
-                        pass
-                except Exception:
-                    # never break evolution on injected fetch attempts
-                    pass
-
-            # Emit explicit debug for closure visibility
+        # Only run when there is any injected URL present at all (do not affect normal runs)
+        if _fix41afc10_injected_norm:
+            # Build baseline URL set from existing snapshots
+            _fix41afc10_base_set = set()
             try:
-                if isinstance(output.get("debug"), dict):
-                    output.setdefault("debug", {})
-                    output["debug"].setdefault("fix35", {})
-                    output["debug"]["fix35"]["injected_fetch_attempted_count"] = len(_fix41afc10_attempted)
-                    output["debug"]["fix35"]["injected_fetch_attempted"] = _fix41afc10_attempted
-                    output["debug"]["fix35"]["injected_fetch_snapshot_appended_count"] = len(_fix41afc10_persisted)
-                    output["debug"]["fix35"]["injected_fetch_snapshot_appended"] = _fix41afc10_persisted
+                for _s in (baseline_sources_cache or []):
+                    if isinstance(_s, dict) and _s.get("url"):
+                        _fix41afc10_base_set.add(_normalize_url(_s.get("url")) or str(_s.get("url")))
             except Exception:
                 pass
-except Exception:
-    pass
 
-# ---------- Use your existing deterministic metric diff helper ----------
-prev_response = (previous_data or {}).get("primary_response", {}) or {}
+            _fix41afc10_missing = [u for u in _fix41afc10_injected_norm if (u and (u not in _fix41afc10_base_set))]
+            if _fix41afc10_missing:
+                _fix41afc10_attempted = []
+                _fix41afc10_persisted = []
+                for _u in _fix41afc10_missing:
+                    try:
+                        _fix41afc10_attempted.append(_u)
 
-# =====================================================================
-# PATCH HF6 (ADDITIVE): tolerate previous_data being the primary_response itself
-# =====================================================================
-try:
-    if (not isinstance(prev_response, dict) or not prev_response) and isinstance(previous_data, dict):
-        if isinstance(previous_data.get("primary_metrics_canonical"), dict) or isinstance(previous_data.get("metric_schema_frozen"), dict):
-            prev_response = previous_data
-except Exception:
-    pass
-# =====================================================================
+                        _txt = None
+                        try:
+                            _txt = fetch_url_content(_u)
+                        except Exception:
+                            _txt = None
 
-prev_metrics = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
+                        _status = "failed"
+                        _detail = "no_text"
+                        _nums = []
+                        if isinstance(_txt, str) and _txt.strip():
+                            _status = "success"
+                            _detail = "fetched"
+                            try:
+                                _nums = extract_numbers_with_context(_txt, source_url=_u) or []
+                            except Exception:
+                                _nums = []
+                        # fingerprint (best-effort; used only for determinism / debugging)
+                        _fp = ""
+                        try:
+                            if isinstance(_txt, str) and _txt:
+                                _fp = hashlib.sha256(_txt.encode("utf-8", errors="ignore")).hexdigest()
+                        except Exception:
+                            _fp = ""
 
-# ============================================================
-# PATCH CSR_INPUTS1 (ADDITIVE): normalize prev schema/anchors/canon
-# (safe alias for prior `prev_analysis` usage)
-# ============================================================
-prev_analysis = previous_data  # PATCH CSR_INPUTS1_ALIAS (ADDITIVE)
-try:
-    prev_schema = _first_present(prev_analysis, [
-        ("metric_schema_frozen",),
-        ("primary_response", "metric_schema_frozen"),
-        ("results", "metric_schema_frozen"),
-        ("results", "primary_response", "metric_schema_frozen"),
-    ], default=None)
+                        _snap = {
+                            "url": _u,
+                            "status": _status,
+                            "status_detail": _detail,
+                            "numbers_found": len(_nums or []),
+                            "fetched_at": _now(),
+                            "fingerprint": _fp,
+                            "extracted_numbers": _nums or [],
+                        }
 
-    prev_canon = _first_present(prev_analysis, [
-        ("primary_metrics_canonical",),
-        ("primary_response", "primary_metrics_canonical"),
-        ("results", "primary_metrics_canonical"),
-        ("results", "primary_response", "primary_metrics_canonical"),
-    ], default=None)
+                        # Append snapshot (even if failed) so lifecycle is visible + deterministic
+                        try:
+                            if isinstance(baseline_sources_cache, list):
+                                baseline_sources_cache.append(_snap)
+                                _fix41afc10_persisted.append(_u)
+                        except Exception:
+                            pass
+                    except Exception:
+                        # never break evolution on injected fetch attempts
+                        pass
 
-    prev_anchors = _first_present(prev_analysis, [
-        ("metric_anchors",),
-        ("primary_response", "metric_anchors"),
-        ("results", "metric_anchors"),
-        ("results", "primary_response", "metric_anchors"),
-    ], default=None)
-
-    if (not isinstance(prev_schema, dict) or not prev_schema) and isinstance(prev_canon, dict) and prev_canon:
-        try:
-            fn = globals().get("freeze_metric_schema")
-            if callable(fn):
-                prev_schema = fn(prev_canon)
-        except Exception:
-            pass
-except Exception:
-    pass
-# ============================================================
-
-# Ensure schema/anchors are available inside prev_response (additive copies)
-try:
-    if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_schema_frozen"), dict):
-        if isinstance(previous_data.get("metric_schema_frozen"), dict):
-            prev_response["metric_schema_frozen"] = previous_data.get("metric_schema_frozen")
-except Exception:
-    pass
-try:
-    if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_anchors"), dict):
-        if isinstance(previous_data.get("metric_anchors"), dict):
-            prev_response["metric_anchors"] = previous_data.get("metric_anchors")
-except Exception:
-    pass
-
-# Build a minimal current metrics dict from snapshots:
-current_metrics = {}
-
-# Prefer metric_anchors to rebuild current_metrics (snapshot-gated)
-def _get_metric_anchors(prev: dict) -> dict:
-    if not isinstance(prev, dict):
-        return {}
-    a = prev.get("metric_anchors")
-    if isinstance(a, dict) and a:
-        return a
-    pr = prev.get("primary_response")
-    if isinstance(pr, dict):
-        a2 = pr.get("metric_anchors")
-        if isinstance(a2, dict) and a2:
-            return a2
-    res = prev.get("results")
-    if isinstance(res, dict):
-        a3 = res.get("metric_anchors")
-        if isinstance(a3, dict) and a3:
-            return a3
-    return {}
-
-def _canonicalize_candidate(n: dict) -> dict:
-    try:
-        fn = globals().get("canonicalize_numeric_candidate")
-        if callable(fn):
-            return fn(dict(n))
-    except Exception:
-        pass
-    return dict(n)
-
-def _build_anchor_to_candidate_map(snapshots: list) -> dict:
-    m = {}
-    for sr in snapshots or []:
-        if not isinstance(sr, dict):
-            continue
-        for n in (sr.get("extracted_numbers") or []):
-            if not isinstance(n, dict):
-                continue
-            nn = _canonicalize_candidate(n)
-            ah = nn.get("anchor_hash")
-            if not ah:
-                continue
-            if ah not in m:
-                m[ah] = nn
-    return m
-
-try:
-    metric_anchors = _get_metric_anchors(previous_data)
-    anchor_to_candidate = _build_anchor_to_candidate_map(baseline_sources_cache)
-
-    if isinstance(metric_anchors, dict) and metric_anchors:
-        for ckey, a in metric_anchors.items():
-            if not isinstance(a, dict):
-                continue
-            ah = a.get("anchor_hash") or a.get("anchor")
-            if not ah:
-                continue
-            cand = anchor_to_candidate.get(ah)
-            if not isinstance(cand, dict):
-                continue
-
-            base = prev_metrics.get(ckey) if isinstance(prev_metrics, dict) else None
-            out_row = dict(base) if isinstance(base, dict) else {}
-            out_row.update({
-                "canonical_key": ckey,
-                "anchor_hash": ah,
-                "anchor_used": True,
-                "anchor_confidence": a.get("anchor_confidence"),
-                "source_url": cand.get("source_url") or a.get("source_url"),
-                "raw": cand.get("raw"),
-                "value": cand.get("value"),
-                "unit": cand.get("unit"),
-                "value_norm": cand.get("value_norm"),
-                "context_snippet": cand.get("context_snippet") or cand.get("context") or "",
-                "candidate_id": cand.get("candidate_id") or a.get("candidate_id"),
-                "fix36_origin": "anchor_mapping",  # PATCH FIX36 (ADD): per-metric provenance
-            })
-            current_metrics[ckey] = out_row
-except Exception:
-    pass
-
-# ============================================================
-# PATCH FIX36 (ADDITIVE): set current_metrics_origin when anchor mapping populated any metrics
-# ============================================================
-try:
-    if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
-        if output["debug"]["fix35"].get("current_metrics_origin") in (None, "", "unknown"):
-            # If any current metric was filled via anchor mapping, stamp origin
-            if isinstance(current_metrics, dict) and any(isinstance(v, dict) and v.get("anchor_used") for v in current_metrics.values()):
-                output["debug"]["fix35"]["current_metrics_origin"] = "anchor_mapping"
-except Exception:
-    pass
-# ============================================================
-
-# Rebuild fallback only if anchors didn't produce metrics
-if not isinstance(current_metrics, dict) or not current_metrics:
-    try:
-        # =====================================================================
-        # PATCH FIX41AFC14 (ADDITIVE): Augment baseline_sources_cache with injected URL delta BEFORE schema-only rebuild
-        #
-        # Problem:
-        # - With fastpath bypassed, evolution may fall back to schema-only rebuild *without* running any
-        #   fetch cycle. In that case, injected URLs never enter baseline_sources_cache, so rebuild cannot
-        #   see them and injection remains inert (attempted=0, persisted=0).
-        #
-        # Goal:
-        # - If injected URLs are present AND introduce a delta vs the current snapshot universe,
-        #   run fetch_web_context() once (normal mode) with force_admit/force_scrape enabled,
-        #   then merge any successful injected snapshots into baseline_sources_cache, and only then
-        #   call the rebuild function.
-        #
-        # Safety:
-        # - No effect when no injection or no delta.
-        # - Does NOT alter hashing logic; it only ensures the snapshot pool reflects successfully fetched injected sources.
-        # - Never raises; on any failure, proceeds with the original baseline_sources_cache.
-        # =====================================================================
-        try:
-            _fx14_wc = web_context if isinstance(web_context, dict) else {}
-            _fx14_extra_raw = []
-            if isinstance(_fx14_wc.get("extra_urls"), (list, tuple)) and _fx14_wc.get("extra_urls"):
-                _fx14_extra_raw = list(_fx14_wc.get("extra_urls") or [])
-            elif isinstance(_fx14_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fx14_wc.get("diag_extra_urls_ui"):
-                _fx14_extra_raw = list(_fx14_wc.get("diag_extra_urls_ui") or [])
-            elif isinstance(_fx14_wc.get("diag_extra_urls_ui_raw"), str) and (_fx14_wc.get("diag_extra_urls_ui_raw") or "").strip():
-                _raw = str(_fx14_wc.get("diag_extra_urls_ui_raw") or "")
-                _parts = []
-                for _line in _raw.splitlines():
-                    _line = (_line or "").strip()
-                    if not _line:
-                        continue
-                    for _p in _line.split(","):
-                        _p = (_p or "").strip()
-                        if _p:
-                            _parts.append(_p)
-                _fx14_extra_raw = _parts
-
-            _fx14_inj = _inj_diag_norm_url_list(_fx14_extra_raw) if _fx14_extra_raw else []
-            _fx14_base_urls = []
-            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
-                for _r in baseline_sources_cache:
-                    if isinstance(_r, dict) and isinstance(_r.get("source_url"), str) and _r.get("source_url"):
-                        _fx14_base_urls.append(_r.get("source_url"))
-            _fx14_base_set = set(_inj_diag_norm_url_list(_fx14_base_urls)) if _fx14_base_urls else set()
-            _fx14_delta = sorted(list(set(_fx14_inj) - _fx14_base_set)) if _fx14_inj else []
-
-            if _fx14_delta:
-                _fx14_q = str((prev_response or {}).get("question") or (previous_data or {}).get("question") or "").strip()
-                _fx14_prev_snap = baseline_sources_cache
-                _fx14_fwc = fetch_web_context(
-                    _fx14_q or "evolution_injection_fetch_pre_rebuild",
-                    num_sources=int(min(12, max(1, len(_fx14_base_set) + len(_fx14_inj)))),
-                    fallback_mode=True,
-                    fallback_urls=list(_inj_diag_norm_url_list(_fx14_base_urls)),
-                    existing_snapshots=_fx14_prev_snap,
-                    extra_urls=list(_fx14_inj),
-                    diag_run_id=str((_fx14_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
-                    diag_extra_urls_ui_raw=(_fx14_wc or {}).get("diag_extra_urls_ui_raw"),
-                    identity_only=False,
-                    force_scrape_extra_urls=True,
-                    force_admit_extra_urls=True,
-                ) or {}
-
+                # Emit explicit debug for closure visibility
                 try:
-                    if isinstance(_fx14_wc, dict):
-                        _fx14_wc["evolution_calls_fetch_web_context"] = True
+                    if isinstance(output.get("debug"), dict):
+                        output.setdefault("debug", {})
+                        output["debug"].setdefault("fix35", {})
+                        output["debug"]["fix35"]["injected_fetch_attempted_count"] = len(_fix41afc10_attempted)
+                        output["debug"]["fix35"]["injected_fetch_attempted"] = _fix41afc10_attempted
+                        output["debug"]["fix35"]["injected_fetch_snapshot_appended_count"] = len(_fix41afc10_persisted)
+                        output["debug"]["fix35"]["injected_fetch_snapshot_appended"] = _fix41afc10_persisted
                 except Exception:
                     pass
+    except Exception:
+        pass
 
-                _fx14_sm = _fx14_fwc.get("scraped_meta")
-                _fx14_bsc_new = None
-                try:
-                    _fn_bsc = globals().get("_fix24_baseline_sources_cache_from_scraped_meta")
-                    if callable(_fn_bsc) and isinstance(_fx14_sm, dict):
-                        _fx14_bsc_new = _fn_bsc(_fx14_sm)
-                except Exception:
-                    _fx14_bsc_new = None
+    # ---------- Use your existing deterministic metric diff helper ----------
+    prev_response = (previous_data or {}).get("primary_response", {}) or {}
 
-                if isinstance(_fx14_bsc_new, list) and _fx14_bsc_new:
-                    # Merge: keep original order for existing snapshots, append new unique ones
-                    _merged = list(baseline_sources_cache or [])
-                    _seen = set(_inj_diag_norm_url_list(_fx14_base_urls))
-                    _added = []
-                    for _row in _fx14_bsc_new:
-                        if not isinstance(_row, dict):
+    # =====================================================================
+    # PATCH HF6 (ADDITIVE): tolerate previous_data being the primary_response itself
+    # =====================================================================
+    try:
+        if (not isinstance(prev_response, dict) or not prev_response) and isinstance(previous_data, dict):
+            if isinstance(previous_data.get("primary_metrics_canonical"), dict) or isinstance(previous_data.get("metric_schema_frozen"), dict):
+                prev_response = previous_data
+    except Exception:
+        pass
+    # =====================================================================
+
+    prev_metrics = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
+
+    # ============================================================
+    # PATCH CSR_INPUTS1 (ADDITIVE): normalize prev schema/anchors/canon
+    # (safe alias for prior `prev_analysis` usage)
+    # ============================================================
+    prev_analysis = previous_data  # PATCH CSR_INPUTS1_ALIAS (ADDITIVE)
+    try:
+        prev_schema = _first_present(prev_analysis, [
+            ("metric_schema_frozen",),
+            ("primary_response", "metric_schema_frozen"),
+            ("results", "metric_schema_frozen"),
+            ("results", "primary_response", "metric_schema_frozen"),
+        ], default=None)
+
+        prev_canon = _first_present(prev_analysis, [
+            ("primary_metrics_canonical",),
+            ("primary_response", "primary_metrics_canonical"),
+            ("results", "primary_metrics_canonical"),
+            ("results", "primary_response", "primary_metrics_canonical"),
+        ], default=None)
+
+        prev_anchors = _first_present(prev_analysis, [
+            ("metric_anchors",),
+            ("primary_response", "metric_anchors"),
+            ("results", "metric_anchors"),
+            ("results", "primary_response", "metric_anchors"),
+        ], default=None)
+
+        if (not isinstance(prev_schema, dict) or not prev_schema) and isinstance(prev_canon, dict) and prev_canon:
+            try:
+                fn = globals().get("freeze_metric_schema")
+                if callable(fn):
+                    prev_schema = fn(prev_canon)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # ============================================================
+
+    # Ensure schema/anchors are available inside prev_response (additive copies)
+    try:
+        if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_schema_frozen"), dict):
+            if isinstance(previous_data.get("metric_schema_frozen"), dict):
+                prev_response["metric_schema_frozen"] = previous_data.get("metric_schema_frozen")
+    except Exception:
+        pass
+    try:
+        if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_anchors"), dict):
+            if isinstance(previous_data.get("metric_anchors"), dict):
+                prev_response["metric_anchors"] = previous_data.get("metric_anchors")
+    except Exception:
+        pass
+
+    # Build a minimal current metrics dict from snapshots:
+    current_metrics = {}
+
+    # Prefer metric_anchors to rebuild current_metrics (snapshot-gated)
+    def _get_metric_anchors(prev: dict) -> dict:
+        if not isinstance(prev, dict):
+            return {}
+        a = prev.get("metric_anchors")
+        if isinstance(a, dict) and a:
+            return a
+        pr = prev.get("primary_response")
+        if isinstance(pr, dict):
+            a2 = pr.get("metric_anchors")
+            if isinstance(a2, dict) and a2:
+                return a2
+        res = prev.get("results")
+        if isinstance(res, dict):
+            a3 = res.get("metric_anchors")
+            if isinstance(a3, dict) and a3:
+                return a3
+        return {}
+
+    def _canonicalize_candidate(n: dict) -> dict:
+        try:
+            fn = globals().get("canonicalize_numeric_candidate")
+            if callable(fn):
+                return fn(dict(n))
+        except Exception:
+            pass
+        return dict(n)
+
+    def _build_anchor_to_candidate_map(snapshots: list) -> dict:
+        m = {}
+        for sr in snapshots or []:
+            if not isinstance(sr, dict):
+                continue
+            for n in (sr.get("extracted_numbers") or []):
+                if not isinstance(n, dict):
+                    continue
+                nn = _canonicalize_candidate(n)
+                ah = nn.get("anchor_hash")
+                if not ah:
+                    continue
+                if ah not in m:
+                    m[ah] = nn
+        return m
+
+    try:
+        metric_anchors = _get_metric_anchors(previous_data)
+        anchor_to_candidate = _build_anchor_to_candidate_map(baseline_sources_cache)
+
+        if isinstance(metric_anchors, dict) and metric_anchors:
+            for ckey, a in metric_anchors.items():
+                if not isinstance(a, dict):
+                    continue
+                ah = a.get("anchor_hash") or a.get("anchor")
+                if not ah:
+                    continue
+                cand = anchor_to_candidate.get(ah)
+                if not isinstance(cand, dict):
+                    continue
+
+                base = prev_metrics.get(ckey) if isinstance(prev_metrics, dict) else None
+                out_row = dict(base) if isinstance(base, dict) else {}
+                out_row.update({
+                    "canonical_key": ckey,
+                    "anchor_hash": ah,
+                    "anchor_used": True,
+                    "anchor_confidence": a.get("anchor_confidence"),
+                    "source_url": cand.get("source_url") or a.get("source_url"),
+                    "raw": cand.get("raw"),
+                    "value": cand.get("value"),
+                    "unit": cand.get("unit"),
+                    "value_norm": cand.get("value_norm"),
+                    "context_snippet": cand.get("context_snippet") or cand.get("context") or "",
+                    "candidate_id": cand.get("candidate_id") or a.get("candidate_id"),
+                    "fix36_origin": "anchor_mapping",  # PATCH FIX36 (ADD): per-metric provenance
+                })
+                current_metrics[ckey] = out_row
+    except Exception:
+        pass
+
+    # ============================================================
+    # PATCH FIX36 (ADDITIVE): set current_metrics_origin when anchor mapping populated any metrics
+    # ============================================================
+    try:
+        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+            if output["debug"]["fix35"].get("current_metrics_origin") in (None, "", "unknown"):
+                # If any current metric was filled via anchor mapping, stamp origin
+                if isinstance(current_metrics, dict) and any(isinstance(v, dict) and v.get("anchor_used") for v in current_metrics.values()):
+                    output["debug"]["fix35"]["current_metrics_origin"] = "anchor_mapping"
+    except Exception:
+        pass
+    # ============================================================
+
+    # Rebuild fallback only if anchors didn't produce metrics
+    if not isinstance(current_metrics, dict) or not current_metrics:
+        try:
+            # =====================================================================
+            # PATCH FIX41AFC14 (ADDITIVE): Augment baseline_sources_cache with injected URL delta BEFORE schema-only rebuild
+            #
+            # Problem:
+            # - With fastpath bypassed, evolution may fall back to schema-only rebuild *without* running any
+            #   fetch cycle. In that case, injected URLs never enter baseline_sources_cache, so rebuild cannot
+            #   see them and injection remains inert (attempted=0, persisted=0).
+            #
+            # Goal:
+            # - If injected URLs are present AND introduce a delta vs the current snapshot universe,
+            #   run fetch_web_context() once (normal mode) with force_admit/force_scrape enabled,
+            #   then merge any successful injected snapshots into baseline_sources_cache, and only then
+            #   call the rebuild function.
+            #
+            # Safety:
+            # - No effect when no injection or no delta.
+            # - Does NOT alter hashing logic; it only ensures the snapshot pool reflects successfully fetched injected sources.
+            # - Never raises; on any failure, proceeds with the original baseline_sources_cache.
+            # =====================================================================
+            try:
+                _fx14_wc = web_context if isinstance(web_context, dict) else {}
+                _fx14_extra_raw = []
+                if isinstance(_fx14_wc.get("extra_urls"), (list, tuple)) and _fx14_wc.get("extra_urls"):
+                    _fx14_extra_raw = list(_fx14_wc.get("extra_urls") or [])
+                elif isinstance(_fx14_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fx14_wc.get("diag_extra_urls_ui"):
+                    _fx14_extra_raw = list(_fx14_wc.get("diag_extra_urls_ui") or [])
+                elif isinstance(_fx14_wc.get("diag_extra_urls_ui_raw"), str) and (_fx14_wc.get("diag_extra_urls_ui_raw") or "").strip():
+                    _raw = str(_fx14_wc.get("diag_extra_urls_ui_raw") or "")
+                    _parts = []
+                    for _line in _raw.splitlines():
+                        _line = (_line or "").strip()
+                        if not _line:
                             continue
-                        _u = _row.get("source_url") or ""
-                        _nu = (_inj_diag_norm_url(_u) if isinstance(_u, str) else "")
-                        if _nu and _nu not in _seen:
-                            _merged.append(_row)
-                            _seen.add(_nu)
-                            _added.append(_nu)
-                    if _added:
-                        baseline_sources_cache = _merged
+                        for _p in _line.split(","):
+                            _p = (_p or "").strip()
+                            if _p:
+                                _parts.append(_p)
+                    _fx14_extra_raw = _parts
 
-                    # Debug
+                _fx14_inj = _inj_diag_norm_url_list(_fx14_extra_raw) if _fx14_extra_raw else []
+                _fx14_base_urls = []
+                if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                    for _r in baseline_sources_cache:
+                        if isinstance(_r, dict) and isinstance(_r.get("source_url"), str) and _r.get("source_url"):
+                            _fx14_base_urls.append(_r.get("source_url"))
+                _fx14_base_set = set(_inj_diag_norm_url_list(_fx14_base_urls)) if _fx14_base_urls else set()
+                _fx14_delta = sorted(list(set(_fx14_inj) - _fx14_base_set)) if _fx14_inj else []
+
+                if _fx14_delta:
+                    _fx14_q = str((prev_response or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+                    _fx14_prev_snap = baseline_sources_cache
+                    _fx14_fwc = fetch_web_context(
+                        _fx14_q or "evolution_injection_fetch_pre_rebuild",
+                        num_sources=int(min(12, max(1, len(_fx14_base_set) + len(_fx14_inj)))),
+                        fallback_mode=True,
+                        fallback_urls=list(_inj_diag_norm_url_list(_fx14_base_urls)),
+                        existing_snapshots=_fx14_prev_snap,
+                        extra_urls=list(_fx14_inj),
+                        diag_run_id=str((_fx14_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                        diag_extra_urls_ui_raw=(_fx14_wc or {}).get("diag_extra_urls_ui_raw"),
+                        identity_only=False,
+                        force_scrape_extra_urls=True,
+                        force_admit_extra_urls=True,
+                    ) or {}
+
                     try:
-                        output.setdefault("debug", {})
+                        if isinstance(_fx14_wc, dict):
+                            _fx14_wc["evolution_calls_fetch_web_context"] = True
+                    except Exception:
+                        pass
+
+                    _fx14_sm = _fx14_fwc.get("scraped_meta")
+                    _fx14_bsc_new = None
+                    try:
+                        _fn_bsc = globals().get("_fix24_baseline_sources_cache_from_scraped_meta")
+                        if callable(_fn_bsc) and isinstance(_fx14_sm, dict):
+                            _fx14_bsc_new = _fn_bsc(_fx14_sm)
+                    except Exception:
+                        _fx14_bsc_new = None
+
+                    if isinstance(_fx14_bsc_new, list) and _fx14_bsc_new:
+                        # Merge: keep original order for existing snapshots, append new unique ones
+                        _merged = list(baseline_sources_cache or [])
+                        _seen = set(_inj_diag_norm_url_list(_fx14_base_urls))
+                        _added = []
+                        for _row in _fx14_bsc_new:
+                            if not isinstance(_row, dict):
+                                continue
+                            _u = _row.get("source_url") or ""
+                            _nu = (_inj_diag_norm_url(_u) if isinstance(_u, str) else "")
+                            if _nu and _nu not in _seen:
+                                _merged.append(_row)
+                                _seen.add(_nu)
+                                _added.append(_nu)
+                        if _added:
+                            baseline_sources_cache = _merged
+
+                        # Debug
+                        try:
+                            output.setdefault("debug", {})
+                            if isinstance(output.get("debug"), dict):
+                                output["debug"].setdefault("fix41afc14", {})
+                                if isinstance(output["debug"].get("fix41afc14"), dict):
+                                    output["debug"]["fix41afc14"].update({
+                                        "inj_delta_count": int(len(_fx14_delta)),
+                                        "inj_delta": list(_fx14_delta),
+                                        "merged_added_count": int(len(_added)),
+                                        "merged_added": list(_added),
+                                        "baseline_sources_cache_count_after_merge": int(len(baseline_sources_cache or [])),
+                                    })
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # =====================================================================
+            fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
+            if callable(fn_rebuild):
+                current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
+                # PATCH FIX36 (ADD): provenance for rebuild fallback
+                try:
+                    if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                        if output["debug"]["fix35"].get("current_metrics_origin") in (None, "", "unknown"):
+                            output["debug"]["fix35"]["current_metrics_origin"] = "schema_only_rebuild"
+                except Exception:
+                    pass
+                # =====================================================================
+                # PATCH FIX41AFC18 (ADDITIVE): schema-preserve guard on rebuild when injected URLs are present
+                # Intent:
+                #   - Keep drift-0 for existing metrics even when an injected URL forces rebuild
+                #   - Only allow a rebuilt metric to replace the previous metric if it carries
+                #     evidence anchors and passes basic schema/unit sanity checks
+                #   - Never changes fastpath logic; only post-rebuild metric selection safety
+                # =====================================================================
+                try:
+                    _fix41afc18_prev = prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else None
+                    _fix41afc18_schema = prev_response.get("metric_schema_frozen") if isinstance(prev_response, dict) else None
+
+                    # Recover injected-delta set (normalized) from earlier patches, if available
+                    _fix41afc18_inj_delta = []
+                    try:
                         if isinstance(output.get("debug"), dict):
-                            output["debug"].setdefault("fix41afc14", {})
-                            if isinstance(output["debug"].get("fix41afc14"), dict):
-                                output["debug"]["fix41afc14"].update({
-                                    "inj_delta_count": int(len(_fx14_delta)),
-                                    "inj_delta": list(_fx14_delta),
-                                    "merged_added_count": int(len(_added)),
-                                    "merged_added": list(_added),
-                                    "baseline_sources_cache_count_after_merge": int(len(baseline_sources_cache or [])),
+                            _d15 = output["debug"].get("fix41afc15") or output["debug"].get("fix41afc16") or output["debug"].get("fix41afc14") or {}
+                            if isinstance(_d15, dict):
+                                _fix41afc18_inj_delta = list(_d15.get("inj_delta") or [])
+                    except Exception:
+                        _fix41afc18_inj_delta = []
+                    _fix41afc18_inj_set = set()
+                    try:
+                        _norm_fn = globals().get("_inj_diag_norm_url_list")
+                        if callable(_norm_fn) and _fix41afc18_inj_delta:
+                            _fix41afc18_inj_set = set(_norm_fn(_fix41afc18_inj_delta))
+                        else:
+                            _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
+                    except Exception:
+                        _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
+
+                    def _fix41afc18_has_evidence(m: dict) -> bool:
+                        if not isinstance(m, dict):
+                            return False
+                        ev = m.get("evidence")
+                        if isinstance(ev, list) and len(ev) > 0:
+                            return True
+                        # fallback: anchor_hash present
+                        ah = m.get("anchor_hash") or m.get("anchorHash") or m.get("anchor")
+                        return bool(ah and str(ah) not in ("None", "none", ""))
+
+                    def _fix41afc18_unit_ok(prev_m: dict, cur_m: dict) -> bool:
+                        try:
+                            # Prefer schema unit_family/unit_tag if available
+                            ck = str(cur_m.get("canonical_key") or "")
+                            schema_row = _fix41afc18_schema.get(ck) if isinstance(_fix41afc18_schema, dict) else None
+                            if isinstance(schema_row, dict):
+                                exp_fam = str(schema_row.get("unit_family") or "")
+                                exp_tag = str(schema_row.get("unit_tag") or schema_row.get("unit") or "")
+                                cur_fam = str(cur_m.get("unit_family") or "")
+                                cur_tag = str(cur_m.get("unit_tag") or cur_m.get("unit") or "")
+                                # If schema expects a family/tag, require match when present
+                                if exp_fam and cur_fam and exp_fam != cur_fam:
+                                    return False
+                                if exp_tag and cur_tag and exp_tag != cur_tag:
+                                    return False
+                            # Fallback: if both prev and cur have unit_family, require equality
+                            pf = str(prev_m.get("unit_family") or "")
+                            cf = str(cur_m.get("unit_family") or "")
+                            if pf and cf and pf != cf:
+                                return False
+                            return True
+                        except Exception:
+                            return True
+
+                    def _fix41afc18_from_injected_source(cur_m: dict) -> bool:
+                        try:
+                            su = str(cur_m.get("source_url") or cur_m.get("source") or "")
+                            if not su:
+                                return False
+                            # normalize by simple strip only (avoid heavy deps)
+                            su = su.strip()
+                            # if we have inj set, treat any exact/startswith match as injected
+                            for iu in _fix41afc18_inj_set:
+                                if not iu:
+                                    continue
+                                if su == iu or su.startswith(iu) or iu.startswith(su):
+                                    return True
+                            return False
+                        except Exception:
+                            return False
+
+                    def _fix41afc18_value(prev_m: dict):
+                        for k in ("value_norm", "value"):
+                            v = prev_m.get(k) if isinstance(prev_m, dict) else None
+                            if isinstance(v, (int, float)):
+                                return float(v)
+                        return None
+
+                    _fix41afc18_replaced = 0
+                    _fix41afc18_preserved = 0
+                    _fix41afc18_added = 0
+                    _fix41afc18_notes = []
+
+                    # Only apply guard when injected delta is present (no-change case remains locked)
+                    if _fix41afc18_inj_set and isinstance(_fix41afc18_prev, dict) and isinstance(current_metrics, dict):
+                        for _ck, _prev_m in _fix41afc18_prev.items():
+                            if not isinstance(_ck, str) or not _ck:
+                                continue
+                            _cur_m = current_metrics.get(_ck)
+                            if not isinstance(_cur_m, dict):
+                                # If rebuild dropped a metric, preserve previous
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_metric_missing_in_rebuild"})
+                                continue
+
+                            # If rebuild metric lacks evidence, preserve previous (schema-driven drift lock)
+                            if not _fix41afc18_has_evidence(_cur_m):
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_no_evidence"})
+                                continue
+
+                            # If unit sanity fails, preserve previous
+                            if not _fix41afc18_unit_ok(_prev_m, _cur_m):
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_unit_mismatch"})
+                                continue
+
+                            # If the replacement comes only from injected source and is wildly different, preserve prev
+                            try:
+                                pv = _fix41afc18_value(_prev_m)
+                                cv = _fix41afc18_value(_cur_m)
+                                if pv is not None and cv is not None and pv != 0:
+                                    rel = abs(cv - pv) / max(abs(pv), 1e-9)
+                                    if _fix41afc18_from_injected_source(_cur_m) and rel >= 0.50:
+                                        current_metrics[_ck] = _prev_m
+                                        _fix41afc18_preserved += 1
+                                        _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_suspicious_injected_delta", "prev": pv, "cur": cv, "rel": rel})
+                                        continue
+                            except Exception:
+                                pass
+
+                            # Otherwise accept rebuilt metric (explicit replace)
+                            _fix41afc18_replaced += 1
+
+                        # If rebuild produced new metrics not in schema, keep them but track (non-breaking)
+                        for _ck2, _cur_m2 in list(current_metrics.items()):
+                            if not isinstance(_ck2, str) or not _ck2:
+                                continue
+                            if _ck2 not in _fix41afc18_prev:
+                                _fix41afc18_added += 1
+
+                    # Emit debug for traceability
+                    try:
+                        if isinstance(output.get("debug"), dict):
+                            output["debug"].setdefault("fix41afc18", {})
+                            if isinstance(output["debug"].get("fix41afc18"), dict):
+                                output["debug"]["fix41afc18"].update({
+                                    "inj_delta_present": bool(_fix41afc18_inj_set),
+                                    "inj_delta_count": int(len(_fix41afc18_inj_set)),
+                                    "rebuild_metrics_replaced_count": int(_fix41afc18_replaced),
+                                    "rebuild_metrics_preserved_count": int(_fix41afc18_preserved),
+                                    "rebuild_metrics_added_count": int(_fix41afc18_added),
+                                    "notes_sample": _fix41afc18_notes[:10],
                                 })
                     except Exception:
                         pass
-        except Exception:
-            pass
-        # =====================================================================
-        fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
-        if callable(fn_rebuild):
-            current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
-            # PATCH FIX36 (ADD): provenance for rebuild fallback
-            try:
-                if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
-                    if output["debug"]["fix35"].get("current_metrics_origin") in (None, "", "unknown"):
-                        output["debug"]["fix35"]["current_metrics_origin"] = "schema_only_rebuild"
-            except Exception:
-                pass
-            # =====================================================================
-            # PATCH FIX41AFC18 (ADDITIVE): schema-preserve guard on rebuild when injected URLs are present
-            # Intent:
-            #   - Keep drift-0 for existing metrics even when an injected URL forces rebuild
-            #   - Only allow a rebuilt metric to replace the previous metric if it carries
-            #     evidence anchors and passes basic schema/unit sanity checks
-            #   - Never changes fastpath logic; only post-rebuild metric selection safety
-            # =====================================================================
-            try:
-                _fix41afc18_prev = prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else None
-                _fix41afc18_schema = prev_response.get("metric_schema_frozen") if isinstance(prev_response, dict) else None
-
-                # Recover injected-delta set (normalized) from earlier patches, if available
-                _fix41afc18_inj_delta = []
-                try:
-                    if isinstance(output.get("debug"), dict):
-                        _d15 = output["debug"].get("fix41afc15") or output["debug"].get("fix41afc16") or output["debug"].get("fix41afc14") or {}
-                        if isinstance(_d15, dict):
-                            _fix41afc18_inj_delta = list(_d15.get("inj_delta") or [])
-                except Exception:
-                    _fix41afc18_inj_delta = []
-                _fix41afc18_inj_set = set()
-                try:
-                    _norm_fn = globals().get("_inj_diag_norm_url_list")
-                    if callable(_norm_fn) and _fix41afc18_inj_delta:
-                        _fix41afc18_inj_set = set(_norm_fn(_fix41afc18_inj_delta))
-                    else:
-                        _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
-                except Exception:
-                    _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
-
-                def _fix41afc18_has_evidence(m: dict) -> bool:
-                    if not isinstance(m, dict):
-                        return False
-                    ev = m.get("evidence")
-                    if isinstance(ev, list) and len(ev) > 0:
-                        return True
-                    # fallback: anchor_hash present
-                    ah = m.get("anchor_hash") or m.get("anchorHash") or m.get("anchor")
-                    return bool(ah and str(ah) not in ("None", "none", ""))
-
-                def _fix41afc18_unit_ok(prev_m: dict, cur_m: dict) -> bool:
-                    try:
-                        # Prefer schema unit_family/unit_tag if available
-                        ck = str(cur_m.get("canonical_key") or "")
-                        schema_row = _fix41afc18_schema.get(ck) if isinstance(_fix41afc18_schema, dict) else None
-                        if isinstance(schema_row, dict):
-                            exp_fam = str(schema_row.get("unit_family") or "")
-                            exp_tag = str(schema_row.get("unit_tag") or schema_row.get("unit") or "")
-                            cur_fam = str(cur_m.get("unit_family") or "")
-                            cur_tag = str(cur_m.get("unit_tag") or cur_m.get("unit") or "")
-                            # If schema expects a family/tag, require match when present
-                            if exp_fam and cur_fam and exp_fam != cur_fam:
-                                return False
-                            if exp_tag and cur_tag and exp_tag != cur_tag:
-                                return False
-                        # Fallback: if both prev and cur have unit_family, require equality
-                        pf = str(prev_m.get("unit_family") or "")
-                        cf = str(cur_m.get("unit_family") or "")
-                        if pf and cf and pf != cf:
-                            return False
-                        return True
-                    except Exception:
-                        return True
-
-                def _fix41afc18_from_injected_source(cur_m: dict) -> bool:
-                    try:
-                        su = str(cur_m.get("source_url") or cur_m.get("source") or "")
-                        if not su:
-                            return False
-                        # normalize by simple strip only (avoid heavy deps)
-                        su = su.strip()
-                        # if we have inj set, treat any exact/startswith match as injected
-                        for iu in _fix41afc18_inj_set:
-                            if not iu:
-                                continue
-                            if su == iu or su.startswith(iu) or iu.startswith(su):
-                                return True
-                        return False
-                    except Exception:
-                        return False
-
-                def _fix41afc18_value(prev_m: dict):
-                    for k in ("value_norm", "value"):
-                        v = prev_m.get(k) if isinstance(prev_m, dict) else None
-                        if isinstance(v, (int, float)):
-                            return float(v)
-                    return None
-
-                _fix41afc18_replaced = 0
-                _fix41afc18_preserved = 0
-                _fix41afc18_added = 0
-                _fix41afc18_notes = []
-
-                # Only apply guard when injected delta is present (no-change case remains locked)
-                if _fix41afc18_inj_set and isinstance(_fix41afc18_prev, dict) and isinstance(current_metrics, dict):
-                    for _ck, _prev_m in _fix41afc18_prev.items():
-                        if not isinstance(_ck, str) or not _ck:
-                            continue
-                        _cur_m = current_metrics.get(_ck)
-                        if not isinstance(_cur_m, dict):
-                            # If rebuild dropped a metric, preserve previous
-                            current_metrics[_ck] = _prev_m
-                            _fix41afc18_preserved += 1
-                            _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_metric_missing_in_rebuild"})
-                            continue
-
-                        # If rebuild metric lacks evidence, preserve previous (schema-driven drift lock)
-                        if not _fix41afc18_has_evidence(_cur_m):
-                            current_metrics[_ck] = _prev_m
-                            _fix41afc18_preserved += 1
-                            _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_no_evidence"})
-                            continue
-
-                        # If unit sanity fails, preserve previous
-                        if not _fix41afc18_unit_ok(_prev_m, _cur_m):
-                            current_metrics[_ck] = _prev_m
-                            _fix41afc18_preserved += 1
-                            _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_unit_mismatch"})
-                            continue
-
-                        # If the replacement comes only from injected source and is wildly different, preserve prev
-                        try:
-                            pv = _fix41afc18_value(_prev_m)
-                            cv = _fix41afc18_value(_cur_m)
-                            if pv is not None and cv is not None and pv != 0:
-                                rel = abs(cv - pv) / max(abs(pv), 1e-9)
-                                if _fix41afc18_from_injected_source(_cur_m) and rel >= 0.50:
-                                    current_metrics[_ck] = _prev_m
-                                    _fix41afc18_preserved += 1
-                                    _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_suspicious_injected_delta", "prev": pv, "cur": cv, "rel": rel})
-                                    continue
-                        except Exception:
-                            pass
-
-                        # Otherwise accept rebuilt metric (explicit replace)
-                        _fix41afc18_replaced += 1
-
-                    # If rebuild produced new metrics not in schema, keep them but track (non-breaking)
-                    for _ck2, _cur_m2 in list(current_metrics.items()):
-                        if not isinstance(_ck2, str) or not _ck2:
-                            continue
-                        if _ck2 not in _fix41afc18_prev:
-                            _fix41afc18_added += 1
-
-                # Emit debug for traceability
-                try:
-                    if isinstance(output.get("debug"), dict):
-                        output["debug"].setdefault("fix41afc18", {})
-                        if isinstance(output["debug"].get("fix41afc18"), dict):
-                            output["debug"]["fix41afc18"].update({
-                                "inj_delta_present": bool(_fix41afc18_inj_set),
-                                "inj_delta_count": int(len(_fix41afc18_inj_set)),
-                                "rebuild_metrics_replaced_count": int(_fix41afc18_replaced),
-                                "rebuild_metrics_preserved_count": int(_fix41afc18_preserved),
-                                "rebuild_metrics_added_count": int(_fix41afc18_added),
-                                "notes_sample": _fix41afc18_notes[:10],
-                            })
                 except Exception:
                     pass
+                # =====================================================================
+        except Exception:
+            current_metrics = {}
+
+    if not isinstance(current_metrics, dict) or not current_metrics:
+        output["status"] = "failed"
+        output["message"] = "Valid snapshots exist, but metric rebuild returned empty. No re-fetch / no heuristic matching performed."
+        output["source_results"] = baseline_sources_cache[:50]
+        output["sources_checked"] = len(baseline_sources_cache)
+        output["sources_fetched"] = len(baseline_sources_cache)
+        output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
+        return output
+
+    # Diff using existing diff helper if present
+    metric_changes = []
+    try:
+        fn_diff = globals().get("diff_metrics_by_name")
+        if callable(fn_diff):
+            # ============================================================
+            # PATCH FIX38 (ADDITIVE): ensure schema is wired into diff layer + emit lookup provenance
+            # - Some runs showed schema_unit_family=None in diff rows, preventing unit-required mismatch logic.
+            # - We attach metric_schema_frozen to prev_response if missing, and post-process diff rows
+            #   to populate schema_unit_family + schema_lookup_source.
+            # ============================================================
+            _fix38_schema = None
+            _fix38_schema_src = ""
+            try:
+                # Prefer schema already on prev_response
+                if isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen"), dict) and prev_response.get("metric_schema_frozen"):
+                    _fix38_schema = prev_response.get("metric_schema_frozen")
+                    _fix38_schema_src = "prev_response.metric_schema_frozen"
+                # Else try common containers on previous_data
+                elif isinstance(previous_data, dict):
+                    if isinstance(previous_data.get("metric_schema_frozen"), dict) and previous_data.get("metric_schema_frozen"):
+                        _fix38_schema = previous_data.get("metric_schema_frozen")
+                        _fix38_schema_src = "previous_data.metric_schema_frozen"
+                    elif isinstance(previous_data.get("primary_response"), dict) and isinstance(previous_data["primary_response"].get("metric_schema_frozen"), dict) and previous_data["primary_response"].get("metric_schema_frozen"):
+                        _fix38_schema = previous_data["primary_response"].get("metric_schema_frozen")
+                        _fix38_schema_src = "previous_data.primary_response.metric_schema_frozen"
+                # Attach if missing
+                if isinstance(_fix38_schema, dict) and _fix38_schema and isinstance(prev_response, dict):
+                    if not (isinstance(prev_response.get("metric_schema_frozen"), dict) and prev_response.get("metric_schema_frozen")):
+                        prev_response["metric_schema_frozen"] = _fix38_schema
             except Exception:
                 pass
-            # =====================================================================
-    except Exception:
-        current_metrics = {}
 
-if not isinstance(current_metrics, dict) or not current_metrics:
-    output["status"] = "failed"
-    output["message"] = "Valid snapshots exist, but metric rebuild returned empty. No re-fetch / no heuristic matching performed."
+            # Record schema wiring debug
+            try:
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix38", {})
+                    output["debug"]["fix38"]["schema_attached"] = bool(isinstance(_fix38_schema, dict) and _fix38_schema)
+                    output["debug"]["fix38"]["schema_source"] = _fix38_schema_src
+            except Exception:
+                pass
+
+            cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
+            # ============================================================
+            # ============================================================
+            # PATCH V34D (ADDITIVE): provide metric_anchors for current side so anchor_hash join can work
+            # - compute_source_anchored_diff previously passed only primary_metrics_canonical to diff layer
+            # - v34 join requires cur_response.metric_anchors[ckey].anchor_hash (secondary join)
+            # - We synthesize metric_anchors from rebuilt canonical metrics when missing.
+            # Safety:
+            # - Deterministic, inference-free. Uses only anchor_hash already attached to rebuilt canonical metrics.
+            # ============================================================
+            try:
+                if isinstance(cur_resp_for_diff, dict) and "metric_anchors" not in cur_resp_for_diff:
+                    _v34d_cur_anchors = {}
+                    if isinstance(current_metrics, dict):
+                        for _ck_v34d, _m_v34d in current_metrics.items():
+                            if not isinstance(_ck_v34d, str) or not _ck_v34d:
+                                continue
+                            if not isinstance(_m_v34d, dict):
+                                continue
+                            _ah = _m_v34d.get("anchor_hash") or _m_v34d.get("anchor") or _m_v34d.get("anchor_id") or None
+                            if isinstance(_ah, str) and _ah:
+                                _v34d_cur_anchors[_ck_v34d] = {"anchor_hash": _ah}
+                    if _v34d_cur_anchors:
+                        cur_resp_for_diff["metric_anchors"] = _v34d_cur_anchors
+            except Exception:
+                pass
+            # ============================================================
+            metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+
+            # ============================================================
+            # PATCH V34F (ADDITIVE): force-run strict anchor-hash join diff and preserve diagnostics
+            # WHY:
+            # - Some deployments still route through a legacy diff function (or strip diagnostics),
+            #   leaving Current blank/N/A even when a stable anchor match exists.
+            # - We deterministically re-run the v34 anchor-join diff against the exact same
+            #   (prev_response, cur_resp_for_diff) payload, then adopt its output if it yields
+            #   any per-row v34 diagnostics.
+            # SAFETY:
+            # - Render/diff layer only. No fetch, no inference, no hashing changes.
+            # ============================================================
+            try:
+                _v34f_fn = (
+                    globals().get("diff_metrics_by_name_FIX41_V34C_UNWRAP")
+                    or globals().get("diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN")
+                    or globals().get("diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN".lower())
+                )
+                if callable(_v34f_fn):
+                    _mc_v34f, _u_v34f, _i_v34f, _d_v34f, _f_v34f = _v34f_fn(prev_response, cur_resp_for_diff)
+                    # Adopt only if it looks like the v34 pipeline (has diag.diff_join_trace_v1 anywhere)
+                    _has_v34_diag = False
+                    if isinstance(_mc_v34f, list):
+                        for _r_v34f in _mc_v34f:
+                            if isinstance(_r_v34f, dict) and isinstance(_r_v34f.get("diag"), dict) and _r_v34f["diag"].get("diff_join_trace_v1"):
+                                _has_v34_diag = True
+                                break
+                    if _has_v34_diag:
+                        metric_changes, unchanged, increased, decreased, found = _mc_v34f, _u_v34f, _i_v34f, _d_v34f, _f_v34f
+                        # Surface top-level join summary debug (emitted on cur_resp_for_diff by v34)
+                        try:
+                            _v34f_dbg = None
+                            if isinstance(cur_resp_for_diff, dict) and isinstance(cur_resp_for_diff.get("debug"), dict):
+                                _v34f_dbg = cur_resp_for_diff["debug"].get("diff_join_anchor_v34")
+                            if isinstance(_v34f_dbg, dict) and isinstance(output.get("debug"), dict):
+                                output["debug"]["diff_join_anchor_v34"] = _v34f_dbg
+                                output["debug"]["diff_join_anchor_v34"]["v34f_forced_rerun"] = True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # ============================================================
+            # ============================================================
+            # ============================================================
+            # PATCH V34D (ADDITIVE): merge diff join summary debug into evolution output debug
+            # - v34 join emits debug.diff_join_anchor_v34 on the cur_response object passed to diff layer
+            # - cur_resp_for_diff is local; we surface it to output.debug for auditability.
+            # ============================================================
+            try:
+                _v34d_dbg = None
+                if isinstance(cur_resp_for_diff, dict) and isinstance(cur_resp_for_diff.get("debug"), dict):
+                    _v34d_dbg = cur_resp_for_diff["debug"].get("diff_join_anchor_v34")
+                if isinstance(_v34d_dbg, dict) and isinstance(output.get("debug"), dict):
+                    output["debug"]["diff_join_anchor_v34"] = _v34d_dbg
+            except Exception:
+                pass
+            # ============================================================
+
+            # PATCH FIX38 (ADDITIVE): populate schema_unit_family on diff rows (if missing)
+            # ============================================================
+            try:
+                if isinstance(metric_changes, list) and metric_changes and isinstance(_fix38_schema, dict) and _fix38_schema:
+                    bad = {}
+                    for row in metric_changes:
+                        if not isinstance(row, dict):
+                            continue
+                        ckey = row.get("canonical_key") or row.get("canonical") or row.get("key") or ""
+                        if not ckey:
+                            continue
+                        if row.get("schema_unit_family") in (None, "", "None"):
+                            md = _fix38_schema.get(ckey) if isinstance(_fix38_schema.get(ckey), dict) else None
+                            uf = ""
+                            if isinstance(md, dict):
+                                uf = (md.get("unit_family") or md.get("unit") or "").strip()
+                            if uf:
+                                row["schema_unit_family"] = uf
+                                row["fix38_schema_lookup"] = _fix38_schema_src or "attached_schema"
+                        # Track any remaining year-like current with missing unit-family for diagnosis
+                        try:
+                            cv = row.get("cur_value_norm")
+                            cu = (row.get("cur_unit_cmp") or "").strip()
+                            if isinstance(cv, (int, float)) and 1900 <= float(cv) <= 2100 and not cu:
+                                bad[ckey] = {"cur_value_norm": cv, "cur_unit_cmp": cu, "schema_unit_family": row.get("schema_unit_family")}
+                        except Exception:
+                            pass
+                    if bad:
+                        output.setdefault("debug", {}).setdefault("fix38", {})["bad_year_currents_sample"] = dict(list(bad.items())[:10])
+            except Exception:
+                pass
+        else:
+            metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+    except Exception:
+        metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+
+    # ============================================================
+    # PATCH FIX36 (ADDITIVE): attach per-row provenance from current_metrics
+    # - Adds row['fix36_origin'] when available so we can see which path produced 'Current'
+    # ============================================================
+    try:
+        if isinstance(metric_changes, list) and isinstance(current_metrics, dict):
+            for r in metric_changes:
+                if not isinstance(r, dict):
+                    continue
+                ck = r.get("canonical_key") or r.get("canonical") or ""
+                if ck and isinstance(current_metrics.get(ck), dict):
+                    if current_metrics[ck].get("fix36_origin"):
+                        r["fix36_origin"] = current_metrics[ck].get("fix36_origin")
+    except Exception:
+        pass
+    # ============================================================
+
+
+
+    # =================================================================
+    # PATCH DIFF_PANEL_V2_WIRING (ADDITIVE): Build a self-contained, deterministic
+    # diff table feed from canonical outputs ONLY, and safely override render rows.
+    #
+    # Safety:
+    # - Render layer only.
+    # - No fetch, no inference, no hashing changes.
+    # - Legacy metric_changes preserved in output.metric_changes_legacy.
+    #
+    # Behavior:
+    # - Always emits one row per prev.primary_metrics_canonical key.
+    # - If prev empty, emits a sentinel row.
+    # - Join order: canonical_key -> anchor_hash -> none.
+    # =================================================================
+    try:
+        output["metric_changes_legacy"] = metric_changes or []
+    except Exception:
+        pass
+
+    _mc_v2 = []
+    _mc_v2_summary = None
+    try:
+        _fn_v2 = globals().get("build_diff_metrics_panel_v2")
+        if callable(_fn_v2):
+            _mc_v2, _mc_v2_summary = _fn_v2(prev_response, cur_resp_for_diff)
+
+        # =================================================================
+        # PATCH DIFF_PANEL_V2_WIRING_FIX1 (ADDITIVE): Fallback cur_response wrapper
+        # Why:
+        # - Some evolution packaging paths do not preserve/shape cur_resp_for_diff as a
+        #   response-like dict containing primary_metrics_canonical.
+        # - We build a minimal, deterministic wrapper from current_metrics (already rebuilt)
+        #   so V2 always emits rows when prev metrics exist.
+        # Safety:
+        # - Render-only. No inference. No legacy diff edits.
+        # =================================================================
+        try:
+            if (
+                (not isinstance(_mc_v2, list) or not _mc_v2)
+                and callable(_fn_v2)
+                and isinstance(current_metrics, dict)
+                and current_metrics
+            ):
+                _cur_v2 = {"primary_metrics_canonical": current_metrics}
+                # -------------------------------------------------------------
+                # PATCH FIX2M_OBSERVED_ROWS_WIRING (ADDITIVE)
+                # Provide observed-number pools (already fetched/extracted) to
+                # the V2 diff builder so it can emit "observed" rows.
+                # This is render-layer only: does NOT alter extraction/hashing.
+                # -------------------------------------------------------------
+                try:
+                    _bsc_cur = output.get("baseline_sources_cache_current")
+                    if _bsc_cur is None:
+                        _bsc_cur = output.get("baseline_sources_cache")
+                    if isinstance(_bsc_cur, list) and _bsc_cur:
+                        _cur_v2["baseline_sources_cache_current"] = _bsc_cur
+                except Exception:
+                    pass
+                _mc_v2, _mc_v2_summary = _fn_v2(prev_response, _cur_v2)
+        except Exception:
+            pass
+    except Exception:
+        _mc_v2, _mc_v2_summary = ([], None)
+
+    # Write V2 rows to output for UI/debug visibility
+    try:
+        output["metric_changes_v2"] = _mc_v2 or []
+    except Exception:
+        pass
+
+    # =================================================================
+    # PATCH DIFF_PANEL_V2_WIRING_FIX2 (ADDITIVE): Persist V2 artifacts under output["results"]
+    # - Some serializers/callers only retain a curated subset of top-level keys.
+    # - We mirror key artifacts into output["results"]["diff_panel_v2"] for auditability.
+    # =================================================================
+    try:
+        _r = output.setdefault("results", {})
+        if isinstance(_r, dict):
+            _r.setdefault("diff_panel_v2", {})
+            if isinstance(_r.get("diff_panel_v2"), dict):
+                _r["diff_panel_v2"]["metric_changes_v2"] = _mc_v2 or []
+                if isinstance(_mc_v2_summary, dict):
+                    _r["diff_panel_v2"]["summary"] = _mc_v2_summary
+    except Exception:
+        pass
+
+    # Surface top-level summary under output.debug for auditability
+    try:
+        if isinstance(_mc_v2_summary, dict):
+            _dbg = output.setdefault("debug", {})
+            if isinstance(_dbg, dict):
+                _dbg["diff_panel_v2_summary"] = _mc_v2_summary
+
+        # =====================================================================
+        # PATCH FIX2S_MERGE_MAPPING_DIAG_INTO_V2_SUMMARY (ADDITIVE)
+        # =====================================================================
+        if isinstance(web_context, dict) and isinstance(_mc_v2_summary, dict):
+            _md = web_context.get("_fix2s_mapping_diag")
+            if isinstance(_md, dict):
+                _mc_v2_summary.setdefault("mapping_rules_version", _md.get("mapping_rules_version"))
+                _mc_v2_summary.setdefault("mapping_hits", _md.get("mapping_hits"))
+                _mc_v2_summary.setdefault(
+                    "observed_rows_canonicalized_by_mapping",
+                    _md.get("observed_rows_canonicalized_by_mapping"),
+                )
+        # =====================================================================
+        # END PATCH FIX2S_MERGE_MAPPING_DIAG_INTO_V2_SUMMARY
+        # =====================================================================
+
+    except Exception:
+        pass
+
+    # Option B: prefer v2 rows if non-empty; otherwise keep legacy output
+    try:
+        if isinstance(_mc_v2, list) and _mc_v2:
+            metric_changes = _mc_v2
+    except Exception:
+        pass
+    # =====================================================================
+    # PATCH FIX2G_OPTION_B_PROOF_AND_SENTINEL (ADDITIVE)
+    # Objective:
+    # - Make Option B activation unambiguous in serialized outputs.
+    # - Ensure V2 never yields an empty table when prev canonical metrics exist.
+    # - Add injection/hash diagnostics (read-only) to confirm injected URLs enter hash inputs.
+    # Safety: diagnostics only; no changes to hashing/fastpath/snapshots/extraction.
+    # =====================================================================
+    try:
+        _dbg = output.setdefault("debug", {})
+        if isinstance(_dbg, dict):
+            _dbg["diff_panel_v2_option_b_active"] = True
+            _dbg["diff_panel_v2_code_version"] = str(globals().get("CODE_VERSION") or "")
+    except Exception:
+        pass
+
+    # If prev canonical metrics exist but V2 produced zero rows, emit a sentinel row
+    # and still override the UI feed so the panel never goes silently empty.
+    try:
+        _prev_pmc = {}
+        if isinstance(prev_response, dict):
+            _prev_pmc = prev_response.get("primary_metrics_canonical") if isinstance(prev_response.get("primary_metrics_canonical"), dict) else {}
+        if isinstance(_prev_pmc, dict) and _prev_pmc and (not isinstance(_diff_v2_rows, list) or not _diff_v2_rows):
+            _sent = {
+                "metric_name": "Diff Panel V2 sentinel",
+                "canonical_key": "__diff_panel_v2_sentinel__",
+                "previous": None,
+                "current": "N/A",
+                "change_type": "v2_empty_unexpected",
+                "diag": {
+                    "diff_join_trace_v1": {
+                        "prev_ckey": None,
+                        "resolved_cur_ckey": None,
+                        "method": "none",
+                        "prev_anchor_hash": None,
+                        "cur_anchor_hash": None,
+                    },
+                    "diff_current_source_trace_v1": {
+                        "current_source_path_used": "none",
+                        "current_value_norm": None,
+                        "current_unit_tag": None,
+                        "inference_disabled": True,
+                    },
+                    "reason": "prev.primary_metrics_canonical non-empty but V2 emitted 0 rows; check diff_panel_v2_error and canonical inputs",
+                },
+            }
+            _diff_v2_rows = [_sent]
+            _diff_v2_summary = {"rows_total": 1, "joined_by_ckey": 0, "joined_by_anchor_hash": 0, "not_found": 1, "sentinel": True}
+            output["metric_changes_v2"] = _diff_v2_rows
+            _dbg = output.setdefault("debug", {})
+            if isinstance(_dbg, dict):
+                _dbg["diff_panel_v2_summary"] = _diff_v2_summary
+            metric_changes = _diff_v2_rows
+    except Exception:
+        pass
+
+    # Injection/hash diagnostics (read-only): mirror key facts from inj_trace_v1
+    try:
+        _dbg = output.setdefault("debug", {})
+        _inj = _dbg.get("inj_trace_v1") if isinstance(_dbg, dict) else None
+        if isinstance(_dbg, dict) and isinstance(_inj, dict):
+            admitted = _inj.get("admitted_norm") if isinstance(_inj.get("admitted_norm"), list) else []
+            hash_in = _inj.get("hash_inputs_norm") if isinstance(_inj.get("hash_inputs_norm"), list) else []
+            # Build a normalized URL set from current baseline cache (if present)
+            cur_cache = output.get("baseline_sources_cache_current") if isinstance(output.get("baseline_sources_cache_current"), list) else []
+            cur_urls = set()
+            for sr in cur_cache:
+                if isinstance(sr, dict):
+                    u = (sr.get("url") or sr.get("source_url") or sr.get("source") or "").strip()
+                    if u:
+                        cur_urls.add(u)
+            _dbg["inj_hash_diag_v1"] = {
+                "admitted_norm_count": len(admitted),
+                "hash_inputs_norm_count": len(hash_in),
+                "admitted_norm_sample": admitted[:5],
+                "hash_inputs_norm_sample": hash_in[:5],
+                "admitted_present_in_cache_current": any(u in cur_urls for u in admitted),
+                "hash_inputs_present_in_cache_current": any(u in cur_urls for u in hash_in),
+            }
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX2G_OPTION_B_PROOF_AND_SENTINEL
+    # =====================================================================
+
+
+
+    output["metric_changes"] = metric_changes or []
+
+    # =====================================================================
+    # PATCH PH2B_S3 (ADDITIVE): Attach selector breadcrumb + current fields per diff row
+    # - Makes Phase 2B runbook checks (#3/#7/#9) a fast scan.
+    # - Does not alter selection; only exposes chosen current metadata.
+    # =====================================================================
+    try:
+        if isinstance(output.get("metric_changes"), list) and isinstance(current_metrics, dict):
+            # local normalizer for safe comparisons in dashboards
+            def _ph2b_norm_url(_u: str) -> str:
+                try:
+                    _u = (_u or "").strip()
+                    if not _u:
+                        return ""
+                    _u = _u.replace("http://", "https://")
+                    # drop trailing slash
+                    while _u.endswith("/") and len(_u) > 8:
+                        _u = _u[:-1]
+                    # remove www.
+                    _u = _u.replace("://www.", "://")
+                    return _u
+                except Exception:
+                    return (_u or "").strip()
+
+            for _row in output["metric_changes"]:
+                if not isinstance(_row, dict):
+                    continue
+                _ck = _row.get("canonical_key") or _row.get("canonical_id") or ""
+                if not _ck:
+                    continue
+                _cur = current_metrics.get(_ck)
+                if not isinstance(_cur, dict):
+                    continue
+
+                if "selector_used" not in _row:
+                    _row["selector_used"] = _cur.get("selector_used") or ""
+                if not _row.get("cur_source_url"):
+                    _row["cur_source_url"] = _cur.get("source_url") or ""
+                if "cur_source_url_norm" not in _row:
+                    _row["cur_source_url_norm"] = _ph2b_norm_url(_row.get("cur_source_url") or "")
+                if "cur_value_norm" not in _row and _cur.get("value_norm") is not None:
+                    _row["cur_value_norm"] = _cur.get("value_norm")
+                if "cur_unit_cmp" not in _row:
+                    _row["cur_unit_cmp"] = _cur.get("unit") or _cur.get("unit_tag") or ""
+                if "anchor_used" not in _row and isinstance(_cur.get("anchor_used"), bool):
+                    _row["anchor_used"] = _cur.get("anchor_used")
+    except Exception:
+        pass
+    # =====================================================================
+
+    output["summary"]["total_metrics"] = len(output["metric_changes"])
+    output["summary"]["metrics_found"] = int(found or 0)
+    output["summary"]["metrics_increased"] = int(increased or 0)
+    output["summary"]["metrics_decreased"] = int(decreased or 0)
+    output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+
+    total = max(1, len(output["metric_changes"]))
+    output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
+
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
     output["sources_fetched"] = len(baseline_sources_cache)
-    output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
-    return output
 
-# Diff using existing diff helper if present
-metric_changes = []
-try:
-    fn_diff = globals().get("diff_metrics_by_name")
-    if callable(fn_diff):
-        # ============================================================
-        # PATCH FIX38 (ADDITIVE): ensure schema is wired into diff layer + emit lookup provenance
-        # - Some runs showed schema_unit_family=None in diff rows, preventing unit-required mismatch logic.
-        # - We attach metric_schema_frozen to prev_response if missing, and post-process diff rows
-        #   to populate schema_unit_family + schema_lookup_source.
-        # ============================================================
-        _fix38_schema = None
-        _fix38_schema_src = ""
-        try:
-            # Prefer schema already on prev_response
-            if isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen"), dict) and prev_response.get("metric_schema_frozen"):
-                _fix38_schema = prev_response.get("metric_schema_frozen")
-                _fix38_schema_src = "prev_response.metric_schema_frozen"
-            # Else try common containers on previous_data
-            elif isinstance(previous_data, dict):
-                if isinstance(previous_data.get("metric_schema_frozen"), dict) and previous_data.get("metric_schema_frozen"):
-                    _fix38_schema = previous_data.get("metric_schema_frozen")
-                    _fix38_schema_src = "previous_data.metric_schema_frozen"
-                elif isinstance(previous_data.get("primary_response"), dict) and isinstance(previous_data["primary_response"].get("metric_schema_frozen"), dict) and previous_data["primary_response"].get("metric_schema_frozen"):
-                    _fix38_schema = previous_data["primary_response"].get("metric_schema_frozen")
-                    _fix38_schema_src = "previous_data.primary_response.metric_schema_frozen"
-            # Attach if missing
-            if isinstance(_fix38_schema, dict) and _fix38_schema and isinstance(prev_response, dict):
-                if not (isinstance(prev_response.get("metric_schema_frozen"), dict) and prev_response.get("metric_schema_frozen")):
-                    prev_response["metric_schema_frozen"] = _fix38_schema
-        except Exception:
-            pass
-
-        # Record schema wiring debug
-        try:
-            if isinstance(output.get("debug"), dict):
-                output["debug"].setdefault("fix38", {})
-                output["debug"]["fix38"]["schema_attached"] = bool(isinstance(_fix38_schema, dict) and _fix38_schema)
-                output["debug"]["fix38"]["schema_source"] = _fix38_schema_src
-        except Exception:
-            pass
-
-        cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
-        # ============================================================
-        # ============================================================
-        # PATCH V34D (ADDITIVE): provide metric_anchors for current side so anchor_hash join can work
-        # - compute_source_anchored_diff previously passed only primary_metrics_canonical to diff layer
-        # - v34 join requires cur_response.metric_anchors[ckey].anchor_hash (secondary join)
-        # - We synthesize metric_anchors from rebuilt canonical metrics when missing.
-        # Safety:
-        # - Deterministic, inference-free. Uses only anchor_hash already attached to rebuilt canonical metrics.
-        # ============================================================
-        try:
-            if isinstance(cur_resp_for_diff, dict) and "metric_anchors" not in cur_resp_for_diff:
-                _v34d_cur_anchors = {}
-                if isinstance(current_metrics, dict):
-                    for _ck_v34d, _m_v34d in current_metrics.items():
-                        if not isinstance(_ck_v34d, str) or not _ck_v34d:
-                            continue
-                        if not isinstance(_m_v34d, dict):
-                            continue
-                        _ah = _m_v34d.get("anchor_hash") or _m_v34d.get("anchor") or _m_v34d.get("anchor_id") or None
-                        if isinstance(_ah, str) and _ah:
-                            _v34d_cur_anchors[_ck_v34d] = {"anchor_hash": _ah}
-                if _v34d_cur_anchors:
-                    cur_resp_for_diff["metric_anchors"] = _v34d_cur_anchors
-        except Exception:
-            pass
-        # ============================================================
-        metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
-
-        # ============================================================
-        # PATCH V34F (ADDITIVE): force-run strict anchor-hash join diff and preserve diagnostics
-        # WHY:
-        # - Some deployments still route through a legacy diff function (or strip diagnostics),
-        #   leaving Current blank/N/A even when a stable anchor match exists.
-        # - We deterministically re-run the v34 anchor-join diff against the exact same
-        #   (prev_response, cur_resp_for_diff) payload, then adopt its output if it yields
-        #   any per-row v34 diagnostics.
-        # SAFETY:
-        # - Render/diff layer only. No fetch, no inference, no hashing changes.
-        # ============================================================
-        try:
-            _v34f_fn = (
-                globals().get("diff_metrics_by_name_FIX41_V34C_UNWRAP")
-                or globals().get("diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN")
-                or globals().get("diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN".lower())
-            )
-            if callable(_v34f_fn):
-                _mc_v34f, _u_v34f, _i_v34f, _d_v34f, _f_v34f = _v34f_fn(prev_response, cur_resp_for_diff)
-                # Adopt only if it looks like the v34 pipeline (has diag.diff_join_trace_v1 anywhere)
-                _has_v34_diag = False
-                if isinstance(_mc_v34f, list):
-                    for _r_v34f in _mc_v34f:
-                        if isinstance(_r_v34f, dict) and isinstance(_r_v34f.get("diag"), dict) and _r_v34f["diag"].get("diff_join_trace_v1"):
-                            _has_v34_diag = True
-                            break
-                if _has_v34_diag:
-                    metric_changes, unchanged, increased, decreased, found = _mc_v34f, _u_v34f, _i_v34f, _d_v34f, _f_v34f
-                    # Surface top-level join summary debug (emitted on cur_resp_for_diff by v34)
-                    try:
-                        _v34f_dbg = None
-                        if isinstance(cur_resp_for_diff, dict) and isinstance(cur_resp_for_diff.get("debug"), dict):
-                            _v34f_dbg = cur_resp_for_diff["debug"].get("diff_join_anchor_v34")
-                        if isinstance(_v34f_dbg, dict) and isinstance(output.get("debug"), dict):
-                            output["debug"]["diff_join_anchor_v34"] = _v34f_dbg
-                            output["debug"]["diff_join_anchor_v34"]["v34f_forced_rerun"] = True
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        # ============================================================
-        # ============================================================
-        # ============================================================
-        # PATCH V34D (ADDITIVE): merge diff join summary debug into evolution output debug
-        # - v34 join emits debug.diff_join_anchor_v34 on the cur_response object passed to diff layer
-        # - cur_resp_for_diff is local; we surface it to output.debug for auditability.
-        # ============================================================
-        try:
-            _v34d_dbg = None
-            if isinstance(cur_resp_for_diff, dict) and isinstance(cur_resp_for_diff.get("debug"), dict):
-                _v34d_dbg = cur_resp_for_diff["debug"].get("diff_join_anchor_v34")
-            if isinstance(_v34d_dbg, dict) and isinstance(output.get("debug"), dict):
-                output["debug"]["diff_join_anchor_v34"] = _v34d_dbg
-        except Exception:
-            pass
-        # ============================================================
-
-        # PATCH FIX38 (ADDITIVE): populate schema_unit_family on diff rows (if missing)
-        # ============================================================
-        try:
-            if isinstance(metric_changes, list) and metric_changes and isinstance(_fix38_schema, dict) and _fix38_schema:
-                bad = {}
-                for row in metric_changes:
-                    if not isinstance(row, dict):
-                        continue
-                    ckey = row.get("canonical_key") or row.get("canonical") or row.get("key") or ""
-                    if not ckey:
-                        continue
-                    if row.get("schema_unit_family") in (None, "", "None"):
-                        md = _fix38_schema.get(ckey) if isinstance(_fix38_schema.get(ckey), dict) else None
-                        uf = ""
-                        if isinstance(md, dict):
-                            uf = (md.get("unit_family") or md.get("unit") or "").strip()
-                        if uf:
-                            row["schema_unit_family"] = uf
-                            row["fix38_schema_lookup"] = _fix38_schema_src or "attached_schema"
-                    # Track any remaining year-like current with missing unit-family for diagnosis
-                    try:
-                        cv = row.get("cur_value_norm")
-                        cu = (row.get("cur_unit_cmp") or "").strip()
-                        if isinstance(cv, (int, float)) and 1900 <= float(cv) <= 2100 and not cu:
-                            bad[ckey] = {"cur_value_norm": cv, "cur_unit_cmp": cu, "schema_unit_family": row.get("schema_unit_family")}
-                    except Exception:
-                        pass
-                if bad:
-                    output.setdefault("debug", {}).setdefault("fix38", {})["bad_year_currents_sample"] = dict(list(bad.items())[:10])
-        except Exception:
-            pass
-    else:
-        metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
-except Exception:
-    metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
-
-# ============================================================
-# PATCH FIX36 (ADDITIVE): attach per-row provenance from current_metrics
-# - Adds row['fix36_origin'] when available so we can see which path produced 'Current'
-# ============================================================
-try:
-    if isinstance(metric_changes, list) and isinstance(current_metrics, dict):
-        for r in metric_changes:
-            if not isinstance(r, dict):
-                continue
-            ck = r.get("canonical_key") or r.get("canonical") or ""
-            if ck and isinstance(current_metrics.get(ck), dict):
-                if current_metrics[ck].get("fix36_origin"):
-                    r["fix36_origin"] = current_metrics[ck].get("fix36_origin")
-except Exception:
-    pass
-# ============================================================
-
-
-
-# =================================================================
-# PATCH DIFF_PANEL_V2_WIRING (ADDITIVE): Build a self-contained, deterministic
-# diff table feed from canonical outputs ONLY, and safely override render rows.
-#
-# Safety:
-# - Render layer only.
-# - No fetch, no inference, no hashing changes.
-# - Legacy metric_changes preserved in output.metric_changes_legacy.
-#
-# Behavior:
-# - Always emits one row per prev.primary_metrics_canonical key.
-# - If prev empty, emits a sentinel row.
-# - Join order: canonical_key -> anchor_hash -> none.
-# =================================================================
-try:
-    output["metric_changes_legacy"] = metric_changes or []
-except Exception:
-    pass
-
-_mc_v2 = []
-_mc_v2_summary = None
-try:
-    _fn_v2 = globals().get("build_diff_metrics_panel_v2")
-    if callable(_fn_v2):
-        _mc_v2, _mc_v2_summary = _fn_v2(prev_response, cur_resp_for_diff)
-
-    # =================================================================
-    # PATCH DIFF_PANEL_V2_WIRING_FIX1 (ADDITIVE): Fallback cur_response wrapper
-    # Why:
-    # - Some evolution packaging paths do not preserve/shape cur_resp_for_diff as a
-    #   response-like dict containing primary_metrics_canonical.
-    # - We build a minimal, deterministic wrapper from current_metrics (already rebuilt)
-    #   so V2 always emits rows when prev metrics exist.
-    # Safety:
-    # - Render-only. No inference. No legacy diff edits.
-    # =================================================================
     try:
-        if (
-            (not isinstance(_mc_v2, list) or not _mc_v2)
-            and callable(_fn_v2)
-            and isinstance(current_metrics, dict)
-            and current_metrics
-        ):
-            _cur_v2 = {"primary_metrics_canonical": current_metrics}
-            # -------------------------------------------------------------
-            # PATCH FIX2M_OBSERVED_ROWS_WIRING (ADDITIVE)
-            # Provide observed-number pools (already fetched/extracted) to
-            # the V2 diff builder so it can emit "observed" rows.
-            # This is render-layer only: does NOT alter extraction/hashing.
-            # -------------------------------------------------------------
-            try:
-                _bsc_cur = output.get("baseline_sources_cache_current")
-                if _bsc_cur is None:
-                    _bsc_cur = output.get("baseline_sources_cache")
-                if isinstance(_bsc_cur, list) and _bsc_cur:
-                    _cur_v2["baseline_sources_cache_current"] = _bsc_cur
-            except Exception:
-                pass
-            _mc_v2, _mc_v2_summary = _fn_v2(prev_response, _cur_v2)
+        total_nums = 0
+        for sr in baseline_sources_cache or []:
+            if isinstance(sr, dict) and isinstance(sr.get("extracted_numbers"), list):
+                total_nums += len(sr.get("extracted_numbers") or [])
+        output["numbers_extracted_total"] = int(total_nums)
     except Exception:
         pass
-except Exception:
-    _mc_v2, _mc_v2_summary = ([], None)
 
-# Write V2 rows to output for UI/debug visibility
-try:
-    output["metric_changes_v2"] = _mc_v2 or []
-except Exception:
-    pass
+    output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
+    output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
 
-# =================================================================
-# PATCH DIFF_PANEL_V2_WIRING_FIX2 (ADDITIVE): Persist V2 artifacts under output["results"]
-# - Some serializers/callers only retain a curated subset of top-level keys.
-# - We mirror key artifacts into output["results"]["diff_panel_v2"] for auditability.
-# =================================================================
-try:
-    _r = output.setdefault("results", {})
-    if isinstance(_r, dict):
-        _r.setdefault("diff_panel_v2", {})
-        if isinstance(_r.get("diff_panel_v2"), dict):
-            _r["diff_panel_v2"]["metric_changes_v2"] = _mc_v2 or []
-            if isinstance(_mc_v2_summary, dict):
-                _r["diff_panel_v2"]["summary"] = _mc_v2_summary
-except Exception:
-    pass
-
-# Surface top-level summary under output.debug for auditability
-try:
-    if isinstance(_mc_v2_summary, dict):
-        _dbg = output.setdefault("debug", {})
-        if isinstance(_dbg, dict):
-            _dbg["diff_panel_v2_summary"] = _mc_v2_summary
-
-    # =====================================================================
-    # PATCH FIX2S_MERGE_MAPPING_DIAG_INTO_V2_SUMMARY (ADDITIVE)
-    # =====================================================================
-    if isinstance(web_context, dict) and isinstance(_mc_v2_summary, dict):
-        _md = web_context.get("_fix2s_mapping_diag")
-        if isinstance(_md, dict):
-            _mc_v2_summary.setdefault("mapping_rules_version", _md.get("mapping_rules_version"))
-            _mc_v2_summary.setdefault("mapping_hits", _md.get("mapping_hits"))
-            _mc_v2_summary.setdefault(
-                "observed_rows_canonicalized_by_mapping",
-                _md.get("observed_rows_canonicalized_by_mapping"),
-            )
-    # =====================================================================
-    # END PATCH FIX2S_MERGE_MAPPING_DIAG_INTO_V2_SUMMARY
-    # =====================================================================
-
-except Exception:
-    pass
-
-# Option B: prefer v2 rows if non-empty; otherwise keep legacy output
-try:
-    if isinstance(_mc_v2, list) and _mc_v2:
-        metric_changes = _mc_v2
-except Exception:
-    pass
-# =====================================================================
-# PATCH FIX2G_OPTION_B_PROOF_AND_SENTINEL (ADDITIVE)
-# Objective:
-# - Make Option B activation unambiguous in serialized outputs.
-# - Ensure V2 never yields an empty table when prev canonical metrics exist.
-# - Add injection/hash diagnostics (read-only) to confirm injected URLs enter hash inputs.
-# Safety: diagnostics only; no changes to hashing/fastpath/snapshots/extraction.
-# =====================================================================
-try:
-    _dbg = output.setdefault("debug", {})
-    if isinstance(_dbg, dict):
-        _dbg["diff_panel_v2_option_b_active"] = True
-        _dbg["diff_panel_v2_code_version"] = str(globals().get("CODE_VERSION") or "")
-except Exception:
-    pass
-
-# If prev canonical metrics exist but V2 produced zero rows, emit a sentinel row
-# and still override the UI feed so the panel never goes silently empty.
-try:
-    _prev_pmc = {}
-    if isinstance(prev_response, dict):
-        _prev_pmc = prev_response.get("primary_metrics_canonical") if isinstance(prev_response.get("primary_metrics_canonical"), dict) else {}
-    if isinstance(_prev_pmc, dict) and _prev_pmc and (not isinstance(_diff_v2_rows, list) or not _diff_v2_rows):
-        _sent = {
-            "metric_name": "Diff Panel V2 sentinel",
-            "canonical_key": "__diff_panel_v2_sentinel__",
-            "previous": None,
-            "current": "N/A",
-            "change_type": "v2_empty_unexpected",
-            "diag": {
-                "diff_join_trace_v1": {
-                    "prev_ckey": None,
-                    "resolved_cur_ckey": None,
-                    "method": "none",
-                    "prev_anchor_hash": None,
-                    "cur_anchor_hash": None,
-                },
-                "diff_current_source_trace_v1": {
-                    "current_source_path_used": "none",
-                    "current_value_norm": None,
-                    "current_unit_tag": None,
-                    "inference_disabled": True,
-                },
-                "reason": "prev.primary_metrics_canonical non-empty but V2 emitted 0 rows; check diff_panel_v2_error and canonical inputs",
-            },
-        }
-        _diff_v2_rows = [_sent]
-        _diff_v2_summary = {"rows_total": 1, "joined_by_ckey": 0, "joined_by_anchor_hash": 0, "not_found": 1, "sentinel": True}
-        output["metric_changes_v2"] = _diff_v2_rows
-        _dbg = output.setdefault("debug", {})
-        if isinstance(_dbg, dict):
-            _dbg["diff_panel_v2_summary"] = _diff_v2_summary
-        metric_changes = _diff_v2_rows
-except Exception:
-    pass
-
-# Injection/hash diagnostics (read-only): mirror key facts from inj_trace_v1
-try:
-    _dbg = output.setdefault("debug", {})
-    _inj = _dbg.get("inj_trace_v1") if isinstance(_dbg, dict) else None
-    if isinstance(_dbg, dict) and isinstance(_inj, dict):
-        admitted = _inj.get("admitted_norm") if isinstance(_inj.get("admitted_norm"), list) else []
-        hash_in = _inj.get("hash_inputs_norm") if isinstance(_inj.get("hash_inputs_norm"), list) else []
-        # Build a normalized URL set from current baseline cache (if present)
-        cur_cache = output.get("baseline_sources_cache_current") if isinstance(output.get("baseline_sources_cache_current"), list) else []
-        cur_urls = set()
-        for sr in cur_cache:
-            if isinstance(sr, dict):
-                u = (sr.get("url") or sr.get("source_url") or sr.get("source") or "").strip()
-                if u:
-                    cur_urls.add(u)
-        _dbg["inj_hash_diag_v1"] = {
-            "admitted_norm_count": len(admitted),
-            "hash_inputs_norm_count": len(hash_in),
-            "admitted_norm_sample": admitted[:5],
-            "hash_inputs_norm_sample": hash_in[:5],
-            "admitted_present_in_cache_current": any(u in cur_urls for u in admitted),
-            "hash_inputs_present_in_cache_current": any(u in cur_urls for u in hash_in),
-        }
-except Exception:
-    pass
-# =====================================================================
-# END PATCH FIX2G_OPTION_B_PROOF_AND_SENTINEL
-# =====================================================================
+    # FIX2B8 Option A bridge – expose canonical metrics to renderer
+    output["canonical_metrics"] = canonical_metrics
+    output["primary_metrics_canonical"] = canonical_metrics
 
 
-
-output["metric_changes"] = metric_changes or []
-
-# =====================================================================
-# PATCH PH2B_S3 (ADDITIVE): Attach selector breadcrumb + current fields per diff row
-# - Makes Phase 2B runbook checks (#3/#7/#9) a fast scan.
-# - Does not alter selection; only exposes chosen current metadata.
-# =====================================================================
-try:
-    if isinstance(output.get("metric_changes"), list) and isinstance(current_metrics, dict):
-        # local normalizer for safe comparisons in dashboards
-        def _ph2b_norm_url(_u: str) -> str:
-            try:
-                _u = (_u or "").strip()
-                if not _u:
-                    return ""
-                _u = _u.replace("http://", "https://")
-                # drop trailing slash
-                while _u.endswith("/") and len(_u) > 8:
-                    _u = _u[:-1]
-                # remove www.
-                _u = _u.replace("://www.", "://")
-                return _u
-            except Exception:
-                return (_u or "").strip()
-
-        for _row in output["metric_changes"]:
-            if not isinstance(_row, dict):
-                continue
-            _ck = _row.get("canonical_key") or _row.get("canonical_id") or ""
-            if not _ck:
-                continue
-            _cur = current_metrics.get(_ck)
-            if not isinstance(_cur, dict):
-                continue
-
-            if "selector_used" not in _row:
-                _row["selector_used"] = _cur.get("selector_used") or ""
-            if not _row.get("cur_source_url"):
-                _row["cur_source_url"] = _cur.get("source_url") or ""
-            if "cur_source_url_norm" not in _row:
-                _row["cur_source_url_norm"] = _ph2b_norm_url(_row.get("cur_source_url") or "")
-            if "cur_value_norm" not in _row and _cur.get("value_norm") is not None:
-                _row["cur_value_norm"] = _cur.get("value_norm")
-            if "cur_unit_cmp" not in _row:
-                _row["cur_unit_cmp"] = _cur.get("unit") or _cur.get("unit_tag") or ""
-            if "anchor_used" not in _row and isinstance(_cur.get("anchor_used"), bool):
-                _row["anchor_used"] = _cur.get("anchor_used")
-except Exception:
-    pass
-# =====================================================================
-
-output["summary"]["total_metrics"] = len(output["metric_changes"])
-output["summary"]["metrics_found"] = int(found or 0)
-output["summary"]["metrics_increased"] = int(increased or 0)
-output["summary"]["metrics_decreased"] = int(decreased or 0)
-output["summary"]["metrics_unchanged"] = int(unchanged or 0)
-
-total = max(1, len(output["metric_changes"]))
-output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
-
-output["source_results"] = baseline_sources_cache[:50]
-output["sources_checked"] = len(baseline_sources_cache)
-output["sources_fetched"] = len(baseline_sources_cache)
-
-try:
-    total_nums = 0
-    for sr in baseline_sources_cache or []:
-        if isinstance(sr, dict) and isinstance(sr.get("extracted_numbers"), list):
-            total_nums += len(sr.get("extracted_numbers") or [])
-    output["numbers_extracted_total"] = int(total_nums)
-except Exception:
-    pass
-
-output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
-output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
-
-return output
+    return output
 
 
 
@@ -19224,7 +19205,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-    
+
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -22617,7 +22598,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-    
+
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -22646,7 +22627,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-            
+
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -24332,7 +24313,7 @@ def render_source_anchored_results(results, query: str):
         st.info("No metric changes to display.")
         return
 
-    
+
     # =====================================================================
     # PATCH FIX2B7_OPTION_A_HYDRATE_CURRENT_V1 (ADDITIVE)
     #
@@ -27038,7 +27019,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-    
+
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -30154,7 +30135,7 @@ except Exception:
 
 # PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30305,7 +30286,7 @@ except Exception:
 
 # PATCH V24_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30314,7 +30295,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -30325,7 +30306,7 @@ except Exception:
 # =====================================================================
 # PATCH CODE_VERSION_V26 (ADDITIVE)
 # =====================================================================
-CODE_VERSION = "FIX2BC"
+CODE_VERSION = "FIX2B8"
 # =====================================================================
 # END PATCH CODE_VERSION_V26
 # =====================================================================
@@ -30334,7 +30315,7 @@ CODE_VERSION = "FIX2BC"
 # PATCH V27_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -30345,7 +30326,7 @@ except Exception:
 # PATCH V28_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -30356,7 +30337,7 @@ except Exception:
 # =====================================================================
 # PATCH V29_CODE_VERSION_BUMP (ADDITIVE)
 # =====================================================================
-CODE_VERSION = "FIX2BC"
+CODE_VERSION = "FIX2B8"
 # =====================================================================
 # END PATCH V29_CODE_VERSION_BUMP
 # =====================================================================
@@ -30535,7 +30516,7 @@ except Exception:
 
 # PATCH V32_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30794,7 +30775,7 @@ except Exception:
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30843,7 +30824,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, sn
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30981,7 +30962,7 @@ except Exception:
 
 # PATCH V34C_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -30994,7 +30975,7 @@ except Exception:
 # PATCH V34F_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31296,7 +31277,7 @@ except Exception:
 
 # Version bump (additive)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31588,7 +31569,7 @@ except Exception:
 
 # Final version bump (additive) — ensure this is the last CODE_VERSION assignment.
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31598,7 +31579,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2F_CODE_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31606,7 +31587,7 @@ except Exception:
 # PATCH FIX2H_CODE_VERSION_FINAL (ADDITIVE)
 # Ensure CODE_VERSION reflects this build for audit/debug.
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -31616,14 +31597,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-# 
+#
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -31633,7 +31614,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-# 
+#
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -31642,13 +31623,13 @@ except Exception:
 try:
     CODE_VERSION = str(globals().get('CODE_VERSION') or '')
 except Exception:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 
 try:
     if CODE_VERSION and 'fix2j' not in CODE_VERSION:
         CODE_VERSION = f"{CODE_VERSION}_fix2j_diffpanel_v2_unit_mismatch_split_and_raw_current_rows"
     elif not CODE_VERSION:
-        CODE_VERSION = "FIX2BC"
+        CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -31990,7 +31971,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-# 
+#
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -33094,7 +33075,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2BC"
+        CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -33126,7 +33107,7 @@ try:
     if _CV and 'fix2k' not in _CV:
         CODE_VERSION = f"{_CV}_fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only"
     elif not _CV:
-        CODE_VERSION = "FIX2BC"
+        CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -33442,7 +33423,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -33454,7 +33435,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -34129,7 +34110,7 @@ except Exception:
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -34634,7 +34615,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 
 
 # ---------------------------------------------------------------------
-# 
+#
 # =====================================================================
 # PATCH FIX2AL_EVO_RUNNER_INJECTED_FETCH_ASSURE_V1 (ADDITIVE)
 # Purpose:
@@ -34866,13 +34847,13 @@ except Exception:
 # Final CODE_VERSION bump (short filename)
 # ---------------------------------------------------------------------
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
 # PATCH FIX2AL (ADD): ensure CODE_VERSION reflects latest issued file
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -35782,7 +35763,7 @@ except Exception:
 
 # PATCH FIX2AN (ADD): bump CODE_VERSION to new patch filename
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -36134,7 +36115,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 #   to use it (additive-only; legacy binders remain intact).
 
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -36498,7 +36479,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
 # so the diff/join (and thus the UI Current column) can populate deterministically.
 
 # PATCH FIX2AO (ADDITIVE): bump CODE_VERSION to new patch filename
-CODE_VERSION = "FIX2BC"
+CODE_VERSION = "FIX2B8"
 
 
 def _fix2ao_norm_key_base(canonical_key: str) -> str:
@@ -36780,7 +36761,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
                         canonical_metrics[str(_ak)] = float(_v)
                 except Exception:
                     pass
-        
+
             # Prefer schema keys (stable ordering), then include any extra reconciled keys for debugging.
             for _ck in sorted(set(list(schema.keys()) + list(cur_metrics_recon.keys()))):
                 _cm = cur_metrics_recon.get(_ck)
@@ -36794,7 +36775,7 @@ def run_evolutionary_runner(previous_data: dict, web_context: dict = None) -> di
                 if _v is None:
                     continue
                 _set_cm(_ck, _v)
-        
+
             out["canonical_metrics"] = canonical_metrics
             out.setdefault("output_debug", {})
             if isinstance(out.get("output_debug"), dict):
@@ -37446,7 +37427,7 @@ if _fix2at__orig_run_evolutionary_runner is not None:
 # - FIX2AT: Hydrate results.metric_changes[].current_value deterministically from emitted canonical metrics + frozen schema.
 
 # Ensure CODE_VERSION matches this file (override any stale bump blocks)
-CODE_VERSION = "FIX2BC"
+CODE_VERSION = "FIX2B8"
 
 
 # =====================================================================
@@ -37454,7 +37435,7 @@ CODE_VERSION = "FIX2BC"
 # Ensure CODE_VERSION reflects the latest issued file (append-only override).
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -37610,7 +37591,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     return rows, summary
 
 # Hard override CODE_VERSION at EOF (authoritative)
-CODE_VERSION = "FIX2BC"
+CODE_VERSION = "FIX2B8"
 # PATCH TRACKER (append-only)
 # - FIX2AV: Guard DIFF_PANEL_V2 summary UnboundLocalError + deterministic fallback rows to populate Current column.
 # =================== END PATCH FIX2AV (ADDITIVE) ====================
@@ -37627,7 +37608,7 @@ CODE_VERSION = "FIX2BC"
 # Ensure CODE_VERSION reflects the filename even if older blocks reset it.
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
@@ -37865,7 +37846,7 @@ def run_unified_poc(question: str,
             row['change_pct'] = None
         metric_changes.append(row)
 
-    
+
     # PATCH FIX2B4 (ADDITIVE): Coverage stats for PoC → dashboard hydration debugging
     _poc_stats = {
         "schema_keys": int(len(SCHEMA)),
@@ -37901,7 +37882,7 @@ def run_unified_poc(question: str,
 
 # CODE_VERSION (authoritative at EOF)
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 
@@ -37918,8 +37899,7 @@ except Exception:
 # This final assignment is authoritative for this patched file.
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2BC"
+    CODE_VERSION = "FIX2B8"
 except Exception:
     pass
 # =====================================================================
-
