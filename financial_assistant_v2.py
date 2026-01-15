@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D14"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D15"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11c
@@ -119,17 +119,18 @@ except Exception:
 
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D14
+# PATCH TRACKER V1 (ADD): FIX2D15
+# NOTE: FIX2D15 supersedes and removes FIX2D15 year-token guard implementation (replaced with stricter schema-only eligibility gates).
 # ============================================================
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D14",
+        "patch_id": "FIX2D15",
         "date": "2026-01-15",
         "summary": "Reject bare-year tokens (e.g., 2030) during schema-only rebuild for non-year metrics; add diagnostics to prevent year pollution and restore stable baseline comparables.",
-        "files": ["FIX2D14.py"],
+        "files": ["FIX2D15.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -29182,43 +29183,55 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         except Exception:
             return ("", "", 0, "", "", 0.0)
 
-    # PATCH FIX2D14 (ADD): reject bare-year numeric tokens for non-year metrics
-    def _fix2d14_is_bare_year_candidate(cand: dict, metric_is_year_like: bool, canonical_key: str, spec: dict) -> bool:
+    # =====================================================================
+    # PATCH FIX2D15 (ADD): Harden schema-only rebuild candidate eligibility
+    # Goals:
+    #   1) Prevent bare-year tokens (e.g., 2030) from being selected as metric values
+    #      when the metric does NOT explicitly expect a year-as-value.
+    #   2) Prevent cross-metric pollution where a sales/market snippet satisfies
+    #      unrelated schema metrics (e.g., chargers, charging investment).
+    #   3) Enforce light unit-family expectations (percent / currency).
+    # Notes:
+    #   - This patch intentionally supersedes (and replaces) FIX2D15's earlier guard.
+    #   - Keep changes local to schema_only_rebuild_fix17 selection.
+    # =====================================================================
+
+    def _fix2d15_expects_year_value(spec: dict, canonical_key: str) -> bool:
         try:
-            if metric_is_year_like:
-                return False
-            # if the metric key itself encodes a year target, it's not a "year-as-value" metric
-            # (e.g., chargers_2040 is a 2040 projection count; 2040 is not the value)
-            raw = str(cand.get("raw") or cand.get("value") or "").strip()
-            # allow if the metric explicitly expects a year value
             unit_hint = str(spec.get("unit_tag") or spec.get("unit") or "").lower()
             dim_hint = str(spec.get("dimension") or spec.get("value_type") or "").lower()
-            expects_year = ("year" in unit_hint) or (dim_hint == "year") or canonical_key.endswith("__year") or ("_year_" in canonical_key)
-            if expects_year:
-                return False
+            if dim_hint == "year":
+                return True
+            if "year" in unit_hint:
+                return True
+            ck = str(canonical_key or "")
+            if ck.endswith("__year") or ("_year_" in ck):
+                return True
+            return False
+        except Exception:
+            return False
 
+    def _fix2d15_is_bare_year_token(cand: dict) -> bool:
+        try:
+            raw = str(cand.get("raw") or cand.get("value") or "").strip()
             v = cand.get("value_norm")
             try:
                 vf = float(v)
             except Exception:
-                # try parse raw numeric
                 try:
                     vf = float(re.sub(r"[^0-9\.\-]+", "", raw or ""))
                 except Exception:
                     return False
 
-            # year range guard
             if vf < 1900 or vf > 2100:
                 return False
 
-            # raw token should look like a plain year (4 digits) or float-cast of it
             raw_digits = re.sub(r"[^0-9]", "", raw)
             looks_year = (len(raw_digits) == 4 and raw_digits == str(int(vf))) or (raw.strip() in [str(int(vf)), f"{int(vf)}.0"])
             if not looks_year:
                 return False
 
-            # If candidate has explicit unit evidence (%, $, M, etc.), don't treat it as a year token.
-            unit = str(cand.get("unit") or cand.get("unit_tag") or "").strip().lower()
+            unit = str(cand.get("unit") or cand.get("unit_tag") or "").strip()
             if unit:
                 return False
             if "%" in raw or "$" in raw or "€" in raw or "£" in raw:
@@ -29228,14 +29241,82 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         except Exception:
             return False
 
+    def _fix2d15_metric_domain_tokens(canonical_key: str, spec: dict) -> list:
+        """Derive a small set of domain tokens from canonical_key/name."""
+        try:
+            ck = _norm(str(canonical_key or ""))
+            nm = _norm(str(spec.get("name") or spec.get("metric_name") or ""))
+            base = " ".join([ck, nm]).strip()
+            toks = [w for w in base.split() if w and not re.fullmatch(r"\d{4}", w)]
+            stop = set(["global","world","worldwide","total","overall","ev","electric","vehicle","vehicles","metric","market"])
+            out = []
+            for w in toks:
+                if w in stop:
+                    continue
+                if len(w) < 4:
+                    continue
+                if w not in out:
+                    out.append(w)
+            return out[:6]
+        except Exception:
+            return []
+
+    def _fix2d15_unit_family_ok(cand: dict, spec: dict) -> bool:
+        try:
+            dim = str(spec.get("dimension") or "").lower()
+            uf = str(spec.get("unit_family") or "").lower()
+            raw = str(cand.get("raw") or "")
+            unit = str(cand.get("unit") or cand.get("unit_tag") or "").lower()
+
+            s = (raw + " " + unit).lower()
+            has_currency = ("$" in raw) or ("us$" in s) or ("usd" in s) or ("eur" in s) or ("gbp" in s) or ("€" in raw) or ("£" in raw)
+            has_percent = ("%" in raw) or ("percent" in s) or ("pct" in s)
+
+            if dim == "percent" or uf == "percent":
+                return has_percent
+            if dim == "currency" or uf == "currency":
+                return has_currency
+            return True
+        except Exception:
+            return True
+
+    def _fix2d15_candidate_ok(cand: dict, spec: dict, canonical_key: str, kw_norm: list) -> (bool, str):
+        try:
+            if _fix2d15_is_bare_year_token(cand) and not _fix2d15_expects_year_value(spec, canonical_key):
+                return False, "bare_year_token"
+
+            if not _fix2d15_unit_family_ok(cand, spec):
+                return False, "unit_family_mismatch"
+
+            ctx = _norm(cand.get("context_snippet") or cand.get("context") or cand.get("context_window") or "")
+            rawn = _norm(cand.get("raw") or "")
+            dom = _fix2d15_metric_domain_tokens(canonical_key, spec)
+
+            hit_kw = 0
+            for k in (kw_norm or []):
+                if k and (k in ctx or k in rawn):
+                    hit_kw += 1
+
+            hit_dom = 0
+            for d in (dom or []):
+                if d and (d in ctx or d in rawn):
+                    hit_dom += 1
+
+            if (kw_norm or dom) and (hit_kw <= 0 and hit_dom <= 0):
+                return False, "no_keyword_or_domain_hits"
+
+            return True, ""
+        except Exception:
+            return True, ""
+
     candidates.sort(key=_cand_sort_key)
 
     # Debug sink
     dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
     dbg.setdefault("schema_only_zero_hit_metrics_fix17", [])
-    # PATCH FIX2D14 (ADD): year-token rejection diagnostics
-    dbg.setdefault("fix2d14_rejected_year_candidates", 0)
-    dbg.setdefault("fix2d14_year_reject_samples", [])
+    # PATCH FIX2D15 (ADD): diagnostics for schema-only gating
+    dbg.setdefault("fix2d15_reject_reasons", {})
+    dbg.setdefault("fix2d15_year_reject_samples", [])
 
     rebuilt = {}
 
@@ -29271,17 +29352,20 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             if not ok:
                 continue
 
-            # PATCH FIX2D14 (ADD): reject bare-year tokens (e.g., 2030) for non-year metrics
+            # PATCH FIX2D15 (ADD): additional eligibility gates (year-token / domain / unit-family)
             try:
-                if _fix2d14_is_bare_year_candidate(c, metric_is_year_like, canonical_key=str(canonical_key), spec=spec):
-                    dbg["fix2d14_rejected_year_candidates"] = int(dbg.get("fix2d14_rejected_year_candidates") or 0) + 1
-                    if len(dbg.get("fix2d14_year_reject_samples") or []) < 20:
-                        dbg["fix2d14_year_reject_samples"].append({
-                            "canonical_key": str(canonical_key),
-                            "raw": str(c.get("raw") or c.get("value") or "")[:80],
-                            "value_norm": c.get("value_norm"),
-                            "source_url": str(c.get("source_url") or "")[:120],
-                        })
+                _ok2, _why2 = _fix2d15_candidate_ok(c, spec, canonical_key=str(canonical_key), kw_norm=kw_norm)
+                if not _ok2:
+                    dbg.setdefault("fix2d15_reject_reasons", {})
+                    dbg["fix2d15_reject_reasons"][_why2] = int(dbg["fix2d15_reject_reasons"].get(_why2) or 0) + 1
+                    if _why2 == "bare_year_token":
+                        if len(dbg.get("fix2d15_year_reject_samples") or []) < 20:
+                            dbg["fix2d15_year_reject_samples"].append({
+                                "canonical_key": str(canonical_key),
+                                "raw": str(c.get("raw") or c.get("value") or "")[:80],
+                                "value_norm": c.get("value_norm"),
+                                "source_url": str(c.get("source_url") or "")[:120],
+                            })
                     continue
             except Exception:
                 pass
