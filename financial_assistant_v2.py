@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D16"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D17"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11c
@@ -137,7 +137,13 @@ try:
         "date": "2026-01-15",
         "summary": "Add soft-match fallback to fill current values for baseline rows when anchor/ckey join fails; add last-mile bare-year reject for schema-only rebuild promotions. Disable FIX2D15 gating.",
         "files": ["FIX2D16.py"],
+    })    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D17",
+        "date": "2026-01-15",
+        "summary": "Harden canonical selector: reject bare-year tokens as metric values and require domain keyword overlap to prevent cross-metric pollution; deprecate FIX2D16 soft-match/year guards.",
+        "files": ["FIX2D17.py"],
     })
+
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
@@ -28961,6 +28967,68 @@ def _analysis_canonical_final_selector_v1(
             # =====================================================================
         except Exception:
             continue
+        # =====================================================================
+        # PATCH FIX2D17 (ADDITIVE): Reject bare-year tokens and enforce domain keyword overlap
+        # Prevents year tokens like 2030 from being committed as metric values for non-year metrics,
+        # and prevents unrelated snippets (e.g., "By 2030 ... sales ...") from satisfying chargers/investment metrics.
+        # =====================================================================
+        try:
+            _fix2d17_spec = spec if isinstance(spec, dict) else {}
+            _fix2d17_ckey = str(canonical_key or "")
+            _fix2d17_dim = str(_fix2d17_spec.get("dimension") or "")
+            _fix2d17_unitfam = str(_fix2d17_spec.get("unit_family") or "")
+            _fix2d17_ut = str(_fix2d17_spec.get("unit_tag") or _fix2d17_spec.get("unit") or "")
+            _fix2d17_year_metric = (
+                ("year" in _fix2d17_dim.lower())
+                or ("year" in _fix2d17_unitfam.lower())
+                or (_fix2d17_ut.lower() in ["year", "yr", "years"])
+                or (re.search(r"(?:^|_)(?:19|20)\d{2}(?:_|$)", _fix2d17_ckey) is not None)
+            )
+
+            _raw = str(c.get("raw") or "")
+            try:
+                _vf = float(c.get("value_norm") or 0.0)
+            except Exception:
+                _vf = 0.0
+            _raw_digits = re.sub(r"[^0-9]", "", _raw or "")
+            _looks_year = (1900.0 <= _vf <= 2100.0) and (len(_raw_digits) == 4 and _raw_digits == str(int(_vf)))
+
+            _cand_unit = str(c.get("unit") or c.get("unit_tag") or "").strip()
+            _cand_uf = str(c.get("unit_family") or "").strip().lower()
+
+            if _looks_year and not _fix2d17_year_metric:
+                # Allow only if this "year" token is clearly attached to a real unit (rare); otherwise reject.
+                if (not _cand_unit) and (_cand_uf in ["", "unknown", "none"]):
+                    meta["fix2d17_reject_bare_year"] = int(meta.get("fix2d17_reject_bare_year") or 0) + 1
+                    continue
+
+            # Domain keyword overlap enforcement for certain metrics to prevent cross-metric pollution.
+            ctx_blob = (" " + str(c.get("context_snippet") or c.get("context") or "") + " " + _raw + " ").lower()
+            # Normalize to token-ish spaces
+            ctx_tok = " " + re.sub(r"[^a-z0-9]+", " ", ctx_blob) + " "
+
+            domain_tokens = {
+                "charger", "chargers", "charging", "station", "stations", "infrastructure",
+                "investment", "invest", "capex", "spend", "spending",
+                "sales", "sold", "market", "share", "revenue", "turnover",
+                "units", "deliveries", "registrations",
+            }
+
+            kw = _fix2d17_spec.get("keywords") or []
+            if isinstance(kw, (list, tuple)):
+                kw_l = [str(x).lower().strip() for x in kw if str(x).strip()]
+            else:
+                kw_l = []
+            required = [k for k in kw_l if k in domain_tokens]
+
+            # If schema explicitly includes domain tokens, require at least one to appear in candidate context/raw.
+            if required:
+                if not any((" " + t + " ") in ctx_tok for t in required):
+                    meta["fix2d17_reject_domain_mismatch"] = int(meta.get("fix2d17_reject_domain_mismatch") or 0) + 1
+                    continue
+        except Exception:
+            pass
+
         eligible.append(c)
 
     meta["eligible_count"] = int(len(eligible) or 0)
@@ -29010,6 +29078,33 @@ def _analysis_canonical_final_selector_v1(
     if best is None:
         meta["blocked_reason"] = "no_winner_after_scoring"
         return None, meta
+
+    # =====================================================================
+    # PATCH FIX2D17 (ADDITIVE): Last-mile reject if winner is a bare-year token for non-year metrics
+    # =====================================================================
+    try:
+        _raw = str(best.get("raw") or "")
+        try:
+            _vf = float(best.get("value_norm") or 0.0)
+        except Exception:
+            _vf = 0.0
+        _raw_digits = re.sub(r"[^0-9]", "", _raw or "")
+        _looks_year = (1900.0 <= _vf <= 2100.0) and (len(_raw_digits) == 4 and _raw_digits == str(int(_vf)))
+        _dim = str(spec.get("dimension") or "")
+        _uf = str(spec.get("unit_family") or "")
+        _ut = str(spec.get("unit_tag") or spec.get("unit") or "")
+        _year_metric = (
+            ("year" in _dim.lower()) or ("year" in _uf.lower()) or (_ut.lower() in ["year", "yr", "years"])
+            or (re.search(r"(?:^|_)(?:19|20)\\d{2}(?:_|$)", str(canonical_key or "")) is not None)
+        )
+        _cand_unit = str(best.get("unit") or best.get("unit_tag") or "").strip()
+        _cand_uf = str(best.get("unit_family") or "").strip().lower()
+        if _looks_year and (not _year_metric) and (not _cand_unit) and (_cand_uf in ["", "unknown", "none"]):
+            meta["blocked_reason"] = "fix2d17_reject_bare_year_best"
+            meta["fix2d17_bare_year_best"] = True
+            return None, meta
+    except Exception:
+        pass
 
     # Build value_range in schema units (NO double divide)
     try:
@@ -29192,6 +29287,8 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
     # =====================================================================
     # PATCH FIX2D16 (ADD): Disable FIX2D15 gating; rely on last-mile bare-year reject instead
     _fix2d16_disable_fix2d15 = True
+    # PATCH FIX2D17: Deprecate FIX2D16 soft-match/year guards
+    _fix2d17_disable_fix2d16 = True
 
     # (Legacy block retained for context but disabled)
     # PATCH FIX2D15 (ADD): Harden schema-only rebuild candidate eligibility
