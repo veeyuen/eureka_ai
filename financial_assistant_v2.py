@@ -22827,24 +22827,29 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 # ============================================================
 # ============================================================
     # ============================================================
-    # PATCH START: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2
+
+
+    except Exception:
+        pass
+
+
+    # ============================================================
+    # PATCH START: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2B
     # Purpose:
     #   Render-gate fallback (UNION / demo mode only).
-    #   If anchor enforcement yields zero hits, allow render-time
-    #   population from current canonical metrics, explicitly
-    #   labeled as unanchored-for-render.
+    #   If V28 anchor enforcement was attempted but produced zero hits,
+    #   populate canonical_for_render from current primary_metrics_canonical,
+    #   and label metrics as unanchored-for-render.
     #
     # Safety:
-    #   - Render-only
-    #   - Must remain inside compute_source_anchored_diff scope
+    #   - Render-only (does not affect canonicalisation, hashing, snapshots, fastpath)
+    #   - UNION mode only
+    #   - No new try/except blocks inside compute_source_anchored_diff
     # ============================================================
 
     _fix2d11_join_mode = None
     if "_fix2d6_get_diff_join_mode_v1" in globals():
-        try:
-            _fix2d11_join_mode = _fix2d6_get_diff_join_mode_v1()
-        except Exception:
-            _fix2d11_join_mode = None
+        _fix2d11_join_mode = _fix2d6_get_diff_join_mode_v1()
 
     if (
         isinstance(locals().get("_v28_anchor_enforce"), dict)
@@ -22856,52 +22861,23 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         if isinstance(output.get("results"), dict):
             _pmc = output["results"].get("primary_metrics_canonical")
 
-        if not (isinstance(_pmc, dict) and _pmc):
-            if isinstance(output.get("results", {}).get("results"), dict):
-                _pmc = output["results"]["results"].get("primary_metrics_canonical")
-
         if isinstance(_pmc, dict) and _pmc:
             canonical_for_render = dict(_pmc)
+            for _k, _cm in canonical_for_render.items():
+                if isinstance(_cm, dict):
+                    _cm.setdefault("diag", {})
+                    if isinstance(_cm.get("diag"), dict):
+                        _cm["diag"]["render_origin"] = "current_unanchored"
 
-            try:
-                for _k, _cm in canonical_for_render.items():
-                    if isinstance(_cm, dict):
-                        _cm.setdefault("diag", {})
-                        if isinstance(_cm.get("diag"), dict):
-                            _cm["diag"]["fix2d11_render_fallback_unanchored"] = True
-                            _cm["diag"]["fix2d11_render_fallback_join_mode"] = "union"
-            except Exception:
-                pass
-
-            try:
-                _v28_anchor_enforce["fix2d11_fallback_applied"] = True
-                _v28_anchor_enforce["fix2d11_fallback_count"] = len(_pmc)
-                _v28_anchor_enforce["note_fix2d11"] = (
-                    "union-mode fallback: canonical_for_render populated from "
-                    "current primary_metrics_canonical (unanchored)"
-                )
-            except Exception:
-                pass
+            _v28_anchor_enforce["fix2d11_fallback_applied"] = True
+            _v28_anchor_enforce["fix2d11_fallback_count"] = len(canonical_for_render)
         else:
-            try:
-                _v28_anchor_enforce["fix2d11_fallback_applied"] = False
-                _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
-            except Exception:
-                pass
+            _v28_anchor_enforce["fix2d11_fallback_applied"] = False
+            _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
 
     # ============================================================
-    # PATCH END: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2
+    # PATCH END: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2B
     # ============================================================
-
-# ============================================================
-_V1
-# ============================================================
-
-# ============================================================
-
-
-    except Exception:
-        pass
 
     try:
         if isinstance(output.get("debug"), dict):
