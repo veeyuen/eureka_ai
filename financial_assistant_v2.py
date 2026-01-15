@@ -22786,21 +22786,18 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     except Exception:
                         continue
 # ============================================================
+# ============================================================
 # PATCH START: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V1
 # Purpose:
-#   The V28 render-only anchor enforcement can result in 0 hits when
-#   anchor hashes from Analysis cannot be found in the frozen pool.
-#   When that happens, canonical_for_render may be effectively unusable
-#   and the dashboard "Current" column stays blank.
-#
-#   In DEMO/union mode, allow a controlled, explicitly-labeled fallback:
-#   - If V28 attempted and hits==0, populate canonical_for_render from the
-#     already-built current canonical dict (results.primary_metrics_canonical)
-#   - Mark metrics as unanchored-for-render so the behavior is auditable.
+#   Render-gate fallback (DEMO / UNION mode only).
+#   If anchor enforcement (V28) yields zero hits, allow rendering
+#   of current canonical metrics by populating canonical_for_render
+#   from results.primary_metrics_canonical, explicitly labeled
+#   as unanchored-for-render.
 #
 # Safety:
-#   - Render-only: affects ONLY canonical_for_render; does not change snapshots,
-#     hashing, extraction, or fastpath.
+#   - Render-only
+#   - Does NOT affect hashing, snapshots, or fastpath
 # ============================================================
 try:
     _fix2d11_join_mode = None
@@ -22809,51 +22806,55 @@ try:
     except Exception:
         _fix2d11_join_mode = None
 
-    if _v28_anchor_enforce.get("attempted") and int(_v28_anchor_enforce.get("hits") or 0) == 0:
-        if str(_fix2d11_join_mode or "").strip().lower() == "union":
-            # Prefer current canonical already propagated into results.*
+    if (
+        isinstance(locals().get("_v28_anchor_enforce"), dict)
+        and _v28_anchor_enforce.get("attempted")
+        and int(_v28_anchor_enforce.get("hits") or 0) == 0
+        and str(_fix2d11_join_mode or "").lower() == "union"
+    ):
+        _pmc = None
+        try:
+            _pmc = output.get("results", {}).get("primary_metrics_canonical")
+        except Exception:
             _pmc = None
+
+        if not (isinstance(_pmc, dict) and _pmc):
             try:
-                _pmc = output.get("results", {}).get("primary_metrics_canonical")
+                _pmc = output.get("results", {}).get("results", {}).get("primary_metrics_canonical")
             except Exception:
                 _pmc = None
-            if not (isinstance(_pmc, dict) and _pmc):
-                try:
-                    _pmc = output.get("results", {}).get("results", {}).get("primary_metrics_canonical")
-                except Exception:
-                    _pmc = None
 
-            if isinstance(_pmc, dict) and _pmc:
-                # Overwrite canonical_for_render with schema-anchored current canonical dict
-                try:
-                    canonical_for_render = dict(_pmc)
-                except Exception:
-                    canonical_for_render = _pmc
+        if isinstance(_pmc, dict) and _pmc:
+            try:
+                canonical_for_render = dict(_pmc)
+            except Exception:
+                canonical_for_render = _pmc
 
-                # Label as unanchored-for-render (auditable)
-                try:
-                    for _k, _cm in list(canonical_for_render.items()):
-                        if isinstance(_cm, dict):
-                            _cm.setdefault("diag", {})
-                            if isinstance(_cm.get("diag"), dict):
-                                _cm["diag"]["fix2d11_render_fallback_unanchored"] = True
-                                _cm["diag"]["fix2d11_render_fallback_join_mode"] = "union"
-                except Exception:
-                    pass
+            try:
+                for _k, _cm in canonical_for_render.items():
+                    if isinstance(_cm, dict):
+                        _cm.setdefault("diag", {})
+                        if isinstance(_cm.get("diag"), dict):
+                            _cm["diag"]["fix2d11_render_fallback_unanchored"] = True
+                            _cm["diag"]["fix2d11_render_fallback_join_mode"] = "union"
+            except Exception:
+                pass
 
-                _v28_anchor_enforce["note_fix2d11"] = "union-mode fallback: canonical_for_render populated from current primary_metrics_canonical (unanchored)"
-                _v28_anchor_enforce["fix2d11_fallback_applied"] = True
-                _v28_anchor_enforce["fix2d11_fallback_count"] = int(len(_pmc))
-            else:
-                _v28_anchor_enforce["fix2d11_fallback_applied"] = False
-                _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
+            _v28_anchor_enforce["fix2d11_fallback_applied"] = True
+            _v28_anchor_enforce["fix2d11_fallback_count"] = int(len(_pmc))
+            _v28_anchor_enforce["note_fix2d11"] = (
+                "union-mode fallback: canonical_for_render populated from "
+                "current primary_metrics_canonical (unanchored-for-render)"
+            )
         else:
             _v28_anchor_enforce["fix2d11_fallback_applied"] = False
-            _v28_anchor_enforce["fix2d11_fallback_reason"] = "join_mode_not_union"
+            _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
 except Exception:
     pass
 # ============================================================
 # PATCH END: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V1
+# ============================================================
+
 # ============================================================
 
 
