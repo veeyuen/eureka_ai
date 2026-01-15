@@ -18776,6 +18776,17 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     """Return (rows, summary) for Diff Metrics Panel V2."""
 
+    # =================================================================
+    # PATCH FIX2D1_B (ADDITIVE): prevent UnboundLocalError on 'summary'
+    # Some exception paths reference `summary` before it is assigned.
+    # Initialize a safe default up-front so errors degrade gracefully
+    # into "not_found" rows rather than killing the diff panel.
+    # =================================================================
+    rows = []
+    summary = {"rows_total": 0, "joined_by_ckey": 0, "joined_by_anchor_hash": 0, "not_found": 0}
+    # =================================================================
+
+
     def _unwrap_primary_metrics_canonical(resp: dict):
         if not isinstance(resp, dict):
             return {}
@@ -19777,6 +19788,87 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 # =====================================================================
 # PATCH WRAP_COMPUTE_SOURCE_ANCHORED_DIFF (ADDITIVE): preserve original as compute_source_anchored_diff_BASE
 # and define the patched version below.
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D1 (ADDITIVE): Early aliases for canonical-for-render rebuild
+# ---------------------------------------------------------------------
+# Problem:
+#   compute_source_anchored_diff() performs a late "display rebuild" and
+#   looks up these callables via globals():
+#     - rebuild_metrics_from_snapshots_analysis_canonical_v1
+#     - rebuild_metrics_from_snapshots_schema_only_fix16
+#   In Streamlit, the evolution run can invoke compute_source_anchored_diff()
+#   BEFORE the later parts of this file finish executing/defining those
+#   functions, leading to:
+#     skip_reason_v19 = "fn_missing"
+#   Which then leaves Current blank and produces no diff rows.
+#
+# Fix (render-layer only):
+#   - Provide *early* safe aliases so the callables always exist at lookup time.
+#   - Each alias does a best-effort late-binding to the final implementations
+#     (if/when they are defined later), else falls back to the earliest safe
+#     schema-only rebuild if available.
+#
+# Safety:
+#   - Additive-only. Does NOT touch hashing, injection, snapshot attach, fetch,
+#     extraction, or Analysis. Only prevents "fn_missing" gating.
+# =====================================================================
+
+def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
+    """Early alias: resolves to the most specific schema-only rebuild available."""
+    # Prefer a later concrete implementation if it already exists (late-binding)
+    try:
+        fn = globals().get("_rebuild_metrics_from_snapshots_schema_only_fix16_impl")
+        if callable(fn):
+            return fn(prev_response, snapshot_pool, web_context=web_context)
+    except Exception:
+        pass
+
+    # Next: base schema-only (often defined earlier than FIX16 helpers)
+    try:
+        fn = globals().get("rebuild_metrics_from_snapshots_schema_only")
+        if callable(fn):
+            try:
+                return fn(prev_response, snapshot_pool, web_context=web_context)
+            except TypeError:
+                return fn(prev_response, snapshot_pool)
+    except Exception:
+        pass
+
+    return {}
+
+def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
+    """Early alias: prefer the analysis-canonical rebuild if later-defined; else schema-only."""
+    # Prefer a later concrete implementation if it already exists (late-binding)
+    try:
+        fn = globals().get("_rebuild_metrics_from_snapshots_analysis_canonical_v1_impl")
+        if callable(fn):
+            return fn(prev_response, snapshot_pool, web_context=web_context)
+    except Exception:
+        pass
+
+    # Otherwise, fall back deterministically to schema-only
+    try:
+        fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+        if callable(fn):
+            return fn(prev_response, snapshot_pool, web_context=web_context)
+    except Exception:
+        pass
+
+    return {}
+
+# Best-effort version bump (render-layer only)
+try:
+    CODE_VERSION = str(globals().get("CODE_VERSION") or "")
+    if "fix2d1" not in CODE_VERSION.lower():
+        CODE_VERSION = "FIX2D1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2D1
 # =====================================================================
 
 def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
