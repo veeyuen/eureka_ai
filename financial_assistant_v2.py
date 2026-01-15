@@ -79,7 +79,74 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ae_injected_fetch_urls_merge_v1_fix2af_fetch_visibility_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2D1"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+# =====================================================================
+# PATCH TRACKER V1 (ADD): minimal patch tracker for consolidation
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D1",
+        "date": "2026-01-15",
+        "summary": "Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.",
+        "files": ["fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX2D1 START: Fix fn_missing + Diff Panel V2 summary crash
+# - Adds best-effort aliases so FIX41AFC19 display rebuild can find a callable
+# - Wraps Diff Panel V2 _impl call so summary is always defined (no UnboundLocalError)
+# =====================================================================
+def _fix2d1_first_callable_name(candidates):
+    try:
+        for name in candidates:
+            fn = globals().get(name)
+            if callable(fn):
+                return name
+    except Exception:
+        return None
+    return None
+
+def _fix2d1_find_callable_by_contains(substr, deny_exact=None):
+    try:
+        for k, v in globals().items():
+            if deny_exact and k == deny_exact:
+                continue
+            if substr in k and callable(v):
+                return k
+    except Exception:
+        return None
+    return None
+
+# Ensure canonical rebuild symbol exists under the exact names FIX41AFC19 expects
+try:
+    if not callable(globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")):
+        _alt = _fix2d1_first_callable_name([
+            "rebuild_metrics_from_snapshots_analysis_canonical_v1_IMPL",
+            "rebuild_metrics_from_snapshots_analysis_canonical_v1_base",
+            "rebuild_metrics_from_snapshots_analysis_canonical_v1_BASE",
+        ]) or _fix2d1_find_callable_by_contains("rebuild_metrics_from_snapshots_analysis_canonical", deny_exact="rebuild_metrics_from_snapshots_analysis_canonical_v1")
+        if _alt and callable(globals().get(_alt)):
+            globals()["rebuild_metrics_from_snapshots_analysis_canonical_v1"] = globals()[_alt]
+
+    if not callable(globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")):
+        _alt = _fix2d1_first_callable_name([
+            "rebuild_metrics_from_snapshots_schema_only_fix16_IMPL",
+            "rebuild_metrics_from_snapshots_schema_only_fix16_base",
+            "rebuild_metrics_from_snapshots_schema_only_fix16_BASE",
+        ]) or _fix2d1_find_callable_by_contains("rebuild_metrics_from_snapshots_schema_only_fix16", deny_exact="rebuild_metrics_from_snapshots_schema_only_fix16")
+        if _alt and callable(globals().get(_alt)):
+            globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = globals()[_alt]
+except Exception:
+    pass
+# =====================================================================
+# PATCH FIX2D1 END (part 1): aliasing
+# =====================================================================
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -32729,7 +32796,19 @@ def build_diff_metrics_panel_v2_fix2k(prev_response: dict, cur_response: dict):
     if not callable(_impl):
         return ([], {'rows_total': 0, 'joined_by_ckey': 0, 'joined_by_anchor_hash': 0, 'not_found': 0})
 
-    rows, summary = _impl(prev_response, cur_response)
+    # PATCH FIX2D1 START (part 2): harden _impl call so summary always defined
+    rows = []
+    summary = {'rows_total': 0, 'joined_by_ckey': 0, 'joined_by_anchor_hash': 0, 'not_found': 0, 'error': None}
+    try:
+        rows, summary = _impl(prev_response, cur_response)
+    except Exception as _e:
+        # Keep the panel renderable even if underlying builder fails.
+        summary['error'] = "diff_panel_v2_impl_exception:" + str(type(_e).__name__)
+        try:
+            summary['error_detail'] = str(_e)[:300]
+        except Exception:
+            pass
+    # PATCH FIX2D1 END (part 2)
 
     # -------------------------------
     # Helpers
