@@ -79,7 +79,42 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D17"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D19"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D18
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D18",
+        "date": "2026-01-15",
+        "summary": "Re-enable schema-only rebuild eligibility gates (domain token + unit-family) and strengthen unit-sales expectations to prevent bare-year (e.g., 2030) contamination; improves baseline comparables for Analysis→Evolution diffing.",
+        "files": ["FIX2D18.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D19
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D19",
+        "date": "2026-01-16",
+        "summary": "Harden schema_only_rebuild_fix17 with required domain-token binding (prevents generic keyword matches) and add deterministic baseline soft-match fallback in Diff Panel V2 to enable Analysis→Evolution comparable diffs when strict joins fail.",
+        "files": ["FIX2D19.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11c
@@ -545,7 +580,7 @@ try:
         "summary": "Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.",
         "files": ["fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py"],
     })
-
+    
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D3",
         "date": "2026-01-15",
@@ -18820,7 +18855,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
 
-
+    
     # =====================================================================
     # PATCH FIX2D2_ANCHOR_FILL_FOR_CURRENT (ADDITIVE)
     # Purpose:
@@ -20113,7 +20148,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-
+    
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -23812,7 +23847,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-
+    
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -23841,7 +23876,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-
+            
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -28057,7 +28092,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-
+    
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -29287,7 +29322,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
 
     # =====================================================================
     # PATCH FIX2D16 (ADD): Disable FIX2D15 gating; rely on last-mile bare-year reject instead
-    _fix2d16_disable_fix2d15 = True
+    _fix2d16_disable_fix2d15 = False
     # PATCH FIX2D17: Deprecate FIX2D16 soft-match/year guards
     _fix2d17_disable_fix2d16 = True
 
@@ -29369,6 +29404,40 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         except Exception:
             return []
 
+    # =====================================================================
+    # PATCH FIX2D19 (ADD): Required domain token binding
+    # - Prevent generic keyword hits (e.g., 'global', 'market') from allowing
+    #   unrelated candidates (e.g., year tokens) to satisfy domain-specific
+    #   metrics like chargers/investment.
+    # - For certain metrics, require at least one strong domain token to
+    #   appear in candidate context/raw.
+    # =====================================================================
+    def _fix2d19_required_domain_tokens(canonical_key: str, spec: dict) -> list:
+        try:
+            ck = str(canonical_key or '').lower()
+            dim = str(spec.get('dimension') or spec.get('value_type') or '').lower()
+            uf = str(spec.get('unit_family') or '').lower()
+            req = []
+            if 'charger' in ck or 'charging' in ck:
+                req += ['charger', 'charging', 'station', 'infrastructure']
+            if 'investment' in ck or 'capex' in ck or dim == 'currency' or uf == 'currency':
+                # still allow currency cues to satisfy, but require at least one semantic token
+                req += ['invest', 'investment', 'capex', 'spend', 'spending', 'cost']
+            if 'share' in ck or dim == 'percent' or uf == 'percent':
+                req += ['share', 'market share', 'ev share']
+            if 'sale' in ck or 'sales' in ck or dim in ('unit_sales','sales','units') or uf in ('unit_sales','sales','units'):
+                req += ['sales', 'sold', 'deliveries', 'deliver']
+            # de-dupe while keeping order
+            out=[]
+            for r in req:
+                r=str(r).strip().lower()
+                if r and r not in out:
+                    out.append(r)
+            return out[:8]
+        except Exception:
+            return []
+
+
     def _fix2d15_unit_family_ok(cand: dict, spec: dict) -> bool:
         try:
             dim = str(spec.get("dimension") or "").lower()
@@ -29384,6 +29453,14 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 return has_percent
             if dim == "currency" or uf == "currency":
                 return has_currency
+
+            # FIX2D18: unit-sales expectations (prevents bare years like 2030 from winning)
+            if dim in ("unit_sales","units","sales") or uf in ("unit_sales","units","sales"):
+                # require some unit cue
+                has_units = ("unit" in s) or ("units" in s) or ("million" in s) or ("mn" in s) or ("m " in s) or (" m" in s)
+                if not has_units:
+                    return False
+
             return True
         except Exception:
             return True
@@ -29399,6 +29476,20 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             ctx = _norm(cand.get("context_snippet") or cand.get("context") or cand.get("context_window") or "")
             rawn = _norm(cand.get("raw") or "")
             dom = _fix2d15_metric_domain_tokens(canonical_key, spec)
+
+            # FIX2D19: strong required domain-token binding
+            req_dom = _fix2d19_required_domain_tokens(canonical_key, spec)
+            if req_dom:
+                _req_hit = 0
+                for r in req_dom:
+                    if not r:
+                        continue
+                    rr = _norm(r)
+                    if rr and (rr in ctx or rr in rawn):
+                        _req_hit += 1
+                if _req_hit <= 0:
+                    return False, 'missing_required_domain_token'
+
 
             hit_kw = 0
             for k in (kw_norm or []):
@@ -32689,14 +32780,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-#
+# 
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -32706,7 +32797,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-#
+# 
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -33063,7 +33154,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
@@ -33880,6 +33971,8 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
             "current_only_injected_rows": 0,
             "unit_mismatch_split": 0,
             "cur_can_n": int(len(cur_metrics) if isinstance(cur_metrics, dict) else 0),
+        "fix2d19_soft_match_rows": int(sum(1 for r in rows if isinstance(r, dict) and r.get('diag', {}).get('diff_join_trace_v1', {}).get('method') == 'soft_match')),
+
         }
         return rows, summary
 
@@ -33968,6 +34061,139 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
 
         if resolved_cur_ckey_effective is None:
             not_found += 1
+
+        # =====================================================================
+        # PATCH FIX2D19 (ADD): Deterministic baseline soft-match fallback
+        # When strict joins fail (ckey/anchor), attempt to find a plausible
+        # current candidate from already-extracted_numbers pools so Analysis→
+        # Evolution can produce comparable diffs without requiring Analysis to
+        # include injected URLs. Render-only and fully auditable.
+        # =====================================================================
+        _fix2d19_soft = None
+        _fix2d19_soft_reason = None
+        try:
+            if resolved_cur_ckey_effective is None and isinstance(prev_val_norm, (int, float)):
+                pool = _unwrap_extracted_numbers_pool(cur_response)
+                # derive expected type from canonical key / name
+                ck_l = str(prev_ckey).lower()
+                nm_l = str(pm.get('name') or '').lower()
+                want_percent = ('share' in ck_l) or ('percent' in ck_l) or ('%' in (nm_l or ''))
+                want_sales = ('sale' in ck_l) or ('sales' in ck_l) or ('unit_sales' in ck_l)
+                # try to detect reference year in canonical key
+                m = re.search(r'(19\d{2}|20\d{2})', ck_l)
+                ref_year = m.group(1) if m else None
+
+                def _score(n):
+                    try:
+                        if not isinstance(n, dict):
+                            return -1e9
+                        if n.get('is_junk') is True:
+                            return -1e9
+                        if _looks_like_year(n):
+                            return -1e9
+                        raw = str(n.get('raw') or n.get('value') or '').lower()
+                        ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '').lower()
+                        unit = str(n.get('unit_tag') or n.get('base_unit') or n.get('unit') or '').lower()
+                        s = raw + ' ' + unit
+                        vn = n.get('value_norm')
+                        try:
+                            vn = float(vn) if vn is not None else None
+                        except Exception:
+                            vn = None
+                        if vn is None:
+                            return -1e9
+
+                        sc = 0.0
+                        # unit-family gates
+                        if want_percent:
+                            if '%' not in raw and 'percent' not in s and 'pct' not in s:
+                                return -1e9
+                            sc += 5.0
+                            if 'share' in ctx or 'market' in ctx:
+                                sc += 2.0
+                        if want_sales:
+                            if ('million' not in s and 'units' not in s and ' m' not in s and unit in ('m','mn')):
+                                # allow plain numbers if context says million/units
+                                if 'million' not in ctx and 'units' not in ctx:
+                                    return -1e9
+                            sc += 4.0
+                            if 'sales' in ctx or 'sold' in ctx:
+                                sc += 2.0
+
+                        # keyword binding from metric name
+                        for kw in ('sales','share','market'):
+                            if kw in nm_l and kw in ctx:
+                                sc += 1.0
+
+                        # prefer same-year sentence
+                        if ref_year and ref_year in ctx:
+                            sc += 3.0
+
+                        # mild preference for closer numeric magnitude to baseline (avoid random huge/small)
+                        try:
+                            sc -= min(5.0, abs(float(vn) - float(prev_val_norm)) / max(1e-9, abs(float(prev_val_norm))))
+                        except Exception:
+                            pass
+                        return sc
+                    except Exception:
+                        return -1e9
+
+                bestn = None
+                bests = -1e9
+                for n in pool:
+                    sc = _score(n)
+                    if sc > bests:
+                        bests = sc
+                        bestn = n
+
+                if isinstance(bestn, dict) and bests > -1e8:
+                    _fix2d19_soft = bestn
+                    _fix2d19_soft_reason = 'soft_match_extracted_numbers'
+        except Exception:
+            _fix2d19_soft = None
+
+        if _fix2d19_soft is not None:
+            try:
+                cur_raw_effective = str(_fix2d19_soft.get('raw') or _fix2d19_soft.get('value') or '').strip() or 'N/A'
+                cur_val_norm_effective = float(_fix2d19_soft.get('value_norm')) if _fix2d19_soft.get('value_norm') is not None else None
+                cur_unit_effective = str(_fix2d19_soft.get('unit_tag') or _fix2d19_soft.get('base_unit') or _fix2d19_soft.get('unit') or '').strip()
+                cur_ah_effective = str(_fix2d19_soft.get('anchor_hash') or '') or None
+                method_effective = 'soft_match'
+                resolved_cur_ckey_effective = prev_ckey  # keep row identity stable for baseline comparison
+                # keep not_found counter as-is; we record separate summary below
+            except Exception:
+                pass
+        # =====================================================================
+
+        # FIX2D19: Recompute baseline semantics using the effective current value
+        # (including soft_match) so comparable deltas can be emitted.
+        try:
+            baseline_prev_value = prev_raw
+            baseline_cur_value = cur_raw_effective if (cur_raw_effective is not None and cur_raw_effective != 'N/A') else None
+            baseline_delta_abs = None
+            baseline_delta_pct = None
+            baseline_change_type = None
+            baseline_is_comparable = isinstance(prev_val_norm, (int, float)) and isinstance(cur_val_norm_effective, (int, float))
+            if baseline_is_comparable:
+                _d = float(cur_val_norm_effective) - float(prev_val_norm)
+                baseline_delta_abs = _d
+                if abs(float(prev_val_norm)) > 1e-12:
+                    baseline_delta_pct = (_d / float(prev_val_norm)) * 100.0
+                if abs(_d) < 1e-9:
+                    baseline_change_type = 'unchanged'
+                elif _d > 0:
+                    baseline_change_type = 'increased'
+                else:
+                    baseline_change_type = 'decreased'
+            else:
+                if cur_raw_effective not in (None, 'N/A') and prev_raw not in (None, 'N/A'):
+                    baseline_change_type = 'unknown'
+                elif cur_raw_effective not in (None, 'N/A'):
+                    baseline_change_type = 'added'
+                else:
+                    baseline_change_type = 'not_found'
+        except Exception:
+            pass
 
         # classify change only if both numeric (no inference)
         change_type = "unknown"
@@ -34203,6 +34429,8 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
         "current_only_raw_injected_rows": int(raw_current_only_injected),
         "unit_mismatch_split": int(unit_mismatch_split),
         "cur_can_n": int(len(cur_metrics) if isinstance(cur_metrics, dict) else 0),
+        "fix2d19_soft_match_rows": int(sum(1 for r in rows if isinstance(r, dict) and r.get('diag', {}).get('diff_join_trace_v1', {}).get('method') == 'soft_match')),
+
     }
 
     return rows, summary
