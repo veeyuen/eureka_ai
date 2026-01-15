@@ -18278,7 +18278,161 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
 
-    # Diff using existing diff helper if present
+    
+    # =====================================================================
+    # PATCH FIX2D2_ANCHOR_FILL_FOR_CURRENT (ADDITIVE)
+    # Purpose:
+    #   When schema_frozen is missing/misaligned (e.g., wrong namespace) the render/diff
+    #   rebuild can populate an unrelated keyspace, causing the dashboard "Current" column
+    #   to be empty for the intended canonical keys and diff rows to be all not_found.
+    #
+    # Fix (render/diff layer only):
+    #   - Build a deterministic anchor_hash -> candidate map from the *current* snapshot pool.
+    #   - For each canonical_key that exists in prev_response.primary_metrics_canonical, if the
+    #     current_metrics dict is missing that key (or has no value_norm), fill it from the
+    #     anchored candidate in the current pool (when available).
+    #
+    # Non-negotiables:
+    #   - No changes to hashing, injection lifecycle, snapshot attach, or extraction.
+    #   - Anchor-hash is treated as the authority for key/value materialization.
+    # =====================================================================
+    try:
+        def _fix2d2_safe_dict(x):
+            return x if isinstance(x, dict) else {}
+
+        def _fix2d2_unwrap_primary_metrics_canonical(resp: dict) -> dict:
+            if not isinstance(resp, dict):
+                return {}
+            for path in (("primary_metrics_canonical",), ("primary_response", "primary_metrics_canonical"), ("results", "primary_metrics_canonical"), ("results", "primary_response", "primary_metrics_canonical")):
+                cur = resp
+                ok = True
+                for k in path:
+                    if isinstance(cur, dict) and k in cur:
+                        cur = cur.get(k)
+                    else:
+                        ok = False
+                        break
+                if ok and isinstance(cur, dict) and cur:
+                    return cur
+            return {}
+
+        def _fix2d2_unwrap_metric_anchors(resp: dict) -> dict:
+            if not isinstance(resp, dict):
+                return {}
+            for path in (("metric_anchors",), ("primary_response", "metric_anchors"), ("results", "metric_anchors"), ("results", "primary_response", "metric_anchors")):
+                cur = resp
+                ok = True
+                for k in path:
+                    if isinstance(cur, dict) and k in cur:
+                        cur = cur.get(k)
+                    else:
+                        ok = False
+                        break
+                if ok and isinstance(cur, dict) and cur:
+                    return cur
+            return {}
+
+        _fix2d2_prev_can = _fix2d2_unwrap_primary_metrics_canonical(prev_response)
+        _fix2d2_anchors = _fix2d2_unwrap_metric_anchors(prev_response)
+
+        # Resolve the best available "current" pool for candidate lookup
+        _fix2d2_pool = (
+            locals().get("baseline_sources_cache_current")
+            or (output.get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+            or (output.get("results", {}).get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+            or locals().get("baseline_sources_cache")
+            or locals().get("baseline_sources_cache_prefetched")
+            or None
+        )
+
+        _fix2d2_anchor_to_cand = {}
+        _fix2d2_scanned = 0
+        if isinstance(_fix2d2_pool, list) and _fix2d2_pool:
+            for _src in _fix2d2_pool:
+                _srcd = _fix2d2_safe_dict(_src)
+                for _cand in (_srcd.get("extracted_numbers") or []):
+                    _fix2d2_scanned += 1
+                    if not isinstance(_cand, dict):
+                        continue
+                    _ah = _cand.get("anchor_hash") or _cand.get("anchor") or _cand.get("anchorHash")
+                    if not _ah:
+                        continue
+                    # Deterministic first-wins (pool order is deterministic)
+                    if str(_ah) not in _fix2d2_anchor_to_cand:
+                        _fix2d2_anchor_to_cand[str(_ah)] = _cand
+
+        _fix2d2_filled = 0
+        _fix2d2_missing_anchor = 0
+        _fix2d2_missing_cand = 0
+
+        if isinstance(_fix2d2_prev_can, dict) and _fix2d2_prev_can:
+            if not isinstance(current_metrics, dict):
+                current_metrics = {}
+            for _ck in list(_fix2d2_prev_can.keys()):
+                # Only fill when current is missing / empty
+                _cur_m = current_metrics.get(_ck) if isinstance(current_metrics, dict) else None
+                _cur_vn = _cur_m.get("value_norm") if isinstance(_cur_m, dict) else None
+                if (_cur_m is not None) and (_cur_vn is not None):
+                    continue
+
+                _a = _fix2d2_safe_dict(_fix2d2_anchors.get(_ck))
+                _ah = _a.get("anchor_hash") or _a.get("anchor") or _a.get("anchorHash")
+                if not _ah:
+                    _fix2d2_missing_anchor += 1
+                    continue
+                _cand = _fix2d2_anchor_to_cand.get(str(_ah))
+                if not isinstance(_cand, dict):
+                    _fix2d2_missing_cand += 1
+                    continue
+
+                # Materialize a minimal metric dict for downstream diff/display
+                _out = dict(_fix2d2_prev_can.get(_ck) or {})
+                try:
+                    _out.update({
+                        "canonical_key": _ck,
+                        "anchor_hash": str(_ah),
+                        "anchor_used": True,
+                        "source_url": _cand.get("source_url") or _a.get("source_url") or "",
+                        "raw": _cand.get("raw"),
+                        "value": _cand.get("value"),
+                        "unit": _cand.get("unit"),
+                        "unit_tag": _cand.get("unit_tag") or _cand.get("unit") or "",
+                        "unit_family": _cand.get("unit_family") or "",
+                        "base_unit": _cand.get("base_unit") or _cand.get("unit") or "",
+                        "multiplier_to_base": _cand.get("multiplier_to_base"),
+                        "value_norm": _cand.get("value_norm"),
+                        "context_snippet": _cand.get("context_snippet") or _cand.get("context") or "",
+                        "candidate_id": _cand.get("candidate_id") or _a.get("candidate_id"),
+                    })
+                except Exception:
+                    pass
+
+                current_metrics[_ck] = _out
+                _fix2d2_filled += 1
+
+        # Emit debug (non-breaking)
+        try:
+            if isinstance(output, dict):
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix2d2", {})
+                    if isinstance(output["debug"].get("fix2d2"), dict):
+                        output["debug"]["fix2d2"].update({
+                            "anchor_fill_attempted": True,
+                            "prev_can_count": int(len(_fix2d2_prev_can)) if isinstance(_fix2d2_prev_can, dict) else 0,
+                            "anchor_map_candidates_scanned": int(_fix2d2_scanned),
+                            "anchor_map_size": int(len(_fix2d2_anchor_to_cand)),
+                            "filled_count": int(_fix2d2_filled),
+                            "missing_anchor_count": int(_fix2d2_missing_anchor),
+                            "missing_candidate_count": int(_fix2d2_missing_cand),
+                        })
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # =====================================================================
+
+# Diff using existing diff helper if present
     metric_changes = []
     try:
         fn_diff = globals().get("diff_metrics_by_name")
@@ -21475,6 +21629,19 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if not callable(_fn):
                 _fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
                 _fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+
+            # PATCH FIX2D2_FALLBACK_REBUILD_FN_NAMES (ADDITIVE):
+            # Some branches expose only the legacy names. Accept them as safe fallbacks
+            # so 'fn_missing' doesn't mask a usable rebuild implementation.
+            if not callable(_fn):
+                _fn = globals().get("rebuild_metrics_from_snapshots_schema_only")
+                _fn_name = "rebuild_metrics_from_snapshots_schema_only"
+            if not callable(_fn):
+                _fn = globals().get("rebuild_metrics_from_snapshots_with_anchors")
+                _fn_name = "rebuild_metrics_from_snapshots_with_anchors"
+            if not callable(_fn):
+                _fn = globals().get("rebuild_metrics_from_snapshots")
+                _fn_name = "rebuild_metrics_from_snapshots"
 
             if not callable(_fn):
                 _fix41afc19_skip_reason_v19 = "fn_missing"
@@ -33219,4 +33386,34 @@ except Exception:
     pass
 # =====================================================================
 # END PATCH FIX2Y_VERSION_BUMP
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX2D2 (ADDITIVE)
+# - Fill current_metrics using analysis anchors when schema_frozen is missing/misaligned
+# - Broaden rebuild fn name fallbacks to avoid fn_missing masking usable rebuilds
+# - Version bump + patch tracker entry
+# =====================================================================
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2",
+        "date": "2026-01-15",
+        "summary": "Anchor-fill current_metrics for diff/display when schema_frozen is misaligned; add rebuild-fn name fallbacks to prevent fn_missing.",
+        "files": ["FIX2D2.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+try:
+    CODE_VERSION = "FIX2D2"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2D2
 # =====================================================================
