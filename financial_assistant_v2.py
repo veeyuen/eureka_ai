@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D4"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D5"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
 # =====================================================================
 # PATCH TRACKER V1 (ADD): minimal patch tracker for consolidation
 # =====================================================================
@@ -93,7 +93,7 @@ try:
         "summary": "Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.",
         "files": ["fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py"],
     })
-
+    
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D3",
         "date": "2026-01-15",
@@ -105,8 +105,15 @@ try:
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D4",
         "date": "2026-01-15",
-        "summary": "Add debug.key_overlap_v1 to explicitly report canonical key overlap (prev vs current) and target key presence for deterministic diff feasibility checks.",
+        "summary": "Add debug.key_overlap_v1 to explicitly report prev/cur canonical key counts, overlap, and target key presence for deterministic diff feasibility checks.",
         "files": ["FIX2D4.py"],
+    })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D5",
+        "date": "2026-01-15",
+        "summary": "Mirror canonical_for_render_v1 diagnostics into results.debug so dashboard/diff diagnostics can see it; additive only.",
+        "files": ["FIX2D5.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -18325,7 +18332,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
 
-
+    
     # =====================================================================
     # PATCH FIX2D2_ANCHOR_FILL_FOR_CURRENT (ADDITIVE)
     # Purpose:
@@ -19515,7 +19522,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-
+    
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -23078,6 +23085,26 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 # END PATCH FIX2W_CANONICAL_FOR_RENDER_DIAG_EXT_V1
                 "replaced_current_metrics_for_render": bool(_canonical_for_render_replaced_current_metrics),
             }
+            # ============================================================
+            # PATCH START: FIX2D5_MIRROR_CANONICAL_FOR_RENDER_V1
+            # Purpose:
+            #   Diff/dashboard diagnostics consume results.debug.*, but canonical_for_render_v1
+            #   was attached to output.debug only. Mirror into output.results.debug to prevent
+            #   false "missing_output_debug.canonical_for_render_v1" diagnoses.
+            #   (Additive; no behavior change)
+            # ============================================================
+            try:
+                if isinstance(output.get("results"), dict):
+                    output["results"].setdefault("debug", {})
+                    if isinstance(output["results"].get("debug"), dict):
+                        output["results"]["debug"]["canonical_for_render_v1"] = dict(output["debug"].get("canonical_for_render_v1") or {})
+            except Exception:
+                pass
+            # ============================================================
+            # PATCH END: FIX2D5_MIRROR_CANONICAL_FOR_RENDER_V1
+            # ============================================================
+
+
             output["debug"]["canonical_for_render_row_audit_v1"] = _row_audit
     except Exception:
         pass
@@ -23085,7 +23112,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-
+    
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -23114,7 +23141,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-
+            
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -27330,7 +27357,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-
+    
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -31697,14 +31724,14 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Problem observed:
 # - Evolution output often has NO current primary_metrics_canonical attached, so FIX2I
 #   cannot append "current_only" rows (it only appends when cur_metrics is non-empty).
 # - When a resolved current metric exists but unit differs, UI shows unit_mismatch; user
 #   wants this treated as "different metric" -> prev row stays not_found and the current
 #   metric is emitted as a separate current_only row.
-#
+# 
 # Solution (render-layer only):
 # A) Unit mismatch split:
 #    - If join resolves (ckey/anchor) BUT unit_tag differs and both are non-empty, do NOT
@@ -31714,7 +31741,7 @@ except Exception:
 #    - Build deterministic current_only rows from baseline_sources_cache_current[*].extracted_numbers
 #      (or baseline_sources_cache as fallback), filtering obvious years.
 #    - No hashing/extraction changes: this is read-only off existing fields.
-#
+# 
 # Output additions:
 # - summary.current_only_raw_rows, summary.unit_mismatch_split_rows
 # - per-row diag.diff_unit_mismatch_split_v1 when applicable
@@ -32071,7 +32098,7 @@ except Exception:
 
 # =====================================================================
 # PATCH FIX2J (ADDITIVE): Diff Panel V2 last-mile behavior
-#
+# 
 # Objectives:
 # 1) If a prev->cur join would be "unit mismatch", do NOT force-match.
 #    - Prev row becomes not_found (Current=N/A)
