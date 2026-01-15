@@ -22785,77 +22785,77 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             _v28_anchor_enforce["hit_keys_sample"].append(str(_ckey))
                     except Exception:
                         continue
-# ============================================================
-# ============================================================
-# PATCH START: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V1
-# Purpose:
-#   Render-gate fallback (DEMO / UNION mode only).
-#   If anchor enforcement (V28) yields zero hits, allow rendering
-#   of current canonical metrics by populating canonical_for_render
-#   from results.primary_metrics_canonical, explicitly labeled
-#   as unanchored-for-render.
-#
-# Safety:
-#   - Render-only
-#   - Does NOT affect hashing, snapshots, or fastpath
-# ============================================================
-try:
-    _fix2d11_join_mode = None
+    # ============================================================
+    # ============================================================
+    # PATCH START: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V1
+    # Purpose:
+    #   Render-gate fallback (DEMO / UNION mode only).
+    #   If anchor enforcement (V28) yields zero hits, allow rendering
+    #   of current canonical metrics by populating canonical_for_render
+    #   from results.primary_metrics_canonical, explicitly labeled
+    #   as unanchored-for-render.
+    #
+    # Safety:
+    #   - Render-only
+    #   - Does NOT affect hashing, snapshots, or fastpath
+    # ============================================================
     try:
-        _fix2d11_join_mode = _fix2d6_get_diff_join_mode_v1()
-    except Exception:
         _fix2d11_join_mode = None
-
-    if (
-        isinstance(locals().get("_v28_anchor_enforce"), dict)
-        and _v28_anchor_enforce.get("attempted")
-        and int(_v28_anchor_enforce.get("hits") or 0) == 0
-        and str(_fix2d11_join_mode or "").lower() == "union"
-    ):
-        _pmc = None
         try:
-            _pmc = output.get("results", {}).get("primary_metrics_canonical")
+            _fix2d11_join_mode = _fix2d6_get_diff_join_mode_v1()
         except Exception:
-            _pmc = None
+            _fix2d11_join_mode = None
 
-        if not (isinstance(_pmc, dict) and _pmc):
+        if (
+            isinstance(locals().get("_v28_anchor_enforce"), dict)
+            and _v28_anchor_enforce.get("attempted")
+            and int(_v28_anchor_enforce.get("hits") or 0) == 0
+            and str(_fix2d11_join_mode or "").lower() == "union"
+        ):
+            _pmc = None
             try:
-                _pmc = output.get("results", {}).get("results", {}).get("primary_metrics_canonical")
+                _pmc = output.get("results", {}).get("primary_metrics_canonical")
             except Exception:
                 _pmc = None
 
-        if isinstance(_pmc, dict) and _pmc:
-            try:
-                canonical_for_render = dict(_pmc)
-            except Exception:
-                canonical_for_render = _pmc
+            if not (isinstance(_pmc, dict) and _pmc):
+                try:
+                    _pmc = output.get("results", {}).get("results", {}).get("primary_metrics_canonical")
+                except Exception:
+                    _pmc = None
 
-            try:
-                for _k, _cm in canonical_for_render.items():
-                    if isinstance(_cm, dict):
-                        _cm.setdefault("diag", {})
-                        if isinstance(_cm.get("diag"), dict):
-                            _cm["diag"]["fix2d11_render_fallback_unanchored"] = True
-                            _cm["diag"]["fix2d11_render_fallback_join_mode"] = "union"
-            except Exception:
-                pass
+            if isinstance(_pmc, dict) and _pmc:
+                try:
+                    canonical_for_render = dict(_pmc)
+                except Exception:
+                    canonical_for_render = _pmc
 
-            _v28_anchor_enforce["fix2d11_fallback_applied"] = True
-            _v28_anchor_enforce["fix2d11_fallback_count"] = int(len(_pmc))
-            _v28_anchor_enforce["note_fix2d11"] = (
-                "union-mode fallback: canonical_for_render populated from "
-                "current primary_metrics_canonical (unanchored-for-render)"
-            )
-        else:
-            _v28_anchor_enforce["fix2d11_fallback_applied"] = False
-            _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
-except Exception:
-    pass
-# ============================================================
-# PATCH END: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V1
-# ============================================================
+                try:
+                    for _k, _cm in canonical_for_render.items():
+                        if isinstance(_cm, dict):
+                            _cm.setdefault("diag", {})
+                            if isinstance(_cm.get("diag"), dict):
+                                _cm["diag"]["fix2d11_render_fallback_unanchored"] = True
+                                _cm["diag"]["fix2d11_render_fallback_join_mode"] = "union"
+                except Exception:
+                    pass
 
-# ============================================================
+                _v28_anchor_enforce["fix2d11_fallback_applied"] = True
+                _v28_anchor_enforce["fix2d11_fallback_count"] = int(len(_pmc))
+                _v28_anchor_enforce["note_fix2d11"] = (
+                    "union-mode fallback: canonical_for_render populated from "
+                    "current primary_metrics_canonical (unanchored-for-render)"
+                )
+            else:
+                _v28_anchor_enforce["fix2d11_fallback_applied"] = False
+                _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
+    except Exception:
+        pass
+    # ============================================================
+    # PATCH END: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V1
+    # ============================================================
+
+    # ============================================================
 
 
     except Exception:
