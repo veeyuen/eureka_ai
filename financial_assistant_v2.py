@@ -79,7 +79,92 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D7"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D8"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+
+# ============================================================
+# PATCH START: FIX2D8_PROMOTE_NESTED_RESULTS_V1
+# Purpose:
+#   Normalize output shape by promoting nested results.results.*
+#   up into results.* so downstream diff/render can see current
+#   canonical metrics in the expected location.
+#   (Additive, deterministic)
+# ============================================================
+def _fix2d8_promote_nested_results_v1(output_obj):
+    diag = {
+        "applied": False,
+        "promoted_primary_metrics_canonical": 0,
+        "promoted_primary_response": 0,
+        "notes": []
+    }
+    try:
+        if not isinstance(output_obj, dict):
+            return diag
+        results = output_obj.get("results")
+        if not isinstance(results, dict):
+            return diag
+        nested = results.get("results")
+        if not isinstance(nested, dict):
+            return diag
+
+        nested_pmc = nested.get("primary_metrics_canonical")
+        top_pmc = results.get("primary_metrics_canonical")
+        if isinstance(nested_pmc, dict) and nested_pmc and (not isinstance(top_pmc, dict) or not top_pmc):
+            results["primary_metrics_canonical"] = dict(nested_pmc)
+            diag["promoted_primary_metrics_canonical"] = len(nested_pmc)
+            diag["applied"] = True
+
+        nested_pr = nested.get("primary_response")
+        top_pr = results.get("primary_response")
+        if isinstance(nested_pr, dict) and nested_pr and (not isinstance(top_pr, dict) or not top_pr):
+            results["primary_response"] = dict(nested_pr)
+            diag["promoted_primary_response"] = 1
+            diag["applied"] = True
+
+        # Ensure primary_response.primary_metrics_canonical exists
+        try:
+            if isinstance(results.get("primary_response"), dict) and isinstance(results.get("primary_metrics_canonical"), dict):
+                if "primary_metrics_canonical" not in results["primary_response"]:
+                    results["primary_response"]["primary_metrics_canonical"] = results["primary_metrics_canonical"]
+                    diag["notes"].append("filled_primary_response.primary_metrics_canonical_from_results")
+                    diag["applied"] = True
+        except Exception:
+            pass
+
+        try:
+            results.setdefault("debug", {})
+            results["debug"]["fix2d8_promote_nested_results_v1"] = diag
+        except Exception:
+            pass
+        return diag
+    except Exception as _e:
+        try:
+            diag["notes"].append("exception:" + str(type(_e).__name__))
+        except Exception:
+            pass
+        return diag
+# ============================================================
+# PATCH END: FIX2D8_PROMOTE_NESTED_RESULTS_V1
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D8
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D8",
+        "date": "2026-01-15",
+        "summary": "Normalize output shape by promoting nested results.results.* into results.* for diff/render Current hydration.",
+        "files": ["FIX2D8.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+
+
 
 # ============================================================
 # PATCH START: FIX2D6_EXECUTION_STAMP_AND_ASSERT_V1
@@ -17840,6 +17925,18 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["status"] = "failed"
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
+# ============================================================
+# PATCH START: FIX2D8_PROMOTE_NESTED_RESULTS_CALLSITE_V1
+# Purpose: Ensure results.* contains promoted canonical outputs
+# ============================================================
+try:
+    _fix2d8_promote_nested_results_v1(output)
+except Exception:
+    pass
+# ============================================================
+# PATCH END: FIX2D8_PROMOTE_NESTED_RESULTS_CALLSITE_V1
+# ============================================================
+
         return output
 
 
