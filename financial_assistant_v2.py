@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D12"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D13"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11c
@@ -112,6 +112,24 @@ try:
         "date": "2026-01-15",
         "summary": "Fix Diff Panel V2 premature return that prevented row emission; ensure UNION mode can emit current-only rows (added) and populate Current column.",
         "files": ["FIX2D12.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D13
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D13",
+        "date": "2026-01-15",
+        "summary": "Add baseline-focused diff semantics to Diff Panel V2: classify rows as comparable/added/not_found and emit baseline delta fields + summary counters without requiring injected URLs in Analysis.",
+        "files": ["FIX2D13.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -19429,7 +19447,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     # into "not_found" rows rather than killing the diff panel.
     # =================================================================
     rows = []
-    summary = {"rows_total": 0, "joined_by_ckey": 0, "joined_by_anchor_hash": 0, "not_found": 0}
+    summary = {"rows_total": 0, "joined_by_ckey": 0, "joined_by_anchor_hash": 0, "not_found": 0, "baseline_comparable": 0, "baseline_increased": 0, "baseline_decreased": 0, "baseline_unchanged": 0, "baseline_added": 0, "baseline_not_found": 0}
     # =================================================================
 
 
@@ -19809,6 +19827,61 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 change_type = "removed"
                 change_pct = None
 
+# -----------------------------------------------------------------
+        # PATCH FIX2D13_BASELINE_SEMANTICS_V1 (ADDITIVE)
+        # Baseline-focused semantics for Analysis -> Evolution comparison:
+        # - Only compute increased/decreased/unchanged when BOTH sides have numeric values.
+        # - If baseline missing but current present => added (newly discovered vs baseline)
+        # - If baseline present but current missing => not_found (missing vs baseline)
+        # This is orthogonal to join_mode (strict/union) and preserves existing row fields.
+        # -----------------------------------------------------------------
+        baseline_prev_value = prev_raw if _has_prev else None
+        baseline_cur_value = cur_raw if _has_cur else None
+        baseline_delta_abs = None
+        baseline_delta_pct = None
+        baseline_change_type = None
+        baseline_is_comparable = bool(_has_prev and _has_cur)
+
+        if baseline_is_comparable:
+            try:
+                _d = float(cur_val_norm) - float(prev_val_norm)
+                baseline_delta_abs = _d
+                if abs(float(prev_val_norm)) > 1e-12:
+                    baseline_delta_pct = (_d / float(prev_val_norm)) * 100.0
+                # tolerance: treat tiny diffs as unchanged (avoid float jitter)
+                if abs(_d) < 1e-9:
+                    baseline_change_type = "unchanged"
+                elif _d > 0:
+                    baseline_change_type = "increased"
+                else:
+                    baseline_change_type = "decreased"
+            except Exception:
+                baseline_is_comparable = False
+                baseline_change_type = "unknown"
+        else:
+            if _has_cur and not _has_prev:
+                baseline_change_type = "added"
+            elif _has_prev and not _has_cur:
+                baseline_change_type = "not_found"
+            else:
+                baseline_change_type = "unknown"
+
+        try:
+            summary["baseline_comparable"] = int(summary.get("baseline_comparable") or 0) + (1 if baseline_is_comparable else 0)
+            if baseline_change_type == "increased":
+                summary["baseline_increased"] = int(summary.get("baseline_increased") or 0) + 1
+            elif baseline_change_type == "decreased":
+                summary["baseline_decreased"] = int(summary.get("baseline_decreased") or 0) + 1
+            elif baseline_change_type == "unchanged":
+                summary["baseline_unchanged"] = int(summary.get("baseline_unchanged") or 0) + 1
+            elif baseline_change_type == "added":
+                summary["baseline_added"] = int(summary.get("baseline_added") or 0) + 1
+            elif baseline_change_type == "not_found":
+                summary["baseline_not_found"] = int(summary.get("baseline_not_found") or 0) + 1
+        except Exception:
+            pass
+        # END PATCH FIX2D13_BASELINE_SEMANTICS_V1
+
         display_name = pm.get("name") or pm.get("display_name") or pm.get("original_name") or prev_ckey
 
         row = {
@@ -19819,6 +19892,15 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             "change_pct": change_pct,
             "change_type": change_type,
             "match_confidence": match_conf,
+
+            # PATCH FIX2D13 (ADDITIVE): baseline-focused diff fields
+            "baseline_prev_value": baseline_prev_value,
+            "baseline_cur_value": baseline_cur_value,
+            "baseline_delta_abs": baseline_delta_abs,
+            "baseline_delta_pct": baseline_delta_pct,
+            "baseline_change_type": baseline_change_type,
+            "baseline_is_comparable": baseline_is_comparable,
+
 
             # minimal context fields kept for UI compatibility
             "context_snippet": None,
@@ -19940,6 +20022,15 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "change_pct": None,
                     "change_type": "current_only",
                     "match_confidence": 0.0,
+
+                    # PATCH FIX2D13 (ADDITIVE): baseline-focused diff fields
+                    "baseline_prev_value": None,
+                    "baseline_cur_value": cur_raw,
+                    "baseline_delta_abs": None,
+                    "baseline_delta_pct": None,
+                    "baseline_change_type": "added",
+                    "baseline_is_comparable": False,
+
                     "context_snippet": None,
                     "source_url": (_metric_source_urls(cm) or [None])[0],
                     "anchor_used": False,
@@ -19979,6 +20070,10 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     pass
 
                 rows.append(row)
+                try:
+                    summary["baseline_added"] = int(summary.get("baseline_added") or 0) + 1
+                except Exception:
+                    pass
                 current_only_total += 1
                 if row.get("from_injected_url"):
                     current_only_injected += 1
@@ -33010,6 +33105,15 @@ def build_diff_metrics_panel_v2_fix2j(prev_response: dict, cur_response: dict):
             "change_pct": change_pct,
             "change_type": change_type,
             "match_confidence": match_conf,
+
+            # PATCH FIX2D13 (ADDITIVE): baseline-focused diff fields
+            "baseline_prev_value": baseline_prev_value,
+            "baseline_cur_value": baseline_cur_value,
+            "baseline_delta_abs": baseline_delta_abs,
+            "baseline_delta_pct": baseline_delta_pct,
+            "baseline_change_type": baseline_change_type,
+            "baseline_is_comparable": baseline_is_comparable,
+
             "context_snippet": None,
             "source_url": None,
             "anchor_used": (method == "anchor_hash"),
@@ -33070,6 +33174,15 @@ def build_diff_metrics_panel_v2_fix2j(prev_response: dict, cur_response: dict):
                     "change_pct": None,
                     "change_type": "current_only",
                     "match_confidence": 0.0,
+
+                    # PATCH FIX2D13 (ADDITIVE): baseline-focused diff fields
+                    "baseline_prev_value": None,
+                    "baseline_cur_value": cur_raw,
+                    "baseline_delta_abs": None,
+                    "baseline_delta_pct": None,
+                    "baseline_change_type": "added",
+                    "baseline_is_comparable": False,
+
                     "context_snippet": None,
                     "source_url": cm.get("source_url"),
                     "anchor_used": False,
@@ -33143,6 +33256,15 @@ def build_diff_metrics_panel_v2_fix2j(prev_response: dict, cur_response: dict):
                     "change_pct": None,
                     "change_type": "current_only",
                     "match_confidence": 0.0,
+
+                    # PATCH FIX2D13 (ADDITIVE): baseline-focused diff fields
+                    "baseline_prev_value": None,
+                    "baseline_cur_value": cur_raw,
+                    "baseline_delta_abs": None,
+                    "baseline_delta_pct": None,
+                    "baseline_change_type": "added",
+                    "baseline_is_comparable": False,
+
                     "context_snippet": n.get("context_snippet") or n.get("context"),
                     "source_url": n.get("source_url"),
                     "anchor_used": False,
@@ -33585,6 +33707,15 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
             "change_pct": change_pct,
             "change_type": change_type,
             "match_confidence": match_conf,
+
+            # PATCH FIX2D13 (ADDITIVE): baseline-focused diff fields
+            "baseline_prev_value": baseline_prev_value,
+            "baseline_cur_value": baseline_cur_value,
+            "baseline_delta_abs": baseline_delta_abs,
+            "baseline_delta_pct": baseline_delta_pct,
+            "baseline_change_type": baseline_change_type,
+            "baseline_is_comparable": baseline_is_comparable,
+
             "context_snippet": None,
             "source_url": None,
             "anchor_used": (method_effective == "anchor_hash"),
@@ -33648,6 +33779,15 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):  # noq
                     "change_pct": None,
                     "change_type": "current_only",
                     "match_confidence": 0.0,
+
+                    # PATCH FIX2D13 (ADDITIVE): baseline-focused diff fields
+                    "baseline_prev_value": None,
+                    "baseline_cur_value": cur_raw,
+                    "baseline_delta_abs": None,
+                    "baseline_delta_pct": None,
+                    "baseline_change_type": "added",
+                    "baseline_is_comparable": False,
+
                     "context_snippet": None,
                     "source_url": (urls or [None])[0],
                     "anchor_used": False,
