@@ -79,7 +79,86 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D9"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D10"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+
+# ============================================================
+# PATCH START: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_V1
+# Purpose:
+#   The Evolution dashboard diagnostics expect output_debug.canonical_for_render_v1
+#   to exist. Some code paths populate current canonical under results.primary_metrics_canonical
+#   (or nested results.results.*). This patch materializes output_debug.canonical_for_render_v1
+#   from results.primary_metrics_canonical (post-promotion) to eliminate false 'missing' signals
+#   and allow Current column hydration.
+# ============================================================
+def _fix2d10_materialize_output_debug_canonical_for_render_v1(output_obj):
+    diag = {
+        "applied": False,
+        "source": None,
+        "count": 0,
+        "keys_sample": [],
+    }
+    try:
+        if not isinstance(output_obj, dict):
+            return diag
+        results = output_obj.get("results")
+        if not isinstance(results, dict):
+            return diag
+        # prefer top-level results.primary_metrics_canonical
+        pmc = results.get("primary_metrics_canonical")
+        src_name = "results.primary_metrics_canonical"
+        if not (isinstance(pmc, dict) and pmc):
+            nested = results.get("results")
+            if isinstance(nested, dict) and isinstance(nested.get("primary_metrics_canonical"), dict) and nested.get("primary_metrics_canonical"):
+                pmc = nested.get("primary_metrics_canonical")
+                src_name = "results.results.primary_metrics_canonical"
+        if not (isinstance(pmc, dict) and pmc):
+            diag["source"] = "none"
+            return diag
+
+        # materialize output_debug.canonical_for_render_v1
+        od = output_obj.get("output_debug")
+        if not isinstance(od, dict):
+            od = {}
+            output_obj["output_debug"] = od
+        od["canonical_for_render_v1"] = dict(pmc)
+        diag["applied"] = True
+        diag["source"] = src_name
+        diag["count"] = len(pmc)
+        try:
+            diag["keys_sample"] = list(pmc.keys())[:10]
+        except Exception:
+            diag["keys_sample"] = []
+
+        try:
+            results.setdefault("debug", {})
+            results["debug"]["fix2d10_materialize_output_debug_canonical_for_render_v1"] = diag
+        except Exception:
+            pass
+
+        return diag
+    except Exception:
+        return diag
+# ============================================================
+# PATCH END: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_V1
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D10
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D10",
+        "date": "2026-01-15",
+        "summary": "Materialize output_debug.canonical_for_render_v1 from results.primary_metrics_canonical so dashboard can hydrate Current and diagnostics stop falsely flagging missing.",
+        "files": ["FIX2D10.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# ============================================================
+
 
 # ============================================================
 # PATCH START: FIX2D9_SCHEMA_ANCHORED_REBUILD_V1
@@ -18020,6 +18099,17 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             pass
         # ============================================================
         # PATCH END: FIX2D8_PROMOTE_NESTED_RESULTS_CALLSITE_V1
+        # ============================================================
+        # ============================================================
+        # PATCH START: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_CALLSITE_V1
+        # Purpose: ensure output_debug.canonical_for_render_v1 is present for dashboard hydration
+        # ============================================================
+        try:
+            _fix2d10_materialize_output_debug_canonical_for_render_v1(output)
+        except Exception:
+            pass
+        # ============================================================
+        # PATCH END: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_CALLSITE_V1
         # ============================================================
         return output
 
