@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D11c"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D12"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11c
@@ -93,6 +93,25 @@ try:
         "date": "2026-01-15",
         "summary": "Fix indentation/scope of FIX2D11 render fallback by ensuring it remains inside compute_source_anchored_diff (4-space indent) to avoid parse-time try/indent errors.",
         "files": ["FIX2D11c.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D12
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D12",
+        "date": "2026-01-15",
+        "summary": "Fix Diff Panel V2 premature return that prevented row emission; ensure UNION mode can emit current-only rows (added) and populate Current column.",
+        "files": ["FIX2D12.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -19678,7 +19697,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     except Exception:
         pass
     # END PATCH FIX2W_DIFF_PANEL_INJ_TRACE_ATTACH_V1
-    return rows, summary
 
     # Emit rows (deterministic ordering). Default is strict (prev-only).
     _join_mode = _fix2d6_get_diff_join_mode_v1()
