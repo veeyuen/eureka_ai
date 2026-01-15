@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D19"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D20"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 
 # ============================================================
@@ -115,6 +115,133 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+
+
+# PATCH TRACKER V1 (ADD): FIX2D20
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D20",
+        "date": "2026-01-15",
+        "summary": "Diagnostic-first trace: record every year-like (1900-2100) value committed to primary_metrics_canonical, including callsite tags and metric object metadata; also disable FIX2D18/FIX2D19 logic while tracing.",
+        "files": ["FIX2D20.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D20 (ADD): Disable earlier speculative selection tweaks while tracing
+# =====================================================================
+_FIX2D20_DISABLE_FIX2D18 = True
+_FIX2D20_DISABLE_FIX2D19 = True
+
+# =====================================================================
+# PATCH FIX2D20 (ADD): Year-like commit tracing for primary_metrics_canonical
+# - We have repeated evidence of year tokens (e.g., 2024/2030) being committed
+#   with method/unit missing. This patch records *where* and *what* is being
+#   committed so we can fix the correct choke point without more speculation.
+# =====================================================================
+
+def _fix2d20_is_yearish_value(v):
+    try:
+        if v is None:
+            return False
+        fv = float(v)
+        iv = int(fv)
+        if abs(fv - iv) > 1e-6:
+            return False
+        return 1900 <= iv <= 2100
+    except Exception:
+        return False
+
+
+def _fix2d20_is_yearish_token(raw: str) -> bool:
+    try:
+        s = str(raw or '').strip()
+        if not s:
+            return False
+        # allow "2030" or "2030.0"
+        if re.fullmatch(r"\d{4}(?:\.0+)?", s):
+            iv = int(float(s))
+            return 1900 <= iv <= 2100
+        return False
+    except Exception:
+        return False
+
+
+def _fix2d20_trace_year_like_commits(output: dict, stage: str, callsite: str) -> None:
+    try:
+        if not isinstance(output, dict):
+            return
+        results = output.get('results')
+        if not isinstance(results, dict):
+            return
+        pmc = results.get('primary_metrics_canonical')
+        if not isinstance(pmc, dict) or not pmc:
+            return
+        dbg = results.setdefault('debug', {})
+        if not isinstance(dbg, dict):
+            return
+        trace = dbg.setdefault('fix2d20_year_commit_trace_v1', {})
+        if not isinstance(trace, dict):
+            return
+        trace.setdefault('stage', str(stage or ''))
+        trace.setdefault('events', [])
+        trace.setdefault('callsite_counts', {})
+        events = trace.get('events')
+        if not isinstance(events, list):
+            events = []
+            trace['events'] = events
+        ccounts = trace.get('callsite_counts')
+        if not isinstance(ccounts, dict):
+            ccounts = {}
+            trace['callsite_counts'] = ccounts
+
+        max_events = 80
+        for k, mobj in pmc.items():
+            if not isinstance(mobj, dict):
+                continue
+            v = mobj.get('value_norm')
+            raw = mobj.get('raw')
+            if not (_fix2d20_is_yearish_value(v) or _fix2d20_is_yearish_token(raw)):
+                continue
+            unit = mobj.get('unit_tag')
+            method = mobj.get('method')
+            src = mobj.get('source_url')
+            ev = {
+                'canonical_key': str(k),
+                'value_norm': v,
+                'raw': raw,
+                'unit_tag': unit,
+                'method': method,
+                'source_url': src,
+                'callsite': str(callsite or ''),
+            }
+            # small context sample if present
+            evd = mobj.get('evidence')
+            if isinstance(evd, dict):
+                ctx = evd.get('context_snippet') or evd.get('context')
+                if ctx:
+                    ev['context_snippet'] = str(ctx)[:240]
+                ev['evidence_method'] = evd.get('method')
+                ev['evidence_raw'] = evd.get('raw')
+            diag = mobj.get('diag')
+            if isinstance(diag, dict):
+                ev['diag_keys'] = sorted([str(x) for x in diag.keys()])[:12]
+            events.append(ev)
+            ccounts[str(callsite or '')] = int(ccounts.get(str(callsite or ''), 0) or 0) + 1
+            if len(events) >= max_events:
+                break
+
+        trace['events'] = events
+        trace['callsite_counts'] = ccounts
+    except Exception:
+        return
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11c
@@ -13143,6 +13270,12 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     except Exception:
         pass
 
+    # PATCH FIX2D20 (ADD): trace year-like commits on evolution base-run output
+
+
+    _fix2d20_trace_year_like_commits(out, stage='evolution', callsite='run_source_anchored_evolution_base')
+
+
     return out
 # =========================================================
 # ROBUST EVOLUTION HELPERS (DETERMINISTIC)
@@ -18272,10 +18405,9 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         # ============================================================
         # PATCH END: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_CALLSITE_V1
         # ============================================================
-        return output
-
-
-    # =====================================================================
+        # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
+        _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+        return output    # =====================================================================
     # PATCH FIX41AFC10 (ADDITIVE): Fetch + attach injected URL snapshots when injection delta exists
     #
     # Goal:
@@ -18853,10 +18985,9 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["sources_checked"] = len(baseline_sources_cache)
         output["sources_fetched"] = len(baseline_sources_cache)
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
-        return output
-
-    
-    # =====================================================================
+        # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
+        _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+        return output    # =====================================================================
     # PATCH FIX2D2_ANCHOR_FILL_FOR_CURRENT (ADDITIVE)
     # Purpose:
     #   When schema_frozen is missing/misaligned (e.g., wrong namespace) the render/diff
@@ -19473,12 +19604,11 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
 
-    return output
+    # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
 
+    _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
 
-
-
-# =====================================================================
+    return output# =====================================================================
 # PATCH DIFF_PANEL_V2 (ADDITIVE): Deterministic Diff Metrics Panel V2 table feed
 #
 # Goal:
@@ -21237,9 +21367,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["status"] = "failed"
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
-        return output
-
-    # ---------- Use your existing deterministic metric diff helper ----------
+        # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
+        _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+        return output    # ---------- Use your existing deterministic metric diff helper ----------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
 
     # =====================================================================
@@ -22163,10 +22293,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["sources_checked"] = len(baseline_sources_cache)
         output["sources_fetched"] = len(baseline_sources_cache)
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
-        return output
-
-
-    # =====================================================================
+        # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
+        _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+        return output    # =====================================================================
     # PATCH FIX41AFC19 (ADDITIVE): Anchor-first FIX16 rebuild override (schema parity)
     #
     # Why:
@@ -24565,7 +24694,14 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # =====================================================================
 
 
+    # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
+
+
+    _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+
+
     return output
+
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     Minimal deterministic rebuild:
@@ -29414,6 +29550,8 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
     # =====================================================================
     def _fix2d19_required_domain_tokens(canonical_key: str, spec: dict) -> list:
         try:
+            if bool(globals().get("_FIX2D20_DISABLE_FIX2D19", False)):
+                return []
             ck = str(canonical_key or '').lower()
             dim = str(spec.get('dimension') or spec.get('value_type') or '').lower()
             uf = str(spec.get('unit_family') or '').lower()
@@ -29455,11 +29593,12 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 return has_currency
 
             # FIX2D18: unit-sales expectations (prevents bare years like 2030 from winning)
-            if dim in ("unit_sales","units","sales") or uf in ("unit_sales","units","sales"):
-                # require some unit cue
-                has_units = ("unit" in s) or ("units" in s) or ("million" in s) or ("mn" in s) or ("m " in s) or (" m" in s)
-                if not has_units:
-                    return False
+            if not bool(globals().get("_FIX2D20_DISABLE_FIX2D18", False)):
+                if dim in ("unit_sales","units","sales") or uf in ("unit_sales","units","sales"):
+                    # require some unit cue
+                    has_units = ("unit" in s) or ("units" in s) or ("million" in s) or ("mn" in s) or ("m " in s) or (" m" in s)
+                    if not has_units:
+                        return False
 
             return True
         except Exception:
@@ -30960,8 +31099,11 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         # =====================================================================
         # END PATCH EVO_INJ_TRACE_REPLAY1
         # =====================================================================
-        return out_replay
+        # PATCH FIX2D20 (ADD): trace year-like commits on evolution replay output
 
+        _fix2d20_trace_year_like_commits(out_replay, stage='evolution', callsite='run_source_anchored_evolution_replay')
+
+        return out_replay
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
     # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
     wc = {"scraped_meta": scraped_meta}
@@ -31023,6 +31165,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
             except Exception:
                 pass
+            # PATCH FIX2D20 (ADD): trace year-like commits on evolution changed output
+
+            _fix2d20_trace_year_like_commits(out_changed, stage='evolution', callsite='run_source_anchored_evolution_changed')
+
             return out_changed
         except Exception:
             pass
