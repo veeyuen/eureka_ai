@@ -135,6 +135,7 @@ def _fix2d8_promote_nested_results_v1(output_obj):
             results["debug"]["fix2d8_promote_nested_results_v1"] = diag
         except Exception:
             pass
+
         return diag
     except Exception as _e:
         try:
@@ -156,14 +157,12 @@ try:
         "patch_id": "FIX2D8",
         "date": "2026-01-15",
         "summary": "Normalize output shape by promoting nested results.results.* into results.* for diff/render Current hydration.",
-        "files": ["FIX2D8.py"],
+        "files": ["FIX2D8_fixed.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
-
 # ============================================================
-
 
 
 # ============================================================
@@ -17925,18 +17924,17 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["status"] = "failed"
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
-# ============================================================
-# PATCH START: FIX2D8_PROMOTE_NESTED_RESULTS_CALLSITE_V1
-# Purpose: Ensure results.* contains promoted canonical outputs
-# ============================================================
-try:
-    _fix2d8_promote_nested_results_v1(output)
-except Exception:
-    pass
-# ============================================================
-# PATCH END: FIX2D8_PROMOTE_NESTED_RESULTS_CALLSITE_V1
-# ============================================================
-
+        # ============================================================
+        # PATCH START: FIX2D8_PROMOTE_NESTED_RESULTS_CALLSITE_V1
+        # Purpose: Ensure results.* contains promoted canonical outputs
+        # ============================================================
+        try:
+            _fix2d8_promote_nested_results_v1(output)
+        except Exception:
+            pass
+        # ============================================================
+        # PATCH END: FIX2D8_PROMOTE_NESTED_RESULTS_CALLSITE_V1
+        # ============================================================
         return output
 
 
