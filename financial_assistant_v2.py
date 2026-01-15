@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D15"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D16"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11c
@@ -131,6 +131,12 @@ try:
         "date": "2026-01-15",
         "summary": "Reject bare-year tokens (e.g., 2030) during schema-only rebuild for non-year metrics; add diagnostics to prevent year pollution and restore stable baseline comparables.",
         "files": ["FIX2D15.py"],
+    })
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D16",
+        "date": "2026-01-15",
+        "summary": "Add soft-match fallback to fill current values for baseline rows when anchor/ckey join fails; add last-mile bare-year reject for schema-only rebuild promotions. Disable FIX2D15 gating.",
+        "files": ["FIX2D16.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -29184,6 +29190,10 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             return ("", "", 0, "", "", 0.0)
 
     # =====================================================================
+    # PATCH FIX2D16 (ADD): Disable FIX2D15 gating; rely on last-mile bare-year reject instead
+    _fix2d16_disable_fix2d15 = True
+
+    # (Legacy block retained for context but disabled)
     # PATCH FIX2D15 (ADD): Harden schema-only rebuild candidate eligibility
     # Goals:
     #   1) Prevent bare-year tokens (e.g., 2030) from being selected as metric values
@@ -29351,24 +29361,24 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
-
-            # PATCH FIX2D15 (ADD): additional eligibility gates (year-token / domain / unit-family)
-            try:
-                _ok2, _why2 = _fix2d15_candidate_ok(c, spec, canonical_key=str(canonical_key), kw_norm=kw_norm)
-                if not _ok2:
-                    dbg.setdefault("fix2d15_reject_reasons", {})
-                    dbg["fix2d15_reject_reasons"][_why2] = int(dbg["fix2d15_reject_reasons"].get(_why2) or 0) + 1
-                    if _why2 == "bare_year_token":
-                        if len(dbg.get("fix2d15_year_reject_samples") or []) < 20:
-                            dbg["fix2d15_year_reject_samples"].append({
-                                "canonical_key": str(canonical_key),
-                                "raw": str(c.get("raw") or c.get("value") or "")[:80],
-                                "value_norm": c.get("value_norm"),
-                                "source_url": str(c.get("source_url") or "")[:120],
-                            })
-                    continue
-            except Exception:
-                pass
+            # PATCH FIX2D16 (ADD): FIX2D15 gating disabled (kept for reference only)
+            if not _fix2d16_disable_fix2d15:
+                try:
+                    _ok2, _why2 = _fix2d15_candidate_ok(c, spec, canonical_key=str(canonical_key), kw_norm=kw_norm)
+                    if not _ok2:
+                        dbg.setdefault("fix2d15_reject_reasons", {})
+                        dbg["fix2d15_reject_reasons"][_why2] = int(dbg["fix2d15_reject_reasons"].get(_why2) or 0) + 1
+                        if _why2 == "bare_year_token":
+                            if len(dbg.get("fix2d15_year_reject_samples") or []) < 20:
+                                dbg["fix2d15_year_reject_samples"].append({
+                                    "canonical_key": str(canonical_key),
+                                    "raw": str(c.get("raw") or c.get("value") or "")[:80],
+                                    "value_norm": c.get("value_norm"),
+                                    "source_url": str(c.get("source_url") or "")[:120],
+                                })
+                        continue
+                except Exception:
+                    pass
 
             ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
             raw = _norm(c.get("raw") or "")
@@ -29391,6 +29401,29 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         if kw_norm and best_hits <= 0:
             dbg["schema_only_zero_hit_metrics_fix17"].append({"canonical_key": canonical_key, "reason": "no_keyword_hits"})
             continue
+
+        # =====================================================================
+        # PATCH FIX2D16 (ADD): Last-mile bare-year rejection for schema-only promotions
+        # Even if earlier eligibility gates miss it, prevent committing a pure year
+        # (e.g., 2030) as the metric value for non-year metrics.
+        # =====================================================================
+        try:
+            if _fix2d15_is_bare_year_token(best) and not _fix2d15_expects_year_value(spec, str(canonical_key)):
+                dbg.setdefault("fix2d16_rejected_bare_year_commit", 0)
+                dbg["fix2d16_rejected_bare_year_commit"] = int(dbg.get("fix2d16_rejected_bare_year_commit") or 0) + 1
+                dbg.setdefault("fix2d16_rejected_bare_year_samples", [])
+                if len(dbg.get("fix2d16_rejected_bare_year_samples") or []) < 20:
+                    dbg["fix2d16_rejected_bare_year_samples"].append({
+                        "canonical_key": str(canonical_key),
+                        "raw": str(best.get("raw") or best.get("value") or "")[:80],
+                        "value_norm": best.get("value_norm"),
+                        "source_url": str(best.get("source_url") or "")[:120],
+                    })
+                continue
+        except Exception:
+            pass
+        # =====================================================================
+
 
         rebuilt[canonical_key] = {
             "canonical_key": canonical_key,
@@ -34231,18 +34264,166 @@ def build_diff_metrics_panel_v2_fix2k(prev_response: dict, cur_response: dict):
                     pass
 
     # -------------------------------
-    # (2) Broader current-only rows
+    # PATCH FIX2D16 (ADD): Soft-match fill for baseline rows when no join
+    # Goal: enable baseline diffing (increased/decreased) even when anchor/ckey join fails,
+    # by searching deterministic extracted_numbers pools for a plausible current candidate.
+    # Scope: only rows where resolved_cur_ckey is null and prev_value_norm is numeric.
+    # Safety: does NOT affect canonical metrics; render-only row enrichment.
     # -------------------------------
-    # Determine which current keys are already represented.
-    represented_cur_ckeys = set()
-    represented_cur_anchors = set()
+    def _fix2d16_tokens(s: str):
+        try:
+            s = str(s or "").lower()
+            s = re.sub(r"[^a-z0-9]+", " ", s)
+            toks = [t for t in s.split() if t and len(t) >= 4 and not re.fullmatch(r"\d{4}", t)]
+            stop = set(["global","world","total","overall","metric","market","report","growth","forecast","electric","vehicle","vehicles","sales"])
+            return [t for t in toks if t not in stop]
+        except Exception:
+            return []
 
+    def _fix2d16_unit_family_from_row(r: dict) -> str:
+        try:
+            ut = str(r.get("prev_unit_tag") or r.get("unit_tag") or "").lower()
+            name = str(r.get("name") or "").lower()
+            if "%" in ut or "percent" in ut or "pct" in ut or "share" in name:
+                return "percent"
+            if "$" in ut or "usd" in ut or "us$" in ut or "currency" in ut or "revenue" in name or "investment" in name:
+                return "currency"
+            return ""
+        except Exception:
+            return ""
+
+    def _fix2d16_candidate_unit_ok(c: dict, uf: str) -> bool:
+        try:
+            raw = str(c.get("raw") or c.get("display") or "")
+            unit = str(c.get("unit") or c.get("unit_tag") or c.get("base_unit") or "").lower()
+            s2 = (raw + " " + unit).lower()
+            if uf == "percent":
+                return ("%" in raw) or ("percent" in s2) or ("pct" in s2)
+            if uf == "currency":
+                return ("$" in raw) or ("us$" in s2) or ("usd" in s2) or ("eur" in s2) or ("gbp" in s2) or ("€" in raw) or ("£" in raw) or ("bn" in s2) or ("billion" in s2)
+            return True
+        except Exception:
+            return True
+
+    def _fix2d16_build_pool(resp: dict):
+        pool = []
+        bsc = _unwrap_baseline_sources_cache_current(resp)
+        for s in (bsc or []):
+            if not isinstance(s, dict):
+                continue
+            src = _norm_url(s.get("source_url") or s.get("url") or "")
+            nums = s.get("extracted_numbers")
+            if not isinstance(nums, list) or not nums:
+                continue
+            for n in nums:
+                if not isinstance(n, dict):
+                    continue
+                vn = n.get("value_norm")
+                if vn is None:
+                    vn = n.get("value")
+                try:
+                    fv = float(vn)
+                except Exception:
+                    continue
+                unit_tag = str(n.get("unit_tag") or n.get("unit") or n.get("base_unit") or "").strip()
+                raw = str(n.get("raw") or n.get("display") or n.get("value") or "")
+                if (not unit_tag) and 1900 <= fv <= 2100 and re.fullmatch(r"\d{4}(?:\.0)?", raw.strip()):
+                    continue
+                pool.append({
+                    "value_norm": fv,
+                    "raw": raw,
+                    "unit_tag": unit_tag,
+                    "context": str(n.get("context") or n.get("context_snippet") or n.get("snippet") or ""),
+                    "source_url": src,
+                })
+        pool.sort(key=lambda x: (x.get("source_url") or "", x.get("raw") or "", str(x.get("value_norm") or "")))
+        return pool
+
+    _fix2d16_pool = _fix2d16_build_pool(cur_response)
+
+    _fix2d16_soft_filled = 0
     for r in (rows or []):
         if not isinstance(r, dict):
             continue
-        diag = r.get('diag') if isinstance(r.get('diag'), dict) else {}
-        jt = diag.get('diff_join_trace_v1') if isinstance(diag.get('diff_join_trace_v1'), dict) else {}
-        rc = jt.get('resolved_cur_ckey')
+        diag = r.get("diag") if isinstance(r.get("diag"), dict) else {}
+        jt = diag.get("diff_join_trace_v1") if isinstance(diag.get("diff_join_trace_v1"), dict) else {}
+        resolved = jt.get("resolved_cur_ckey")
+        if resolved:
+            continue
+
+        pv = r.get("prev_value_norm")
+        try:
+            pvf = float(pv)
+        except Exception:
+            continue
+
+        name = str(r.get("name") or r.get("canonical_key") or "")
+        toks = _fix2d16_tokens(name) + _fix2d16_tokens(str(r.get("canonical_key") or ""))
+        uf = _fix2d16_unit_family_from_row(r)
+
+        best = None
+        best_key = None
+        for c in _fix2d16_pool:
+            if uf and not _fix2d16_candidate_unit_ok(c, uf):
+                continue
+            ctxn = ((c.get("context") or "") + " " + (c.get("raw") or "")).lower()
+            hits = 0
+            for t in toks:
+                if t and t in ctxn:
+                    hits += 1
+            if toks and hits <= 0:
+                continue
+            key = (-hits, c.get("source_url") or "", c.get("raw") or "", float(c.get("value_norm") or 0.0))
+            if best is None or key < best_key:
+                best = c
+                best_key = key
+
+        if not best:
+            continue
+
+        cvf = float(best.get("value_norm"))
+        r["current_value"] = best.get("raw") or cvf
+        r["cur_value_norm"] = cvf
+
+        try:
+            if cvf > pvf:
+                r["change_type"] = "increased"
+            elif cvf < pvf:
+                r["change_type"] = "decreased"
+            else:
+                r["change_type"] = "unchanged"
+            if pvf != 0:
+                r["change_pct"] = ((cvf - pvf) / pvf) * 100.0
+            else:
+                r["change_pct"] = None
+        except Exception:
+            pass
+
+        try:
+            diag["diff_soft_match_v1"] = {
+                "applied": True,
+                "unit_family": uf or None,
+                "candidate_source_url": best.get("source_url"),
+                "candidate_raw": (best.get("raw") or "")[:120],
+                "candidate_value_norm": cvf,
+            }
+            cst = diag.get("diff_current_source_trace_v1") if isinstance(diag.get("diff_current_source_trace_v1"), dict) else {}
+            cst["current_source_path_used"] = "baseline_sources_cache_current.soft_match"
+            cst["current_value_norm"] = cvf
+            cst["current_unit_tag"] = best.get("unit_tag") or None
+            diag["diff_current_source_trace_v1"] = cst
+            r["diag"] = diag
+        except Exception:
+            pass
+
+        _fix2d16_soft_filled += 1
+
+    try:
+        if not isinstance(summary, dict):
+            summary = {}
+        summary["fix2d16_soft_match_filled_rows"] = int(_fix2d16_soft_filled)
+    except Exception:
+        pass
         if isinstance(rc, str) and rc:
             represented_cur_ckeys.add(rc)
         # prefer explicit cur_anchor_hash fields if present
@@ -34488,4 +34669,14 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2D2
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX2D16_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = "FIX2D16"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX2D16_VERSION_BUMP
 # =====================================================================
