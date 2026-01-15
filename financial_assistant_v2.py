@@ -25953,9 +25953,6 @@ def main():
                         )
 
                         
-# PATCH FIX2C6 (ADDITIVE): apply CoreV1 viewer contract + hash bundle
-results = _corev1_postprocess_evolution(results, baseline_data)
-# ============================================================
 
 
                     except Exception as e:
@@ -25964,6 +25961,17 @@ results = _corev1_postprocess_evolution(results, baseline_data)
 
                         return
 
+
+                # PATCH FIX2C7 (ADDITIVE): apply CoreV1 viewer contract + hash bundle (outside legacy try/except)
+                try:
+                    results = _corev1_postprocess_evolution(results, baseline_data)
+                except Exception as _corev1_e:
+                    # Never fail the legacy UI flow due to viewer postprocessing
+                    if isinstance(results, dict):
+                        results.setdefault('debug', {})
+                        results['debug'].setdefault('corev1', {})
+                        results['debug']['corev1']['postprocess_error'] = f"{type(_corev1_e).__name__}: {_corev1_e}"
+                # ============================================================
 
                 interpretation = ""
                 try:
