@@ -82,6 +82,58 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 CODE_VERSION = "FIX2D6"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
 
 # ============================================================
+# PATCH START: FIX2D6_EXECUTION_STAMP_AND_ASSERT_V1
+# Purpose:
+#   - Assert the running code version at runtime (fail fast if wrong file imported)
+#   - Emit execution stamp into results.debug so JSON proves which code ran
+#   - Emit join mode into results.debug
+# ============================================================
+EXPECTED_CODE_VERSION_FIX2D6 = "FIX2D6"
+
+def _fix2d6_assert_and_stamp_runtime_v1(output_obj, join_mode=None):
+    """Fail-fast version assert + JSON-visible execution stamp."""
+    # Hard assert: if this file isn't the one executing, stop immediately.
+    if str(globals().get("CODE_VERSION", "")).strip() != EXPECTED_CODE_VERSION_FIX2D6:
+        raise RuntimeError(
+            "FIX2D6 runtime assert failed: CODE_VERSION=%r expected=%r"
+            % (globals().get("CODE_VERSION"), EXPECTED_CODE_VERSION_FIX2D6)
+        )
+    try:
+        if isinstance(output_obj, dict):
+            output_obj.setdefault("results", {}).setdefault("debug", {})
+            output_obj["results"]["debug"]["__exec_code_version"] = globals().get("CODE_VERSION")
+            try:
+                output_obj["results"]["debug"]["__exec_join_mode"] = join_mode
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+# ============================================================
+# PATCH END: FIX2D6_EXECUTION_STAMP_AND_ASSERT_V1
+
+# ============================================================
+# PATCH START: FIX2D6_BUILD_DIFF_KEY_UNIVERSE_V1
+# Purpose: Construct diff row key universe (strict vs union)
+# ============================================================
+def _build_diff_key_universe(prev_keys, cur_keys):
+    join_mode = None
+    try:
+        join_mode = _fix2d6_get_diff_join_mode_v1()
+    except Exception:
+        join_mode = "strict"
+    if join_mode == "union":
+        return sorted(set(prev_keys) | set(cur_keys)), join_mode
+    return sorted(set(prev_keys)), join_mode
+# ============================================================
+# PATCH END: FIX2D6_BUILD_DIFF_KEY_UNIVERSE_V1
+# ============================================================
+
+# ============================================================
+
+
+
+# ============================================================
 # PATCH START: FIX2D6_HARDCODE_JOIN_MODE_V1
 # Purpose:
 #   Allow a hardcoded override for diff join mode (demo/debug).
