@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D13"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D14"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11c
@@ -112,6 +112,24 @@ try:
         "date": "2026-01-15",
         "summary": "Fix Diff Panel V2 premature return that prevented row emission; ensure UNION mode can emit current-only rows (added) and populate Current column.",
         "files": ["FIX2D12.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D14
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D14",
+        "date": "2026-01-15",
+        "summary": "Reject bare-year tokens (e.g., 2030) during schema-only rebuild for non-year metrics; add diagnostics to prevent year pollution and restore stable baseline comparables.",
+        "files": ["FIX2D14.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -29164,11 +29182,60 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         except Exception:
             return ("", "", 0, "", "", 0.0)
 
+    # PATCH FIX2D14 (ADD): reject bare-year numeric tokens for non-year metrics
+    def _fix2d14_is_bare_year_candidate(cand: dict, metric_is_year_like: bool, canonical_key: str, spec: dict) -> bool:
+        try:
+            if metric_is_year_like:
+                return False
+            # if the metric key itself encodes a year target, it's not a "year-as-value" metric
+            # (e.g., chargers_2040 is a 2040 projection count; 2040 is not the value)
+            raw = str(cand.get("raw") or cand.get("value") or "").strip()
+            # allow if the metric explicitly expects a year value
+            unit_hint = str(spec.get("unit_tag") or spec.get("unit") or "").lower()
+            dim_hint = str(spec.get("dimension") or spec.get("value_type") or "").lower()
+            expects_year = ("year" in unit_hint) or (dim_hint == "year") or canonical_key.endswith("__year") or ("_year_" in canonical_key)
+            if expects_year:
+                return False
+
+            v = cand.get("value_norm")
+            try:
+                vf = float(v)
+            except Exception:
+                # try parse raw numeric
+                try:
+                    vf = float(re.sub(r"[^0-9\.\-]+", "", raw or ""))
+                except Exception:
+                    return False
+
+            # year range guard
+            if vf < 1900 or vf > 2100:
+                return False
+
+            # raw token should look like a plain year (4 digits) or float-cast of it
+            raw_digits = re.sub(r"[^0-9]", "", raw)
+            looks_year = (len(raw_digits) == 4 and raw_digits == str(int(vf))) or (raw.strip() in [str(int(vf)), f"{int(vf)}.0"])
+            if not looks_year:
+                return False
+
+            # If candidate has explicit unit evidence (%, $, M, etc.), don't treat it as a year token.
+            unit = str(cand.get("unit") or cand.get("unit_tag") or "").strip().lower()
+            if unit:
+                return False
+            if "%" in raw or "$" in raw or "€" in raw or "£" in raw:
+                return False
+
+            return True
+        except Exception:
+            return False
+
     candidates.sort(key=_cand_sort_key)
 
     # Debug sink
     dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
     dbg.setdefault("schema_only_zero_hit_metrics_fix17", [])
+    # PATCH FIX2D14 (ADD): year-token rejection diagnostics
+    dbg.setdefault("fix2d14_rejected_year_candidates", 0)
+    dbg.setdefault("fix2d14_year_reject_samples", [])
 
     rebuilt = {}
 
@@ -29203,6 +29270,21 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
+
+            # PATCH FIX2D14 (ADD): reject bare-year tokens (e.g., 2030) for non-year metrics
+            try:
+                if _fix2d14_is_bare_year_candidate(c, metric_is_year_like, canonical_key=str(canonical_key), spec=spec):
+                    dbg["fix2d14_rejected_year_candidates"] = int(dbg.get("fix2d14_rejected_year_candidates") or 0) + 1
+                    if len(dbg.get("fix2d14_year_reject_samples") or []) < 20:
+                        dbg["fix2d14_year_reject_samples"].append({
+                            "canonical_key": str(canonical_key),
+                            "raw": str(c.get("raw") or c.get("value") or "")[:80],
+                            "value_norm": c.get("value_norm"),
+                            "source_url": str(c.get("source_url") or "")[:120],
+                        })
+                    continue
+            except Exception:
+                pass
 
             ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
             raw = _norm(c.get("raw") or "")
