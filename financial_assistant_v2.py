@@ -20222,17 +20222,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, sn
 
     return {}
 
-# Best-effort version bump (render-layer only)
-try:
-    CODE_VERSION = str(globals().get("CODE_VERSION") or "")
-    if "fix2d1" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D1"
-except Exception:
-    pass
-
-# =====================================================================
-# END PATCH FIX2D1
-# =====================================================================
 
 def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
     """
@@ -20740,23 +20729,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["status"] = "failed"
         output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
-# ============================================================
-# PATCH START: FIX2D7_RESULTS_EXEC_STAMP_V1
-# Purpose: Always stamp exec code version + join mode into results.debug
-# ============================================================
-try:
-    output.setdefault("results", {}).setdefault("debug", {})
-    output["results"]["debug"]["__exec_code_version"] = globals().get("CODE_VERSION")
-    try:
-        output["results"]["debug"]["__exec_join_mode"] = _fix2d6_get_diff_join_mode_v1()
-    except Exception:
-        pass
-except Exception:
-    pass
-# ============================================================
-# PATCH END: FIX2D7_RESULTS_EXEC_STAMP_V1
-# ============================================================
-
         return output
 
     # ---------- Use your existing deterministic metric diff helper ----------
@@ -21968,6 +21940,45 @@ except Exception:
 
         # Apply display override (used by diff below)
         locals()["current_metrics"] = current_metrics_for_display  # keep variable name used by downstream diff
+        # ============================================================
+        # PATCH START: FIX2D7_EXEC_STAMP_AND_PROPAGATE_V1
+        # Purpose:
+        #   - Stamp exec code version + join mode into results.debug
+        #   - Propagate current_metrics_for_display into results.primary_metrics_canonical
+        #     so downstream render/diff can populate the 'Current' column.
+        # ============================================================
+        try:
+            output.setdefault('results', {}).setdefault('debug', {})
+            output['results']['debug']['__exec_code_version'] = globals().get('CODE_VERSION')
+            try:
+                output['results']['debug']['__exec_join_mode'] = _fix2d6_get_diff_join_mode_v1()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            if isinstance(current_metrics_for_display, dict) and current_metrics_for_display:
+                output.setdefault('results', {})
+                output['results']['primary_metrics_canonical'] = dict(current_metrics_for_display)
+                try:
+                    output['results'].setdefault('primary_response', {})
+                    if isinstance(output['results']['primary_response'], dict):
+                        output['results']['primary_response']['primary_metrics_canonical'] = dict(current_metrics_for_display)
+                except Exception:
+                    pass
+                output.setdefault('debug', {})
+                if isinstance(output['debug'], dict):
+                    output['debug']['fix2d7_propagate_current_canon_v1'] = {
+                        'applied': True,
+                        'count': int(len(current_metrics_for_display)),
+                        'keys_sample': list(current_metrics_for_display.keys())[:10],
+                    }
+        except Exception:
+            pass
+        # ============================================================
+        # PATCH END: FIX2D7_EXEC_STAMP_AND_PROPAGATE_V1
+        # ============================================================
+
         try:
             _fix41afc19_keys_sample_v19 = _fix41afc19_keys_sample_v19 or (list(current_metrics_for_display.keys())[:10] if isinstance(current_metrics_for_display, dict) else [])
         except Exception:
@@ -22176,50 +22187,6 @@ except Exception:
     _canonical_for_render_replaced_current_metrics = False
 
     canonical_for_render = {}
-# ============================================================
-# PATCH START: FIX2D7_SEED_CANONICAL_FOR_RENDER_UNION_V1
-# Purpose:
-#   In union-join demo/debug mode, ensure canonical_for_render is populated
-#   directly from current metrics for display when anchor enforcement
-#   produces zero hits. This is render-only and does NOT change hashing,
-#   snapshots, extraction, or canonical selection; it only affects what
-#   the dashboard can show in the "Current" column.
-# ============================================================
-try:
-    _jm7 = None
-    try:
-        _jm7 = _fix2d6_get_diff_join_mode_v1()
-    except Exception:
-        _jm7 = None
-    if (_jm7 == "union") and (isinstance(canonical_for_render, dict) and not canonical_for_render):
-        _src7 = locals().get("current_metrics_for_display")
-        if not isinstance(_src7, dict) or not _src7:
-            _src7 = locals().get("current_metrics") if isinstance(locals().get("current_metrics"), dict) else {}
-        if isinstance(_src7, dict) and _src7:
-            canonical_for_render = dict(_src7)
-            try:
-                for _k7, _v7 in canonical_for_render.items():
-                    if isinstance(_v7, dict):
-                        _v7.setdefault("diag", {})
-                        _v7["diag"]["fix2d7_seeded_union_v1"] = True
-            except Exception:
-                pass
-            try:
-                if isinstance(output.get("debug"), dict):
-                    output["debug"]["fix2d7_seed_canonical_for_render_union_v1"] = {
-                        "applied": True,
-                        "join_mode": _jm7,
-                        "seed_count": int(len(canonical_for_render)),
-                    }
-            except Exception:
-                pass
-except Exception:
-    pass
-# ============================================================
-# PATCH END: FIX2D7_SEED_CANONICAL_FOR_RENDER_UNION_V1
-# ============================================================
-
-
     try:
         # Default: use whatever current_metrics we already have
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
