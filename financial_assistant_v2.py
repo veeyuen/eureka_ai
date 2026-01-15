@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D1"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D3"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
 # =====================================================================
 # PATCH TRACKER V1 (ADD): minimal patch tracker for consolidation
 # =====================================================================
@@ -93,7 +93,15 @@ try:
         "summary": "Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.",
         "files": ["fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py"],
     })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+    
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D3",
+        "date": "2026-01-15",
+        "summary": "Fix FIX41AFC19 v19 display-rebuild pool resolution + callable lookup; harden Diff Panel V2 injected-set detection (support cur_response without debug wrapper).",
+        "files": ["FIX2D3.py"],
+    })
+
+globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
 
@@ -19092,13 +19100,49 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
     # END PATCH FIX2W_INJECTED_SET_BUILD_V2
 
+    # PATCH FIX2D3 START: Diff Panel V2 injected-set detection (cur_response may not include debug wrapper)
     try:
-        _inj = (cur_response or {}).get("debug", {}).get("inj_trace_v1", {})
-        _ad = _inj.get("admitted_norm") or _inj.get("admitted") or []
+        # inj_trace_v1 may live in different containers depending on caller.
+        _inj = None
+
+        # (1) common: cur_response.debug.inj_trace_v1
+        try:
+            if isinstance(cur_response, dict):
+                _dbg = cur_response.get("debug") if isinstance(cur_response.get("debug"), dict) else None
+                if isinstance(_dbg, dict) and isinstance(_dbg.get("inj_trace_v1"), dict):
+                    _inj = _dbg.get("inj_trace_v1")
+                elif isinstance(cur_response.get("inj_trace_v1"), dict):
+                    _inj = cur_response.get("inj_trace_v1")
+        except Exception:
+            _inj = None
+
+        # (2) sometimes: locals/output.debug.inj_trace_v1 (cur_response passed as a partial dict)
+        if not isinstance(_inj, dict) or not _inj:
+            try:
+                _out = locals().get("output")
+                if isinstance(_out, dict):
+                    _dbg2 = _out.get("debug") if isinstance(_out.get("debug"), dict) else None
+                    if isinstance(_dbg2, dict) and isinstance(_dbg2.get("inj_trace_v1"), dict):
+                        _inj = _dbg2.get("inj_trace_v1")
+            except Exception:
+                pass
+
+        # (3) last resort: locals inj_trace_v1 variable
+        if not isinstance(_inj, dict) or not _inj:
+            try:
+                _inj3 = locals().get("inj_trace_v1")
+                if isinstance(_inj3, dict):
+                    _inj = _inj3
+            except Exception:
+                pass
+
+        _ad = (_inj or {}).get("admitted_norm") or (_inj or {}).get("admitted") or []
         if isinstance(_ad, list):
             inj_set = set([u for u in _ad if isinstance(u, str) and u])
     except Exception:
         inj_set = set()
+    # END PATCH FIX2D3
+
 
     def _metric_source_urls(mdict: dict):
         """Best-effort extract list of source/evidence URLs from a canonical metric dict."""
@@ -21596,15 +21640,59 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         if (not _already_applied) or (_already_count <= 0):
             _fix41afc19_attempted_v19 = True
 
+            # PATCH FIX2D3 START: Harden FIX41AFC19 v19 pool resolution + callable lookup
             # Resolve the best available snapshot pool (post-attach merged universe)
-            _pool = (
-                locals().get("baseline_sources_cache_current")
-                or (output.get("baseline_sources_cache_current") if isinstance(output, dict) else None)
-                or (output.get("results", {}).get("baseline_sources_cache_current") if isinstance(output, dict) else None)
-                or locals().get("baseline_sources_cache")
-                or locals().get("baseline_sources_cache_prefetched")
-                or None
-            )
+            # NOTE: Different callers store the "current" snapshot pool under different names.
+            # We intentionally scan a wide set of candidate keys and pick the largest non-empty list.
+            _pool = None
+            _pool_key_used = None
+            try:
+                _cand = []
+
+                # Common/expected keys (current run)
+                _cand.append(("baseline_sources_cache_current", locals().get("baseline_sources_cache_current")))
+                _cand.append(("baseline_sources_cache", locals().get("baseline_sources_cache")))
+                _cand.append(("baseline_sources_cache_prefetched", locals().get("baseline_sources_cache_prefetched")))
+
+                # Attachment / merge outputs (varies by branch)
+                _cand.append(("baseline_sources_cache_attached", locals().get("baseline_sources_cache_attached")))
+                _cand.append(("baseline_sources_cache_merged", locals().get("baseline_sources_cache_merged")))
+                _cand.append(("attached_pool", locals().get("attached_pool")))
+                _cand.append(("current_pool", locals().get("current_pool")))
+                _cand.append(("source_snapshots_current", locals().get("source_snapshots_current")))
+                _cand.append(("snapshots_current", locals().get("snapshots_current")))
+
+                # Sometimes carried on output dict
+                _out = (locals().get("output") if isinstance(locals().get("output"), dict) else None)
+                if isinstance(_out, dict):
+                    _cand.append(("output.baseline_sources_cache_current", _out.get("baseline_sources_cache_current")))
+                    _cand.append(("output.baseline_sources_cache", _out.get("baseline_sources_cache")))
+                    _res = _out.get("results") if isinstance(_out.get("results"), dict) else None
+                    if isinstance(_res, dict):
+                        _cand.append(("output.results.baseline_sources_cache_current", _res.get("baseline_sources_cache_current")))
+                        _cand.append(("output.results.baseline_sources_cache", _res.get("baseline_sources_cache")))
+                        _cand.append(("output.results.attached_pool", _res.get("attached_pool")))
+                        _cand.append(("output.results.current_pool", _res.get("current_pool")))
+
+                # Final sweep: anything in locals containing baseline_sources_cache*
+                for _k, _v in (locals() or {}).items():
+                    if not isinstance(_k, str):
+                        continue
+                    if "baseline_sources_cache" in _k and isinstance(_v, list) and _v:
+                        _cand.append((_k, _v))
+
+                # Choose best candidate (largest list wins)
+                _best = None
+                for _k, _v in _cand:
+                    if isinstance(_v, list) and _v:
+                        if _best is None or len(_v) > len(_best[1] or []):
+                            _best = (_k, _v)
+                if _best is not None:
+                    _pool_key_used, _pool = _best[0], _best[1]
+            except Exception:
+                _pool = None
+                _pool_key_used = None
+
 
             if _pool is None:
                 try:
@@ -21622,13 +21710,40 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
             if isinstance(_pool, list):
                 _fix41afc19_pool_count_v19 = len(_pool or [])
+                _fix41afc19_pool_key_used_v19 = _pool_key_used
 
             # Pick best available rebuild fn
-            _fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+            def _fix2d3_resolve_callable(_name: str):
+                try:
+                    fn = globals().get(_name)
+                    if callable(fn):
+                        return fn
+                except Exception:
+                    pass
+                try:
+                    fn = locals().get(_name)
+                    if callable(fn):
+                        return fn
+                except Exception:
+                    pass
+                try:
+                    import sys as _sys
+                    _mod = _sys.modules.get(__name__)
+                    fn = getattr(_mod, _name, None) if _mod else None
+                    if callable(fn):
+                        return fn
+                except Exception:
+                    pass
+                return None
+
+            # END PATCH FIX2D3
+
+            _fn = _fix2d3_resolve_callable("rebuild_metrics_from_snapshots_analysis_canonical_v1")
             _fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
             if not callable(_fn):
-                _fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+                _fn = _fix2d3_resolve_callable("rebuild_metrics_from_snapshots_schema_only_fix16")
                 _fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+
 
             # PATCH FIX2D2_FALLBACK_REBUILD_FN_NAMES (ADDITIVE):
             # Some branches expose only the legacy names. Accept them as safe fallbacks
@@ -21832,6 +21947,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 output["debug"]["fix41afc19"]["reason"] = str(_fix41afc19_skip_reason_v19)
             output["debug"]["fix41afc19"]["skip_reason_v19"] = str(_fix41afc19_skip_reason_v19 or "")
             output["debug"]["fix41afc19"]["pool_count_v19"] = int(_fix41afc19_pool_count_v19 or 0)
+            output["debug"]["fix41afc19"]["pool_key_used_v19"] = str(locals().get("_fix41afc19_pool_key_used_v19") or locals().get("_pool_key_used") or "")
             output["debug"]["fix41afc19"]["rebuilt_keys_sample_v19"] = list(_fix41afc19_keys_sample_v19 or [])
             if _fix41afc19_winner_trace_v19:
                 output["debug"]["evo_winner_trace_v1"] = _fix41afc19_winner_trace_v19
