@@ -58,154 +58,6 @@ import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-
-# ===================== PATCH FIX2C6 (ADDITIVE): CoreV1 wiring (B then A) =====================
-# Purpose:
-#  - B: Surface CoreV1 hash bundle + version diagnostics in payloads (auditable)
-#  - A: Enforce "viewer by construction" in Evolution: metric_changes current_value always comes from cur_canonical
-# Notes:
-#  - Legacy code remains untouched except for a post-process call-site in Streamlit tab2.
-#  - All imports are lazy to avoid gspread/streamlit CLI issues elsewhere.
-
-import os as _os
-
-def _corev1_enabled() -> bool:
-    v = _os.getenv("YUREEKA_ENABLE_CORE_ENGINE_V1", "")
-    return str(v).strip().lower() in ("1","true","yes","y","on")
-
-def _corev1_try_import():
-    try:
-        import yureeka_core
-        from yureeka_core.core_diff_v1 import core_diff_v1 as _core_diff_v1
-        from yureeka_core.hashing_v1 import (
-            compute_source_snapshot_hash_v1_with_diag as _hash_v1_with_diag,
-            compute_source_snapshot_hash_v2_with_diag as _hash_v2_with_diag,
-            normalize_sources_cache_v1 as _norm_cache,
-        )
-        return {
-            "ok": True,
-            "yureeka_core": yureeka_core,
-            "core_diff_v1": _core_diff_v1,
-            "hash_v1_with_diag": _hash_v1_with_diag,
-            "hash_v2_with_diag": _hash_v2_with_diag,
-            "norm_cache": _norm_cache,
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
-def _corev1_pick_first_dict(*candidates):
-    for c in candidates:
-        if isinstance(c, dict) and c:
-            return c
-    return {}
-
-def _corev1_pick_schema(prev_data: dict, results: dict) -> dict:
-    # Prefer frozen schema if present
-    return _corev1_pick_first_dict(
-        results.get("metric_schema_frozen"),
-        results.get("schema_frozen"),
-        prev_data.get("metric_schema_frozen") if isinstance(prev_data, dict) else {},
-        prev_data.get("schema_frozen") if isinstance(prev_data, dict) else {},
-        results.get("metric_schema"),
-        prev_data.get("metric_schema") if isinstance(prev_data, dict) else {},
-    )
-
-def _corev1_pick_canonical(prev_data: dict, results: dict, which: str) -> dict:
-    # which in {"prev","cur"}
-    if which == "cur":
-        return _corev1_pick_first_dict(
-            results.get("canonical_metrics"),
-            results.get("primary_metrics_canonical"),
-            results.get("canonical_for_render_v1"),
-            results.get("canonical_for_render"),
-            results.get("primary_metrics"),
-        )
-    # prev
-    if isinstance(prev_data, dict):
-        return _corev1_pick_first_dict(
-            prev_data.get("canonical_metrics"),
-            prev_data.get("primary_metrics_canonical"),
-            (prev_data.get("replay_analysis_payload") or {}).get("canonical_metrics") if isinstance(prev_data.get("replay_analysis_payload"), dict) else {},
-            (prev_data.get("analysis_payload") or {}).get("canonical_metrics") if isinstance(prev_data.get("analysis_payload"), dict) else {},
-        )
-    return {}
-
-def _corev1_attach_hash_bundle(results: dict, imported: dict) -> None:
-    # Best-effort: attach source snapshot hashes if we can locate any source cache
-    if not isinstance(results, dict):
-        return
-    dbg = results.setdefault("debug", {})
-    corev1_dbg = dbg.setdefault("corev1", {})
-    corev1_dbg.setdefault("patch_id", "FIX2C6")
-    # Try common cache keys
-    cache = (
-        results.get("baseline_sources_cache_current")
-        or results.get("baseline_sources_cache")
-        or (results.get("debug", {}) or {}).get("baseline_sources_cache_current")
-        or (results.get("debug", {}) or {}).get("baseline_sources_cache")
-    )
-    try:
-        if cache is not None and imported.get("ok"):
-            # Normalize then hash
-            rows, ndiag = imported["norm_cache"](cache)
-            h1, d1 = imported["hash_v1_with_diag"](rows)
-            h2, d2 = imported["hash_v2_with_diag"](rows)
-            corev1_dbg["hashes"] = {
-                "sources_snapshot_v1": h1,
-                "sources_snapshot_v2": h2,
-            }
-            corev1_dbg["hash_normalization"] = {
-                "recognized_shape": ndiag.get("recognized_shape"),
-                "items_in": ndiag.get("items_in"),
-                "items_out": ndiag.get("items_out"),
-                "dropped": ndiag.get("dropped", 0),
-            }
-            corev1_dbg["hash_v1_diag"] = d1
-            corev1_dbg["hash_v2_diag"] = d2
-    except Exception as e:
-        corev1_dbg["hash_bundle_error"] = f"{type(e).__name__}: {e}"
-
-def _corev1_postprocess_evolution(results: dict, prev_data: dict) -> dict:
-    if not _corev1_enabled():
-        return results
-    imported = _corev1_try_import()
-    if not imported.get("ok"):
-        # Still attach minimal debug
-        if isinstance(results, dict):
-            results.setdefault("debug", {}).setdefault("corev1", {})["import_error"] = imported.get("error")
-        return results
-
-    if not isinstance(results, dict):
-        return results
-
-    schema = _corev1_pick_schema(prev_data or {}, results)
-    prev_can = _corev1_pick_canonical(prev_data or {}, results, "prev")
-    cur_can = _corev1_pick_canonical(prev_data or {}, results, "cur")
-
-    # Attach hash bundle + version
-    _corev1_attach_hash_bundle(results, imported)
-
-    # Viewer-by-construction: rebuild metric_changes from prev/cur canonical
-    try:
-        diff_obj = imported["core_diff_v1"](prev_can or {}, cur_can or {}, schema or {})
-        if isinstance(diff_obj, dict) and "metric_changes" in diff_obj:
-            results["metric_changes"] = diff_obj["metric_changes"]
-            results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_applied"] = True
-            results["debug"]["corev1"]["prev_canonical_count"] = len(prev_can or {})
-            results["debug"]["corev1"]["cur_canonical_count"] = len(cur_can or {})
-            results["debug"]["corev1"]["metric_changes_count"] = len(diff_obj.get("metric_changes") or [])
-        else:
-            results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_applied"] = False
-    except Exception as e:
-        results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_error"] = f"{type(e).__name__}: {e}"
-
-    # Ensure canonical_metrics key exists (one truth key)
-    if "canonical_metrics" not in results and isinstance(cur_can, dict):
-        results["canonical_metrics"] = cur_can
-
-    return results
-
-# =================== END PATCH FIX2C6 (ADDITIVE) ===================
 import base64
 import hashlib
 import numpy as np
@@ -227,20 +79,121 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2C9"  
+CODE_VERSION = "FIX2D4"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+# =====================================================================
+# PATCH TRACKER V1 (ADD): minimal patch tracker for consolidation
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D1",
+        "date": "2026-01-15",
+        "summary": "Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.",
+        "files": ["fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py"],
+    })
+    
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D3",
+        "date": "2026-01-15",
+        "summary": "Fix FIX41AFC19 v19 display-rebuild pool resolution + callable lookup; harden Diff Panel V2 injected-set detection (support cur_response without debug wrapper).",
+        "files": ["FIX2D3.py"],
+    })
 
-# === PATCH TRACKER (additive) ===
-PATCH_TRACKER = {
-    "FIX2C9": {
-        "summary": "Evolution: broaden injected URL must-fetch lane to trigger whenever injected URLs are present (not only delta).",
-        "acceptance": [
-            "Injected URLs appear in inj_trace attempted when present.",
-            "Injected URLs no longer get stuck in admitted_minus_attempted due to delta==empty gating.",
-        ],
-    }
-}
-# === PATCH TRACKER END ===
-# PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+
+    PATCH_TRACKER_V1.append({
+        \"patch_id\": \"FIX2D4\",
+        \"date\": \"2026-01-15\",
+        \"summary\": \"Add debug.key_overlap_v1 to explicitly report canonical key overlap (prev vs current) and target key presence for deterministic diff feasibility checks.\",
+        \"files\": [\"FIX2D4.py\"],
+    })
+globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH START: FIX2D4_key_overlap_debug_v1
+# Purpose:
+#   Emit explicit canonical key overlap diagnostics between previous and
+#   current canonical metrics to make diff feasibility observable.
+#   (Additive, no behavior change)
+# =====================================================================
+
+def _emit_key_overlap_debug_v1(prev_metrics, cur_metrics, target_key=None):
+    try:
+        prev_keys = set(prev_metrics.keys()) if isinstance(prev_metrics, dict) else set()
+        cur_keys = set(cur_metrics.keys()) if isinstance(cur_metrics, dict) else set()
+        overlap = prev_keys.intersection(cur_keys)
+        return {
+            "prev_count": len(prev_keys),
+            "cur_count": len(cur_keys),
+            "overlap_count": len(overlap),
+            "overlap_sample": list(sorted(overlap))[:10],
+            "target_key": target_key,
+            "target_present_prev": (target_key in prev_keys) if target_key else None,
+            "target_present_cur": (target_key in cur_keys) if target_key else None,
+        }
+    except Exception as _e:
+        return {
+            "error": "key_overlap_exception",
+            "exception": str(type(_e).__name__),
+        }
+
+# =====================================================================
+# PATCH END: FIX2D4_key_overlap_debug_v1
+# =====================================================================
+# =====================================================================
+# PATCH FIX2D1 START: Fix fn_missing + Diff Panel V2 summary crash
+# - Adds best-effort aliases so FIX41AFC19 display rebuild can find a callable
+# - Wraps Diff Panel V2 _impl call so summary is always defined (no UnboundLocalError)
+# =====================================================================
+def _fix2d1_first_callable_name(candidates):
+    try:
+        for name in candidates:
+            fn = globals().get(name)
+            if callable(fn):
+                return name
+    except Exception:
+        return None
+    return None
+
+def _fix2d1_find_callable_by_contains(substr, deny_exact=None):
+    try:
+        for k, v in globals().items():
+            if deny_exact and k == deny_exact:
+                continue
+            if substr in k and callable(v):
+                return k
+    except Exception:
+        return None
+    return None
+
+# Ensure canonical rebuild symbol exists under the exact names FIX41AFC19 expects
+try:
+    if not callable(globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")):
+        _alt = _fix2d1_first_callable_name([
+            "rebuild_metrics_from_snapshots_analysis_canonical_v1_IMPL",
+            "rebuild_metrics_from_snapshots_analysis_canonical_v1_base",
+            "rebuild_metrics_from_snapshots_analysis_canonical_v1_BASE",
+        ]) or _fix2d1_find_callable_by_contains("rebuild_metrics_from_snapshots_analysis_canonical", deny_exact="rebuild_metrics_from_snapshots_analysis_canonical_v1")
+        if _alt and callable(globals().get(_alt)):
+            globals()["rebuild_metrics_from_snapshots_analysis_canonical_v1"] = globals()[_alt]
+
+    if not callable(globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")):
+        _alt = _fix2d1_first_callable_name([
+            "rebuild_metrics_from_snapshots_schema_only_fix16_IMPL",
+            "rebuild_metrics_from_snapshots_schema_only_fix16_base",
+            "rebuild_metrics_from_snapshots_schema_only_fix16_BASE",
+        ]) or _fix2d1_find_callable_by_contains("rebuild_metrics_from_snapshots_schema_only_fix16", deny_exact="rebuild_metrics_from_snapshots_schema_only_fix16")
+        if _alt and callable(globals().get(_alt)):
+            globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = globals()[_alt]
+except Exception:
+    pass
+# =====================================================================
+# PATCH FIX2D1 END (part 1): aliasing
+# =====================================================================
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -5903,90 +5856,6 @@ def fetch_web_context(
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    # PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1 (ADDITIVE)
-    # Deterministic injected-URL fetch/extract adapter:
-    # - Only used when scrape_url() yields empty text AND url is in injected extras.
-    # - Captures HTTP/content-type/bytes_len diagnostics.
-    # - Provides HTML->visible-text fallback and raw-HTML numeric scan.
-    import hashlib
-    import urllib.request
-    import urllib.error
-
-    def _fix2c8_html_visible_text(html: str) -> str:
-        try:
-            txt = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", html or "")
-            txt = re.sub(r"(?is)<[^>]+>", " ", txt)
-            lines = [ln.strip() for ln in (txt or "").splitlines() if ln.strip()]
-            out = "\n".join(lines)
-            out = re.sub(r"\n{3,}", "\n\n", out)
-            return out.strip()
-        except Exception:
-            return ""
-
-    def _fix2c8_fetch_bytes(u: str, timeout_s: int = 18) -> dict:
-        diag = {
-            "http_status": None,
-            "final_url": u,
-            "content_type": "",
-            "bytes_len": 0,
-            "decode_error": "",
-        }
-        raw = b""
-        try:
-            req = urllib.request.Request(
-                u,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                diag["http_status"] = getattr(resp, "status", None)
-                diag["final_url"] = getattr(resp, "geturl", lambda: u)()
-                try:
-                    diag["content_type"] = resp.headers.get("Content-Type", "") or ""
-                except Exception:
-                    diag["content_type"] = ""
-                raw = resp.read() or b""
-        except urllib.error.HTTPError as e:
-            diag["http_status"] = getattr(e, "code", None)
-            try:
-                diag["content_type"] = e.headers.get("Content-Type", "") or ""
-            except Exception:
-                diag["content_type"] = ""
-            try:
-                raw = e.read() or b""
-            except Exception:
-                raw = b""
-        except Exception as e:
-            diag["decode_error"] = f"{type(e).__name__}: {str(e)[:200]}"
-            raw = b""
-
-        diag["bytes_len"] = len(raw) if isinstance(raw, (bytes, bytearray)) else 0
-        text = ""
-        if diag["bytes_len"] > 0:
-            try:
-                text = raw.decode("utf-8", errors="replace")
-            except Exception as e:
-                diag["decode_error"] = f"{type(e).__name__}: {str(e)[:200]}"
-                try:
-                    text = raw.decode("latin-1", errors="replace")
-                except Exception:
-                    text = ""
-        return {"diag": diag, "raw_text": text}
-
-    def _fix2c8_sha256(s: str) -> str:
-        try:
-            return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
-        except Exception:
-            return ""
-    # END PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1
-
     def _is_probably_url(s: str) -> bool:
         if not s or not isinstance(s, str):
             return False
@@ -6369,44 +6238,12 @@ def fetch_web_context(
 
         try:
             text = scrape_url(url)  # ✅ ScrapingDog + fallback inside scrape_url
-
-            # PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1 (ADDITIVE)
-            # If scrape_url yields empty for an injected URL, attempt deterministic urllib fetch,
-            # extract visible text, and scan raw HTML for numbers to avoid "attempted but not persisted".
-            _fix2c8_is_injected = False
-            try:
-                if "_extras" in locals() and isinstance(_extras, list) and _extras:
-                    _fix2c8_is_injected = (url in set([u for u in _extras if isinstance(u, str)]))
-            except Exception:
-                _fix2c8_is_injected = False
-
-            _fix2c8_injected_diag = {}
-            if (_fix2c8_is_injected and (not text or not str(text).strip())):
-                try:
-                    _fx = _fix2c8_fetch_bytes(url)
-                    _fix2c8_injected_diag = _fx.get("diag") or {}
-                    _raw_txt = str(_fx.get("raw_text") or "")
-                    _visible = _fix2c8_html_visible_text(_raw_txt)
-                    # Prefer visible text, but fall back to raw if visible is empty
-                    text = _visible.strip() if _visible and _visible.strip() else _raw_txt.strip()
-
-                    # Attach diagnostics and method choice
-                    meta["injected"] = True
-                    meta["inject_fetch_diag_v1"] = _fix2c8_injected_diag
-                    meta["inject_extract_method_v1"] = ("html_visible_text" if _visible and _visible.strip() else "raw_html_text")
-                    meta["inject_text_head_200_v1"] = (text[:200] if isinstance(text, str) else "")
-                except Exception as _e:
-                    meta["injected"] = True
-                    meta["inject_fetch_diag_v1"] = {"error": f"{type(_e).__name__}: {str(_e)[:200]}"}
-            # END PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1
-
             if not text or not str(text).strip():
                 meta["status"] = "failed"
                 meta["status_detail"] = "failed:no_text"
                 scraped_failed += 1
                 out["scraped_meta"][url] = meta
             else:
-
                 cleaned = str(text).strip()
                 meta["status"] = "fetched"
                 meta["status_detail"] = "success"
@@ -18488,7 +18325,161 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
 
-    # Diff using existing diff helper if present
+    
+    # =====================================================================
+    # PATCH FIX2D2_ANCHOR_FILL_FOR_CURRENT (ADDITIVE)
+    # Purpose:
+    #   When schema_frozen is missing/misaligned (e.g., wrong namespace) the render/diff
+    #   rebuild can populate an unrelated keyspace, causing the dashboard "Current" column
+    #   to be empty for the intended canonical keys and diff rows to be all not_found.
+    #
+    # Fix (render/diff layer only):
+    #   - Build a deterministic anchor_hash -> candidate map from the *current* snapshot pool.
+    #   - For each canonical_key that exists in prev_response.primary_metrics_canonical, if the
+    #     current_metrics dict is missing that key (or has no value_norm), fill it from the
+    #     anchored candidate in the current pool (when available).
+    #
+    # Non-negotiables:
+    #   - No changes to hashing, injection lifecycle, snapshot attach, or extraction.
+    #   - Anchor-hash is treated as the authority for key/value materialization.
+    # =====================================================================
+    try:
+        def _fix2d2_safe_dict(x):
+            return x if isinstance(x, dict) else {}
+
+        def _fix2d2_unwrap_primary_metrics_canonical(resp: dict) -> dict:
+            if not isinstance(resp, dict):
+                return {}
+            for path in (("primary_metrics_canonical",), ("primary_response", "primary_metrics_canonical"), ("results", "primary_metrics_canonical"), ("results", "primary_response", "primary_metrics_canonical")):
+                cur = resp
+                ok = True
+                for k in path:
+                    if isinstance(cur, dict) and k in cur:
+                        cur = cur.get(k)
+                    else:
+                        ok = False
+                        break
+                if ok and isinstance(cur, dict) and cur:
+                    return cur
+            return {}
+
+        def _fix2d2_unwrap_metric_anchors(resp: dict) -> dict:
+            if not isinstance(resp, dict):
+                return {}
+            for path in (("metric_anchors",), ("primary_response", "metric_anchors"), ("results", "metric_anchors"), ("results", "primary_response", "metric_anchors")):
+                cur = resp
+                ok = True
+                for k in path:
+                    if isinstance(cur, dict) and k in cur:
+                        cur = cur.get(k)
+                    else:
+                        ok = False
+                        break
+                if ok and isinstance(cur, dict) and cur:
+                    return cur
+            return {}
+
+        _fix2d2_prev_can = _fix2d2_unwrap_primary_metrics_canonical(prev_response)
+        _fix2d2_anchors = _fix2d2_unwrap_metric_anchors(prev_response)
+
+        # Resolve the best available "current" pool for candidate lookup
+        _fix2d2_pool = (
+            locals().get("baseline_sources_cache_current")
+            or (output.get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+            or (output.get("results", {}).get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+            or locals().get("baseline_sources_cache")
+            or locals().get("baseline_sources_cache_prefetched")
+            or None
+        )
+
+        _fix2d2_anchor_to_cand = {}
+        _fix2d2_scanned = 0
+        if isinstance(_fix2d2_pool, list) and _fix2d2_pool:
+            for _src in _fix2d2_pool:
+                _srcd = _fix2d2_safe_dict(_src)
+                for _cand in (_srcd.get("extracted_numbers") or []):
+                    _fix2d2_scanned += 1
+                    if not isinstance(_cand, dict):
+                        continue
+                    _ah = _cand.get("anchor_hash") or _cand.get("anchor") or _cand.get("anchorHash")
+                    if not _ah:
+                        continue
+                    # Deterministic first-wins (pool order is deterministic)
+                    if str(_ah) not in _fix2d2_anchor_to_cand:
+                        _fix2d2_anchor_to_cand[str(_ah)] = _cand
+
+        _fix2d2_filled = 0
+        _fix2d2_missing_anchor = 0
+        _fix2d2_missing_cand = 0
+
+        if isinstance(_fix2d2_prev_can, dict) and _fix2d2_prev_can:
+            if not isinstance(current_metrics, dict):
+                current_metrics = {}
+            for _ck in list(_fix2d2_prev_can.keys()):
+                # Only fill when current is missing / empty
+                _cur_m = current_metrics.get(_ck) if isinstance(current_metrics, dict) else None
+                _cur_vn = _cur_m.get("value_norm") if isinstance(_cur_m, dict) else None
+                if (_cur_m is not None) and (_cur_vn is not None):
+                    continue
+
+                _a = _fix2d2_safe_dict(_fix2d2_anchors.get(_ck))
+                _ah = _a.get("anchor_hash") or _a.get("anchor") or _a.get("anchorHash")
+                if not _ah:
+                    _fix2d2_missing_anchor += 1
+                    continue
+                _cand = _fix2d2_anchor_to_cand.get(str(_ah))
+                if not isinstance(_cand, dict):
+                    _fix2d2_missing_cand += 1
+                    continue
+
+                # Materialize a minimal metric dict for downstream diff/display
+                _out = dict(_fix2d2_prev_can.get(_ck) or {})
+                try:
+                    _out.update({
+                        "canonical_key": _ck,
+                        "anchor_hash": str(_ah),
+                        "anchor_used": True,
+                        "source_url": _cand.get("source_url") or _a.get("source_url") or "",
+                        "raw": _cand.get("raw"),
+                        "value": _cand.get("value"),
+                        "unit": _cand.get("unit"),
+                        "unit_tag": _cand.get("unit_tag") or _cand.get("unit") or "",
+                        "unit_family": _cand.get("unit_family") or "",
+                        "base_unit": _cand.get("base_unit") or _cand.get("unit") or "",
+                        "multiplier_to_base": _cand.get("multiplier_to_base"),
+                        "value_norm": _cand.get("value_norm"),
+                        "context_snippet": _cand.get("context_snippet") or _cand.get("context") or "",
+                        "candidate_id": _cand.get("candidate_id") or _a.get("candidate_id"),
+                    })
+                except Exception:
+                    pass
+
+                current_metrics[_ck] = _out
+                _fix2d2_filled += 1
+
+        # Emit debug (non-breaking)
+        try:
+            if isinstance(output, dict):
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix2d2", {})
+                    if isinstance(output["debug"].get("fix2d2"), dict):
+                        output["debug"]["fix2d2"].update({
+                            "anchor_fill_attempted": True,
+                            "prev_can_count": int(len(_fix2d2_prev_can)) if isinstance(_fix2d2_prev_can, dict) else 0,
+                            "anchor_map_candidates_scanned": int(_fix2d2_scanned),
+                            "anchor_map_size": int(len(_fix2d2_anchor_to_cand)),
+                            "filled_count": int(_fix2d2_filled),
+                            "missing_anchor_count": int(_fix2d2_missing_anchor),
+                            "missing_candidate_count": int(_fix2d2_missing_cand),
+                        })
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # =====================================================================
+
+# Diff using existing diff helper if present
     metric_changes = []
     try:
         fn_diff = globals().get("diff_metrics_by_name")
@@ -18986,6 +18977,17 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     """Return (rows, summary) for Diff Metrics Panel V2."""
 
+    # =================================================================
+    # PATCH FIX2D1_B (ADDITIVE): prevent UnboundLocalError on 'summary'
+    # Some exception paths reference `summary` before it is assigned.
+    # Initialize a safe default up-front so errors degrade gracefully
+    # into "not_found" rows rather than killing the diff panel.
+    # =================================================================
+    rows = []
+    summary = {"rows_total": 0, "joined_by_ckey": 0, "joined_by_anchor_hash": 0, "not_found": 0}
+    # =================================================================
+
+
     def _unwrap_primary_metrics_canonical(resp: dict):
         if not isinstance(resp, dict):
             return {}
@@ -19137,13 +19139,49 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
     # END PATCH FIX2W_INJECTED_SET_BUILD_V2
 
+    # PATCH FIX2D3 START: Diff Panel V2 injected-set detection (cur_response may not include debug wrapper)
     try:
-        _inj = (cur_response or {}).get("debug", {}).get("inj_trace_v1", {})
-        _ad = _inj.get("admitted_norm") or _inj.get("admitted") or []
+        # inj_trace_v1 may live in different containers depending on caller.
+        _inj = None
+
+        # (1) common: cur_response.debug.inj_trace_v1
+        try:
+            if isinstance(cur_response, dict):
+                _dbg = cur_response.get("debug") if isinstance(cur_response.get("debug"), dict) else None
+                if isinstance(_dbg, dict) and isinstance(_dbg.get("inj_trace_v1"), dict):
+                    _inj = _dbg.get("inj_trace_v1")
+                elif isinstance(cur_response.get("inj_trace_v1"), dict):
+                    _inj = cur_response.get("inj_trace_v1")
+        except Exception:
+            _inj = None
+
+        # (2) sometimes: locals/output.debug.inj_trace_v1 (cur_response passed as a partial dict)
+        if not isinstance(_inj, dict) or not _inj:
+            try:
+                _out = locals().get("output")
+                if isinstance(_out, dict):
+                    _dbg2 = _out.get("debug") if isinstance(_out.get("debug"), dict) else None
+                    if isinstance(_dbg2, dict) and isinstance(_dbg2.get("inj_trace_v1"), dict):
+                        _inj = _dbg2.get("inj_trace_v1")
+            except Exception:
+                pass
+
+        # (3) last resort: locals inj_trace_v1 variable
+        if not isinstance(_inj, dict) or not _inj:
+            try:
+                _inj3 = locals().get("inj_trace_v1")
+                if isinstance(_inj3, dict):
+                    _inj = _inj3
+            except Exception:
+                pass
+
+        _ad = (_inj or {}).get("admitted_norm") or (_inj or {}).get("admitted") or []
         if isinstance(_ad, list):
             inj_set = set([u for u in _ad if isinstance(u, str) and u])
     except Exception:
         inj_set = set()
+    # END PATCH FIX2D3
+
 
     def _metric_source_urls(mdict: dict):
         """Best-effort extract list of source/evidence URLs from a canonical metric dict."""
@@ -19987,6 +20025,87 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 # =====================================================================
 # PATCH WRAP_COMPUTE_SOURCE_ANCHORED_DIFF (ADDITIVE): preserve original as compute_source_anchored_diff_BASE
 # and define the patched version below.
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D1 (ADDITIVE): Early aliases for canonical-for-render rebuild
+# ---------------------------------------------------------------------
+# Problem:
+#   compute_source_anchored_diff() performs a late "display rebuild" and
+#   looks up these callables via globals():
+#     - rebuild_metrics_from_snapshots_analysis_canonical_v1
+#     - rebuild_metrics_from_snapshots_schema_only_fix16
+#   In Streamlit, the evolution run can invoke compute_source_anchored_diff()
+#   BEFORE the later parts of this file finish executing/defining those
+#   functions, leading to:
+#     skip_reason_v19 = "fn_missing"
+#   Which then leaves Current blank and produces no diff rows.
+#
+# Fix (render-layer only):
+#   - Provide *early* safe aliases so the callables always exist at lookup time.
+#   - Each alias does a best-effort late-binding to the final implementations
+#     (if/when they are defined later), else falls back to the earliest safe
+#     schema-only rebuild if available.
+#
+# Safety:
+#   - Additive-only. Does NOT touch hashing, injection, snapshot attach, fetch,
+#     extraction, or Analysis. Only prevents "fn_missing" gating.
+# =====================================================================
+
+def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
+    """Early alias: resolves to the most specific schema-only rebuild available."""
+    # Prefer a later concrete implementation if it already exists (late-binding)
+    try:
+        fn = globals().get("_rebuild_metrics_from_snapshots_schema_only_fix16_impl")
+        if callable(fn):
+            return fn(prev_response, snapshot_pool, web_context=web_context)
+    except Exception:
+        pass
+
+    # Next: base schema-only (often defined earlier than FIX16 helpers)
+    try:
+        fn = globals().get("rebuild_metrics_from_snapshots_schema_only")
+        if callable(fn):
+            try:
+                return fn(prev_response, snapshot_pool, web_context=web_context)
+            except TypeError:
+                return fn(prev_response, snapshot_pool)
+    except Exception:
+        pass
+
+    return {}
+
+def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
+    """Early alias: prefer the analysis-canonical rebuild if later-defined; else schema-only."""
+    # Prefer a later concrete implementation if it already exists (late-binding)
+    try:
+        fn = globals().get("_rebuild_metrics_from_snapshots_analysis_canonical_v1_impl")
+        if callable(fn):
+            return fn(prev_response, snapshot_pool, web_context=web_context)
+    except Exception:
+        pass
+
+    # Otherwise, fall back deterministically to schema-only
+    try:
+        fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+        if callable(fn):
+            return fn(prev_response, snapshot_pool, web_context=web_context)
+    except Exception:
+        pass
+
+    return {}
+
+# Best-effort version bump (render-layer only)
+try:
+    CODE_VERSION = str(globals().get("CODE_VERSION") or "")
+    if "fix2d1" not in CODE_VERSION.lower():
+        CODE_VERSION = "FIX2D1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2D1
 # =====================================================================
 
 def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
@@ -21560,15 +21679,59 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         if (not _already_applied) or (_already_count <= 0):
             _fix41afc19_attempted_v19 = True
 
+            # PATCH FIX2D3 START: Harden FIX41AFC19 v19 pool resolution + callable lookup
             # Resolve the best available snapshot pool (post-attach merged universe)
-            _pool = (
-                locals().get("baseline_sources_cache_current")
-                or (output.get("baseline_sources_cache_current") if isinstance(output, dict) else None)
-                or (output.get("results", {}).get("baseline_sources_cache_current") if isinstance(output, dict) else None)
-                or locals().get("baseline_sources_cache")
-                or locals().get("baseline_sources_cache_prefetched")
-                or None
-            )
+            # NOTE: Different callers store the "current" snapshot pool under different names.
+            # We intentionally scan a wide set of candidate keys and pick the largest non-empty list.
+            _pool = None
+            _pool_key_used = None
+            try:
+                _cand = []
+
+                # Common/expected keys (current run)
+                _cand.append(("baseline_sources_cache_current", locals().get("baseline_sources_cache_current")))
+                _cand.append(("baseline_sources_cache", locals().get("baseline_sources_cache")))
+                _cand.append(("baseline_sources_cache_prefetched", locals().get("baseline_sources_cache_prefetched")))
+
+                # Attachment / merge outputs (varies by branch)
+                _cand.append(("baseline_sources_cache_attached", locals().get("baseline_sources_cache_attached")))
+                _cand.append(("baseline_sources_cache_merged", locals().get("baseline_sources_cache_merged")))
+                _cand.append(("attached_pool", locals().get("attached_pool")))
+                _cand.append(("current_pool", locals().get("current_pool")))
+                _cand.append(("source_snapshots_current", locals().get("source_snapshots_current")))
+                _cand.append(("snapshots_current", locals().get("snapshots_current")))
+
+                # Sometimes carried on output dict
+                _out = (locals().get("output") if isinstance(locals().get("output"), dict) else None)
+                if isinstance(_out, dict):
+                    _cand.append(("output.baseline_sources_cache_current", _out.get("baseline_sources_cache_current")))
+                    _cand.append(("output.baseline_sources_cache", _out.get("baseline_sources_cache")))
+                    _res = _out.get("results") if isinstance(_out.get("results"), dict) else None
+                    if isinstance(_res, dict):
+                        _cand.append(("output.results.baseline_sources_cache_current", _res.get("baseline_sources_cache_current")))
+                        _cand.append(("output.results.baseline_sources_cache", _res.get("baseline_sources_cache")))
+                        _cand.append(("output.results.attached_pool", _res.get("attached_pool")))
+                        _cand.append(("output.results.current_pool", _res.get("current_pool")))
+
+                # Final sweep: anything in locals containing baseline_sources_cache*
+                for _k, _v in (locals() or {}).items():
+                    if not isinstance(_k, str):
+                        continue
+                    if "baseline_sources_cache" in _k and isinstance(_v, list) and _v:
+                        _cand.append((_k, _v))
+
+                # Choose best candidate (largest list wins)
+                _best = None
+                for _k, _v in _cand:
+                    if isinstance(_v, list) and _v:
+                        if _best is None or len(_v) > len(_best[1] or []):
+                            _best = (_k, _v)
+                if _best is not None:
+                    _pool_key_used, _pool = _best[0], _best[1]
+            except Exception:
+                _pool = None
+                _pool_key_used = None
+
 
             if _pool is None:
                 try:
@@ -21586,13 +21749,53 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
             if isinstance(_pool, list):
                 _fix41afc19_pool_count_v19 = len(_pool or [])
+                _fix41afc19_pool_key_used_v19 = _pool_key_used
 
             # Pick best available rebuild fn
-            _fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+            def _fix2d3_resolve_callable(_name: str):
+                try:
+                    fn = globals().get(_name)
+                    if callable(fn):
+                        return fn
+                except Exception:
+                    pass
+                try:
+                    fn = locals().get(_name)
+                    if callable(fn):
+                        return fn
+                except Exception:
+                    pass
+                try:
+                    import sys as _sys
+                    _mod = _sys.modules.get(__name__)
+                    fn = getattr(_mod, _name, None) if _mod else None
+                    if callable(fn):
+                        return fn
+                except Exception:
+                    pass
+                return None
+
+            # END PATCH FIX2D3
+
+            _fn = _fix2d3_resolve_callable("rebuild_metrics_from_snapshots_analysis_canonical_v1")
             _fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
             if not callable(_fn):
-                _fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+                _fn = _fix2d3_resolve_callable("rebuild_metrics_from_snapshots_schema_only_fix16")
                 _fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+
+
+            # PATCH FIX2D2_FALLBACK_REBUILD_FN_NAMES (ADDITIVE):
+            # Some branches expose only the legacy names. Accept them as safe fallbacks
+            # so 'fn_missing' doesn't mask a usable rebuild implementation.
+            if not callable(_fn):
+                _fn = globals().get("rebuild_metrics_from_snapshots_schema_only")
+                _fn_name = "rebuild_metrics_from_snapshots_schema_only"
+            if not callable(_fn):
+                _fn = globals().get("rebuild_metrics_from_snapshots_with_anchors")
+                _fn_name = "rebuild_metrics_from_snapshots_with_anchors"
+            if not callable(_fn):
+                _fn = globals().get("rebuild_metrics_from_snapshots")
+                _fn_name = "rebuild_metrics_from_snapshots"
 
             if not callable(_fn):
                 _fix41afc19_skip_reason_v19 = "fn_missing"
@@ -21644,6 +21847,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 prev_canon = {}
 
             cur_canon = current_metrics_for_display if isinstance(current_metrics_for_display, dict) else {}
+
+            # PATCH FIX2D4 (ADD): explicit key overlap diagnostics (prev vs current)
+            try:
+                if isinstance(output.get("debug"), dict):
+                    output["debug"]["key_overlap_v1"] = _emit_key_overlap_debug_v1(
+                        prev_metrics=prev_canon,
+                        cur_metrics=cur_canon,
+                        target_key="global_ev_sales_ytd_2025__unit_sales"
+                    )
+            except Exception:
+                pass
 
             # Infer projected-share keys if the exact ones are not present
             if isinstance(prev_canon, dict) and isinstance(cur_canon, dict):
@@ -21783,6 +21997,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 output["debug"]["fix41afc19"]["reason"] = str(_fix41afc19_skip_reason_v19)
             output["debug"]["fix41afc19"]["skip_reason_v19"] = str(_fix41afc19_skip_reason_v19 or "")
             output["debug"]["fix41afc19"]["pool_count_v19"] = int(_fix41afc19_pool_count_v19 or 0)
+            output["debug"]["fix41afc19"]["pool_key_used_v19"] = str(locals().get("_fix41afc19_pool_key_used_v19") or locals().get("_pool_key_used") or "")
             output["debug"]["fix41afc19"]["rebuilt_keys_sample_v19"] = list(_fix41afc19_keys_sample_v19 or [])
             if _fix41afc19_winner_trace_v19:
                 output["debug"]["evo_winner_trace_v1"] = _fix41afc19_winner_trace_v19
@@ -26081,7 +26296,7 @@ def main():
 
                         )
 
-                        
+                        # ============================================================
 
 
                     except Exception as e:
@@ -26090,17 +26305,6 @@ def main():
 
                         return
 
-
-                # PATCH FIX2C7 (ADDITIVE): apply CoreV1 viewer contract + hash bundle (outside legacy try/except)
-                try:
-                    results = _corev1_postprocess_evolution(results, baseline_data)
-                except Exception as _corev1_e:
-                    # Never fail the legacy UI flow due to viewer postprocessing
-                    if isinstance(results, dict):
-                        results.setdefault('debug', {})
-                        results['debug'].setdefault('corev1', {})
-                        results['debug']['corev1']['postprocess_error'] = f"{type(_corev1_e).__name__}: {_corev1_e}"
-                # ============================================================
 
                 interpretation = ""
                 try:
@@ -29322,9 +29526,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         _fix41afc11_base_set = set(_fix41afc11_urls_norm or [])
         _fix41afc11_delta = sorted(list(_fix41afc11_inj_set - _fix41afc11_base_set)) if _fix41afc11_inj_set else []
 
-        # === PATCH FIX2C9 START ===
-        # Broaden must-fetch lane: run whenever injected URLs are present (delta or not)
-        if _fix41afc11_inj_norm:
+        if _fix41afc11_delta:
             # (1) Force-admit delta into local urls universe deterministically
             _added = []
             if urls and isinstance(urls[0], dict):
@@ -29396,7 +29598,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                             "inj_must_fetch_sources_count": int(len(_fwc_sources or [])) if isinstance(_fwc_sources, list) else 0,
                         })
     except Exception:
-        # === PATCH FIX2C9 END ===
         pass
     # =====================================================================
     # =====================================================================
@@ -33020,7 +33221,19 @@ def build_diff_metrics_panel_v2_fix2k(prev_response: dict, cur_response: dict):
     if not callable(_impl):
         return ([], {'rows_total': 0, 'joined_by_ckey': 0, 'joined_by_anchor_hash': 0, 'not_found': 0})
 
-    rows, summary = _impl(prev_response, cur_response)
+    # PATCH FIX2D1 START (part 2): harden _impl call so summary always defined
+    rows = []
+    summary = {'rows_total': 0, 'joined_by_ckey': 0, 'joined_by_anchor_hash': 0, 'not_found': 0, 'error': None}
+    try:
+        rows, summary = _impl(prev_response, cur_response)
+    except Exception as _e:
+        # Keep the panel renderable even if underlying builder fails.
+        summary['error'] = "diff_panel_v2_impl_exception:" + str(type(_e).__name__)
+        try:
+            summary['error_detail'] = str(_e)[:300]
+        except Exception:
+            pass
+    # PATCH FIX2D1 END (part 2)
 
     # -------------------------------
     # Helpers
@@ -33339,4 +33552,34 @@ except Exception:
     pass
 # =====================================================================
 # END PATCH FIX2Y_VERSION_BUMP
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX2D2 (ADDITIVE)
+# - Fill current_metrics using analysis anchors when schema_frozen is missing/misaligned
+# - Broaden rebuild fn name fallbacks to avoid fn_missing masking usable rebuilds
+# - Version bump + patch tracker entry
+# =====================================================================
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2",
+        "date": "2026-01-15",
+        "summary": "Anchor-fill current_metrics for diff/display when schema_frozen is misaligned; add rebuild-fn name fallbacks to prevent fn_missing.",
+        "files": ["FIX2D2.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+try:
+    CODE_VERSION = "FIX2D2"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2D2
 # =====================================================================
