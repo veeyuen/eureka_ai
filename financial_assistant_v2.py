@@ -58,154 +58,6 @@ import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-
-# ===================== PATCH FIX2C6 (ADDITIVE): CoreV1 wiring (B then A) =====================
-# Purpose:
-#  - B: Surface CoreV1 hash bundle + version diagnostics in payloads (auditable)
-#  - A: Enforce "viewer by construction" in Evolution: metric_changes current_value always comes from cur_canonical
-# Notes:
-#  - Legacy code remains untouched except for a post-process call-site in Streamlit tab2.
-#  - All imports are lazy to avoid gspread/streamlit CLI issues elsewhere.
-
-import os as _os
-
-def _corev1_enabled() -> bool:
-    v = _os.getenv("YUREEKA_ENABLE_CORE_ENGINE_V1", "")
-    return str(v).strip().lower() in ("1","true","yes","y","on")
-
-def _corev1_try_import():
-    try:
-        import yureeka_core
-        from yureeka_core.core_diff_v1 import core_diff_v1 as _core_diff_v1
-        from yureeka_core.hashing_v1 import (
-            compute_source_snapshot_hash_v1_with_diag as _hash_v1_with_diag,
-            compute_source_snapshot_hash_v2_with_diag as _hash_v2_with_diag,
-            normalize_sources_cache_v1 as _norm_cache,
-        )
-        return {
-            "ok": True,
-            "yureeka_core": yureeka_core,
-            "core_diff_v1": _core_diff_v1,
-            "hash_v1_with_diag": _hash_v1_with_diag,
-            "hash_v2_with_diag": _hash_v2_with_diag,
-            "norm_cache": _norm_cache,
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
-def _corev1_pick_first_dict(*candidates):
-    for c in candidates:
-        if isinstance(c, dict) and c:
-            return c
-    return {}
-
-def _corev1_pick_schema(prev_data: dict, results: dict) -> dict:
-    # Prefer frozen schema if present
-    return _corev1_pick_first_dict(
-        results.get("metric_schema_frozen"),
-        results.get("schema_frozen"),
-        prev_data.get("metric_schema_frozen") if isinstance(prev_data, dict) else {},
-        prev_data.get("schema_frozen") if isinstance(prev_data, dict) else {},
-        results.get("metric_schema"),
-        prev_data.get("metric_schema") if isinstance(prev_data, dict) else {},
-    )
-
-def _corev1_pick_canonical(prev_data: dict, results: dict, which: str) -> dict:
-    # which in {"prev","cur"}
-    if which == "cur":
-        return _corev1_pick_first_dict(
-            results.get("canonical_metrics"),
-            results.get("primary_metrics_canonical"),
-            results.get("canonical_for_render_v1"),
-            results.get("canonical_for_render"),
-            results.get("primary_metrics"),
-        )
-    # prev
-    if isinstance(prev_data, dict):
-        return _corev1_pick_first_dict(
-            prev_data.get("canonical_metrics"),
-            prev_data.get("primary_metrics_canonical"),
-            (prev_data.get("replay_analysis_payload") or {}).get("canonical_metrics") if isinstance(prev_data.get("replay_analysis_payload"), dict) else {},
-            (prev_data.get("analysis_payload") or {}).get("canonical_metrics") if isinstance(prev_data.get("analysis_payload"), dict) else {},
-        )
-    return {}
-
-def _corev1_attach_hash_bundle(results: dict, imported: dict) -> None:
-    # Best-effort: attach source snapshot hashes if we can locate any source cache
-    if not isinstance(results, dict):
-        return
-    dbg = results.setdefault("debug", {})
-    corev1_dbg = dbg.setdefault("corev1", {})
-    corev1_dbg.setdefault("patch_id", "FIX2C6")
-    # Try common cache keys
-    cache = (
-        results.get("baseline_sources_cache_current")
-        or results.get("baseline_sources_cache")
-        or (results.get("debug", {}) or {}).get("baseline_sources_cache_current")
-        or (results.get("debug", {}) or {}).get("baseline_sources_cache")
-    )
-    try:
-        if cache is not None and imported.get("ok"):
-            # Normalize then hash
-            rows, ndiag = imported["norm_cache"](cache)
-            h1, d1 = imported["hash_v1_with_diag"](rows)
-            h2, d2 = imported["hash_v2_with_diag"](rows)
-            corev1_dbg["hashes"] = {
-                "sources_snapshot_v1": h1,
-                "sources_snapshot_v2": h2,
-            }
-            corev1_dbg["hash_normalization"] = {
-                "recognized_shape": ndiag.get("recognized_shape"),
-                "items_in": ndiag.get("items_in"),
-                "items_out": ndiag.get("items_out"),
-                "dropped": ndiag.get("dropped", 0),
-            }
-            corev1_dbg["hash_v1_diag"] = d1
-            corev1_dbg["hash_v2_diag"] = d2
-    except Exception as e:
-        corev1_dbg["hash_bundle_error"] = f"{type(e).__name__}: {e}"
-
-def _corev1_postprocess_evolution(results: dict, prev_data: dict) -> dict:
-    if not _corev1_enabled():
-        return results
-    imported = _corev1_try_import()
-    if not imported.get("ok"):
-        # Still attach minimal debug
-        if isinstance(results, dict):
-            results.setdefault("debug", {}).setdefault("corev1", {})["import_error"] = imported.get("error")
-        return results
-
-    if not isinstance(results, dict):
-        return results
-
-    schema = _corev1_pick_schema(prev_data or {}, results)
-    prev_can = _corev1_pick_canonical(prev_data or {}, results, "prev")
-    cur_can = _corev1_pick_canonical(prev_data or {}, results, "cur")
-
-    # Attach hash bundle + version
-    _corev1_attach_hash_bundle(results, imported)
-
-    # Viewer-by-construction: rebuild metric_changes from prev/cur canonical
-    try:
-        diff_obj = imported["core_diff_v1"](prev_can or {}, cur_can or {}, schema or {})
-        if isinstance(diff_obj, dict) and "metric_changes" in diff_obj:
-            results["metric_changes"] = diff_obj["metric_changes"]
-            results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_applied"] = True
-            results["debug"]["corev1"]["prev_canonical_count"] = len(prev_can or {})
-            results["debug"]["corev1"]["cur_canonical_count"] = len(cur_can or {})
-            results["debug"]["corev1"]["metric_changes_count"] = len(diff_obj.get("metric_changes") or [])
-        else:
-            results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_applied"] = False
-    except Exception as e:
-        results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_error"] = f"{type(e).__name__}: {e}"
-
-    # Ensure canonical_metrics key exists (one truth key)
-    if "canonical_metrics" not in results and isinstance(cur_can, dict):
-        results["canonical_metrics"] = cur_can
-
-    return results
-
-# =================== END PATCH FIX2C6 (ADDITIVE) ===================
 import base64
 import hashlib
 import numpy as np
@@ -5890,90 +5742,6 @@ def fetch_web_context(
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    # PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1 (ADDITIVE)
-    # Deterministic injected-URL fetch/extract adapter:
-    # - Only used when scrape_url() yields empty text AND url is in injected extras.
-    # - Captures HTTP/content-type/bytes_len diagnostics.
-    # - Provides HTML->visible-text fallback and raw-HTML numeric scan.
-    import hashlib
-    import urllib.request
-    import urllib.error
-
-    def _fix2c8_html_visible_text(html: str) -> str:
-        try:
-            txt = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", html or "")
-            txt = re.sub(r"(?is)<[^>]+>", " ", txt)
-            lines = [ln.strip() for ln in (txt or "").splitlines() if ln.strip()]
-            out = "\n".join(lines)
-            out = re.sub(r"\n{3,}", "\n\n", out)
-            return out.strip()
-        except Exception:
-            return ""
-
-    def _fix2c8_fetch_bytes(u: str, timeout_s: int = 18) -> dict:
-        diag = {
-            "http_status": None,
-            "final_url": u,
-            "content_type": "",
-            "bytes_len": 0,
-            "decode_error": "",
-        }
-        raw = b""
-        try:
-            req = urllib.request.Request(
-                u,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                diag["http_status"] = getattr(resp, "status", None)
-                diag["final_url"] = getattr(resp, "geturl", lambda: u)()
-                try:
-                    diag["content_type"] = resp.headers.get("Content-Type", "") or ""
-                except Exception:
-                    diag["content_type"] = ""
-                raw = resp.read() or b""
-        except urllib.error.HTTPError as e:
-            diag["http_status"] = getattr(e, "code", None)
-            try:
-                diag["content_type"] = e.headers.get("Content-Type", "") or ""
-            except Exception:
-                diag["content_type"] = ""
-            try:
-                raw = e.read() or b""
-            except Exception:
-                raw = b""
-        except Exception as e:
-            diag["decode_error"] = f"{type(e).__name__}: {str(e)[:200]}"
-            raw = b""
-
-        diag["bytes_len"] = len(raw) if isinstance(raw, (bytes, bytearray)) else 0
-        text = ""
-        if diag["bytes_len"] > 0:
-            try:
-                text = raw.decode("utf-8", errors="replace")
-            except Exception as e:
-                diag["decode_error"] = f"{type(e).__name__}: {str(e)[:200]}"
-                try:
-                    text = raw.decode("latin-1", errors="replace")
-                except Exception:
-                    text = ""
-        return {"diag": diag, "raw_text": text}
-
-    def _fix2c8_sha256(s: str) -> str:
-        try:
-            return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
-        except Exception:
-            return ""
-    # END PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1
-
     def _is_probably_url(s: str) -> bool:
         if not s or not isinstance(s, str):
             return False
@@ -6356,44 +6124,12 @@ def fetch_web_context(
 
         try:
             text = scrape_url(url)  # ✅ ScrapingDog + fallback inside scrape_url
-
-            # PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1 (ADDITIVE)
-            # If scrape_url yields empty for an injected URL, attempt deterministic urllib fetch,
-            # extract visible text, and scan raw HTML for numbers to avoid "attempted but not persisted".
-            _fix2c8_is_injected = False
-            try:
-                if "_extras" in locals() and isinstance(_extras, list) and _extras:
-                    _fix2c8_is_injected = (url in set([u for u in _extras if isinstance(u, str)]))
-            except Exception:
-                _fix2c8_is_injected = False
-
-            _fix2c8_injected_diag = {}
-            if (_fix2c8_is_injected and (not text or not str(text).strip())):
-                try:
-                    _fx = _fix2c8_fetch_bytes(url)
-                    _fix2c8_injected_diag = _fx.get("diag") or {}
-                    _raw_txt = str(_fx.get("raw_text") or "")
-                    _visible = _fix2c8_html_visible_text(_raw_txt)
-                    # Prefer visible text, but fall back to raw if visible is empty
-                    text = _visible.strip() if _visible and _visible.strip() else _raw_txt.strip()
-
-                    # Attach diagnostics and method choice
-                    meta["injected"] = True
-                    meta["inject_fetch_diag_v1"] = _fix2c8_injected_diag
-                    meta["inject_extract_method_v1"] = ("html_visible_text" if _visible and _visible.strip() else "raw_html_text")
-                    meta["inject_text_head_200_v1"] = (text[:200] if isinstance(text, str) else "")
-                except Exception as _e:
-                    meta["injected"] = True
-                    meta["inject_fetch_diag_v1"] = {"error": f"{type(_e).__name__}: {str(_e)[:200]}"}
-            # END PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1
-
             if not text or not str(text).strip():
                 meta["status"] = "failed"
                 meta["status_detail"] = "failed:no_text"
                 scraped_failed += 1
                 out["scraped_meta"][url] = meta
             else:
-
                 cleaned = str(text).strip()
                 meta["status"] = "fetched"
                 meta["status_detail"] = "success"
@@ -26068,7 +25804,7 @@ def main():
 
                         )
 
-                        
+                        # ============================================================
 
 
                     except Exception as e:
@@ -26077,17 +25813,6 @@ def main():
 
                         return
 
-
-                # PATCH FIX2C7 (ADDITIVE): apply CoreV1 viewer contract + hash bundle (outside legacy try/except)
-                try:
-                    results = _corev1_postprocess_evolution(results, baseline_data)
-                except Exception as _corev1_e:
-                    # Never fail the legacy UI flow due to viewer postprocessing
-                    if isinstance(results, dict):
-                        results.setdefault('debug', {})
-                        results['debug'].setdefault('corev1', {})
-                        results['debug']['corev1']['postprocess_error'] = f"{type(_corev1_e).__name__}: {_corev1_e}"
-                # ============================================================
 
                 interpretation = ""
                 try:
