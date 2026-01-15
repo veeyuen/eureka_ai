@@ -79,7 +79,32 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D5"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D6"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+
+# ============================================================
+# PATCH START: FIX2D6_HARDCODE_JOIN_MODE_V1
+# Purpose:
+#   Allow a hardcoded override for diff join mode (demo/debug).
+#   If FORCE_DIFF_JOIN_MODE is set (e.g. "union"), it overrides
+#   EVO_DIFF_JOIN_MODE environment variable.
+# ============================================================
+FORCE_DIFF_JOIN_MODE = "union"   # set to None to restore env-based behavior
+
+def _fix2d6_get_diff_join_mode_v1():
+    try:
+        if FORCE_DIFF_JOIN_MODE:
+            return str(FORCE_DIFF_JOIN_MODE).strip().lower()
+    except Exception:
+        pass
+    try:
+        import os as _os
+        return str(_os.getenv("EVO_DIFF_JOIN_MODE", "strict")).strip().lower()
+    except Exception:
+        return "strict"
+# ============================================================
+# PATCH END: FIX2D6_HARDCODE_JOIN_MODE_V1
+# ============================================================
+
 # =====================================================================
 # PATCH TRACKER V1 (ADD): minimal patch tracker for consolidation
 # =====================================================================
@@ -115,6 +140,20 @@ try:
         "summary": "Mirror canonical_for_render_v1 diagnostics into results.debug so dashboard/diff diagnostics can see it; additive only.",
         "files": ["FIX2D5.py"],
     })
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D6",
+        "date": "2026-01-15",
+        "summary": "Option B engine completeness: Diff Panel V2 row universe can be prev∪cur (union) behind EVO_DIFF_JOIN_MODE flag; adds added/removed change_type and summary counts; default remains strict.",
+        "files": ["FIX2D6.py"],
+    })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D6_HARDCODE",
+        "date": "2026-01-15",
+        "summary": "Hardcode diff join mode override via FORCE_DIFF_JOIN_MODE and route Diff Panel V2 join-mode selection through helper.",
+        "files": ["FIX2D6.py"],
+    })
+
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
@@ -19261,12 +19300,30 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     # END PATCH FIX2W_DIFF_PANEL_INJ_TRACE_ATTACH_V1
     return rows, summary
 
-    # Emit one row per prev key (deterministic ordering)
-    prev_keys = sorted([k for k in prev_metrics.keys() if isinstance(k, str)])
+    # Emit rows (deterministic ordering). Default is strict (prev-only).
+    _join_mode = _fix2d6_get_diff_join_mode_v1()
+    _join_mode = "union" if _join_mode in ("union", "u", "1", "true", "yes", "y") else "strict"
 
-    for prev_ckey in prev_keys:
+    prev_keys = sorted([k for k in prev_metrics.keys() if isinstance(k, str)]) if isinstance(prev_metrics, dict) else []
+    cur_keys = sorted([k for k in cur_metrics.keys() if isinstance(k, str)]) if isinstance(cur_metrics, dict) else []
+
+    _prev_set = set(prev_keys)
+    _cur_set = set(cur_keys)
+    _both_count = len(_prev_set & _cur_set)
+    _prev_only_count = len(_prev_set - _cur_set)
+    _cur_only_count = len(_cur_set - _prev_set)
+
+    if _join_mode == "union":
+        _emit_keys = sorted(_prev_set | _cur_set)
+    else:
+        _emit_keys = list(prev_keys)
+
+    for prev_ckey in _emit_keys:
         pm = prev_metrics.get(prev_ckey) if isinstance(prev_metrics, dict) else None
         pm = pm if isinstance(pm, dict) else {}
+
+        _has_prev = prev_ckey in _prev_set
+        _has_cur = prev_ckey in _cur_set
 
         prev_raw = _raw_display_value(pm)
         prev_val_norm = _canon_value_norm(pm)
@@ -19344,6 +19401,15 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             else:
                 # we do not infer numeric; keep classification neutral
                 change_type = "unknown"
+
+        # Union mode: expose current-only and prev-only metrics as added/removed (identity remains canonical_key).
+        if _join_mode == "union":
+            if _has_cur and not _has_prev:
+                change_type = "added"
+                change_pct = None
+            elif _has_prev and not _has_cur:
+                change_type = "removed"
+                change_pct = None
 
         display_name = pm.get("name") or pm.get("display_name") or pm.get("original_name") or prev_ckey
 
@@ -20006,6 +20072,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         _fix2p_canary_injected = False
     summary = {
         "rows_total": len(rows),
+        "join_mode": _join_mode, "prev_only_count": int(_prev_only_count), "cur_only_count": int(_cur_only_count), "both_count": int(_both_count),
         "joined_by_ckey": int(joined_by_ckey),
         "joined_by_anchor_hash": int(joined_by_anchor),
         "not_found": int(not_found),
