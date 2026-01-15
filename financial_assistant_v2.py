@@ -79,7 +79,93 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D8"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D9"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+
+# ============================================================
+# PATCH START: FIX2D9_SCHEMA_ANCHORED_REBUILD_V1
+# Purpose:
+#   Force current-side canonical rebuild to be schema-anchored
+#   to the Analysis (prev_response) schema universe, so keys
+#   overlap and "Current" can populate.
+#
+# Strategy:
+#   Prefer rebuild_metrics_from_snapshots_schema_only_fix16 if
+#   callable; fallback to rebuild_metrics_from_snapshots_analysis_canonical_v1.
+#
+#   Render/diff-facing only; does not change hashing/snapshots.
+# ============================================================
+
+def _fix2d9_schema_anchored_rebuild_current_metrics_v1(prev_response, pool, web_context=None):
+    diag = {
+        "applied": False,
+        "fn": None,
+        "count": 0,
+        "keys_sample": [],
+        "reason": None,
+    }
+    try:
+        if pool is None:
+            diag["reason"] = "pool_none"
+            return None, diag
+        if not isinstance(pool, list) or not pool:
+            diag["reason"] = "pool_empty"
+            return None, diag
+
+        fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+        fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+        if not callable(fn):
+            fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+            fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+
+        if not callable(fn):
+            diag["reason"] = "fn_missing"
+            return None, diag
+
+        diag["fn"] = fn_name
+
+        try:
+            rebuilt = fn(prev_response, pool, web_context=web_context)
+        except TypeError:
+            rebuilt = fn(prev_response, pool)
+
+        if isinstance(rebuilt, dict) and rebuilt:
+            diag["applied"] = True
+            diag["count"] = len(rebuilt)
+            try:
+                diag["keys_sample"] = list(rebuilt.keys())[:10]
+            except Exception:
+                diag["keys_sample"] = []
+            return dict(rebuilt), diag
+
+        diag["reason"] = "rebuilt_empty_or_non_dict"
+        return None, diag
+    except Exception as _e:
+        diag["reason"] = "exception:" + str(type(_e).__name__)
+        return None, diag
+
+# ============================================================
+# PATCH END: FIX2D9_SCHEMA_ANCHORED_REBUILD_V1
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D9
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D9",
+        "date": "2026-01-15",
+        "summary": "Schema-anchored current-side canonical rebuild for diff/render: prefer schema_only rebuild so keys overlap and Current can populate.",
+        "files": ["FIX2D9.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+
+
 
 # ============================================================
 # PATCH START: FIX2D8_PROMOTE_NESTED_RESULTS_V1
@@ -22035,6 +22121,33 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         # Apply display override (used by diff below)
         locals()["current_metrics"] = current_metrics_for_display  # keep variable name used by downstream diff
+        # ============================================================
+        # PATCH START: FIX2D9_SCHEMA_ANCHORED_REBUILD_CALLSITE_V1
+        # Purpose: Override current_metrics_for_display with schema-anchored rebuild
+        # ============================================================
+        try:
+            _fix2d9_over, _fix2d9_diag = _fix2d9_schema_anchored_rebuild_current_metrics_v1(
+                prev_response=prev_response,
+                pool=_pool,
+                web_context=web_context,
+            )
+            try:
+                output.setdefault('results', {}).setdefault('debug', {})
+                output['results']['debug']['fix2d9_schema_anchored_rebuild_v1'] = _fix2d9_diag
+            except Exception:
+                pass
+            if isinstance(_fix2d9_over, dict) and _fix2d9_over:
+                current_metrics_for_display = dict(_fix2d9_over)
+                locals()['current_metrics'] = current_metrics_for_display
+                try:
+                    output.setdefault('results', {})['primary_metrics_canonical'] = current_metrics_for_display
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # ============================================================
+        # PATCH END: FIX2D9_SCHEMA_ANCHORED_REBUILD_CALLSITE_V1
+        # ============================================================
         # ============================================================
         # PATCH START: FIX2D7_EXEC_STAMP_AND_PROPAGATE_V1
         # Purpose:
