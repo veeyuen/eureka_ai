@@ -79,7 +79,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D11"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D11b"  # PATCH FIX2D1 (ADD): bump CODE_VERSION to match patch id
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D11b
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D11b",
+        "date": "2026-01-15",
+        "summary": "Syntax-safe render-gate fallback: union-mode unanchored canonical_for_render without introducing nested try blocks.",
+        "files": ["FIX2D11b.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D11
@@ -22785,63 +22804,70 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             _v28_anchor_enforce["hit_keys_sample"].append(str(_ckey))
                     except Exception:
                         continue
-    # ============================================================
-    # PATCH START: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2
-    # Purpose:
-    #   Render-gate fallback (UNION / demo mode only).
-    #   If anchor enforcement yields zero hits, allow render-time
-    #   population from current canonical metrics, explicitly
-    #   labeled as unanchored-for-render.
-    #
-    # Safety:
-    #   - Render-only
-    #   - No try/except (must live inside existing try scope)
-    # ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# PATCH START: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2
+# Purpose:
+#   Render-gate fallback (UNION / demo mode only).
+#   If anchor enforcement yields zero hits, allow render-time
+#   population from current canonical metrics, explicitly
+#   labeled as unanchored-for-render.
+#
+# Safety:
+#   - Render-only
+#   - NO new try/except (must live inside existing try scope)
+# ============================================================
 
-    _fix2d11_join_mode = None
-    if "_fix2d6_get_diff_join_mode_v1" in globals():
-        try:
-            _fix2d11_join_mode = _fix2d6_get_diff_join_mode_v1()
-        except Exception:
-            _fix2d11_join_mode = None
+_fix2d11_join_mode = None
+if "_fix2d6_get_diff_join_mode_v1" in globals():
+    try:
+        _fix2d11_join_mode = _fix2d6_get_diff_join_mode_v1()
+    except Exception:
+        _fix2d11_join_mode = None
 
-    if (
-        isinstance(locals().get("_v28_anchor_enforce"), dict)
-        and _v28_anchor_enforce.get("attempted")
-        and int(_v28_anchor_enforce.get("hits") or 0) == 0
-        and str(_fix2d11_join_mode or "").lower() == "union"
-    ):
-        _pmc = None
-        if isinstance(output.get("results"), dict):
-            _pmc = output["results"].get("primary_metrics_canonical")
+if (
+    isinstance(locals().get("_v28_anchor_enforce"), dict)
+    and _v28_anchor_enforce.get("attempted")
+    and int(_v28_anchor_enforce.get("hits") or 0) == 0
+    and str(_fix2d11_join_mode or "").lower() == "union"
+):
+    _pmc = None
+    if isinstance(output.get("results"), dict):
+        _pmc = output["results"].get("primary_metrics_canonical")
 
-        if not (isinstance(_pmc, dict) and _pmc):
-            if isinstance(output.get("results", {}).get("results"), dict):
-                _pmc = output["results"]["results"].get("primary_metrics_canonical")
+    if not (isinstance(_pmc, dict) and _pmc):
+        if isinstance(output.get("results", {}).get("results"), dict):
+            _pmc = output["results"]["results"].get("primary_metrics_canonical")
 
-        if isinstance(_pmc, dict) and _pmc:
-            canonical_for_render = dict(_pmc)
+    if isinstance(_pmc, dict) and _pmc:
+        canonical_for_render = dict(_pmc)
 
-            for _k, _cm in canonical_for_render.items():
-                if isinstance(_cm, dict):
-                    _cm.setdefault("diag", {})
-                    if isinstance(_cm["diag"], dict):
-                        _cm["diag"]["fix2d11_render_fallback_unanchored"] = True
-                        _cm["diag"]["fix2d11_render_fallback_join_mode"] = "union"
+        for _k, _cm in canonical_for_render.items():
+            if isinstance(_cm, dict):
+                _cm.setdefault("diag", {})
+                if isinstance(_cm["diag"], dict):
+                    _cm["diag"]["fix2d11_render_fallback_unanchored"] = True
+                    _cm["diag"]["fix2d11_render_fallback_join_mode"] = "union"
 
-            _v28_anchor_enforce["fix2d11_fallback_applied"] = True
-            _v28_anchor_enforce["fix2d11_fallback_count"] = len(_pmc)
-            _v28_anchor_enforce["note_fix2d11"] = (
-                "union-mode fallback: canonical_for_render populated from "
-                "current primary_metrics_canonical (unanchored)"
-            )
-        else:
-            _v28_anchor_enforce["fix2d11_fallback_applied"] = False
-            _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
+        _v28_anchor_enforce["fix2d11_fallback_applied"] = True
+        _v28_anchor_enforce["fix2d11_fallback_count"] = len(_pmc)
+        _v28_anchor_enforce["note_fix2d11"] = (
+            "union-mode fallback: canonical_for_render populated from "
+            "current primary_metrics_canonical (unanchored)"
+        )
+    else:
+        _v28_anchor_enforce["fix2d11_fallback_applied"] = False
+        _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
 
-    # ============================================================
-    # PATCH END: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2
-    # ============================================================
+# ============================================================
+# PATCH END: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2
+# ============================================================
+_V1
+# ============================================================
+
+# ============================================================
+
 
     except Exception:
         pass
