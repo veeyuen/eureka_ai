@@ -103,10 +103,10 @@ try:
 
 
     PATCH_TRACKER_V1.append({
-        "patch_id\": \"FIX2D4\",
-        "date\": \"2026-01-15\",
-        "summary\": \"Add debug.key_overlap_v1 to explicitly report canonical key overlap (prev vs current) and target key presence for deterministic diff feasibility checks.\",
-        "files\": [\"FIX2D4.py\"],
+        "patch_id": "FIX2D4",
+        "date": "2026-01-15",
+        "summary": "Add debug.key_overlap_v1 to explicitly report canonical key overlap (prev vs current) and target key presence for deterministic diff feasibility checks.",
+        "files": ["FIX2D4.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
