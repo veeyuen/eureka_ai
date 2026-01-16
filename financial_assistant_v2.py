@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2K"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2L"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -25024,6 +25024,194 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _r["current_value"] = "N/A"
                         _r["current_value_norm"] = None
                         _r["cur_value_norm"] = None
+                        # =====================================================================
+                        # PATCH FIX2D2L (AUTHORITATIVE): yearlike-current blocked => inference fallback + commit
+                        # Why:
+                        # - FIX2D24 correctly blocks unitless yearlike current values (e.g. 2024/2030)
+                        #   but previously left Current as N/A. This patch immediately falls back to the
+                        #   guarded inference pool and commits a binding current value into metric_changes.
+                        # What:
+                        # - Build a shared extracted-number pool from baseline_sources_cache(_current)
+                        # - Score candidates with unit-family + keyword/context hints
+                        # - Commit into current_value/current_value_norm/current_source/current_method
+                        # - Attach explicit trace yearlike_current_blocked_then_inferred_v1
+                        # =====================================================================
+                        try:
+                            _r_diag = _r.get('diag') if isinstance(_r.get('diag'), dict) else {}
+                            _blocked_vn = _cvn
+                            _blocked_raw = _raw
+                            # lazily build pool once
+                            if '_fix2d2l_pool_v1' not in locals():
+                                _fix2d2l_pool_v1 = []
+                                def _fix2d2l_add_from_bsc(_bsc_list):
+                                    try:
+                                        if not isinstance(_bsc_list, list):
+                                            return
+                                        for _src in _bsc_list:
+                                            if not isinstance(_src, dict):
+                                                continue
+                                            _surl = _src.get('source_url') or _src.get('url')
+                                            _nums = _src.get('extracted_numbers')
+                                            if not isinstance(_nums, list):
+                                                continue
+                                            for _n in _nums:
+                                                if not isinstance(_n, dict):
+                                                    continue
+                                                _vn = _n.get('value_norm')
+                                                _rw = _n.get('raw')
+                                                _ut = str(_n.get('unit_tag') or '').strip()
+                                                _uf = str(_n.get('unit_family') or '').strip()
+                                                _ctx = _n.get('context_snippet') or _n.get('context') or ''
+                                                # derive minimal unit_family if missing
+                                                if not _uf:
+                                                    if _ut == '%':
+                                                        _uf = 'percent'
+                                                    elif _ut in {'USD','US$','$','EUR','€','GBP','£','SGD','S$','JPY','¥','CNY','RMB','CN¥'}:
+                                                        _uf = 'currency'
+                                                    elif _ut in {'M','B','T','K'}:
+                                                        _uf = 'magnitude'
+                                                _fix2d2l_pool_v1.append({
+                                                    'value_norm': _vn,
+                                                    'raw': _rw,
+                                                    'unit_tag': _ut,
+                                                    'unit_family': _uf,
+                                                    'source_url': (_n.get('source_url') or _surl),
+                                                    'context_snippet': _ctx,
+                                                })
+                                    except Exception:
+                                        return
+                                # collect from common locations
+                                _fix2d2l_add_from_bsc(output.get('baseline_sources_cache_current'))
+                                _fix2d2l_add_from_bsc(output.get('baseline_sources_cache'))
+                                if isinstance(output.get('results'), dict):
+                                    _fix2d2l_add_from_bsc(output['results'].get('baseline_sources_cache_current'))
+                                    _fix2d2l_add_from_bsc(output['results'].get('baseline_sources_cache'))
+                            _pool = locals().get('_fix2d2l_pool_v1') or []
+                            # determine desired unit_family from row hints
+                            _desired_uf = ''
+                            try:
+                                _hint_u = str(_r.get('prev_unit_cmp') or _r.get('unit') or _r.get('cur_unit_cmp') or '').strip().lower()
+                                _hint_name = str(_nm or '').lower()
+                                if '%' in _hint_u or 'percent' in _hint_u or 'share' in _hint_name:
+                                    _desired_uf = 'percent'
+                                elif any(x in _hint_u for x in ['usd','us$','$','eur','€','gbp','£','sgd','s$','jpy','¥','cny','rmb']):
+                                    _desired_uf = 'currency'
+                                elif any(x in _hint_name for x in ['sales','units','deliver','ship','vehicle']):
+                                    _desired_uf = 'magnitude'
+                            except Exception:
+                                _desired_uf = ''
+                            # keyword set for context scoring
+                            _kw = set()
+                            try:
+                                for tok in re.split(r"[^a-z0-9]+", str(_nm or _ckey or '').lower()):
+                                    if len(tok) >= 4 and tok not in {'global','total','market','share','sales','units','value','year'}:
+                                        _kw.add(tok)
+                            except Exception:
+                                _kw = set()
+                            # score candidates
+                            _scored = []
+                            for _cand in _pool:
+                                try:
+                                    if not isinstance(_cand, dict):
+                                        continue
+                                    _vn = _cand.get('value_norm')
+                                    _rw = _cand.get('raw')
+                                    if _fix2d24_is_yearlike(_vn, _rw):
+                                        continue
+                                    _uf = str(_cand.get('unit_family') or '').strip()
+                                    _ut = str(_cand.get('unit_tag') or '').strip()
+                                    _ctx = str(_cand.get('context_snippet') or '').lower()
+                                    _score = 0.0
+                                    if _desired_uf and _uf == _desired_uf:
+                                        _score += 10.0
+                                    if _desired_uf == 'percent' and ('%' in _ctx or _ut == '%'):
+                                        _score += 3.0
+                                    if _desired_uf == 'magnitude' and ('million' in _ctx or 'units' in _ctx):
+                                        _score += 2.0
+                                    if _desired_uf == 'currency' and any(x in _ctx for x in ['$', 'us$', 'usd', 'eur', '€', 'gbp', '£']):
+                                        _score += 2.0
+                                    # prefer same source_url when present
+                                    _row_surl = str(_r.get('source_url') or _r.get('cur_source_url') or '').strip()
+                                    if _row_surl and str(_cand.get('source_url') or '').strip() == _row_surl:
+                                        _score += 2.0
+                                    # keyword overlap
+                                    if _kw:
+                                        _hits = sum(1 for k in _kw if k in _ctx)
+                                        _score += min(6.0, 1.5 * _hits)
+                                    _scored.append((_score, _cand))
+                                except Exception:
+                                    continue
+                            _scored.sort(key=lambda t: (t[0] if t and len(t)>0 else 0), reverse=True)
+                            _sel = _scored[0][1] if _scored and _scored[0][0] >= 3.0 else None
+                            _committed = False
+                            _reason = 'no_eligible_candidates' if not _scored else ('score_below_threshold' if _sel is None else 'selected')
+                            if isinstance(_sel, dict):
+                                # commit into metric_changes row (UI-read fields)
+                                _r['current_value_norm'] = _sel.get('value_norm')
+                                _r['cur_value_norm'] = _sel.get('value_norm')
+                                _r['current_value'] = (_sel.get('raw') if _sel.get('raw') not in (None, '') else str(_sel.get('value_norm')))
+                                _r['current_source'] = _sel.get('source_url')
+                                _r['current_method'] = 'yearlike_blocked_then_inferred'
+                                # comparable only if prev exists
+                                _pv = _r.get('previous_value_norm')
+                                if _pv is None:
+                                    _pv = _r.get('prev_value_norm')
+                                _r['baseline_is_comparable'] = bool(_pv is not None and _r.get('current_value_norm') is not None)
+                                _committed = True
+                            # trace
+                            _r.setdefault('diag', {})
+                            if isinstance(_r.get('diag'), dict):
+                                _r['diag']['yearlike_current_blocked_then_inferred_v1'] = {
+                                    'blocked_value_norm': _blocked_vn,
+                                    'blocked_raw': _blocked_raw,
+                                    'desired_unit_family': _desired_uf or None,
+                                    'pool_size': int(len(_pool)) if isinstance(_pool, list) else None,
+                                    'eligible_scored': int(len(_scored)),
+                                    'selected': bool(_sel is not None),
+                                    'selected_value_norm': (_sel.get('value_norm') if isinstance(_sel, dict) else None),
+                                    'selected_raw': (_sel.get('raw') if isinstance(_sel, dict) else None),
+                                    'selected_unit_family': (_sel.get('unit_family') if isinstance(_sel, dict) else None),
+                                    'selected_unit_tag': (_sel.get('unit_tag') if isinstance(_sel, dict) else None),
+                                    'selected_source_url': (_sel.get('source_url') if isinstance(_sel, dict) else None),
+                                    'committed': bool(_committed),
+                                    'reason': _reason,
+                                    'top3': [
+                                        {
+                                            'score': float(sc),
+                                            'value_norm': c.get('value_norm') if isinstance(c, dict) else None,
+                                            'raw': c.get('raw') if isinstance(c, dict) else None,
+                                            'unit_family': c.get('unit_family') if isinstance(c, dict) else None,
+                                            'unit_tag': c.get('unit_tag') if isinstance(c, dict) else None,
+                                            'source_url': c.get('source_url') if isinstance(c, dict) else None,
+                                        }
+                                        for sc, c in (_scored[:3] if isinstance(_scored, list) else [])
+                                    ],
+                                }
+                            # aggregate
+                            try:
+                                _dbg.setdefault('fix2d2l_yearlike_block_fallback_trace_v1', {})
+                                _agg = _dbg.get('fix2d2l_yearlike_block_fallback_trace_v1')
+                                if not isinstance(_agg, dict):
+                                    _agg = {}
+                                _agg['fallback_attempts'] = int(_agg.get('fallback_attempts', 0)) + 1
+                                if _committed:
+                                    _agg['fallback_commits'] = int(_agg.get('fallback_commits', 0)) + 1
+                                _agg.setdefault('samples', [])
+                                if isinstance(_agg.get('samples'), list) and len(_agg['samples']) < 10:
+                                    _agg['samples'].append({
+                                        'canonical_key': _ckey,
+                                        'blocked_value_norm': _blocked_vn,
+                                        'committed': bool(_committed),
+                                        'selected_value_norm': (_sel.get('value_norm') if isinstance(_sel, dict) else None),
+                                        'selected_source_url': (_sel.get('source_url') if isinstance(_sel, dict) else None),
+                                        'reason': _reason,
+                                    })
+                                _dbg['fix2d2l_yearlike_block_fallback_trace_v1'] = _agg
+                                output['debug'] = _dbg
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
 
             # attach trace
             try:
@@ -35007,7 +35195,7 @@ except Exception:
 # VERSION STAMP (ADDITIVE)
 # =========================
 try:
-    CODE_VERSION = "FIX2D2K"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
+    CODE_VERSION = "FIX2D2L"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
 except Exception:
     pass
 
@@ -35082,6 +35270,6 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2K"
+    CODE_VERSION = "FIX2D2L"
 except Exception:
     pass
