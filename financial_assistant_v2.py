@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2M"  # PATCH FIX2D2M (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2N"  # PATCH FIX2D2N (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -33329,6 +33329,264 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
     prev_can = _diffpanel_v2__unwrap_primary_metrics_canonical(prev_response)
     cur_can = _diffpanel_v2__unwrap_primary_metrics_canonical(cur_response)
 
+
+    # =====================================================================
+    # PATCH FIX2D2N_BASELINE_KEYED_CURRENT (ADDITIVE)
+    # Problem:
+    # - Evolution can surface a different set of canonical keys than the Analysis baseline.
+    # - Diff joins are baseline-keyed; if cur_can lacks the baseline keys, Current stays N/A.
+    #
+    # Fix:
+    # - Synthesize a baseline-keyed current canonical map by inferring a best current
+    #   candidate for EACH baseline ckey from already-extracted_numbers pools.
+    # - Uses injected-first two-pass policy (injected-only, then global fallback).
+    # - Unit-family gates + yearlike blocking preserved.
+    # - Render-only: does NOT change canonical key generation; it only creates
+    #   a current mapping for diff/join purposes.
+    # =====================================================================
+    try:
+        if isinstance(prev_can, dict) and prev_can and isinstance(cur_can, dict):
+            _prev_keys_set = set([k for k in prev_can.keys() if isinstance(k, str) and k])
+            _cur_keys_set = set([k for k in cur_can.keys() if isinstance(k, str) and k])
+
+            # Only engage if we observe a parity gap (missing baseline keys in current)
+            _missing = sorted(list(_prev_keys_set - _cur_keys_set))
+            if _missing:
+
+                def _fx2d2n_is_yearlike(v, unit_tag=None):
+                    try:
+                        if unit_tag is not None and str(unit_tag).strip():
+                            return False
+                        fv = float(v)
+                        if fv.is_integer():
+                            iv = int(fv)
+                            return 1900 <= iv <= 2100
+                    except Exception:
+                        return False
+                    return False
+
+                def _fx2d2n_unwrap_pool(resp: dict):
+                    pool = []
+                    if not isinstance(resp, dict):
+                        return pool
+
+                    def _add_from_sources(sources):
+                        if not isinstance(sources, list):
+                            return
+                        for s in sources:
+                            if not isinstance(s, dict):
+                                continue
+                            su = s.get('source_url') or s.get('url')
+                            nums = s.get('extracted_numbers')
+                            if not isinstance(nums, list):
+                                continue
+                            for n in nums:
+                                if not isinstance(n, dict):
+                                    continue
+                                vn = n.get('value_norm')
+                                if vn is None:
+                                    vn = n.get('value')
+                                try:
+                                    fvn = float(vn)
+                                except Exception:
+                                    continue
+                                ut = str(n.get('unit_tag') or n.get('unit') or n.get('base_unit') or '').strip()
+                                raw = str(n.get('raw') or n.get('display') or n.get('value') or '').strip()
+                                ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '')
+                                if _fx2d2n_is_yearlike(fvn, ut):
+                                    continue
+                                pool.append({
+                                    'value_norm': fvn,
+                                    'unit_tag': ut,
+                                    'raw': raw,
+                                    'context_snippet': ctx,
+                                    'source_url': str(su).strip() if su else None,
+                                })
+
+                    # Direct keys
+                    _add_from_sources(resp.get('baseline_sources_cache_current'))
+                    if not pool:
+                        _add_from_sources(resp.get('baseline_sources_cache'))
+
+                    # Nested results
+                    res = resp.get('results')
+                    if isinstance(res, dict):
+                        if not pool:
+                            _add_from_sources(res.get('baseline_sources_cache_current'))
+                        if not pool:
+                            _add_from_sources(res.get('baseline_sources_cache'))
+                        if not pool:
+                            _add_from_sources(res.get('source_results'))
+                    return pool
+
+                def _fx2d2n_injected_url_set(resp: dict):
+                    try:
+                        dbg = resp.get('debug') if isinstance(resp, dict) else None
+                        if isinstance(dbg, dict):
+                            it = dbg.get('inj_trace_v1')
+                            if isinstance(it, dict) and isinstance(it.get('admitted_norm'), list):
+                                return set([u for u in it.get('admitted_norm') if isinstance(u, str) and u])
+                        it = resp.get('inj_trace_v1') if isinstance(resp, dict) else None
+                        if isinstance(it, dict) and isinstance(it.get('admitted_norm'), list):
+                            return set([u for u in it.get('admitted_norm') if isinstance(u, str) and u])
+                    except Exception:
+                        return set()
+                    return set()
+
+                _pool_all = _fx2d2n_unwrap_pool(cur_response)
+                _inj_set = _fx2d2n_injected_url_set(cur_response)
+
+                def _expected_family(ckey: str, prev_unit: str):
+                    ck = str(ckey or '').lower()
+                    pu = str(prev_unit or '').lower()
+                    if 'percent' in ck or pu in ('%', 'percent') or '%' in pu:
+                        return 'percent'
+                    if 'currency' in ck or 'usd' in pu or '$' in pu or 's$' in pu:
+                        return 'currency'
+                    if 'ev_sales' in ck or 'unit_sales' in ck or 'sales' in ck:
+                        return 'unit_sales'
+                    if 'unit_count' in ck or 'charg' in ck or 'station' in ck or 'count' in ck:
+                        return 'unit_count'
+                    return 'unknown'
+
+                def _unit_family_ok(expected: str, cand: dict):
+                    try:
+                        u = str(cand.get('unit_tag') or '').lower()
+                        c = str(cand.get('context_snippet') or '').lower()
+                        r = str(cand.get('raw') or '').lower()
+                        if expected == 'percent':
+                            return ('%' in u) or ('percent' in u) or ('%' in r) or ('percent' in r) or ('%' in c) or (' percent' in c)
+                        if expected == 'currency':
+                            return ('$' in u) or ('usd' in u) or ('currency' in u) or ('$' in r) or ('usd' in r) or ('$' in c) or (' usd' in c) or ('billion' in c) or ('bn' in c)
+                        if expected == 'unit_sales':
+                            return ('m' == u) or (u in ('mn','m')) or ('unit' in u) or ('million' in u) or ('units' in u) or ('million' in c) or ('units' in c)
+                        if expected == 'unit_count':
+                            return ('count' in u) or ('unit' in u) or ('count' in c) or ('units' in c)
+                        return True
+                    except Exception:
+                        return False
+
+                def _score(prev_ckey: str, prev_name: str, prev_val_norm, cand: dict):
+                    try:
+                        if not isinstance(cand, dict):
+                            return -1e9
+                        vn = cand.get('value_norm')
+                        if vn is None:
+                            return -1e9
+                        try:
+                            vn = float(vn)
+                        except Exception:
+                            return -1e9
+                        ut = str(cand.get('unit_tag') or '').strip()
+                        if _fx2d2n_is_yearlike(vn, ut):
+                            return -1e9
+                        ctx = str(cand.get('context_snippet') or '').lower()
+                        nm = str(prev_name or '').lower()
+                        ck = str(prev_ckey or '').lower()
+                        expected = _expected_family(prev_ckey, prev_can.get(prev_ckey, {}).get('unit_tag') if isinstance(prev_can.get(prev_ckey), dict) else '')
+                        if expected != 'unknown' and not _unit_family_ok(expected, cand):
+                            return -1e9
+
+                        sc = 0.0
+                        # bind key terms
+                        for kw in ('sales','share','market','revenue','charg'):
+                            if kw in ck and kw in ctx:
+                                sc += 1.0
+                            if kw in nm and kw in ctx:
+                                sc += 0.8
+                        # prefer same year in context
+                        m = re.search(r'(19\d{2}|20\d{2})', ck)
+                        if m and m.group(1) in ctx:
+                            sc += 2.5
+                        # mild magnitude sanity
+                        if isinstance(prev_val_norm, (int, float)):
+                            try:
+                                sc -= min(5.0, abs(float(vn) - float(prev_val_norm)) / max(1e-9, abs(float(prev_val_norm))))
+                            except Exception:
+                                pass
+                        return sc
+                    except Exception:
+                        return -1e9
+
+                def _select_for(prev_ckey: str, pm: dict):
+                    prev_name = (pm.get('name') or pm.get('metric_name') or prev_ckey) if isinstance(pm, dict) else prev_ckey
+                    prev_val = pm.get('value_norm') if isinstance(pm, dict) else None
+
+                    # Pass 1: injected-only
+                    best = None
+                    bests = -1e9
+                    if _inj_set:
+                        for cand in _pool_all:
+                            if not isinstance(cand, dict):
+                                continue
+                            su = cand.get('source_url')
+                            if not su or su not in _inj_set:
+                                continue
+                            sc = _score(prev_ckey, prev_name, prev_val, cand)
+                            if sc > bests:
+                                bests = sc
+                                best = cand
+                        if best is not None and bests > -1e8:
+                            return best, True, float(bests)
+
+                    # Pass 2: global
+                    best = None
+                    bests = -1e9
+                    for cand in _pool_all:
+                        sc = _score(prev_ckey, prev_name, prev_val, cand)
+                        if sc > bests:
+                            bests = sc
+                            best = cand
+                    if best is not None and bests > -1e8:
+                        return best, False, float(bests)
+                    return None, None, None
+
+                # Synthesize missing baseline keys into cur_can
+                _synth = {}
+                for _ck in _missing:
+                    _pm = prev_can.get(_ck)
+                    if not isinstance(_pm, dict):
+                        continue
+                    cand, used_inj, score = _select_for(_ck, _pm)
+                    if isinstance(cand, dict):
+                        _synth[_ck] = {
+                            'name': _pm.get('name') or _pm.get('metric_name') or _ck,
+                            'value_norm': cand.get('value_norm'),
+                            'value': cand.get('value_norm'),
+                            'raw': cand.get('raw'),
+                            'unit_tag': cand.get('unit_tag') or _pm.get('unit_tag'),
+                            'sources': ([{'url': cand.get('source_url')}] if cand.get('source_url') else []),
+                            'source_url': cand.get('source_url'),
+                            'selector_used': 'inference_bound_baseline_keyed',
+                            'diag_fix2d2n': {
+                                'parity_gap': True,
+                                'missing_baseline_ckey': _ck,
+                                'selected_from_injected_pass1': bool(used_inj),
+                                'selected_score': score,
+                            },
+                        }
+
+                if _synth:
+                    # copy-on-write: do not mutate original cur_can in case it is reused elsewhere
+                    _cur_aug = dict(cur_can)
+                    _cur_aug.update(_synth)
+                    cur_can = _cur_aug
+
+                    # attach a tiny debug marker for auditability
+                    if isinstance(cur_response, dict):
+                        _dbg = cur_response.setdefault('debug', {})
+                        if isinstance(_dbg, dict):
+                            _dbg.setdefault('fix2d2n_baseline_keyed_current', {})
+                            if isinstance(_dbg.get('fix2d2n_baseline_keyed_current'), dict):
+                                _dbg['fix2d2n_baseline_keyed_current'].update({
+                                    'enabled': True,
+                                    'missing_baseline_keys': list(_missing)[:25],
+                                    'synthesized_count': int(len(_synth)),
+                                })
+    except Exception:
+        pass
+    # =====================================================================
+
     rows = []
     summary = {
         # PATCH FIX2D2I_STAMP (ADD): unambiguous runtime stamp for which V2 builder produced rows
@@ -35330,10 +35588,34 @@ except Exception:
 
 
 
+# =====================================================================
+# PATCH TRACKER ENTRY: FIX2D2N (ADDITIVE)
+# - Baseline-keyed current mapping for Analysis→Evolution diffing
+# - When current canonical keys do not match baseline keys, synthesize current
+#   metric objects for each baseline ckey using injected-first, unit-family-guarded
+#   inference from extracted_numbers pools.
+# - This closes Analysis/Evolution key parity gaps for the diff join without
+#   changing canonical key generation.
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2N",
+        "date": "2026-01-16",
+        "summary": "Baseline-keyed current mapping: for each Analysis baseline canonical key, synthesize a current metric via injected-first, unit-family-guarded inference from extracted_numbers pools when Evolution canonical keys diverge; enables deterministic Analysis→Evolution diff joins even under key parity gaps.",
+        "files": ["FIX2D2N.py"],
+        "supersedes": ["FIX2D2M"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # =========================
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2M"
+    CODE_VERSION = "FIX2D2N"
 except Exception:
     pass
