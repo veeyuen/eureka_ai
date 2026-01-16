@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2I"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2J"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -121,6 +121,14 @@ try:
         "summary": "Enable binding inference fallback when a joined current value is blocked as unitless yearlike; add unit-family backfill for extracted_numbers pool candidates and trace the backfill/override in Diff Panel V2 __rows.",
         "files": ["FIX2D2I.py"],
         "supersedes": ["FIX2D2G"],
+    })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2J",
+        "date": "2026-01-16",
+        "summary": "Deterministic unit/measure classifier for extracted numeric candidates: backfill unit_family from unit_tag and currency evidence in context; correct measure_kind/measure_assoc for currency-like candidates; attach classifier trace fields.",
+        "files": ["FIX2D2J.py"],
+        "supersedes": ["FIX2D2I"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -2893,6 +2901,34 @@ def unit_family(unit_tag: str) -> str:
 
     return ""
 
+# =========================
+# PATCH FIX2D2J (ADDITIVE): normalize_unit_family alias + currency-aware family
+# - Many extracted candidates arrive with unit_family='' due to legacy drift.
+# - Provide a stable, analysis/evolution-shared unit_family normalizer.
+# - Currency requires context evidence; caller may pass ctx/raw for upgrade.
+# =========================
+def normalize_unit_family(unit_tag: str, ctx: str = "", raw: str = "") -> str:
+    """
+    Deterministic unit-family normalization.
+
+    - Primary signal: normalized unit_tag (%, T/B/M/K, energy tags).
+    - Currency upgrade: if magnitude tag (T/B/M/K) but currency evidence exists in ctx/raw.
+
+    This helper is intentionally conservative; it never labels a candidate as 'currency'
+    unless explicit currency evidence is present.
+    """
+    ut = (unit_tag or "").strip()
+    fam = unit_family(ut)
+    if fam == "magnitude":
+        c = (ctx or "").lower() + " " + (raw or "").lower()
+        # explicit currency markers
+        if any(x in c for x in ["$", "us$", "usd", "eur", "€", "gbp", "£", "jpy", "¥", "cny", "rmb", "aud", "cad", "sgd", "inr", "krw"]):
+            return "currency"
+        if any(k in c for k in ["revenue", "market", "valuation", "valued", "worth", "price", "sales revenue"]):
+            # keyword-only is weaker; require magnitude tag to avoid false positives
+            return "currency"
+    return fam
+
 
 def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
@@ -2993,18 +3029,75 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
         ut = str(candidate.get("unit_tag") or candidate.get("unit") or "").strip()
 
-
+    # =========================
+    # PATCH FIX2D2J (ADDITIVE): deterministic unit/measure classifier
+    # - Backfill unit_family using unit_tag and currency evidence in context
+    # - Correct measure_kind/measure_assoc for currency-like candidates
+    # - Attach small per-candidate trace fields for audit
+    # =========================
+    ctx_s = (candidate.get("context") or candidate.get("context_snippet") or "")
+    raw_s = (candidate.get("raw") or candidate.get("display_value") or "")
+    existing_fam = (candidate.get("unit_family") or "")
 
     try:
-
-
-        fam = normalize_unit_family(ut)
-
-
+        fam = normalize_unit_family(ut, ctx=ctx_s, raw=raw_s)
     except Exception:
-
-
         fam = ""
+
+    unit_family_backfilled = False
+    if (not existing_fam) and fam:
+        candidate["unit_family"] = fam
+        unit_family_backfilled = True
+    elif fam:
+        # keep existing if set, but normalize obvious empties/whitespace
+        if str(existing_fam).strip() == "":
+            candidate["unit_family"] = fam
+            unit_family_backfilled = True
+
+    # currency kind correction (only when evidence exists)
+    measure_kind_corrected = False
+    measure_assoc_corrected = False
+    classifier_reason = ""
+    if fam == "currency":
+        classifier_reason = "currency_evidence"
+        mk0 = str(candidate.get("measure_kind") or "").strip()
+        if mk0 in ("", "count_units"):
+            candidate["measure_kind"] = "currency"
+            measure_kind_corrected = True
+        ma0 = str(candidate.get("measure_assoc") or "").strip()
+        cxl = (ctx_s or "").lower()
+        assoc = None
+        if "revenue" in cxl:
+            assoc = "revenue"
+        elif "market" in cxl and any(k in cxl for k in ["size", "value", "valuation"]):
+            assoc = "market_value"
+        elif "price" in cxl:
+            assoc = "price"
+        if assoc and (ma0 in ("", "units")):
+            candidate["measure_assoc"] = assoc
+            measure_assoc_corrected = True
+    elif fam == "percent":
+        classifier_reason = "percent_tag"
+        mk0 = str(candidate.get("measure_kind") or "").strip()
+        if mk0 == "":
+            candidate["measure_kind"] = "percent"
+            measure_kind_corrected = True
+
+    # attach trace (compact)
+    try:
+        candidate["unit_measure_classifier_trace_v1"] = {
+            "unit_tag": ut,
+            "unit_family": candidate.get("unit_family") or fam,
+            "unit_family_backfilled": bool(unit_family_backfilled),
+            "measure_kind": candidate.get("measure_kind"),
+            "measure_kind_corrected": bool(measure_kind_corrected),
+            "measure_assoc": candidate.get("measure_assoc"),
+            "measure_assoc_corrected": bool(measure_assoc_corrected),
+            "reason": classifier_reason or ("from_unit_tag" if fam else "unknown"),
+        }
+    except Exception:
+        pass
+
 
 
 
@@ -25822,6 +25915,30 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         if len(out) >= int(max_results or 350):
             break
 
+    # =========================
+    # PATCH FIX2D2J (ADDITIVE): enforce unit_family/measure_kind normalization on extractor output
+    # - Ensures out entries include unit_tag, unit_family, and corrected currency measure_kind/assoc
+    # - Adds compact unit_measure_classifier_trace_v1 for audit
+    # =========================
+    try:
+        fn_can = globals().get("canonicalize_numeric_candidate")
+        if not callable(fn_can):
+            fn_can = canonicalize_numeric_candidate
+        out2 = []
+        for _c in out:
+            if isinstance(_c, dict):
+                try:
+                    _c2 = fn_can(dict(_c)) or dict(_c)
+                except Exception:
+                    _c2 = dict(_c)
+                out2.append(_c2)
+            else:
+                out2.append(_c)
+        out = out2
+    except Exception:
+        pass
+    # =========================
+
     return out
 
 
@@ -34802,7 +34919,7 @@ except Exception:
 # VERSION STAMP (ADDITIVE)
 # =========================
 try:
-    CODE_VERSION = "FIX2D2I"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
+    CODE_VERSION = "FIX2D2J"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
 except Exception:
     pass
 
@@ -34877,6 +34994,6 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2I"
+    CODE_VERSION = "FIX2D2J"
 except Exception:
     pass
