@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2E"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2F"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -19510,7 +19510,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     _mc_v2 = []
     _mc_v2_summary = None
     try:
-        _fn_v2 = globals().get("build_diff_metrics_panel_v2")
+        _fn_v2 = globals().get("build_diff_metrics_panel_v2__rows") or globals().get("build_diff_metrics_panel_v2")
         if callable(_fn_v2):
             _mc_v2, _mc_v2_summary = _fn_v2(prev_response, cur_resp_for_diff)
 
@@ -20075,13 +20075,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "current_value_norm": None,
                     "current_unit_tag": None,
                     "inference_disabled": False,
-                    "inference_commit_v1": {
-                        "inference_selected": False,
-                        "inference_committed": False,
-                        "committed_value_norm": None,
-                        "committed_raw": None,
-                        "committed_source_url": None,
-                    },
                 },
             },
         })
@@ -20467,13 +20460,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                             "current_value_norm": cur_val_norm,
                             "current_unit_tag": cur_unit,
                             "inference_disabled": False,
-                    "inference_commit_v1": {
-                        "inference_selected": bool(method_effective == "inference_bound"),
-                        "inference_committed": bool(method_effective == "inference_bound" and cur_val_norm_effective is not None),
-                        "committed_value_norm": cur_val_norm_effective,
-                        "committed_raw": cur_raw_effective,
-                        "committed_source_url": cur_source_url_effective,
-                    },
                         },
                         "diff_current_only_trace_v1": {
                             "reason": "unmatched_current_metric",
@@ -20709,13 +20695,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                         "current_value_norm": c.get("value_norm"),
                         "current_unit_tag": unit_tag,
                         "inference_disabled": False,
-                    "inference_commit_v1": {
-                        "inference_selected": bool(method_effective == "inference_bound"),
-                        "inference_committed": bool(method_effective == "inference_bound" and cur_val_norm_effective is not None),
-                        "committed_value_norm": cur_val_norm_effective,
-                        "committed_raw": cur_raw_effective,
-                        "committed_source_url": cur_source_url_effective,
-                    },
                     },
                     "diff_observed_trace_v1": {
                         "from_injected_url": bool(c.get("from_injected_url")),
@@ -20977,13 +20956,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                             "current_value_norm": c.get("value_norm"),
                             "current_unit_tag": unit_tag,
                             "inference_disabled": False,
-                    "inference_commit_v1": {
-                        "inference_selected": bool(method_effective == "inference_bound"),
-                        "inference_committed": bool(method_effective == "inference_bound" and cur_val_norm_effective is not None),
-                        "committed_value_norm": cur_val_norm_effective,
-                        "committed_raw": cur_raw_effective,
-                        "committed_source_url": cur_source_url_effective,
-                    },
                         },
                     },
                 })
@@ -24283,7 +24255,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
     try:
-        _fn_v2 = globals().get("build_diff_metrics_panel_v2")
+        _fn_v2 = globals().get("build_diff_metrics_panel_v2__rows") or globals().get("build_diff_metrics_panel_v2")
         if callable(_fn_v2):
             # Prefer the same cur_resp_for_diff used by legacy diff; fallback to minimal wrapper from current_metrics.
             _cur_for_v2 = cur_resp_for_diff if isinstance(cur_resp_for_diff, dict) else None
@@ -32590,13 +32562,6 @@ def diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN(prev_response: dict, cur_response
                         "current_value_norm": cur_value_norm if used_path == "primary_metrics_canonical" else None,
                         "current_unit_tag": cur_unit_tag if used_path == "primary_metrics_canonical" else None,
                         "inference_disabled": False,
-                    "inference_commit_v1": {
-                        "inference_selected": bool(method_effective == "inference_bound"),
-                        "inference_committed": bool(method_effective == "inference_bound" and cur_val_norm_effective is not None),
-                        "committed_value_norm": cur_val_norm_effective,
-                        "committed_raw": cur_raw_effective,
-                        "committed_source_url": cur_source_url_effective,
-                    },
                     }
                 except Exception:
                     pass
@@ -34566,6 +34531,14 @@ except Exception:
 # VERSION STAMP (ADDITIVE)
 # =========================
 try:
-    CODE_VERSION = "FIX2D2E"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
+    CODE_VERSION = "FIX2D2F"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
+except Exception:
+    pass
+
+# =====================
+# FINAL CODE_VERSION OVERRIDE (PATCH)
+# =====================
+try:
+    CODE_VERSION = "FIX2D2F"
 except Exception:
     pass
