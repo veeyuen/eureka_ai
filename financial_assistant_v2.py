@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2B"  # PATCH FIX2D2B (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2C"  # PATCH FIX2D2C (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -166,6 +166,14 @@ try:
         "summary": "Correct version stamping for FIX2D2A runtime by bumping CODE_VERSION and adding final end-of-file override to prevent legacy late assignments from masking patch id.",
         "files": ["FIX2D2B.py"],
         "supersedes": ["FIX2D2A"],
+    })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2C",
+        "date": "2026-01-16",
+        "summary": "Fix Diff Panel V2 NameError by defining guarded inference gate in the active builder (build_diff_metrics_panel_v2) and emitting explicit inference gate trace; no heuristic changes.",
+        "files": ["FIX2D2C.py"],
+        "supersedes": ["FIX2D2B"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -19622,7 +19630,11 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                         "current_source_path_used": "none",
                         "current_value_norm": None,
                         "current_unit_tag": None,
-                        "inference_disabled": True,
+                        "inference_disabled": (not _fix2d25_inference_enabled),
+                    "inference_gate_v1": {
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "reason": str(_fix2d2c_inference_gate_reason or ""),
+                    },
                     },
                     "reason": "prev.primary_metrics_canonical non-empty but V2 emitted 0 rows; check diff_panel_v2_error and canonical inputs",
                 },
@@ -19871,6 +19883,26 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     prev_anchors = _unwrap_metric_anchors(prev_response)
     cur_anchors = _unwrap_metric_anchors(cur_response)
 
+    # =====================================================================
+    # PATCH FIX2D2C_INFERENCE_GATE_V1 (ADDITIVE)
+    # Ensure guarded inference gate is always defined in this active builder.
+    # Default: enabled (guards already enforced by FIX2D24/FIX2D26/FIX2D27).
+    # Kill-switch: set EVO_DISABLE_DIFF_INFERENCE=1 to disable.
+    # =====================================================================
+    _fix2d25_inference_enabled = True
+    _fix2d2c_inference_gate_reason = "enabled_by_default"
+    try:
+        import os
+        _e = str(os.environ.get("EVO_DISABLE_DIFF_INFERENCE", "")).strip().lower()
+        if _e in ("1", "true", "yes", "y", "on"):
+            _fix2d25_inference_enabled = False
+            _fix2d2c_inference_gate_reason = "disabled_by_env"
+    except Exception:
+        pass
+    # END PATCH FIX2D2C_INFERENCE_GATE_V1
+
+
+
     # Build reverse index: anchor_hash -> [ckeys]
     cur_by_anchor = {}
     try:
@@ -20025,7 +20057,11 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "current_source_path_used": "none",
                     "current_value_norm": None,
                     "current_unit_tag": None,
-                    "inference_disabled": True,
+                    "inference_disabled": (not _fix2d25_inference_enabled),
+                    "inference_gate_v1": {
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "reason": str(_fix2d2c_inference_gate_reason or ""),
+                    },
                 },
             },
         })
@@ -20265,7 +20301,11 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "current_source_path_used": "primary_metrics_canonical" if resolved_cur_ckey else "none",
                     "current_value_norm": cur_val_norm,
                     "current_unit_tag": cur_unit,
-                    "inference_disabled": True,
+                    "inference_disabled": (not _fix2d25_inference_enabled),
+                    "inference_gate_v1": {
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "reason": str(_fix2d2c_inference_gate_reason or ""),
+                    },
                 },
             },
         }
@@ -36017,19 +36057,19 @@ except Exception:
 # PATCH FIX2D2A_VERSION_BUMP (ADDITIVE)
 # =====================================================
 try:
-    CODE_VERSION = 'FIX2D2A'
+    CODE_VERSION = 'FIX2D2C'
 except Exception:
     pass
 
 
 # =====================================================================
-# PATCH FIX2D2B_CODE_VERSION_FINAL (ADDITIVE)
+# PATCH FIX2D2C_CODE_VERSION_FINAL (ADDITIVE)
 # Ensure CODE_VERSION reflects this patch id/filename even if legacy
 # end-of-file bumps exist below earlier patches. Must be last assignment.
 try:
-    CODE_VERSION = "FIX2D2B"
+    CODE_VERSION = "FIX2D2C"
 except Exception:
     pass
 # =====================================================================
-# END PATCH FIX2D2B_CODE_VERSION_FINAL
+# END PATCH FIX2D2C_CODE_VERSION_FINAL
 # =====================================================================
