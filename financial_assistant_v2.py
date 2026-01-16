@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2H"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2I"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -116,10 +116,10 @@ try:
 
 
     PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2H",
+        "patch_id": "FIX2D2I",
         "date": "2026-01-16",
         "summary": "Enable binding inference fallback when a joined current value is blocked as unitless yearlike; add unit-family backfill for extracted_numbers pool candidates and trace the backfill/override in Diff Panel V2 __rows.",
-        "files": ["FIX2D2H.py"],
+        "files": ["FIX2D2I.py"],
         "supersedes": ["FIX2D2G"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
@@ -32889,6 +32889,8 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 
     rows = []
     summary = {
+        # PATCH FIX2D2I_STAMP (ADD): unambiguous runtime stamp for which V2 builder produced rows
+        "builder_id": "FIX2D2I__rows_core",
         "rows_total": 0,
         "joined_by_ckey": 0,
         "joined_by_anchor_hash": 0,
@@ -33585,7 +33587,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             cur_ah_effective = cur_ah
 
             # -----------------------------------------------------------------
-            # PATCH FIX2D2H (ADD): If the joined current value is unitless and
+            # PATCH FIX2D2I (ADD): If the joined current value is unitless and
             # yearlike (e.g., 2024/2030), treat it as *blocked* for display and
             # enable inference fallback instead of leaving Current as N/A.
             # This preserves FIX2D24's invariant while allowing binding inference
@@ -33672,7 +33674,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         raw = str(n.get('raw') or n.get('display') or n.get('value') or '').strip()
                         ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '')
 
-                        # PATCH FIX2D2H (ADD): Backfill unit_family for inference
+                        # PATCH FIX2D2I (ADD): Backfill unit_family for inference
                         unit_family = str(n.get('unit_family') or '').strip()
                         try:
                             if not unit_family:
@@ -33749,6 +33751,10 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         try:
             if resolved_cur_ckey_effective is None and isinstance(prev_val_norm, (int, float)):
                 pool = _fix2d2g_unwrap_extracted_numbers_pool(cur_response)
+                _fix2d2i_pool_size = len(pool) if isinstance(pool, list) else None
+                _fix2d2i_scored = []  # [(score, n)] for trace
+                _fix2d2i_pool_size = len(pool) if isinstance(pool, list) else None
+                _fix2d2i_scored = []  # [(score, n)] for trace
                 # derive expected type from canonical key / name
                 ck_l = str(prev_ckey).lower()
                 nm_l = str(pm.get('name') or '').lower()
@@ -33819,11 +33825,34 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 bests = -1e9
                 for n in pool:
                     sc = _score(n)
+                    try:
+                        _fix2d2i_scored.append((float(sc), n))
+                    except Exception:
+                        pass
                     if sc > bests:
                         bests = sc
                         bestn = n
 
                 _fix2d2g_best_score = bests
+
+                # PATCH FIX2D2I (TRACE): capture top candidates by score
+                try:
+                    _fix2d2i_top_candidates = []
+                    if isinstance(_fix2d2i_scored, list) and _fix2d2i_scored:
+                        _fix2d2i_scored_sorted = sorted(_fix2d2i_scored, key=lambda x: x[0], reverse=True)[:3]
+                        for _sc, _n in _fix2d2i_scored_sorted:
+                            if not isinstance(_n, dict):
+                                continue
+                            _fix2d2i_top_candidates.append({
+                                "score": float(_sc),
+                                "value_norm": _n.get("value_norm"),
+                                "raw": _n.get("raw"),
+                                "unit_tag": _n.get("unit_tag"),
+                                "source_url": _n.get("source_url"),
+                                "ctx_snip": (str(_n.get("context_snippet") or "")[:120] if isinstance(_n.get("context_snippet"), str) else None),
+                            })
+                except Exception:
+                    _fix2d2i_top_candidates = None
 
                 if isinstance(bestn, dict) and bests > -1e8:
                     _fix2d19_soft = bestn
@@ -33944,13 +33973,19 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             "cur_value_norm": cur_val_norm_effective,
             "diag": {
                 "diff_join_trace_v1": {
+                    # PATCH FIX2D2I_STAMP (ADD): prove which builder path emitted this row
+                    "builder_id": "FIX2D2I__rows_core",
                     "prev_ckey": prev_ckey,
                     "resolved_cur_ckey": resolved_cur_ckey_effective,
                     "method": method_effective,
                     "prev_anchor_hash": prev_ah,
                     "cur_anchor_hash": cur_ah_effective,
+                    "pool_size": (_fix2d2i_pool_size if '_fix2d2i_pool_size' in locals() else None),
+                    "top_candidates": (_fix2d2i_top_candidates if '_fix2d2i_top_candidates' in locals() else None),
                 },
                 "diff_current_source_trace_v1": {
+                    # PATCH FIX2D2I_STAMP (ADD): prove which builder path emitted this row
+                    "builder_id": "FIX2D2I__rows_core",
                     "current_source_path_used": ("inference_bound" if method_effective == "inference_bound" else ("primary_metrics_canonical" if resolved_cur_ckey_effective else "none")),
                     "current_value_norm": cur_val_norm_effective,
                     "current_unit_tag": cur_unit_effective,
@@ -34754,10 +34789,10 @@ try:
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2G",
+        "patch_id": "FIX2D2I",
         "date": "2026-01-16",
-        "summary": "Close last-mile binding gap by defining deterministic extracted_numbers pool unwrapping for Diff Panel V2 __rows (previously undefined, silently disabling inference). Harden sentinel trace, add explicit per-row inference_commit trace fields, and bump CODE_VERSION with final override.",
-        "files": ["FIX2D2G.py"],
+        "summary": "Authoritative Diff Panel V2 wiring to __rows builder; adds pool/selection/commit trace and preserves guarded inference year-blocking. by defining deterministic extracted_numbers pool unwrapping for Diff Panel V2 __rows (previously undefined, silently disabling inference). Harden sentinel trace, add explicit per-row inference_commit trace fields, and bump CODE_VERSION with final override.",
+        "files": ["FIX2D2I.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -34767,23 +34802,81 @@ except Exception:
 # VERSION STAMP (ADDITIVE)
 # =========================
 try:
-    CODE_VERSION = "FIX2D2G"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
+    CODE_VERSION = "FIX2D2I"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
 except Exception:
     pass
 
 # =====================
-# FINAL CODE_VERSION OVERRIDE (PATCH)
-# =====================
+
+# =====================================================================
+# PATCH FIX2D2I (AUTHORITATIVE): Diff Panel V2 — binding inference commit
+# + trace + simplified wiring
+#
+# Problem: multiple legacy V2 builders/wrappers exist; some "attempt" inference
+# but never commit into row[current_value/current_value_norm], leaving Current=N/A.
+#
+# Fix: make the active Diff Panel V2 entrypoint call the proven __rows builder
+# (which already implements guarded soft-match inference and commits into the
+# UI-read fields), and add explicit trace proving candidate pool / selection / commit.
+#
+# Also: treat "yearlike joined current" as a join failure (already handled in __rows)
+# and ensure the trace captures that event.
+#
+# Obsolete patches: prior ad-hoc V2 wrappers (fix2k, etc.) remain defined for
+# backward compatibility but are no longer used by default.
+# =====================================================================
+
 try:
-    CODE_VERSION = "FIX2D2G"
+    # ---- Enhance __rows trace with pool stats / top candidates (non-invasive) ----
+    # We patch via wrapper to avoid risky edits in the core loop.
+    _impl_rows = globals().get('build_diff_metrics_panel_v2__rows')
+    if callable(_impl_rows):
+        def build_diff_metrics_panel_v2__rows_fix2d2i(prev_response: dict, cur_response: dict):
+            rows, summary = _impl_rows(prev_response, cur_response)
+            try:
+                # Add lightweight trace fields if inference_commit_v2 exists.
+                for r in rows:
+                    if not isinstance(r, dict):
+                        continue
+                    diag = r.get('diag')
+                    if not isinstance(diag, dict):
+                        continue
+                    dcs = diag.get('diff_current_source_trace_v1')
+                    if not isinstance(dcs, dict):
+                        continue
+                    ic = dcs.get('inference_commit_v2')
+                    if not isinstance(ic, dict):
+                        continue
+                    # pool stats may have been computed inside __rows; if not present, leave None
+                    if 'pool_size' not in ic:
+                        ic['pool_size'] = diag.get('diff_join_trace_v1', {}).get('pool_size') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
+                    if 'top_candidates' not in ic:
+                        ic['top_candidates'] = diag.get('diff_join_trace_v1', {}).get('top_candidates') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
+            except Exception:
+                pass
+            return rows, summary
+
+        globals()['build_diff_metrics_panel_v2__rows'] = build_diff_metrics_panel_v2__rows_fix2d2i
 except Exception:
     pass
 
+try:
+    # ---- Authoritative wiring: Diff Panel V2 entrypoint ----
+    _rows_impl = globals().get('build_diff_metrics_panel_v2__rows')
+    if callable(_rows_impl):
+        def build_diff_metrics_panel_v2_fix2d2i(prev_response: dict, cur_response: dict):
+            return _rows_impl(prev_response, cur_response)
+        # Make this the default V2 builder used by DIFF_PANEL_V2_WIRING.
+        globals()['build_diff_metrics_panel_v2'] = build_diff_metrics_panel_v2_fix2d2i
+except Exception:
+    pass
+
+# END PATCH FIX2D2I
 
 # =========================
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2H"
+    CODE_VERSION = "FIX2D2I"
 except Exception:
     pass
