@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D26"  # PATCH FIX2D26 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D27"  # PATCH FIX2D27 (ADD): bump CODE_VERSION to match patch id  # PATCH FIX2D26 (ADD): bump CODE_VERSION to match patch id
 
 
 # ============================================================
@@ -20202,6 +20202,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "prev_ckey": prev_ckey,
                     "resolved_cur_ckey": resolved_cur_ckey,
                     "method": method,
+                    "inference_bound": bool(method == "inference_bound"),
                     "prev_anchor_hash": prev_ah,
                     "cur_anchor_hash": cur_ah,
                 },
@@ -32392,6 +32393,7 @@ def diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN(prev_response: dict, cur_response
                         "prev_ckey": prev_ckey or None,
                         "resolved_cur_ckey": resolved_cur_ckey if resolved_cur_ckey else None,
                         "method": method,
+                    "inference_bound": bool(method == "inference_bound"),
                         "prev_anchor_hash": prev_anchor_hash,
                         "cur_anchor_hash": cur_anchor_hash,
                     }
@@ -33189,8 +33191,10 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 inference_used = True
                 inference_evidence = ie
                 if resolved_cur_ckey is None:
-                    resolved_cur_ckey = "__inferred__"  # sentinel
-                    method = "inference"
+                    # FIX2D27: promote inference from suggestive -> binding by
+                    # binding the inferred current value to the baseline canonical key.
+                    resolved_cur_ckey = prev_ckey
+                    method = "inference_bound"
                     summary["joined_by_inference"] += 1
                     if len(summary.get("sample_inference_joins") or []) < 5:
                         summary["sample_inference_joins"].append({
@@ -33227,24 +33231,26 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             "previous_unit": prev_unit,
             "current_unit": cur_unit,
             "change_type": change_type,
-            "confidence": 1.0 if method in ("ckey", "anchor_hash") else 0.0,
+            "confidence": (1.0 if method in ("ckey", "anchor_hash") else (0.6 if method == "inference_bound" else 0.0)),
             "diag": {
                 "diff_join_trace_v1": {
                     "prev_ckey": prev_ckey,
                     "resolved_cur_ckey": resolved_cur_ckey,
                     "method": method,
+                    "inference_bound": bool(method == "inference_bound"),
                     "prev_anchor_hash": prev_anchor,
                     "cur_anchor_hash": cur_anchor,
                 },
                 "diff_current_source_trace_v1": {
                     "current_source_path_used": (
                         "inferred_extracted_numbers" if inference_used else (
-                            "primary_metrics_canonical" if (resolved_cur_ckey is not None and resolved_cur_ckey != "__inferred__") else "none"
+                            "primary_metrics_canonical" if (resolved_cur_ckey is not None) else "none"
                         )
                     ),
                     "current_value_norm": cur_v if resolved_cur_ckey is not None else None,
                     "current_unit_tag": cur_unit if resolved_cur_ckey is not None else None,
-                    "inference_disabled": (not inference_used),
+                    "inference_disabled": (not _fix2d25_inference_enabled),
+                    "inference_used": bool(inference_used),
                     "inference_source_url": cur_source_url,
                     "inference_evidence": inference_evidence,
                 },
