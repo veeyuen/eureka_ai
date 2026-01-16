@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D20"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D21"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 
 # ============================================================
@@ -134,11 +134,27 @@ except Exception:
     pass
 
 
+# PATCH TRACKER V1 (ADD): FIX2D21
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D21",
+        "date": "2026-01-16",
+        "summary": "Evolution baseline-key schema: derive metric_schema_frozen from Analysis primary_metrics_canonical keys, and fix bare-year detection to reject tokens like 2030.0/2024.0; keep FIX2D20 year-commit tracing for verification.",
+        "files": ["FIX2D21.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
 # =====================================================================
 # PATCH FIX2D20 (ADD): Disable earlier speculative selection tweaks while tracing
 # =====================================================================
-_FIX2D20_DISABLE_FIX2D18 = True
-_FIX2D20_DISABLE_FIX2D19 = True
+_FIX2D20_DISABLE_FIX2D18 = False
+_FIX2D20_DISABLE_FIX2D19 = False
 
 # =====================================================================
 # PATCH FIX2D20 (ADD): Year-like commit tracing for primary_metrics_canonical
@@ -29505,8 +29521,23 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             if vf < 1900 or vf > 2100:
                 return False
 
-            raw_digits = re.sub(r"[^0-9]", "", raw)
-            looks_year = (len(raw_digits) == 4 and raw_digits == str(int(vf))) or (raw.strip() in [str(int(vf)), f"{int(vf)}.0"])
+            # Accept raw like "2030" and "2030.0" (and "2030.00") as year tokens
+            looks_year = False
+            try:
+                if re.fullmatch(r"\d{4}", raw or ""):
+                    looks_year = True
+                elif re.fullmatch(r"\d{4}\.0+", raw or ""):
+                    looks_year = True
+            except Exception:
+                looks_year = False
+
+            if not looks_year:
+                try:
+                    iv = int(vf)
+                    looks_year = (abs(vf - iv) < 1e-6) and (1900 <= iv <= 2100)
+                except Exception:
+                    looks_year = False
+
             if not looks_year:
                 return False
 
@@ -29519,6 +29550,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             return True
         except Exception:
             return False
+
 
     def _fix2d15_metric_domain_tokens(canonical_key: str, spec: dict) -> list:
         """Derive a small set of domain tokens from canonical_key/name."""
@@ -29816,11 +29848,59 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
       - Anchored metrics: ONLY from anchor-aware rebuild (fix17), or skipped if rejected.
       - Unanchored metrics: schema-only rebuild (fix17) as before.
       - Never allows schema-only fallback to fill an anchored canonical_key.
+
+    FIX2D21 add:
+      - In Evolution baseline-compare mode, derive the schema keyspace from the Analysis baseline
+        (previous_data.results.primary_metrics_canonical) so schema-only rebuild targets baseline keys.
     """
     if not isinstance(prev_response, dict):
         return {}
 
-    # Anchored part (authoritative when present)
+    # =====================================================================
+    # PATCH FIX2D21 (ADD): derive metric_schema_frozen from analysis baseline keys when available
+    # - This makes Evolution naturally produce current values for the baseline keyspace, enabling
+    #   Analysis -> Evolution deltas without requiring injected URLs during Analysis.
+    # =====================================================================
+    try:
+        _fix2d21_prev_pmc = None
+        if isinstance(prev_response.get("results"), dict):
+            _fix2d21_prev_pmc = prev_response.get("results", {}).get("primary_metrics_canonical")
+        if not isinstance(_fix2d21_prev_pmc, dict):
+            _fix2d21_prev_pmc = prev_response.get("primary_metrics_canonical")
+
+        if isinstance(_fix2d21_prev_pmc, dict) and _fix2d21_prev_pmc:
+            ms_from_baseline = {}
+            for ck, mo in _fix2d21_prev_pmc.items():
+                if not isinstance(ck, str) or not ck:
+                    continue
+                spec = {}
+                if isinstance(mo, dict):
+                    # carry minimal hints to help selection
+                    ut = mo.get("unit_tag") or mo.get("unit") or ""
+                    uf = mo.get("unit_family") or ""
+                    dim = mo.get("dimension") or mo.get("value_type") or ""
+                    if not uf and isinstance(ut, str) and "%" in ut:
+                        uf = "percent"
+                    if not dim and uf:
+                        dim = uf
+                    spec = {
+                        "name": mo.get("name") or mo.get("metric_name") or ck,
+                        "unit_tag": ut,
+                        "unit_family": uf,
+                        "dimension": dim,
+                    }
+                ms_from_baseline[ck] = spec
+
+            # only override if we got something non-trivial
+            if ms_from_baseline:
+                prev_response = dict(prev_response)
+                prev_response["metric_schema_frozen"] = ms_from_baseline
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX2D21
+    # =====================================================================
+# Anchored part (authoritative when present)
     fn_anchor = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix17")
     anchored = fn_anchor(prev_response, baseline_sources_cache, web_context=web_context) if callable(fn_anchor) else {}
 
