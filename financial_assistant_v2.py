@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2R"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2S"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -105,7 +105,7 @@ try:
         "files": ["FIX2D2D.py"],
         "supersedes": ["FIX2D2C"],
     })
-
+    
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D2E",
         "date": "2026-01-16",
@@ -895,7 +895,7 @@ try:
         "summary": "Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.",
         "files": ["fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py"],
     })
-
+    
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D3",
         "date": "2026-01-15",
@@ -20243,7 +20243,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 
     # Sentinel behavior if no prev metrics
     if not isinstance(prev_metrics, dict) or not prev_metrics:
-
+        
         rows.append({
             "name": "No previous canonical metrics",
             "canonical_key": None,
@@ -20678,7 +20678,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-
+    
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -24426,7 +24426,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-
+    
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -24455,7 +24455,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-
+            
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -29152,7 +29152,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-
+    
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -30554,7 +30554,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             return []
 
 
-
+    
 
     # =====================================================================
     # PATCH FIX2D22 (ADD): Eligibility-before-scoring gate for schema-only rebuild
@@ -30719,7 +30719,70 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         best_tie = None
         best_hits = 0
 
-        for c in candidates:
+        # =====================================================================
+        # PATCH FIX2D2S (ADD): Prefer non-year candidates when available
+        # Motivation:
+        #   schema_only_rebuild can still end up selecting a bare year token (e.g. 2024/2026)
+        #   when that token appears in the same snippet as the real metric value.
+        # Policy:
+        #   If the schema does NOT expect a year-as-value and there exists at least one eligible
+        #   non-year candidate in the pool for this canonical_key, then exclude bare-year tokens
+        #   from competition for this canonical_key.
+        # Notes:
+        #   - This is a local, deterministic filter applied BEFORE keyword scoring.
+        #   - It does not weaken year-blocking; it strengthens selection parity.
+        # =====================================================================
+        _fix2d2s_expect_year = False
+        try:
+            _fix2d2s_expect_year = bool(_fix2d15_expects_year_value(spec, str(canonical_key)))
+        except Exception:
+            _fix2d2s_expect_year = False
+
+        _fix2d2s_eligible = []
+        _fix2d2s_has_non_year = False
+        for _c in (candidates or []):
+            ok, _reason = _fix17_candidate_allowed_with_reason(_c, spec, canonical_key=canonical_key)
+            if not ok:
+                continue
+            try:
+                _ok2, _why2 = _fix2d22_candidate_eligible(_c, spec, canonical_key=str(canonical_key), kw_norm=kw_norm)
+                if not _ok2:
+                    dbg.setdefault('fix2d22_reject_reasons', {})
+                    dbg['fix2d22_reject_reasons'][_why2] = int(dbg['fix2d22_reject_reasons'].get(_why2) or 0) + 1
+                    if _why2 == 'bare_year_token':
+                        dbg.setdefault('fix2d22_year_reject_samples', [])
+                        if len(dbg.get('fix2d22_year_reject_samples') or []) < 20:
+                            dbg['fix2d22_year_reject_samples'].append({
+                                'canonical_key': str(canonical_key),
+                                'raw': str(_c.get('raw') or _c.get('value') or '')[:80],
+                                'value_norm': _c.get('value_norm'),
+                                'unit': str(_c.get('unit') or ''),
+                                'source_url': str(_c.get('source_url') or '')[:120],
+                            })
+                    continue
+            except Exception:
+                pass
+
+            _fix2d2s_eligible.append(_c)
+            try:
+                if (not _fix2d2s_expect_year) and (not _fix2d15_is_bare_year_token(_c)):
+                    _fix2d2s_has_non_year = True
+            except Exception:
+                pass
+
+        if _fix2d2s_eligible and _fix2d2s_has_non_year and (not _fix2d2s_expect_year):
+            try:
+                dbg.setdefault('fix2d2s_filtered_bare_year_tokens', 0)
+                _before = len(_fix2d2s_eligible)
+                _fix2d2s_eligible = [x for x in _fix2d2s_eligible if not _fix2d15_is_bare_year_token(x)]
+                dbg['fix2d2s_filtered_bare_year_tokens'] = int(dbg.get('fix2d2s_filtered_bare_year_tokens') or 0) + int(max(0, _before - len(_fix2d2s_eligible)))
+            except Exception:
+                pass
+        # =====================================================================
+        # END PATCH FIX2D2S
+        # =====================================================================
+
+        for c in (_fix2d2s_eligible or []):
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
                 continue            # PATCH FIX2D22 (ADD): eligibility-before-scoring gate
@@ -35858,21 +35921,19 @@ try:
 except Exception:
     pass
 
+
 # =====================================================================
-# PATCH TRACKER ENTRY: FIX2D2Q (ADDITIVE)
-# - Baseline-aligned diffing now uses injected-first selection with optional
-#   base fallback, and stamps clear provenance (injected vs base) to prevent
-#   confusion about where Current values came from.
-# - Keeps union pool semantics: Evolution may still surface extra keys.
+# PATCH TRACKER ENTRIES (CLEAN): FIX2D2Q / FIX2D2R / FIX2D2S
 # =====================================================================
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
+
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D2Q",
         "date": "2026-01-16",
-        "summary": "Implement baseline-aligned current selection with injected-first preference and optional base fallback; stamp provenance fields so Current values are clearly labeled as injected or base-fallback while preserving union pool behavior.",
+        "summary": "Baseline-aligned current selection for diffing: injected-first with optional base fallback; stamps provenance fields (source_type, selection_mode) to prevent confusion while preserving union pool behavior.",
         "files": ["FIX2D2Q.py"],
         "supersedes": ["FIX2D2O"],
     })
@@ -35880,31 +35941,19 @@ try:
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D2R",
         "date": "2026-01-16",
-        "summary": "Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; enforce token-level evidence for currency/percent/unit kinds.",
+        "summary": "Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; improves Analysis/Evolution parity for injected content.",
+        "files": ["FIX2D2R.py"],
+        "supersedes": ["FIX2D2Q"],
     })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 
-
-# =====================================================================
-# PATCH TRACKER ENTRY: FIX2D2Q (ADDITIVE)
-# - Baseline-aligned diffing uses injected-first selection with optional
-#   base fallback, and stamps provenance (injected vs base) to avoid
-#   "crossing of lines" confusion in the Current column.
-# - Keeps union pool semantics: Evolution may still surface extra keys.
-# =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2Q",
+        "patch_id": "FIX2D2S",
         "date": "2026-01-16",
-        "summary": "Add provenance-aware baseline-keyed current selection: injected-first with optional base fallback, stamping selection_mode and source_type to prevent confusion while preserving base+injected union pool semantics.",
-        "files": ["FIX2D2Q.py"],
-        "supersedes": ["FIX2D2O"],
+        "summary": "Schema-only rebuild hardening: when non-year candidates exist for a schema key, skip bare-year tokens during winner selection (down-rank/skip) and record diagnostics; reduces year-token pollution before downstream year-blocking.",
+        "files": ["FIX2D2S.py"],
+        "supersedes": ["FIX2D2R"],
     })
+
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
@@ -35913,6 +35962,6 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2R"
+    CODE_VERSION = "FIX2D2S"
 except Exception:
     pass
