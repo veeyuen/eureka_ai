@@ -105,7 +105,7 @@ try:
         "files": ["FIX2D2D.py"],
         "supersedes": ["FIX2D2C"],
     })
-    
+
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D2E",
         "date": "2026-01-16",
@@ -895,7 +895,7 @@ try:
         "summary": "Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.",
         "files": ["fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py"],
     })
-    
+
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D3",
         "date": "2026-01-15",
@@ -20243,7 +20243,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 
     # Sentinel behavior if no prev metrics
     if not isinstance(prev_metrics, dict) or not prev_metrics:
-        
+
         rows.append({
             "name": "No previous canonical metrics",
             "canonical_key": None,
@@ -20678,7 +20678,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         pass
 
 
-    
+
     # -------------------------------------------------------------
     # PATCH DIFF_PANEL_V2_OBSERVED_ROWS (ADDITIVE)
     #
@@ -24426,7 +24426,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # END PATCH V20_CANONICAL_FOR_RENDER
     # =====================================================================
 
-    
+
     # =====================================================================
     # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
     # Objective:
@@ -24455,7 +24455,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
                     _cur_for_v2 = None
-            
+
 
             # =====================================================================
             # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
@@ -29152,7 +29152,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
     except Exception:
         pass
-    
+
     # =====================================================================
     # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
@@ -30554,7 +30554,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             return []
 
 
-    
+
 
     # =====================================================================
     # PATCH FIX2D22 (ADD): Eligibility-before-scoring gate for schema-only rebuild
@@ -35877,7 +35877,7 @@ try:
         "supersedes": ["FIX2D2O"],
     })
 
-PATCH_TRACKER_V1.append({
+    PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D2R",
         "date": "2026-01-16",
         "summary": "Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; enforce token-level evidence for currency/percent/unit kinds.",
