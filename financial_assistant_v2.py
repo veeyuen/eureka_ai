@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2G"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2H"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -112,6 +112,15 @@ try:
         "summary": "Make Diff Panel V2 binding inference authoritative in the active FIX2J override path by committing inferred current_value/current_value_norm/current_source/current_method when joins miss; add explicit inference_commit trace; keep FIX2D24 year blocking and unit-first eligibility.",
         "files": ["FIX2D2E.py"],
         "supersedes": ["FIX2D2D"],
+    })
+
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2H",
+        "date": "2026-01-16",
+        "summary": "Enable binding inference fallback when a joined current value is blocked as unitless yearlike; add unit-family backfill for extracted_numbers pool candidates and trace the backfill/override in Diff Panel V2 __rows.",
+        "files": ["FIX2D2H.py"],
+        "supersedes": ["FIX2D2G"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -33574,6 +33583,39 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             cur_unit_effective = cur_unit
             cur_source_url_effective = cur_source_url
             cur_ah_effective = cur_ah
+
+            # -----------------------------------------------------------------
+            # PATCH FIX2D2H (ADD): If the joined current value is unitless and
+            # yearlike (e.g., 2024/2030), treat it as *blocked* for display and
+            # enable inference fallback instead of leaving Current as N/A.
+            # This preserves FIX2D24's invariant while allowing binding inference
+            # to populate a valid current value from extracted_numbers pools.
+            # -----------------------------------------------------------------
+            _fix2d2h_joined_current_yearlike_blocked = False
+            _fix2d2h_joined_current_yearlike_payload = None
+            try:
+                if resolved_cur_ckey_effective is not None:
+                    _ut = str(cur_unit_effective or '').strip()
+                    if not _ut and _fix2d25_is_yearlike_value(cur_val_norm_effective):
+                        _fix2d2h_joined_current_yearlike_blocked = True
+                        _fix2d2h_joined_current_yearlike_payload = {
+                            'blocked_value_norm': cur_val_norm_effective,
+                            'blocked_raw': cur_raw_effective,
+                            'blocked_unit': _ut,
+                            'blocked_source_url': cur_source_url_effective,
+                            'blocked_method': method_effective,
+                        }
+                        # undo effective join so inference can run
+                        resolved_cur_ckey_effective = None
+                        method_effective = 'none'
+                        cur_raw_effective = 'N/A'
+                        cur_val_norm_effective = None
+                        cur_unit_effective = None
+                        cur_source_url_effective = None
+                        cur_ah_effective = None
+            except Exception:
+                pass
+
             if resolved_cur_ckey_effective:
                 matched_cur_ckeys.add(resolved_cur_ckey_effective)
                 if method_effective == "ckey":
@@ -33629,11 +33671,30 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         unit_tag = str(n.get('unit_tag') or n.get('unit') or n.get('base_unit') or '').strip()
                         raw = str(n.get('raw') or n.get('display') or n.get('value') or '').strip()
                         ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '')
+
+                        # PATCH FIX2D2H (ADD): Backfill unit_family for inference
+                        unit_family = str(n.get('unit_family') or '').strip()
+                        try:
+                            if not unit_family:
+                                ut_l = unit_tag.lower()
+                                raw_l = raw.lower()
+                                ctx_l = str(ctx or '').lower()
+                                if '%' in raw_l or '%' in ut_l or 'percent' in raw_l or 'percent' in ut_l:
+                                    unit_family = 'percent'
+                                elif '$' in raw_l or '$' in ut_l or 'usd' in ut_l or 'usd' in ctx_l or 'billion' in ctx_l or 'bn' in ctx_l:
+                                    unit_family = 'currency'
+                                elif ut_l in ('m','mn') or 'million' in raw_l or 'million' in ctx_l or ' units' in ctx_l or 'units' in raw_l:
+                                    unit_family = 'magnitude'
+                        except Exception:
+                            unit_family = unit_family
                         pool.append({
                             'value_norm': fvn,
                             'unit_tag': unit_tag,
                             'raw': raw,
                             'context_snippet': ctx,
+                            'unit_family': unit_family,
+                            'measure_kind': n.get('measure_kind'),
+                            'measure_assoc': n.get('measure_assoc'),
                             'source_url': str(su).strip() if su else None,
                         })
 
@@ -33893,6 +33954,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     "current_source_path_used": ("inference_bound" if method_effective == "inference_bound" else ("primary_metrics_canonical" if resolved_cur_ckey_effective else "none")),
                     "current_value_norm": cur_val_norm_effective,
                     "current_unit_tag": cur_unit_effective,
+                    "joined_current_yearlike_blocked_v1": (_fix2d2h_joined_current_yearlike_payload if '_fix2d2h_joined_current_yearlike_payload' in locals() else None),
                     "inference_disabled": False,
                     "inference_commit_v1": {
                         "inference_selected": bool(method_effective == "inference_bound"),
@@ -34714,5 +34776,14 @@ except Exception:
 # =====================
 try:
     CODE_VERSION = "FIX2D2G"
+except Exception:
+    pass
+
+
+# =========================
+# FINAL VERSION OVERRIDE
+# =========================
+try:
+    CODE_VERSION = "FIX2D2H"
 except Exception:
     pass
