@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D25"  # PATCH FIX2D25 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D26"  # PATCH FIX2D26 (ADD): bump CODE_VERSION to match patch id
 
 
 # ============================================================
@@ -95,6 +95,25 @@ try:
         "summary": "Re-enable Analysis→Evolution diffing by adding deterministic, unit-family-guarded inference for baseline keys in Diff Panel V2 when ckey/anchor joins miss; keep FIX2D20/FIX2D24 tracing and yearlike current blocking.",
         "files": ["FIX2D25.py"],
         "supersedes": ["FIX2D23"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D26
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D26",
+        "date": "2026-01-16",
+        "summary": "Unit-first, context-bound inference candidate picker for Diff Panel V2 (Analysis→Evolution). Prefers percent/units/currency matches with keyword binding; rejects bare-year tokens pre-score; adds per-row trace counters.",
+        "files": ["FIX2D26.py"],
+        "supersedes": ["FIX2D25"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -32728,7 +32747,7 @@ def _diffpanel_v2__extract_value_norm_and_unit(_m: dict):
 def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
     """Return (rows, summary_dict).
 
-    FIX2D25: enable *guarded inference* for baseline keys when strict joins miss.
+    FIX2D26: enable *unit-first, context-bound inference* for baseline keys when strict joins miss.
     Inference is deterministic and unit-family constrained; it never promotes
     unitless year-like tokens.
     """
@@ -32930,6 +32949,57 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             return ("unit" in u) or ("count" in u) or ("units" in c)
         return True
 
+    # ------------------------------
+    # FIX2D26: unit-first, context-bound eligibility
+    # ------------------------------
+    def _fix2d26_norm_ctx(s):
+        try:
+            return str(s or '').lower()
+        except Exception:
+            return ''
+
+    def _fix2d26_required_tokens(expected: str):
+        if expected == 'percent':
+            return ['share', 'market']
+        if expected == 'unit_sales':
+            return ['sale']
+        if expected == 'unit_count':
+            return ['charg', 'station']
+        if expected == 'currency':
+            return ['invest', 'spend', 'capex', 'revenue', 'market']
+        return []
+
+    def _fix2d26_has_unit_cues(expected: str, unit_tag: str, ctx: str):
+        u = _fix2d26_norm_ctx(unit_tag)
+        c = _fix2d26_norm_ctx(ctx)
+        if expected == 'percent':
+            return ('%' in u) or ('%' in c) or (' percent' in c)
+        if expected == 'unit_sales':
+            return ('m' == u) or ('million' in u) or ('unit' in u) or (' million' in c) or (' units' in c) or (' million' in c)
+        if expected == 'unit_count':
+            return ('unit' in u) or ('count' in u) or (' units' in c) or (' station' in c) or (' charger' in c)
+        if expected == 'currency':
+            return ('$' in str(unit_tag or '')) or ('usd' in u) or ('$' in c) or (' usd' in c) or ('billion' in c) or (' bn' in c)
+        return True
+
+    def _fix2d26_is_eligible_candidate(expected: str, unit_tag: str, ctx: str, prev_ckey: str, prev_name: str):
+        # Eligibility gate BEFORE scoring.
+        c = _fix2d26_norm_ctx(ctx)
+        # Unit-family must match strongly (do not rely on later score).
+        if not _fix2d26_has_unit_cues(expected, unit_tag, c):
+            return False, 'unit_family_miss'
+        # Required domain tokens: at least one must appear for typed metrics.
+        req = _fix2d26_required_tokens(expected)
+        if req:
+            if not any(t in c for t in req):
+                # allow percent metrics if '%' present and the ckey/name already encodes share
+                kw = _fix2d26_norm_ctx(prev_name or prev_ckey)
+                if expected == 'percent' and ('share' in kw or 'market' in kw) and ('%' in c):
+                    return True, None
+                return False, 'domain_token_miss'
+        return True, None
+
+
     def _fix2d25_infer_from_extracted_numbers(prev_ckey: str, prev_name: str, prev_v, prev_unit: str):
         """Return (cur_v, cur_unit, source_url, evidence_dict) or (None,...)."""
         expected = _fix2d25_expected_family(prev_ckey, prev_unit)
@@ -32943,6 +33013,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 
         # Gather candidates
         candidates = []
+        _rej_counts = {}  # FIX2D26: rejection reasons
         try:
             sr_list = (((cur_response or {}).get("results") or {}).get("source_results") or [])
             if isinstance(sr_list, dict):
@@ -32965,7 +33036,9 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     if (not cu) and _fix2d25_is_yearlike_value(v):
                         continue
                     ctx = c.get("context_snippet") or c.get("context") or ""
-                    if not _fix2d25_unit_family_match(expected, cu, ctx):
+                    ok, why = _fix2d26_is_eligible_candidate(expected, cu, ctx, prev_ckey, prev_name)
+                    if not ok:
+                        _rej_counts[why] = _rej_counts.get(why, 0) + 1
                         continue
                     candidates.append({
                         "value_norm": v,
@@ -32997,16 +33070,31 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             # unit-family match already filtered; reward explicit unit
             if cu:
                 score += 30
-            # keyword binding (very light)
-            if expected == "percent" and ("share" in kw or "market" in kw):
-                if ("share" in str(ctx).lower()) or ("market" in str(ctx).lower()) or ("%" in str(ctx)):
-                    score += 15
-            if expected == "unit_sales" and ("sale" in kw or "units" in kw):
-                if ("sale" in str(ctx).lower()) or ("unit" in str(ctx).lower()) or ("million" in str(ctx).lower()):
-                    score += 15
-            if expected == "currency" and ("invest" in kw or "revenue" in kw or "market" in kw):
-                if ("$" in str(ctx)) or ("usd" in str(ctx).lower()) or ("billion" in str(ctx).lower()) or ("bn" in str(ctx).lower()):
-                    score += 15
+            # FIX2D26: keyword binding (required by expected type)
+            _ctx_l = str(ctx).lower()
+            _hits = 0
+            if expected == 'percent':
+                if ('%' in _ctx_l) or ('%' in str(cu or '').lower()):
+                    _hits += 1
+                if ('share' in _ctx_l) or ('market share' in _ctx_l) or ('ev share' in _ctx_l):
+                    _hits += 1
+            elif expected == 'unit_sales':
+                if ('sale' in _ctx_l) or ('sold' in _ctx_l) or ('deliver' in _ctx_l):
+                    _hits += 1
+                if ('million' in _ctx_l) or (' units' in _ctx_l) or (str(cu or '').lower() in ('m','million','units','unit')):
+                    _hits += 1
+            elif expected == 'currency':
+                if ('$' in _ctx_l) or ('usd' in _ctx_l) or ('billion' in _ctx_l) or ('bn' in _ctx_l):
+                    _hits += 1
+                if ('invest' in _ctx_l) or ('spend' in _ctx_l) or ('capex' in _ctx_l) or ('revenue' in _ctx_l):
+                    _hits += 1
+            elif expected == 'unit_count':
+                if ('charg' in _ctx_l) or ('station' in _ctx_l) or ('infrastructure' in _ctx_l):
+                    _hits += 1
+                if ('count' in _ctx_l) or ('units' in _ctx_l) or ('number of' in _ctx_l):
+                    _hits += 1
+            if _hits > 0:
+                score += 10 * _hits
             # year hint
             if year_hint and (year_hint in str(ctx)):
                 score += 10
@@ -33036,6 +33124,14 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 
         if not best:
             return None, None, None, None
+        try:
+            if isinstance(best, dict):
+                best.setdefault("diag", {})
+                best["diag"]["fix2d26_candidate_count"] = int(len(candidates) or 0)
+                best["diag"]["fix2d26_reject_counts"] = dict(_rej_counts or {})
+                best["diag"]["fix2d26_policy"] = "unit_first_v1"
+        except Exception:
+            pass
         return best.get("value_norm"), best.get("unit_tag"), best.get("source_url"), best
 
     _fix2d25_join_mode = _fix2d25_get_join_mode()
