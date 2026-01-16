@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2M"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2M"  # PATCH FIX2D2M (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -35240,15 +35240,6 @@ try:
 except Exception:
     pass
 
-# =========================
-# VERSION STAMP (ADDITIVE)
-# =========================
-try:
-    CODE_VERSION = "FIX2D2L"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
-except Exception:
-    pass
-
-# =====================
 
 # =====================================================================
 # PATCH FIX2D2I (AUTHORITATIVE): Diff Panel V2 — binding inference commit
@@ -35314,6 +35305,30 @@ except Exception:
     pass
 
 # END PATCH FIX2D2I
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY: FIX2D2M (ADDITIVE)
+# - Injected-first current-value selection (two-pass: injected pool then global)
+# - Trace fields: pass1_injected_pool_size, pass1_selected, fallback_used, selected_source_url
+# - Final version bump
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2M",
+        "date": "2026-01-16",
+        "summary": "Injected-first current-value inference: two-pass selection (injected-only pool then global fallback) with explicit trace fields and authoritative commit into metric_changes.current_value(_norm).",
+        "files": ["FIX2D2M.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
 
 # =========================
 # FINAL VERSION OVERRIDE
