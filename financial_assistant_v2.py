@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2N"  # PATCH FIX2D2N (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2O"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -33331,7 +33331,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 
 
     # =====================================================================
-    # PATCH FIX2D2N_BASELINE_KEYED_CURRENT (ADDITIVE)
+    # PATCH FIX2D2O_BASELINE_KEYED_CURRENT (ADDITIVE)
     # Problem:
     # - Evolution can surface a different set of canonical keys than the Analysis baseline.
     # - Diff joins are baseline-keyed; if cur_can lacks the baseline keys, Current stays N/A.
@@ -33583,6 +33583,28 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                     'missing_baseline_keys': list(_missing)[:25],
                                     'synthesized_count': int(len(_synth)),
                                 })
+
+                                # ============================================================
+                                # PATCH FIX2D2O_PERSIST_BASELINE_KEYED_CURRENT (ADDITIVE)
+                                # Persist the baseline-keyed augmented canonical map onto the
+                                # current response so downstream renderers (and JSON inspection)
+                                # can treat Analysis keys as the current authority for diffing.
+                                # Safety: additive; does not remove Evolution-native keys.
+                                # ============================================================
+                                try:
+                                    # Expose explicitly for diff consumers
+                                    cur_response.setdefault('primary_metrics_canonical_for_diff', cur_can)
+                                    if isinstance(cur_response.get('results'), dict):
+                                        cur_response['results'].setdefault('primary_metrics_canonical_for_diff', cur_can)
+                                    # For demo parity, also mirror into primary_metrics_canonical when parity gap exists
+                                    # (keeps extras available via primary_metrics_canonical_extras if present).
+                                    if isinstance(cur_response.get('primary_metrics_canonical'), dict):
+                                        cur_response['primary_metrics_canonical'] = dict(cur_can)
+                                    elif isinstance(cur_response.get('results'), dict) and isinstance(cur_response['results'].get('primary_metrics_canonical'), dict):
+                                        cur_response['results']['primary_metrics_canonical'] = dict(cur_can)
+                                except Exception:
+                                    pass
+                                # ============================================================
     except Exception:
         pass
     # =====================================================================
@@ -35612,10 +35634,34 @@ try:
 except Exception:
     pass
 
+
+# =====================================================================
+# PATCH TRACKER ENTRY: FIX2D2O (ADDITIVE)
+# - Persist baseline-keyed augmented current canonical map into the
+#   Evolution/current response under primary_metrics_canonical_for_diff
+#   and mirror into primary_metrics_canonical for demo parity.
+# - This makes Evolution JSON inspection show Analysis keys as the
+#   effective current authority for diffing, while keeping extras possible.
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2O",
+        "date": "2026-01-16",
+        "summary": "Persist baseline-keyed current mapping for diffing: when baseline keys are synthesized into cur_can, expose them as primary_metrics_canonical_for_diff and mirror into primary_metrics_canonical so Evolution output keys align with Analysis for the diff demo.",
+        "files": ["FIX2D2O.py"],
+        "supersedes": ["FIX2D2N"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # =========================
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2N"
+    CODE_VERSION = "FIX2D2O"
 except Exception:
     pass
