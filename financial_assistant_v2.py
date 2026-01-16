@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2C"  # PATCH FIX2D2C (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2D"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -95,6 +95,15 @@ try:
         "summary": "Re-enable Analysis→Evolution diffing by adding deterministic, unit-family-guarded inference for baseline keys in Diff Panel V2 when ckey/anchor joins miss; keep FIX2D20/FIX2D24 tracing and yearlike current blocking.",
         "files": ["FIX2D25.py"],
         "supersedes": ["FIX2D23"],
+    })
+
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2D",
+        "date": "2026-01-16",
+        "summary": "Fix Diff Panel V2 crash (prev_v/cur_v NameError) by using correctly scoped norm variables in traces; simplify end-of-file version stamping to a single final override.",
+        "files": ["FIX2D2D.py"],
+        "supersedes": ["FIX2D2C"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -20292,7 +20301,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "prev_ckey": prev_ckey,
                     "resolved_cur_ckey": resolved_cur_ckey,
                     "method": method,
-                    "inference_attempted": bool(_fix2d25_inference_enabled and (prev_v is not None) and (resolved_cur_ckey is None or cur_v is None)),
+                    "inference_attempted": bool(_fix2d25_inference_enabled and (prev_val_norm is not None) and (resolved_cur_ckey is None or cur_val_norm is None)),
                     "inference_bound": bool(method == "inference_bound"),
                     "prev_anchor_hash": prev_ah,
                     "cur_anchor_hash": cur_ah,
@@ -36025,51 +36034,12 @@ try:
 except Exception:
     pass
 
-try:
-    CODE_VERSION = "FIX2D2"
-except Exception:
-    pass
-
-# =====================================================================
-# END PATCH FIX2D2
-# =====================================================================
-
-# =====================================================================
-# PATCH FIX2D16_VERSION_BUMP (ADDITIVE)
-try:
-    CODE_VERSION = "FIX2D16"
-except Exception:
-    pass
-# =====================================================================
-# END PATCH FIX2D16_VERSION_BUMP
-# =====================================================================
 
 
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
 try:
-    CODE_VERSION = "FIX2D29"  # PATCH FIX2D29 (ADD): final bump (override any legacy bumps)
+    CODE_VERSION = "FIX2D2D"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
 except Exception:
     pass
-
-# =====================================================
-# PATCH FIX2D2A_VERSION_BUMP (ADDITIVE)
-# =====================================================
-try:
-    CODE_VERSION = 'FIX2D2C'
-except Exception:
-    pass
-
-
-# =====================================================================
-# PATCH FIX2D2C_CODE_VERSION_FINAL (ADDITIVE)
-# Ensure CODE_VERSION reflects this patch id/filename even if legacy
-# end-of-file bumps exist below earlier patches. Must be last assignment.
-try:
-    CODE_VERSION = "FIX2D2C"
-except Exception:
-    pass
-# =====================================================================
-# END PATCH FIX2D2C_CODE_VERSION_FINAL
-# =====================================================================
