@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D29"  # PATCH FIX2D29 (ADD): bump CODE_VERSION to match patch id/filename  # PATCH FIX2D28 (ADD): bump CODE_VERSION to match patch id/filename  # PATCH FIX2D27 (ADD): bump CODE_VERSION to match patch id  # PATCH FIX2D26 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D2B"  # PATCH FIX2D2B (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -158,6 +158,14 @@ try:
         "date": "2026-01-16",
         "summary": "Enable guarded inference in Diff Panel V2 regardless of join mode; add explicit inference gate + attempted traces so binding inference can commit current values.",
         "files": ["FIX2D2A.py"],
+    })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2B",
+        "date": "2026-01-16",
+        "summary": "Correct version stamping for FIX2D2A runtime by bumping CODE_VERSION and adding final end-of-file override to prevent legacy late assignments from masking patch id.",
+        "files": ["FIX2D2B.py"],
+        "supersedes": ["FIX2D2A"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -36012,3 +36020,16 @@ try:
     CODE_VERSION = 'FIX2D2A'
 except Exception:
     pass
+
+
+# =====================================================================
+# PATCH FIX2D2B_CODE_VERSION_FINAL (ADDITIVE)
+# Ensure CODE_VERSION reflects this patch id/filename even if legacy
+# end-of-file bumps exist below earlier patches. Must be last assignment.
+try:
+    CODE_VERSION = "FIX2D2B"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX2D2B_CODE_VERSION_FINAL
+# =====================================================================
