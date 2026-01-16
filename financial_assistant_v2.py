@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D21"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D22"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 
 # ============================================================
@@ -150,6 +150,23 @@ except Exception:
     pass
 
 
+
+
+# PATCH TRACKER V1 (ADD): FIX2D22
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D22",
+        "date": "2026-01-16",
+        "summary": "Schema-only rebuild: enforce *eligibility-before-scoring* (hard reject bare-year tokens incl 2024/2030 and require unit-family + required domain tokens) so years cannot win; supersedes FIX2D21 selector hardening but retains baseline-key schema derivation.",
+        "files": ["FIX2D22.py"],
+        "supersedes": ["FIX2D21"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 # =====================================================================
 # PATCH FIX2D20 (ADD): Disable earlier speculative selection tweaks while tracing
 # =====================================================================
@@ -29608,6 +29625,60 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             return []
 
 
+    
+
+    # =====================================================================
+    # PATCH FIX2D22 (ADD): Eligibility-before-scoring gate for schema-only rebuild
+    # - This is the decisive fix: reject invalid candidates *before* ranking.
+    # - Prevents bare year tokens (e.g., 2024/2030/2030.0) from ever being
+    #   eligible evidence for non-year metrics.
+    # - Enforces unit-family requirements and required domain-token binding.
+    # =====================================================================
+    def _fix2d22_candidate_eligible(cand: dict, spec: dict, canonical_key: str, kw_norm: list) -> (bool, str):
+        try:
+            # 1) Hard bare-year rejection unless metric explicitly expects year-as-value
+            if _fix2d15_is_bare_year_token(cand) and not _fix2d15_expects_year_value(spec, canonical_key):
+                return False, 'bare_year_token'
+
+            # 2) Unit-family enforcement (percent/currency/unit_sales)
+            if not _fix2d15_unit_family_ok(cand, spec):
+                return False, 'unit_family_mismatch'
+
+            # 3) Required domain token binding (strong)
+            ctx = _norm(cand.get('context_snippet') or cand.get('context') or cand.get('context_window') or '')
+            rawn = _norm(cand.get('raw') or '')
+
+            req_dom = _fix2d19_required_domain_tokens(canonical_key, spec)
+            if req_dom:
+                hit = 0
+                for r in req_dom:
+                    rr = _norm(r)
+                    if rr and (rr in ctx or rr in rawn):
+                        hit += 1
+                        break
+                if hit <= 0:
+                    return False, 'missing_required_domain_token'
+
+            # 4) If schema provides keywords/domain hints, require at least one hit
+            dom = _fix2d15_metric_domain_tokens(canonical_key, spec)
+            if (kw_norm or dom):
+                hit_kw = 0
+                for k in (kw_norm or []):
+                    if k and (k in ctx or k in rawn):
+                        hit_kw += 1
+                        break
+                hit_dom = 0
+                for d in (dom or []):
+                    if d and (d in ctx or d in rawn):
+                        hit_dom += 1
+                        break
+                if hit_kw <= 0 and hit_dom <= 0:
+                    return False, 'no_keyword_or_domain_hits'
+
+            return True, ''
+        except Exception:
+            return True, ''
+
     def _fix2d15_unit_family_ok(cand: dict, spec: dict) -> bool:
         try:
             dim = str(spec.get("dimension") or "").lower()
@@ -29686,6 +29757,8 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
     dbg.setdefault("schema_only_zero_hit_metrics_fix17", [])
     # PATCH FIX2D15 (ADD): diagnostics for schema-only gating
     dbg.setdefault("fix2d15_reject_reasons", {})
+    dbg.setdefault("fix2d22_reject_reasons", {})
+    dbg.setdefault("fix2d22_year_reject_samples", [])
     dbg.setdefault("fix2d15_year_reject_samples", [])
 
     rebuilt = {}
@@ -29720,25 +29793,25 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         for c in candidates:
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
-                continue
-            # PATCH FIX2D16 (ADD): FIX2D15 gating disabled (kept for reference only)
-            if not _fix2d16_disable_fix2d15:
-                try:
-                    _ok2, _why2 = _fix2d15_candidate_ok(c, spec, canonical_key=str(canonical_key), kw_norm=kw_norm)
-                    if not _ok2:
-                        dbg.setdefault("fix2d15_reject_reasons", {})
-                        dbg["fix2d15_reject_reasons"][_why2] = int(dbg["fix2d15_reject_reasons"].get(_why2) or 0) + 1
-                        if _why2 == "bare_year_token":
-                            if len(dbg.get("fix2d15_year_reject_samples") or []) < 20:
-                                dbg["fix2d15_year_reject_samples"].append({
-                                    "canonical_key": str(canonical_key),
-                                    "raw": str(c.get("raw") or c.get("value") or "")[:80],
-                                    "value_norm": c.get("value_norm"),
-                                    "source_url": str(c.get("source_url") or "")[:120],
-                                })
-                        continue
-                except Exception:
-                    pass
+                continue            # PATCH FIX2D22 (ADD): eligibility-before-scoring gate
+            try:
+                _ok2, _why2 = _fix2d22_candidate_eligible(c, spec, canonical_key=str(canonical_key), kw_norm=kw_norm)
+                if not _ok2:
+                    dbg.setdefault("fix2d22_reject_reasons", {})
+                    dbg["fix2d22_reject_reasons"][_why2] = int(dbg["fix2d22_reject_reasons"].get(_why2) or 0) + 1
+                    if _why2 == 'bare_year_token':
+                        dbg.setdefault("fix2d22_year_reject_samples", [])
+                        if len(dbg.get("fix2d22_year_reject_samples") or []) < 20:
+                            dbg["fix2d22_year_reject_samples"].append({
+                                'canonical_key': str(canonical_key),
+                                'raw': str(c.get('raw') or c.get('value') or '')[:80],
+                                'value_norm': c.get('value_norm'),
+                                'unit': str(c.get('unit') or ''),
+                                'source_url': str(c.get('source_url') or '')[:120],
+                            })
+                    continue
+            except Exception:
+                pass
 
             ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
             raw = _norm(c.get("raw") or "")
