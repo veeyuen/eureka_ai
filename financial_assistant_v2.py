@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2O"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2Q"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -33330,6 +33330,22 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
     cur_can = _diffpanel_v2__unwrap_primary_metrics_canonical(cur_response)
 
 
+    # PATCH FIX2D2Q_PROVENANCE (ADDITIVE): capture admitted injected URLs (if any) so
+    # we can stamp row-level provenance for Current values.
+    _fix2d2q_inj_set = set()
+    try:
+        _d0 = cur_response.get('debug') if isinstance(cur_response, dict) else None
+        _it = _d0.get('inj_trace_v1') if isinstance(_d0, dict) else None
+        if not (_it and isinstance(_it, dict)):
+            _it = cur_response.get('inj_trace_v1') if isinstance(cur_response, dict) else None
+        if isinstance(_it, dict):
+            _an = _it.get('admitted_norm')
+            if isinstance(_an, list):
+                _fix2d2q_inj_set = set([u for u in _an if isinstance(u, str) and u])
+    except Exception:
+        _fix2d2q_inj_set = set()
+
+
     # =====================================================================
     # PATCH FIX2D2O_BASELINE_KEYED_CURRENT (ADDITIVE)
     # Problem:
@@ -33436,6 +33452,20 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 _pool_all = _fx2d2n_unwrap_pool(cur_response)
                 _inj_set = _fx2d2n_injected_url_set(cur_response)
 
+                # PATCH FIX2D2Q_POLICY (ADDITIVE):
+                # In baseline-keyed diffing, injection simulates newer content discovered
+                # by Evolution. We prefer injected candidates first, but we may optionally
+                # fall back to the base/global pool when injected candidates are missing
+                # or fail safety/semantic gates. To avoid confusion, we stamp provenance
+                # on each synthesized current metric.
+                _inj_strict = False
+                try:
+                    _dbg0 = cur_response.get('debug') if isinstance(cur_response, dict) else None
+                    if isinstance(_dbg0, dict):
+                        _inj_strict = bool(_dbg0.get('injection_strict_for_baseline_diff') or False)
+                except Exception:
+                    _inj_strict = False
+
                 def _expected_family(ckey: str, prev_unit: str):
                     ck = str(ckey or '').lower()
                     pu = str(prev_unit or '').lower()
@@ -33512,7 +33542,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     prev_name = (pm.get('name') or pm.get('metric_name') or prev_ckey) if isinstance(pm, dict) else prev_ckey
                     prev_val = pm.get('value_norm') if isinstance(pm, dict) else None
 
-                    # Pass 1: injected-only
+                    # Pass 1: injected-only (preferred)
                     best = None
                     bests = -1e9
                     if _inj_set:
@@ -33527,9 +33557,13 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 bests = sc
                                 best = cand
                         if best is not None and bests > -1e8:
-                            return best, True, float(bests)
+                            return best, True, float(bests), 'injected_first', 'injected'
 
-                    # Pass 2: global
+                        # If strict injection demo mode is enabled, do NOT fall back to base.
+                        if _inj_strict:
+                            return None, None, None, 'injected_strict_no_match', None
+
+                    # Pass 2: global/base fallback (allowed when not strict)
                     best = None
                     bests = -1e9
                     for cand in _pool_all:
@@ -33538,16 +33572,17 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                             bests = sc
                             best = cand
                     if best is not None and bests > -1e8:
-                        return best, False, float(bests)
-                    return None, None, None
+                        mode = 'base_only' if not _inj_set else 'base_fallback'
+                        return best, False, float(bests), mode, 'base'
+                    return None, None, None, 'no_candidate', None
 
-                # Synthesize missing baseline keys into cur_can
+# Synthesize missing baseline keys into cur_can
                 _synth = {}
                 for _ck in _missing:
                     _pm = prev_can.get(_ck)
                     if not isinstance(_pm, dict):
                         continue
-                    cand, used_inj, score = _select_for(_ck, _pm)
+                    cand, used_inj, score, _sel_mode, _src_type = _select_for(_ck, _pm)
                     if isinstance(cand, dict):
                         _synth[_ck] = {
                             'name': _pm.get('name') or _pm.get('metric_name') or _ck,
@@ -33558,11 +33593,15 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                             'sources': ([{'url': cand.get('source_url')}] if cand.get('source_url') else []),
                             'source_url': cand.get('source_url'),
                             'selector_used': 'inference_bound_baseline_keyed',
+                            'current_source_type_fix2d2q': _src_type,
+                            'current_selection_mode_fix2d2q': _sel_mode,
                             'diag_fix2d2n': {
                                 'parity_gap': True,
                                 'missing_baseline_ckey': _ck,
                                 'selected_from_injected_pass1': bool(used_inj),
                                 'selected_score': score,
+                                'selection_mode_fix2d2q': _sel_mode,
+                                'selected_source_type_fix2d2q': _src_type,
                             },
                         }
 
@@ -34736,6 +34775,27 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             },
         }
 
+        # PATCH FIX2D2Q_ROW_PROVENANCE (ADDITIVE): stamp where Current came from
+        # (injected vs base), and if available, the selection mode used when
+        # synthesizing baseline-keyed currents.
+        try:
+            if cur_source_url_effective:
+                row['current_source_type_fix2d2q'] = ('injected' if cur_source_url_effective in _fix2d2q_inj_set else 'base')
+            else:
+                row['current_source_type_fix2d2q'] = None
+        except Exception:
+            row['current_source_type_fix2d2q'] = None
+        try:
+            _cm_dbg = None
+            if resolved_cur_ckey_effective and isinstance(cur_can, dict):
+                _cm_dbg = cur_can.get(resolved_cur_ckey_effective)
+            if isinstance(_cm_dbg, dict):
+                row['current_selection_mode_fix2d2q'] = _cm_dbg.get('current_selection_mode_fix2d2q') or _cm_dbg.get('diag_fix2d2n', {}).get('selection_mode_fix2d2q')
+            else:
+                row['current_selection_mode_fix2d2q'] = ('injected_first' if row.get('current_source_type_fix2d2q') == 'injected' else 'base')
+        except Exception:
+            row['current_selection_mode_fix2d2q'] = None
+
         if unit_mismatch:
             row["diag"]["diff_unit_mismatch_v1"] = {
                 "detected": True,
@@ -35658,10 +35718,55 @@ try:
 except Exception:
     pass
 
+# =====================================================================
+# PATCH TRACKER ENTRY: FIX2D2Q (ADDITIVE)
+# - Baseline-aligned diffing now uses injected-first selection with optional
+#   base fallback, and stamps clear provenance (injected vs base) to prevent
+#   confusion about where Current values came from.
+# - Keeps union pool semantics: Evolution may still surface extra keys.
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2Q",
+        "date": "2026-01-16",
+        "summary": "Implement baseline-aligned current selection with injected-first preference and optional base fallback; stamp provenance fields so Current values are clearly labeled as injected or base-fallback while preserving union pool behavior.",
+        "files": ["FIX2D2Q.py"],
+        "supersedes": ["FIX2D2O"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY: FIX2D2Q (ADDITIVE)
+# - Baseline-aligned diffing uses injected-first selection with optional
+#   base fallback, and stamps provenance (injected vs base) to avoid
+#   "crossing of lines" confusion in the Current column.
+# - Keeps union pool semantics: Evolution may still surface extra keys.
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2Q",
+        "date": "2026-01-16",
+        "summary": "Add provenance-aware baseline-keyed current selection: injected-first with optional base fallback, stamping selection_mode and source_type to prevent confusion while preserving base+injected union pool semantics.",
+        "files": ["FIX2D2Q.py"],
+        "supersedes": ["FIX2D2O"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # =========================
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2O"
+    CODE_VERSION = "FIX2D2Q"
 except Exception:
     pass
