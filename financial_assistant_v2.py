@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D22"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D23"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 
 # ============================================================
@@ -20323,6 +20323,37 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     # -------------------------------------------------------------
     observed_rows_total = 0
     observed_rows_injected = 0
+    observed_rows_filtered_yearlike = 0
+    observed_yearlike_samples = []
+
+    def _fix2d23_is_yearlike_token(value_norm, unit_tag):
+        try:
+            if unit_tag:
+                return False
+            if isinstance(value_norm, bool):
+                return False
+            # numeric years
+            if isinstance(value_norm, (int, float)):
+                fv = float(value_norm)
+                iv = int(round(fv))
+                if abs(fv - iv) < 1e-9 and 1900 <= iv <= 2100:
+                    return True
+            # string years, including "2030.0"
+            s = str(value_norm).strip()
+            if s.endswith('.0'):
+                s2 = s[:-2]
+                if s2.isdigit():
+                    iv = int(s2)
+                    if 1900 <= iv <= 2100:
+                        return True
+            if s.isdigit() and len(s) == 4:
+                iv = int(s)
+                if 1900 <= iv <= 2100:
+                    return True
+        except Exception:
+            return False
+        return False
+
     try:
         import hashlib
 
@@ -20699,6 +20730,20 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 
             unit_tag = c.get("unit_tag") or ""
             mk = c.get("measure_kind") or ""
+
+            # FIX2D23: Never promote unitless bare years as Observed current values
+            if _fix2d23_is_yearlike_token(c.get("value_norm"), unit_tag):
+                observed_rows_filtered_yearlike += 1
+                if len(observed_yearlike_samples) < 20:
+                    observed_yearlike_samples.append({
+                        "value_norm": c.get("value_norm"),
+                        "raw": c.get("raw"),
+                        "source_url": c.get("source_url"),
+                        "context_snippet": str(c.get("context_snippet") or "")[:120],
+                        "anchor_hash": c.get("anchor_hash"),
+                    })
+                continue
+
             disp_bits = [b for b in [mk, unit_tag] if b]
             disp_suffix = f" ({', '.join(disp_bits)})" if disp_bits else ""
             snippet = str(c.get("context_snippet") or "").strip().replace("\n", " ")
@@ -20805,6 +20850,8 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         "observed_rows": int(observed_rows_total),
         "observed_injected_rows": int(observed_rows_injected),
         "observed_rows_filtered_noninjected": int(observed_rows_filtered_noninjected),
+        "observed_rows_filtered_yearlike": int(observed_rows_filtered_yearlike),
+        "observed_yearlike_samples": observed_yearlike_samples,
         "observed_rows_promoted_from_source_results": int(observed_rows_promoted_from_source_results),
         "canary_row_injected": bool(_fix2p_canary_injected),
     }
