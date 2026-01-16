@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2F"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2G"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -32924,9 +32924,21 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     "inference_commit_v1": {
                         "inference_selected": bool(method_effective == "inference_bound"),
                         "inference_committed": bool(method_effective == "inference_bound" and cur_val_norm_effective is not None),
-                        "committed_value_norm": cur_val_norm_effective,
-                        "committed_raw": cur_raw_effective,
-                        "committed_source_url": cur_source_url_effective,
+                        "committed_value_norm": (cur_val_norm_effective if method_effective == "inference_bound" else None),
+                        "committed_raw": (cur_raw_effective if method_effective == "inference_bound" else None),
+                        "committed_source_url": (cur_source_url_effective if method_effective == "inference_bound" else None),
+                    },
+                    "inference_commit_v2": {
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "attempted": bool(_fix2d25_inference_enabled and resolved_cur_ckey_effective is None and isinstance(prev_val_norm, (int, float))),
+                        "selected": bool(_fix2d2e_inference_selected),
+                        "selected_value_norm": (_fix2d2e_inference_selected.get('value_norm') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_raw": (_fix2d2e_inference_selected.get('raw') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_unit_tag": (_fix2d2e_inference_selected.get('unit_tag') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_source_url": (_fix2d2e_inference_selected.get('source_url') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_score": _fix2d2g_best_score,
+                        "reason": _fix2d19_soft_reason,
+                        "committed": bool(_fix2d2e_inference_committed),
                     },
                 },
             },
@@ -33443,6 +33455,18 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         "committed_raw": cur_raw_effective,
                         "committed_source_url": cur_source_url_effective,
                     },
+                    "inference_commit_v2": {
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "attempted": bool(_fix2d25_inference_enabled and resolved_cur_ckey_effective is None and isinstance(prev_val_norm, (int, float))),
+                        "selected": bool(_fix2d2e_inference_selected is not None),
+                        "selected_value_norm": (_fix2d2e_inference_selected.get('value_norm') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_raw": (_fix2d2e_inference_selected.get('raw') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_unit_tag": (_fix2d2e_inference_selected.get('unit_tag') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_source_url": (_fix2d2e_inference_selected.get('source_url') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_score": _fix2d2g_best_score,
+                        "committed": bool(_fix2d2e_inference_committed),
+                        "reason": _fix2d19_soft_reason,
+                    },
                 },
             },
         })
@@ -33566,6 +33590,91 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         if resolved_cur_ckey_effective is None:
             not_found += 1
 
+        # ---------------------------------------------------------------------
+        # PATCH FIX2D2G_INFERENCE_POOL (ADD): Deterministic extracted_numbers
+        # pool unwrap for Diff Panel V2 __rows inference.
+        # Why: previous code referenced an undefined pool helper on this path,
+        # leaving inference with an empty candidate set.
+        # Sources tried (in order):
+        #   baseline_sources_cache_current -> baseline_sources_cache ->
+        #   results.baseline_sources_cache_current -> results.baseline_sources_cache ->
+        #   results.source_results
+        # Safety: render-only; does not fetch or re-extract.
+        # ---------------------------------------------------------------------
+        def _fix2d2g_unwrap_extracted_numbers_pool(_resp: dict):
+            pool = []
+            if not isinstance(_resp, dict):
+                return pool
+
+            def _add_from_sources(_sources):
+                if not isinstance(_sources, list):
+                    return
+                for s in _sources:
+                    if not isinstance(s, dict):
+                        continue
+                    su = s.get('source_url') or s.get('url') or None
+                    nums = s.get('extracted_numbers')
+                    if not isinstance(nums, list):
+                        continue
+                    for n in nums:
+                        if not isinstance(n, dict):
+                            continue
+                        vn = n.get('value_norm')
+                        if vn is None:
+                            vn = n.get('value')
+                        try:
+                            fvn = float(vn)
+                        except Exception:
+                            continue
+                        unit_tag = str(n.get('unit_tag') or n.get('unit') or n.get('base_unit') or '').strip()
+                        raw = str(n.get('raw') or n.get('display') or n.get('value') or '').strip()
+                        ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '')
+                        pool.append({
+                            'value_norm': fvn,
+                            'unit_tag': unit_tag,
+                            'raw': raw,
+                            'context_snippet': ctx,
+                            'source_url': str(su).strip() if su else None,
+                        })
+
+            # prefer direct keys
+            _add_from_sources(_resp.get('baseline_sources_cache_current'))
+            if not pool:
+                _add_from_sources(_resp.get('baseline_sources_cache'))
+
+            # nested under results
+            res = _resp.get('results')
+            if isinstance(res, dict):
+                if not pool:
+                    _add_from_sources(res.get('baseline_sources_cache_current'))
+                if not pool:
+                    _add_from_sources(res.get('baseline_sources_cache'))
+                if not pool:
+                    _add_from_sources(res.get('source_results'))
+
+            return pool
+
+        def _fix2d2g_is_yearlike_candidate(n: dict) -> bool:
+            try:
+                if not isinstance(n, dict):
+                    return True
+                ut = str(n.get('unit_tag') or '').strip()
+                if ut:
+                    return False
+                vn = n.get('value_norm')
+                if vn is None:
+                    vn = n.get('value')
+                fv = float(vn)
+                if not (1900.0 <= fv <= 2100.0):
+                    return False
+                return abs(fv - round(fv)) < 1e-9
+            except Exception:
+                return False
+
+        # ---------------------------------------------------------------------
+        # END PATCH FIX2D2G_INFERENCE_POOL
+        # ---------------------------------------------------------------------
+
         # =====================================================================
         # PATCH FIX2D19 (ADD): Deterministic baseline soft-match fallback
         # When strict joins fail (ckey/anchor), attempt to find a plausible
@@ -33575,9 +33684,10 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         # =====================================================================
         _fix2d19_soft = None
         _fix2d19_soft_reason = None
+        _fix2d2g_best_score = None
         try:
             if resolved_cur_ckey_effective is None and isinstance(prev_val_norm, (int, float)):
-                pool = _unwrap_extracted_numbers_pool(cur_response)
+                pool = _fix2d2g_unwrap_extracted_numbers_pool(cur_response)
                 # derive expected type from canonical key / name
                 ck_l = str(prev_ckey).lower()
                 nm_l = str(pm.get('name') or '').lower()
@@ -33593,7 +33703,9 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                             return -1e9
                         if n.get('is_junk') is True:
                             return -1e9
-                        if _looks_like_year(n):
+                        if _fix2d2g_is_yearlike_candidate(n):
+                            return -1e9
+                        if _fix2d25_is_yearlike_value(n.get("value_norm") if isinstance(n, dict) else None):
                             return -1e9
                         raw = str(n.get('raw') or n.get('value') or '').lower()
                         ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '').lower()
@@ -33650,6 +33762,8 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         bests = sc
                         bestn = n
 
+                _fix2d2g_best_score = bests
+
                 if isinstance(bestn, dict) and bests > -1e8:
                     _fix2d19_soft = bestn
                     _fix2d19_soft_reason = 'soft_match_extracted_numbers'
@@ -33664,6 +33778,17 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 cur_source_url_effective = str(_fix2d19_soft.get('source_url') or _fix2d19_soft.get('url') or '').strip() or None
                 cur_ah_effective = str(_fix2d19_soft.get('anchor_hash') or '') or None
                 method_effective = 'inference_bound'
+                try:
+                    summary["joined_by_inference"] += 1
+                    if len(sample_inference_joins) < 10:
+                        sample_inference_joins.append({
+                            'prev_ckey': prev_ckey,
+                            'value_norm': cur_val_norm_effective,
+                            'raw': cur_raw_effective,
+                            'source_url': cur_source_url_effective,
+                        })
+                except Exception:
+                    pass
                 _fix2d2e_inference_selected = dict(_fix2d19_soft)
                 _fix2d2e_inference_committed = True
                 resolved_cur_ckey_effective = prev_ckey  # keep row identity stable for baseline comparison
@@ -33737,12 +33862,6 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             "current_value_norm": cur_val_norm_effective,
             "current_source": cur_source_url_effective,
             "current_method": method_effective,
-            "current_value_norm": cur_val_norm_effective,
-            "current_source": cur_source_url_effective,
-            "current_method": method_effective,
-            "current_value_norm": cur_val_norm_effective,
-            "current_source": cur_source_url_effective,
-            "current_method": method_effective,
             "change_pct": change_pct,
             "change_type": change_type,
             "match_confidence": match_conf,
@@ -33781,6 +33900,18 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         "committed_value_norm": cur_val_norm_effective,
                         "committed_raw": cur_raw_effective,
                         "committed_source_url": cur_source_url_effective,
+                    },
+                    "inference_commit_v2": {
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "attempted": bool(_fix2d25_inference_enabled and resolved_cur_ckey_effective is None and isinstance(prev_val_norm, (int, float))),
+                        "selected": bool(_fix2d2e_inference_selected is not None),
+                        "selected_value_norm": (_fix2d2e_inference_selected.get('value_norm') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_raw": (_fix2d2e_inference_selected.get('raw') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_unit_tag": (_fix2d2e_inference_selected.get('unit_tag') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_source_url": (_fix2d2e_inference_selected.get('source_url') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_score": _fix2d2g_best_score,
+                        "committed": bool(_fix2d2e_inference_committed),
+                        "reason": _fix2d19_soft_reason,
                     },
                 },
             },
@@ -33862,6 +33993,18 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         "committed_raw": cur_raw_effective,
                         "committed_source_url": cur_source_url_effective,
                     },
+                    "inference_commit_v2": {
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "attempted": bool(_fix2d25_inference_enabled and resolved_cur_ckey_effective is None and isinstance(prev_val_norm, (int, float))),
+                        "selected": bool(_fix2d2e_inference_selected is not None),
+                        "selected_value_norm": (_fix2d2e_inference_selected.get('value_norm') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_raw": (_fix2d2e_inference_selected.get('raw') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_unit_tag": (_fix2d2e_inference_selected.get('unit_tag') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_source_url": (_fix2d2e_inference_selected.get('source_url') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_score": _fix2d2g_best_score,
+                        "committed": bool(_fix2d2e_inference_committed),
+                        "reason": _fix2d19_soft_reason,
+                    },
                         },
                     },
                 })
@@ -33876,14 +34019,14 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
     raw_current_only_injected = 0
     try:
         if not (isinstance(cur_metrics, dict) and cur_metrics):
-            pool = _unwrap_extracted_numbers_pool(cur_response)
+            pool = _fix2d2g_unwrap_extracted_numbers_pool(cur_response)
             seen_ah = set()
             for n in pool:
                 if not isinstance(n, dict):
                     continue
                 if n.get("is_junk") is True:
                     continue
-                if _looks_like_year(n):
+                if _fix2d25_is_yearlike_value(n.get("value_norm") if isinstance(n, dict) else None):
                     continue
 
                 ah = str(n.get("anchor_hash") or "")
@@ -33942,6 +34085,18 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         "committed_value_norm": cur_val_norm_effective,
                         "committed_raw": cur_raw_effective,
                         "committed_source_url": cur_source_url_effective,
+                    },
+                    "inference_commit_v2": {
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "attempted": bool(_fix2d25_inference_enabled and resolved_cur_ckey_effective is None and isinstance(prev_val_norm, (int, float))),
+                        "selected": bool(_fix2d2e_inference_selected is not None),
+                        "selected_value_norm": (_fix2d2e_inference_selected.get('value_norm') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_raw": (_fix2d2e_inference_selected.get('raw') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_unit_tag": (_fix2d2e_inference_selected.get('unit_tag') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_source_url": (_fix2d2e_inference_selected.get('source_url') if isinstance(_fix2d2e_inference_selected, dict) else None),
+                        "selected_score": _fix2d2g_best_score,
+                        "committed": bool(_fix2d2e_inference_committed),
+                        "reason": _fix2d19_soft_reason,
                     },
                         },
                     },
@@ -34527,11 +34682,30 @@ except Exception:
 
 
 
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2G",
+        "date": "2026-01-16",
+        "summary": "Close last-mile binding gap by defining deterministic extracted_numbers pool unwrapping for Diff Panel V2 __rows (previously undefined, silently disabling inference). Harden sentinel trace, add explicit per-row inference_commit trace fields, and bump CODE_VERSION with final override.",
+        "files": ["FIX2D2G.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
 try:
-    CODE_VERSION = "FIX2D2F"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
+    CODE_VERSION = "FIX2D2G"  # PATCH FIX2D2D (ADD): final bump (override any legacy bumps)
 except Exception:
     pass
 
@@ -34539,6 +34713,6 @@ except Exception:
 # FINAL CODE_VERSION OVERRIDE (PATCH)
 # =====================
 try:
-    CODE_VERSION = "FIX2D2F"
+    CODE_VERSION = "FIX2D2G"
 except Exception:
     pass
