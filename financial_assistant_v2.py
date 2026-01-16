@@ -79,7 +79,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D24"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D25"  # PATCH FIX2D25 (ADD): bump CODE_VERSION to match patch id
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D25
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D25",
+        "date": "2026-01-16",
+        "summary": "Re-enable Analysis→Evolution diffing by adding deterministic, unit-family-guarded inference for baseline keys in Diff Panel V2 when ckey/anchor joins miss; keep FIX2D20/FIX2D24 tracing and yearlike current blocking.",
+        "files": ["FIX2D25.py"],
+        "supersedes": ["FIX2D23"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 
 # ============================================================
@@ -32707,7 +32726,12 @@ def _diffpanel_v2__extract_value_norm_and_unit(_m: dict):
 
 
 def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
-    """Return (rows, summary_dict). Deterministic, inference-free."""
+    """Return (rows, summary_dict).
+
+    FIX2D25: enable *guarded inference* for baseline keys when strict joins miss.
+    Inference is deterministic and unit-family constrained; it never promotes
+    unitless year-like tokens.
+    """
     prev_can = _diffpanel_v2__unwrap_primary_metrics_canonical(prev_response)
     cur_can = _diffpanel_v2__unwrap_primary_metrics_canonical(cur_response)
 
@@ -32716,8 +32740,10 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         "rows_total": 0,
         "joined_by_ckey": 0,
         "joined_by_anchor_hash": 0,
+        "joined_by_inference": 0,
         "not_found": 0,
         "sample_anchor_joins": [],
+        "sample_inference_joins": [],
     }
 
     if not isinstance(prev_can, dict):
@@ -32776,6 +32802,248 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
     except Exception:
         cur_by_anchor = {}
 
+    # ------------------------------
+    # FIX2D25: inference config
+    # ------------------------------
+    _fix2d25_join_mode = None
+    try:
+        if "_fix2d6_get_diff_join_mode_v1" in globals() and callable(globals().get("_fix2d6_get_diff_join_mode_v1")):
+            _fix2d25_join_mode = globals().get("_fix2d6_get_diff_join_mode_v1")()
+    except Exception:
+        _fix2d25_join_mode = None
+
+    _fix2d25_inference_enabled = True
+    try:
+        # keep strict in non-union mode
+        if str(_fix2d25_join_mode or "").lower() not in ("union", ""):
+            _fix2d25_inference_enabled = False
+    except Exception:
+        _fix2d25_inference_enabled = True
+
+    def _fix2d25_is_yearlike(_v, _unit_tag=None):
+        try:
+            if _unit_tag is not None and str(_unit_tag).strip():
+                return False
+            # prefer existing detector if present
+            if "_fix2d24_is_yearlike_value" in globals() and callable(globals().get("_fix2d24_is_yearlike_value")):
+                return bool(globals().get("_fix2d24_is_yearlike_value")(_v))
+            fv = float(_v)
+            if fv.is_integer():
+                iv = int(fv)
+                return 1900 <= iv <= 2100
+        except Exception:
+            pass
+        return False
+
+    def _fix2d25_expected_family(_ckey: str, _unit: str):
+        c = str(_ckey or "").lower()
+        u = str(_unit or "").lower()
+        if "percent" in c or u in ("%", "percent", "percentage"):
+            return "percent"
+        if "currency" in c or any(x in u for x in ("usd", "$", "currency", "bn", "billion")):
+            return "currency"
+        if "unit_sales" in c or "sales" in c or "deliver" in c:
+            return "unit_sales"
+        if "unit_count" in c or "chargers" in c or "stations" in c or "count" in c:
+            return "unit_count"
+        return "unknown"
+
+    def _fix2d25_collect_candidates(_cur_response: dict):
+        out = []
+        try:
+            rr = (_cur_response or {}).get("results") if isinstance(_cur_response, dict) else None
+            srcs = rr.get("source_results") if isinstance(rr, dict) else None
+            if isinstance(srcs, list):
+                for s in srcs:
+                    if not isinstance(s, dict):
+                        continue
+                    su = s.get("source_url") or s.get("url")
+                    nums = s.get("extracted_numbers")
+                    if not isinstance(nums, list):
+                        continue
+                    for n in nums:
+                        if not isinstance(n, dict):
+                            continue
+                        vn = n.get("value_norm")
+                        ut = n.get("unit_tag") or n.get("unit")
+                        if vn is None:
+                            continue
+                        if _fix2d25_is_yearlike(vn, ut):
+                            continue
+                        out.append({
+                            "value_norm": vn,
+                            "unit_tag": ut,
+                            "raw": n.get("raw"),
+                            "context": n.get("context_snippet") or n.get("context") or "",
+                            "source_url": su,
+                        })
+        except Exception:
+            return []
+        return out
+
+    _fix2d25_candidates = _fix2d25_collect_candidates(cur_response) if _fix2d25_inference_enabled else []
+
+    # ------------------------------
+    # FIX2D25: Guarded inference
+    # ------------------------------
+    def _fix2d25_get_join_mode():
+        jm = None
+        try:
+            if "_fix2d6_get_diff_join_mode_v1" in globals():
+                jm = globals().get("_fix2d6_get_diff_join_mode_v1")()
+        except Exception:
+            jm = None
+        return str(jm or "").strip().lower()
+
+    def _fix2d25_is_yearlike_value(v):
+        try:
+            fv = float(v)
+            if not (1900.0 <= fv <= 2100.0):
+                return False
+            return abs(fv - round(fv)) < 1e-9
+        except Exception:
+            return False
+
+    def _fix2d25_expected_family(prev_ckey: str, prev_unit: str):
+        ck = str(prev_ckey or "").lower()
+        pu = str(prev_unit or "").lower()
+        if "percent" in ck or pu in ("%", "percent") or "%" in pu:
+            return "percent"
+        if "currency" in ck or "usd" in pu or "$" in pu:
+            return "currency"
+        if "unit_sales" in ck or " sales" in ck or ck.endswith("sales") or "ev_sales" in ck:
+            return "unit_sales"
+        if "unit_count" in ck or "charg" in ck or "station" in ck:
+            return "unit_count"
+        return "unknown"
+
+    def _fix2d25_unit_family_match(expected: str, cand_unit: str, cand_ctx: str):
+        u = str(cand_unit or "").lower()
+        c = str(cand_ctx or "").lower()
+        if expected == "percent":
+            return ("%" in u) or ("percent" in u) or ("%" in c) or (" percent" in c)
+        if expected == "currency":
+            return ("$" in u) or ("usd" in u) or ("currency" in u) or ("$" in c) or (" usd" in c) or ("billion" in c) or ("bn" in c)
+        if expected == "unit_sales":
+            return ("unit" in u) or ("sales" in u) or ("million" in u) or ("m" == u) or (" units" in c) or (" million" in c)
+        if expected == "unit_count":
+            return ("unit" in u) or ("count" in u) or ("units" in c)
+        return True
+
+    def _fix2d25_infer_from_extracted_numbers(prev_ckey: str, prev_name: str, prev_v, prev_unit: str):
+        """Return (cur_v, cur_unit, source_url, evidence_dict) or (None,...)."""
+        expected = _fix2d25_expected_family(prev_ckey, prev_unit)
+        year_hint = None
+        try:
+            m = re.search(r"\b(19\d{2}|20\d{2})\b", str(prev_ckey))
+            if m:
+                year_hint = m.group(1)
+        except Exception:
+            year_hint = None
+
+        # Gather candidates
+        candidates = []
+        try:
+            sr_list = (((cur_response or {}).get("results") or {}).get("source_results") or [])
+            if isinstance(sr_list, dict):
+                sr_list = [sr_list]
+            for sr in sr_list:
+                if not isinstance(sr, dict):
+                    continue
+                src_url = sr.get("source_url") or sr.get("url")
+                en = sr.get("extracted_numbers") or []
+                if isinstance(en, dict):
+                    en = [en]
+                for c in en:
+                    if not isinstance(c, dict):
+                        continue
+                    v = c.get("value_norm")
+                    if v is None:
+                        continue
+                    # never infer unitless years
+                    cu = c.get("unit_tag")
+                    if (not cu) and _fix2d25_is_yearlike_value(v):
+                        continue
+                    ctx = c.get("context_snippet") or c.get("context") or ""
+                    if not _fix2d25_unit_family_match(expected, cu, ctx):
+                        continue
+                    candidates.append({
+                        "value_norm": v,
+                        "unit_tag": cu,
+                        "context": ctx,
+                        "source_url": src_url,
+                        "raw": c.get("raw"),
+                    })
+        except Exception:
+            candidates = []
+
+        if not candidates:
+            return None, None, None, None
+
+        # Deterministic scoring
+        best = None
+        best_key = None
+        prevv = None
+        try:
+            prevv = float(prev_v) if prev_v is not None else None
+        except Exception:
+            prevv = None
+        kw = str(prev_name or prev_ckey or "").lower()
+        for cand in candidates:
+            v = cand.get("value_norm")
+            cu = cand.get("unit_tag")
+            ctx = cand.get("context") or ""
+            score = 0
+            # unit-family match already filtered; reward explicit unit
+            if cu:
+                score += 30
+            # keyword binding (very light)
+            if expected == "percent" and ("share" in kw or "market" in kw):
+                if ("share" in str(ctx).lower()) or ("market" in str(ctx).lower()) or ("%" in str(ctx)):
+                    score += 15
+            if expected == "unit_sales" and ("sale" in kw or "units" in kw):
+                if ("sale" in str(ctx).lower()) or ("unit" in str(ctx).lower()) or ("million" in str(ctx).lower()):
+                    score += 15
+            if expected == "currency" and ("invest" in kw or "revenue" in kw or "market" in kw):
+                if ("$" in str(ctx)) or ("usd" in str(ctx).lower()) or ("billion" in str(ctx).lower()) or ("bn" in str(ctx).lower()):
+                    score += 15
+            # year hint
+            if year_hint and (year_hint in str(ctx)):
+                score += 10
+            # closeness to baseline (if available)
+            try:
+                fv = float(v)
+                if prevv is not None and prevv > 0 and fv > 0:
+                    ratio = fv / prevv
+                    if 0.2 <= ratio <= 5.0:
+                        score += 20
+                    # prefer closer
+                    score -= min(20.0, abs(np.log(ratio)) * 10.0)
+            except Exception:
+                pass
+
+            # deterministic tie-break
+            tie = (
+                -score,
+                0 if cand.get("source_url") else 1,
+                str(cand.get("source_url") or ""),
+                str(cand.get("raw") or ""),
+                float(cand.get("value_norm") or 0.0),
+            )
+            if best is None or tie < best_key:
+                best = cand
+                best_key = tie
+
+        if not best:
+            return None, None, None, None
+        return best.get("value_norm"), best.get("unit_tag"), best.get("source_url"), best
+
+    _fix2d25_join_mode = _fix2d25_get_join_mode()
+    _fix2d25_inference_enabled = True  # enable by default
+    if _fix2d25_join_mode not in ("union", ""):
+        # In strict mode, keep inference off.
+        _fix2d25_inference_enabled = False
+
     for prev_ckey in prev_keys:
         pm = prev_can.get(prev_ckey)
         pm = pm if isinstance(pm, dict) else {}
@@ -32807,10 +33075,34 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 
         cur_v = None
         cur_unit = None
+        cur_source_url = None
+        inference_used = False
+        inference_evidence = None
         if resolved_cur_ckey and resolved_cur_ckey in cur_can and isinstance(cur_can.get(resolved_cur_ckey), dict):
             cm = cur_can.get(resolved_cur_ckey)
             cur_anchor = _diffpanel_v2__extract_anchor_hash(cm)
             cur_v, cur_unit = _diffpanel_v2__extract_value_norm_and_unit(cm)
+
+        # FIX2D25: if join missed (or joined but no numeric), attempt safe inference for baseline keys
+        if _fix2d25_inference_enabled and (resolved_cur_ckey is None or cur_v is None) and (prev_v is not None):
+            iv, iu, isrc, ie = _fix2d25_infer_from_extracted_numbers(prev_ckey, prev_name, prev_v, prev_unit)
+            if iv is not None:
+                cur_v = iv
+                cur_unit = iu
+                cur_source_url = isrc
+                inference_used = True
+                inference_evidence = ie
+                if resolved_cur_ckey is None:
+                    resolved_cur_ckey = "__inferred__"  # sentinel
+                    method = "inference"
+                    summary["joined_by_inference"] += 1
+                    if len(summary.get("sample_inference_joins") or []) < 5:
+                        summary["sample_inference_joins"].append({
+                            "prev_ckey": prev_ckey,
+                            "picked_value_norm": iv,
+                            "picked_unit": iu,
+                            "source_url": isrc,
+                        })
 
         if resolved_cur_ckey is None:
             summary["not_found"] += 1
@@ -32849,10 +33141,16 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     "cur_anchor_hash": cur_anchor,
                 },
                 "diff_current_source_trace_v1": {
-                    "current_source_path_used": "primary_metrics_canonical" if resolved_cur_ckey is not None else "none",
+                    "current_source_path_used": (
+                        "inferred_extracted_numbers" if inference_used else (
+                            "primary_metrics_canonical" if (resolved_cur_ckey is not None and resolved_cur_ckey != "__inferred__") else "none"
+                        )
+                    ),
                     "current_value_norm": cur_v if resolved_cur_ckey is not None else None,
                     "current_unit_tag": cur_unit if resolved_cur_ckey is not None else None,
-                    "inference_disabled": True,
+                    "inference_disabled": (not inference_used),
+                    "inference_source_url": cur_source_url,
+                    "inference_evidence": inference_evidence,
                 },
             },
         })
@@ -32900,7 +33198,12 @@ def diff_metrics_by_name_FIX2E_DIFFPANEL_V2(prev_response: dict, cur_response: d
             cur_response.setdefault("debug", {})
             if isinstance(cur_response.get("debug"), dict):
                 cur_response["debug"]["diff_panel_v2_summary"] = v2_summary
-                cur_response["debug"]["diff_panel_v2_inference_disabled"] = True
+                _inf_used = False
+                try:
+                    _inf_used = bool(int((v2_summary or {}).get("joined_by_inference") or 0) > 0)
+                except Exception:
+                    _inf_used = False
+                cur_response["debug"]["diff_panel_v2_inference_disabled"] = (not _inf_used)
                 cur_response["debug"]["diff_panel_v2_rows_total"] = int(v2_summary.get("rows_total") or 0) if isinstance(v2_summary, dict) else 0
     except Exception:
         pass
