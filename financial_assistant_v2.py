@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2Q"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2R"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -25695,6 +25695,87 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
     def _fix27_has_any_unit_evidence(c: dict) -> bool:
         # Any unit evidence captured on the token (not schema defaults)
         return bool((c.get("unit") or "").strip() or (c.get("base_unit") or "").strip() or (c.get("unit_tag") or "").strip())
+
+    # =====================================================================
+    # PATCH FIX2D2R (ADDITIVE): Rebuild parity guard — forbid committing a bare-year
+    # token when a unit-qualified sibling candidate exists in the same local snippet.
+    #
+    # Motivation:
+    #   - Injected pages often contain both (year) and (value+unit) on the same line.
+    #   - Some schema-only rebuild paths were still able to pick the year token.
+    #   - This patch enforces a shared interpretation rule across Analysis/Evolution.
+    #
+    # Rule:
+    #   - For non-year metrics, if a candidate is a bare year token AND there exists a
+    #     nearby candidate from the same source with unit/percent/currency evidence,
+    #     then the year token is ineligible.
+    # =====================================================================
+
+    def _fix2d2r_start_idx(c: dict) -> int:
+        try:
+            return int(c.get('start_idx') or c.get('idx') or 0)
+        except Exception:
+            return 0
+
+    def _fix2d2r_is_bare_year_cand(c: dict) -> bool:
+        try:
+            raw = str(c.get('raw') or c.get('value') or '').strip()
+            vn = c.get('value_norm')
+            # reuse FIX27 helper when available
+            return _fix27_is_bare_year_token(raw, vn)
+        except Exception:
+            return False
+
+    def _fix2d2r_has_required_evidence(c: dict, expected_kind: str) -> bool:
+        try:
+            ek = (expected_kind or 'other').lower().strip()
+            if ek == 'currency':
+                return _fix27_has_currency_evidence(c)
+            if ek == 'percent':
+                return _fix27_has_percent_evidence(c)
+            if ek == 'unit':
+                # token-level unit evidence (captured on the token)
+                if _fix27_has_any_unit_evidence(c):
+                    return True
+                raw = str(c.get('raw') or '').lower()
+                ctx = str(c.get('context') or c.get('context_window') or c.get('context_snippet') or '').lower()
+                blob = raw + ' ' + ctx
+                return any(t in blob for t in ['unit','units','million','billion','thousand','mn','bn',' m','m ',' k','k ','b '])
+            # other: any non-empty unit evidence counts as "better"
+            return bool(_fix27_has_any_unit_evidence(c) or _fix27_has_currency_evidence(c) or _fix27_has_percent_evidence(c))
+        except Exception:
+            return False
+
+    def _fix2d2r_has_better_sibling(year_cand: dict, pool: list, expected_kind: str) -> bool:
+        try:
+            if not isinstance(year_cand, dict) or not isinstance(pool, list):
+                return False
+            su = str(year_cand.get('source_url') or '')
+            if not su:
+                return False
+            yi = _fix2d2r_start_idx(year_cand)
+            # scan a small window around the year token
+            for o in pool:
+                if not isinstance(o, dict):
+                    continue
+                if o is year_cand:
+                    continue
+                if str(o.get('source_url') or '') != su:
+                    continue
+                if abs(_fix2d2r_start_idx(o) - yi) > 120:
+                    continue
+                if _fix2d2r_is_bare_year_cand(o):
+                    continue
+                if _fix2d2r_has_required_evidence(o, expected_kind):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    # =====================================================================
+    # END PATCH FIX2D2R
+    # =====================================================================
+
     # 3) Schema-driven selection
     rebuilt = {}
     for canonical_key, sch in metric_schema.items():
@@ -25712,6 +25793,13 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
         expected_dim = (sch.get("dimension") or sch.get("unit_family") or "").lower().strip()
         expected_kind = _fix27_expected_kind(canonical_key, sch)  # PATCH FIX27
 
+        # =====================================================================
+        # PATCH FIX2D2R (ADDITIVE): enforce token-level evidence and forbid bare-year
+        # selection when a better sibling exists in the same snippet.
+        # =====================================================================
+
+
+
         best = None
         best_score = None
 
@@ -25720,6 +25808,20 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
             raw = _norm(c.get("raw") or "")
             unit = c.get("unit") or ""
             fam = _unit_family_guess(unit)
+
+            # FIX2D2R: strict expected-kind token evidence
+            if expected_kind == 'currency' and not _fix27_has_currency_evidence(c):
+                continue
+            if expected_kind == 'percent' and not _fix27_has_percent_evidence(c):
+                continue
+            if expected_kind == 'unit' and not _fix2d2r_has_required_evidence(c, 'unit'):
+                continue
+
+            # FIX2D2R: reject bare-year token when a better sibling exists in the same snippet
+            if expected_kind != 'year' and _fix2d2r_is_bare_year_cand(c) and not _fix27_has_any_unit_evidence(c):
+                if _fix2d2r_has_better_sibling(c, filtered, expected_kind):
+                    continue
+
             if expected_dim and fam and expected_dim not in (fam,):
                 # strict family check when we can infer a family
                 continue
@@ -29500,6 +29602,25 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
 
+            # FIX2D2R: forbid bare-year tokens when a better sibling exists nearby (parity guard)
+            try:
+                _ek = 'other'
+                _ed = (expected_dim or '').lower().strip()
+                if canonical_key.endswith('__percent') or _ed == 'percent':
+                    _ek = 'percent'
+                elif canonical_key.endswith('__currency') or _ed == 'currency':
+                    _ek = 'currency'
+                elif canonical_key.endswith('__unit_sales') or 'unit' in canonical_key.lower() or 'sales' in canonical_key.lower():
+                    _ek = 'unit'
+                elif canonical_key.endswith('__year') or 'year' in _ed:
+                    _ek = 'year'
+
+                if _ek != 'year' and _fix2d2r_is_bare_year_cand(c) and not str(c.get('unit') or c.get('unit_tag') or '').strip():
+                    if _fix2d2r_has_better_sibling(c, candidates, _ek):
+                        continue
+            except Exception:
+                pass
+
             # keyword relevance
             ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
             raw = _norm(c.get("raw") or "")
@@ -29731,6 +29852,25 @@ def _analysis_canonical_final_selector_v1(
 
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
+
+            # FIX2D2R: forbid bare-year tokens when a better sibling exists nearby (parity guard)
+            try:
+                _ek = 'other'
+                _ed = (expected_dim or '').lower().strip()
+                if canonical_key.endswith('__percent') or _ed == 'percent':
+                    _ek = 'percent'
+                elif canonical_key.endswith('__currency') or _ed == 'currency':
+                    _ek = 'currency'
+                elif canonical_key.endswith('__unit_sales') or 'unit' in canonical_key.lower() or 'sales' in canonical_key.lower():
+                    _ek = 'unit'
+                elif canonical_key.endswith('__year') or 'year' in _ed:
+                    _ek = 'year'
+
+                if _ek != 'year' and _fix2d2r_is_bare_year_cand(c) and not str(c.get('unit') or c.get('unit_tag') or '').strip():
+                    if _fix2d2r_has_better_sibling(c, candidates, _ek):
+                        continue
+            except Exception:
+                pass
 
             # =====================================================================
             # PATCH FIX2B_SEL23 (ADDITIVE): unit-family hard gating + year suppression + scaled-magnitude unit evidence
@@ -35736,6 +35876,12 @@ try:
         "files": ["FIX2D2Q.py"],
         "supersedes": ["FIX2D2O"],
     })
+
+PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2R",
+        "date": "2026-01-16",
+        "summary": "Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; enforce token-level evidence for currency/percent/unit kinds.",
+    })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
@@ -35767,6 +35913,6 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2Q"
+    CODE_VERSION = "FIX2D2R"
 except Exception:
     pass
