@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2L"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2M"  # PATCH FIX2D2D (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -25108,41 +25108,76 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                         _kw.add(tok)
                             except Exception:
                                 _kw = set()
-                            # score candidates
-                            _scored = []
-                            for _cand in _pool:
-                                try:
-                                    if not isinstance(_cand, dict):
+                            # injected-first preference (FIX2D2M)
+                            _inj_urls = set()
+                            try:
+                                # Prefer explicit injected sources when present in caches
+                                def _fix2d2m_scan_injected(bsc):
+                                    if not isinstance(bsc, list):
+                                        return
+                                    for it in bsc:
+                                        try:
+                                            if not isinstance(it, dict):
+                                                continue
+                                            if it.get('injected') is True:
+                                                su = str(it.get('source_url') or '').strip()
+                                                if su:
+                                                    _inj_urls.add(su)
+                                        except Exception:
+                                            continue
+                                _fix2d2m_scan_injected(output.get('baseline_sources_cache_current'))
+                                _fix2d2m_scan_injected(output.get('baseline_sources_cache'))
+                                if isinstance(output.get('results'), dict):
+                                    _fix2d2m_scan_injected(output['results'].get('baseline_sources_cache_current'))
+                                    _fix2d2m_scan_injected(output['results'].get('baseline_sources_cache'))
+                            except Exception:
+                                _inj_urls = set()
+
+                            def _fix2d2m_score_pool(_pool_in):
+                                _sc = []
+                                for _cand in _pool_in:
+                                    try:
+                                        if not isinstance(_cand, dict):
+                                            continue
+                                        _vn = _cand.get('value_norm')
+                                        _rw = _cand.get('raw')
+                                        if _fix2d24_is_yearlike(_vn, _rw):
+                                            continue
+                                        _uf = str(_cand.get('unit_family') or '').strip()
+                                        _ut = str(_cand.get('unit_tag') or '').strip()
+                                        _ctx = str(_cand.get('context_snippet') or '').lower()
+                                        _score = 0.0
+                                        if _desired_uf and _uf == _desired_uf:
+                                            _score += 10.0
+                                        if _desired_uf == 'percent' and ('%' in _ctx or _ut == '%'):
+                                            _score += 3.0
+                                        if _desired_uf == 'magnitude' and ('million' in _ctx or 'units' in _ctx):
+                                            _score += 2.0
+                                        if _desired_uf == 'currency' and any(x in _ctx for x in ['$', 'us$', 'usd', 'eur', '€', 'gbp', '£']):
+                                            _score += 2.0
+                                        _row_surl = str(_r.get('source_url') or _r.get('cur_source_url') or '').strip()
+                                        if _row_surl and str(_cand.get('source_url') or '').strip() == _row_surl:
+                                            _score += 2.0
+                                        if _kw:
+                                            _hits = sum(1 for k in _kw if k in _ctx)
+                                            _score += min(6.0, 1.5 * _hits)
+                                        _sc.append((_score, _cand))
+                                    except Exception:
                                         continue
-                                    _vn = _cand.get('value_norm')
-                                    _rw = _cand.get('raw')
-                                    if _fix2d24_is_yearlike(_vn, _rw):
-                                        continue
-                                    _uf = str(_cand.get('unit_family') or '').strip()
-                                    _ut = str(_cand.get('unit_tag') or '').strip()
-                                    _ctx = str(_cand.get('context_snippet') or '').lower()
-                                    _score = 0.0
-                                    if _desired_uf and _uf == _desired_uf:
-                                        _score += 10.0
-                                    if _desired_uf == 'percent' and ('%' in _ctx or _ut == '%'):
-                                        _score += 3.0
-                                    if _desired_uf == 'magnitude' and ('million' in _ctx or 'units' in _ctx):
-                                        _score += 2.0
-                                    if _desired_uf == 'currency' and any(x in _ctx for x in ['$', 'us$', 'usd', 'eur', '€', 'gbp', '£']):
-                                        _score += 2.0
-                                    # prefer same source_url when present
-                                    _row_surl = str(_r.get('source_url') or _r.get('cur_source_url') or '').strip()
-                                    if _row_surl and str(_cand.get('source_url') or '').strip() == _row_surl:
-                                        _score += 2.0
-                                    # keyword overlap
-                                    if _kw:
-                                        _hits = sum(1 for k in _kw if k in _ctx)
-                                        _score += min(6.0, 1.5 * _hits)
-                                    _scored.append((_score, _cand))
-                                except Exception:
-                                    continue
-                            _scored.sort(key=lambda t: (t[0] if t and len(t)>0 else 0), reverse=True)
-                            _sel = _scored[0][1] if _scored and _scored[0][0] >= 3.0 else None
+                                _sc.sort(key=lambda t: (t[0] if t and len(t)>0 else 0), reverse=True)
+                                return _sc
+
+                            # two-pass selection: injected-only then global
+                            _pool_injected = []
+                            if _inj_urls:
+                                _pool_injected = [c for c in _pool if isinstance(c, dict) and str(c.get('source_url') or '').strip() in _inj_urls]
+                            _scored_inj = _fix2d2m_score_pool(_pool_injected) if _pool_injected else []
+                            _sel = _scored_inj[0][1] if _scored_inj and _scored_inj[0][0] >= 3.0 else None
+                            _used_injected_pass = bool(_sel is not None)
+                            _scored = _scored_inj
+                            if _sel is None:
+                                _scored = _fix2d2m_score_pool(_pool)
+                                _sel = _scored[0][1] if _scored and _scored[0][0] >= 3.0 else None
                             _committed = False
                             _reason = 'no_eligible_candidates' if not _scored else ('score_below_threshold' if _sel is None else 'selected')
                             if isinstance(_sel, dict):
@@ -25187,6 +25222,20 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                         for sc, c in (_scored[:3] if isinstance(_scored, list) else [])
                                     ],
                                 }
+                            # injected preference trace
+                            try:
+                                _r['diag'].setdefault('injected_source_preference_trace_v1', {})
+                                _r['diag']['injected_source_preference_trace_v1'] = {
+                                    'injected_present': bool(_inj_urls),
+                                    'injected_urls': sorted(list(_inj_urls))[:3] if _inj_urls else [],
+                                    'pass1_injected_pool_size': int(len(_pool_injected)) if isinstance(_pool_injected, list) else 0,
+                                    'pass1_selected': bool(_used_injected_pass),
+                                    'fallback_used': bool((not _used_injected_pass) and (_sel is not None)),
+                                    'selected_source_url': (_sel.get('source_url') if isinstance(_sel, dict) else None),
+                                }
+                            except Exception:
+                                pass
+
                             # aggregate
                             try:
                                 _dbg.setdefault('fix2d2l_yearlike_block_fallback_trace_v1', {})
@@ -35270,6 +35319,6 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2L"
+    CODE_VERSION = "FIX2D2M"
 except Exception:
     pass
