@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D23"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D24"  # PATCH FIX2D12 (ADD): bump CODE_VERSION to match patch id
 
 
 # ============================================================
@@ -128,6 +128,22 @@ try:
         "date": "2026-01-15",
         "summary": "Diagnostic-first trace: record every year-like (1900-2100) value committed to primary_metrics_canonical, including callsite tags and metric object metadata; also disable FIX2D18/FIX2D19 logic while tracing.",
         "files": ["FIX2D20.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# PATCH TRACKER V1 (ADD): FIX2D24
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D24",
+        "date": "2026-01-16",
+        "summary": "Last-mile guard for dashboard Current: block unitless year-like values (1900-2100, including 2030.0) from metric_changes hydration for non-year metrics; keep FIX2D20 tracing; supersedes FIX2D23 observed-only filter.",
+        "files": ["FIX2D24.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -20732,59 +20748,62 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             mk = c.get("measure_kind") or ""
 
             # FIX2D23: Never promote unitless bare years as Observed current values
-            if _fix2d23_is_yearlike_token(c.get("value_norm"), unit_tag):
-                observed_rows_filtered_yearlike += 1
-                if len(observed_yearlike_samples) < 20:
-                    observed_yearlike_samples.append({
-                        "value_norm": c.get("value_norm"),
-                        "raw": c.get("raw"),
-                        "source_url": c.get("source_url"),
-                        "context_snippet": str(c.get("context_snippet") or "")[:120],
-                        "anchor_hash": c.get("anchor_hash"),
-                    })
-                continue
 
-            disp_bits = [b for b in [mk, unit_tag] if b]
-            disp_suffix = f" ({', '.join(disp_bits)})" if disp_bits else ""
-            snippet = str(c.get("context_snippet") or "").strip().replace("\n", " ")
-            snippet = snippet[:80] if snippet else "extracted_number"
+            _fix2d24_disable_fix2d23 = True
+            if not _fix2d24_disable_fix2d23:
+                if _fix2d23_is_yearlike_token(c.get("value_norm"), unit_tag):
+                    observed_rows_filtered_yearlike += 1
+                    if len(observed_yearlike_samples) < 20:
+                        observed_yearlike_samples.append({
+                            "value_norm": c.get("value_norm"),
+                            "raw": c.get("raw"),
+                            "source_url": c.get("source_url"),
+                            "context_snippet": str(c.get("context_snippet") or "")[:120],
+                            "anchor_hash": c.get("anchor_hash"),
+                        })
+                    continue
 
-            rows.append({
-                "name": f"[Observed] {snippet}{disp_suffix}",
-                "canonical_key": f"observed__{c.get('anchor_hash')}",
-                "previous_value": "N/A",
-                "current_value": c.get("value_norm"),
-                "change_pct": None,
-                "change_type": "observed_new",
-                "match_confidence": 0.0,
-                "context_snippet": c.get("context_snippet"),
-                "source_url": c.get("source_url"),
-                "anchor_used": False,
-                "prev_anchor_hash": None,
-                "cur_anchor_hash": c.get("anchor_hash"),
-                "prev_value_norm": None,
-                "cur_value_norm": (float(c.get("value_norm")) if isinstance(c.get("value_norm"), (int, float)) else None),
-                "unit_mismatch": False,
-                "from_injected_url": bool(c.get("from_injected_url")),
-                "diag": {
-                    "observed_source": "source_results.extracted_numbers",
+                disp_bits = [b for b in [mk, unit_tag] if b]
+                disp_suffix = f" ({', '.join(disp_bits)})" if disp_bits else ""
+                snippet = str(c.get("context_snippet") or "").strip().replace("\n", " ")
+                snippet = snippet[:80] if snippet else "extracted_number"
+
+                rows.append({
+                    "name": f"[Observed] {snippet}{disp_suffix}",
+                    "canonical_key": f"observed__{c.get('anchor_hash')}",
+                    "previous_value": "N/A",
+                    "current_value": c.get("value_norm"),
+                    "change_pct": None,
+                    "change_type": "observed_new",
+                    "match_confidence": 0.0,
+                    "context_snippet": c.get("context_snippet"),
+                    "source_url": c.get("source_url"),
+                    "anchor_used": False,
+                    "prev_anchor_hash": None,
+                    "cur_anchor_hash": c.get("anchor_hash"),
+                    "prev_value_norm": None,
+                    "cur_value_norm": (float(c.get("value_norm")) if isinstance(c.get("value_norm"), (int, float)) else None),
+                    "unit_mismatch": False,
                     "from_injected_url": bool(c.get("from_injected_url")),
-                    "anchor_hash": c.get("anchor_hash"),
-                    "promotion_reason": "no_canonical_match",
-                    "diff_current_source_trace_v1": {
-                        "current_source_path_used": "results.source_results[*].extracted_numbers",
-                        "current_value_norm": c.get("value_norm"),
-                        "current_unit_tag": unit_tag,
-                        "inference_disabled": True,
+                    "diag": {
+                        "observed_source": "source_results.extracted_numbers",
+                        "from_injected_url": bool(c.get("from_injected_url")),
+                        "anchor_hash": c.get("anchor_hash"),
+                        "promotion_reason": "no_canonical_match",
+                        "diff_current_source_trace_v1": {
+                            "current_source_path_used": "results.source_results[*].extracted_numbers",
+                            "current_value_norm": c.get("value_norm"),
+                            "current_unit_tag": unit_tag,
+                            "inference_disabled": True,
+                        },
                     },
-                },
-            })
+                })
     except Exception as _e:
         try:
-            summary.setdefault("diag_errors", [])
-            summary["diag_errors"].append({"fix2n_observed_adapter_error": str(_e)})
+                summary.setdefault("diag_errors", [])
+                summary["diag_errors"].append({"fix2n_observed_adapter_error": str(_e)})
         except Exception:
-            pass
+                pass
 
 
 
@@ -20803,39 +20822,39 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     try:
         _dbg = None
         if isinstance(cur_response, dict):
-            _r = cur_response.get('results')
-            if isinstance(_r, dict):
-                _dbg = _r.get('debug')
-            if _dbg is None:
-                _dbg = cur_response.get('debug')
+                _r = cur_response.get('results')
+                if isinstance(_r, dict):
+                    _dbg = _r.get('debug')
+                if _dbg is None:
+                    _dbg = cur_response.get('debug')
         _force_canary = bool(isinstance(_dbg, dict) and _dbg.get('force_canary_observed_row') is True)
         if _force_canary:
-            rows.append({
-                'name': '[Observed][CANARY] render-path probe',
-                'canonical_key': 'observed__canary_render_probe',
-                'previous_value': 'N/A',
-                'current_value': '12345.67',
-                'unit_tag': 'canary_unit',
-                'unit': 'canary_unit',
-                'change_pct': None,
-                'change_type': 'observed_new',
-                'match_confidence': 0.0,
-                'context_snippet': 'CANARY_ROW',
-                'source_url': 'canary://render_probe',
-                'anchor_used': False,
-                'prev_anchor_hash': None,
-                'cur_anchor_hash': 'canary_render_probe',
-                'prev_value_norm': None,
-                'cur_value_norm': 12345.67,
-                'unit_mismatch': False,
-                'from_injected_url': False,
-                'diag': {
-                    'observed_source': 'canary',
-                    'promotion_reason': 'render_path_probe',
-                    'note': 'If this row does not render, the UI is not reading results.metric_changes.',
-                },
-            })
-            _fix2p_canary_injected = True
+                rows.append({
+                    'name': '[Observed][CANARY] render-path probe',
+                    'canonical_key': 'observed__canary_render_probe',
+                    'previous_value': 'N/A',
+                    'current_value': '12345.67',
+                    'unit_tag': 'canary_unit',
+                    'unit': 'canary_unit',
+                    'change_pct': None,
+                    'change_type': 'observed_new',
+                    'match_confidence': 0.0,
+                    'context_snippet': 'CANARY_ROW',
+                    'source_url': 'canary://render_probe',
+                    'anchor_used': False,
+                    'prev_anchor_hash': None,
+                    'cur_anchor_hash': 'canary_render_probe',
+                    'prev_value_norm': None,
+                    'cur_value_norm': 12345.67,
+                    'unit_mismatch': False,
+                    'from_injected_url': False,
+                    'diag': {
+                        'observed_source': 'canary',
+                        'promotion_reason': 'render_path_probe',
+                        'note': 'If this row does not render, the UI is not reading results.metric_changes.',
+                    },
+                })
+                _fix2p_canary_injected = True
     except Exception:
         _fix2p_canary_injected = False
     summary = {
@@ -24559,6 +24578,117 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if not isinstance(_dbg, dict):
                 _dbg = {}
             rows = output.get("metric_changes") or []
+            # =====================================================================
+            # PATCH FIX2D24 (ADDITIVE): Last-mile yearlike guard for dashboard "Current"
+            #
+            # Why:
+            # - Even after schema-only rebuild hardening, dashboard "Current" may still
+            #   be hydrated from metric_changes rows that pull values from multiple
+            #   paths (canonical, observed, legacy). We must prevent unitless bare
+            #   years (e.g., 2024, 2030, including 2030.0) from appearing as metric
+            #   values for non-year metrics.
+            #
+            # What:
+            # - Post-process metric_changes in-place before the dashboard consumes it.
+            # - If current value is yearlike AND unit is empty AND metric is not a
+            #   year-as-value metric, blank it (N/A) and attach diagnostics.
+            # - Keep a compact trace in output.debug.fix2d24_yearlike_current_trace_v1.
+            # =====================================================================
+            def _fix2d24_is_yearlike(v, raw=None):
+                try:
+                    if v is None:
+                        return False
+                    fv = float(v)
+                    if fv < 1900.0 or fv > 2100.0:
+                        return False
+                    if abs(fv - round(fv)) > 1e-9:
+                        return False
+                    rs = str(raw if raw is not None else v).strip()
+                    rs = rs.replace(",", "")
+                    if re.match(r"^\d{4}(?:\.0+)?$", rs):
+                        return True
+                    # allow e.g. '2030.0' in string form
+                    if re.match(r"^\d{4}\.0+$", rs):
+                        return True
+                    return True
+                except Exception:
+                    return False
+
+            def _fix2d24_metric_expects_year(ckey, name=None):
+                try:
+                    ck = str(ckey or "").lower()
+                    nm = str(name or "").lower()
+                    if ck.endswith("__year"):
+                        return True
+                    if "year" in ck and ("__" in ck):
+                        # conservative: treat explicit year unit tags as year metrics
+                        if "__year" in ck:
+                            return True
+                    if nm.strip() == "year":
+                        return True
+                    return False
+                except Exception:
+                    return False
+
+            _fix2d24_filtered = 0
+            _fix2d24_samples = []
+            if isinstance(rows, list):
+                for _r in rows:
+                    if not isinstance(_r, dict):
+                        continue
+                    _ckey = _r.get("canonical_key")
+                    _nm = _r.get("metric") or _r.get("name")
+                    _unit = _r.get("cur_unit_cmp")
+                    if _unit is None:
+                        _unit = _r.get("current_unit")
+                    if _unit is None:
+                        _unit = _r.get("unit")
+                    _unit = str(_unit or "").strip()
+                    _cvn = _r.get("current_value_norm")
+                    if _cvn is None:
+                        _cvn = _r.get("cur_value_norm")
+                    _raw = _r.get("current_value")
+                    if _raw is None:
+                        _raw = _r.get("cur_raw")
+
+                    if _fix2d24_is_yearlike(_cvn, _raw) and (not _unit) and (not _fix2d24_metric_expects_year(_ckey, _nm)):
+                        _fix2d24_filtered += 1
+                        if len(_fix2d24_samples) < 25:
+                            _fix2d24_samples.append({
+                                "canonical_key": _ckey,
+                                "name": _nm,
+                                "blocked_value_norm": _cvn,
+                                "blocked_raw": _raw,
+                                "source_url": _r.get("source_url") or _r.get("cur_source_url"),
+                            })
+                        _r.setdefault("diag", {})
+                        if isinstance(_r.get("diag"), dict):
+                            _r["diag"]["fix2d24_yearlike_current_blocked"] = {
+                                "blocked": True,
+                                "value_norm": _cvn,
+                                "raw": _raw,
+                                "unit": _unit,
+                            }
+                        # blank current for dashboard consumption
+                        _r["current_value"] = "N/A"
+                        _r["current_value_norm"] = None
+                        _r["cur_value_norm"] = None
+
+            # attach trace
+            try:
+                _dbg = output.get("debug") if isinstance(output.get("debug"), dict) else {}
+                if not isinstance(_dbg, dict):
+                    _dbg = {}
+                _dbg.setdefault("fix2d24_yearlike_current_trace_v1", {})
+                _dbg["fix2d24_yearlike_current_trace_v1"] = {
+                    "filtered_count": int(_fix2d24_filtered),
+                    "samples": _fix2d24_samples,
+                    "note": "Blocks unitless yearlike current values at metric_changes hydration",
+                }
+                output["debug"] = _dbg
+            except Exception:
+                pass
+
             _sample = []
             if isinstance(rows, list):
                 for _r in rows[:25]:
