@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D27"  # PATCH FIX2D27 (ADD): bump CODE_VERSION to match patch id  # PATCH FIX2D26 (ADD): bump CODE_VERSION to match patch id
+CODE_VERSION = "FIX2D29"  # PATCH FIX2D29 (ADD): bump CODE_VERSION to match patch id/filename  # PATCH FIX2D28 (ADD): bump CODE_VERSION to match patch id/filename  # PATCH FIX2D27 (ADD): bump CODE_VERSION to match patch id  # PATCH FIX2D26 (ADD): bump CODE_VERSION to match patch id
 
 
 # ============================================================
@@ -118,6 +118,44 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D28
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D28",
+        "date": "2026-01-16",
+        "summary": "Close Diff Panel V2 binding gap: when inference selects a current value, commit it into UI/diff-read fields (current_value, current_value_norm, current_source, current_method) and mark baseline_is_comparable once all guards pass.",
+        "files": ["FIX2D28.py"],
+        "supersedes": ["FIX2D27"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D29
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D29",
+        "date": "2026-01-16",
+        "summary": "Fix FIX2D28 insertion placement and complete write-through: commit inference/joined current values into metric_changes fields used by UI/diff (current_value, current_value_norm, current_source, current_method) and set baseline_is_comparable when numeric.",
+        "files": ["FIX2D29.py"],
+        "supersedes": ["FIX2D28"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 
 # ============================================================
@@ -19951,6 +19989,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 
     # Sentinel behavior if no prev metrics
     if not isinstance(prev_metrics, dict) or not prev_metrics:
+        
         rows.append({
             "name": "No previous canonical metrics",
             "canonical_key": None,
@@ -33223,11 +33262,55 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         except Exception:
             change_type = "unknown" if resolved_cur_ckey is not None else "not_found"
 
+
+
+        # =====================================================
+        # PATCH FIX2D29 START: binding inference -> commit Current fields
+        # Goal: write-through inferred (or joined) current values into the exact
+        #       fields the UI + diff engine render/read.
+        #       This is the promotion step: suggestive inference -> binding inference.
+        # =====================================================
+        cur_display = None
+        try:
+            if inference_used and isinstance(inference_evidence, dict):
+                cur_display = inference_evidence.get("display_value") or inference_evidence.get("raw")
+        except Exception:
+            cur_display = None
+        if cur_display is None:
+            cur_display = cur_v
+
+        cur_source_final = cur_source_url
+        try:
+            if not cur_source_final and resolved_cur_ckey and isinstance(cur_can.get(resolved_cur_ckey), dict):
+                _cm_src = cur_can.get(resolved_cur_ckey) or {}
+                if isinstance(_cm_src, dict):
+                    cur_source_final = _cm_src.get("source_url") or _cm_src.get("url") or None
+                    if not cur_source_final and isinstance(_cm_src.get("sources"), list) and _cm_src.get("sources"):
+                        _s0 = _cm_src.get("sources")[0]
+                        if isinstance(_s0, dict):
+                            cur_source_final = _s0.get("url") or _s0.get("source_url") or None
+        except Exception:
+            pass
+
+        baseline_is_comparable = False
+        try:
+            baseline_is_comparable = (
+                resolved_cur_ckey is not None
+                and isinstance(prev_v, (int, float))
+                and isinstance(cur_v, (int, float))
+            )
+        except Exception:
+            baseline_is_comparable = False
+        # PATCH FIX2D29 END
         rows.append({
             "canonical_key": prev_ckey,
             "name": prev_name,
             "previous_value": prev_v,
-            "current_value": (cur_v if resolved_cur_ckey is not None else "N/A"),
+            "current_value": (cur_display if resolved_cur_ckey is not None else "N/A"),
+            "current_value_norm": (cur_v if resolved_cur_ckey is not None else None),
+            "current_source": (cur_source_final if resolved_cur_ckey is not None else None),
+            "current_method": method,
+            "baseline_is_comparable": baseline_is_comparable,
             "previous_unit": prev_unit,
             "current_unit": cur_unit,
             "change_type": change_type,
@@ -35887,3 +35970,12 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2D16_VERSION_BUMP
 # =====================================================================
+
+
+# =========================
+# VERSION STAMP (ADDITIVE)
+# =========================
+try:
+    CODE_VERSION = "FIX2D29"  # PATCH FIX2D29 (ADD): final bump (override any legacy bumps)
+except Exception:
+    pass
