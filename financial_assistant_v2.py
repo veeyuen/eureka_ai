@@ -152,6 +152,13 @@ try:
         "files": ["FIX2D29.py"],
         "supersedes": ["FIX2D28"],
     })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2A",
+        "date": "2026-01-16",
+        "summary": "Enable guarded inference in Diff Panel V2 regardless of join mode; add explicit inference gate + attempted traces so binding inference can commit current values.",
+        "files": ["FIX2D2A.py"],
+    })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
@@ -20241,6 +20248,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "prev_ckey": prev_ckey,
                     "resolved_cur_ckey": resolved_cur_ckey,
                     "method": method,
+                    "inference_attempted": bool(_fix2d25_inference_enabled and (prev_v is not None) and (resolved_cur_ckey is None or cur_v is None)),
                     "inference_bound": bool(method == "inference_bound"),
                     "prev_anchor_hash": prev_ah,
                     "cur_anchor_hash": cur_ah,
@@ -33175,11 +33183,23 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             pass
         return best.get("value_norm"), best.get("unit_tag"), best.get("source_url"), best
 
+    # =====================================================
+    # PATCH FIX2D2A START: inference gate is now always-on (guarded)
+    # Rationale: inference is already protected by FIX2D24/FIX2D26 guards;
+    # disabling it in strict mode prevents binding current values entirely.
+    # We keep an explicit kill-switch via EVO_DISABLE_DIFF_INFERENCE=1.
+    # =====================================================
     _fix2d25_join_mode = _fix2d25_get_join_mode()
-    _fix2d25_inference_enabled = True  # enable by default
-    if _fix2d25_join_mode not in ("union", ""):
-        # In strict mode, keep inference off.
-        _fix2d25_inference_enabled = False
+    _fix2d25_inference_enabled = True  # enabled by default (guarded)
+    _fix2d2a_inference_gate_reason = 'enabled_default'
+    try:
+        import os as _os
+        if str(_os.getenv('EVO_DISABLE_DIFF_INFERENCE','')).strip().lower() in ('1','true','yes','y'):
+            _fix2d25_inference_enabled = False
+            _fix2d2a_inference_gate_reason = 'disabled_by_env'
+    except Exception:
+        pass
+    # PATCH FIX2D2A END
 
     for prev_ckey in prev_keys:
         pm = prev_can.get(prev_ckey)
@@ -33333,6 +33353,11 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     "current_value_norm": cur_v if resolved_cur_ckey is not None else None,
                     "current_unit_tag": cur_unit if resolved_cur_ckey is not None else None,
                     "inference_disabled": (not _fix2d25_inference_enabled),
+                    "inference_gate_v1": {
+                        "join_mode": _fix2d25_join_mode,
+                        "enabled": bool(_fix2d25_inference_enabled),
+                        "reason": _fix2d2a_inference_gate_reason,
+                    },
                     "inference_used": bool(inference_used),
                     "inference_source_url": cur_source_url,
                     "inference_evidence": inference_evidence,
@@ -35977,5 +36002,13 @@ except Exception:
 # =========================
 try:
     CODE_VERSION = "FIX2D29"  # PATCH FIX2D29 (ADD): final bump (override any legacy bumps)
+except Exception:
+    pass
+
+# =====================================================
+# PATCH FIX2D2A_VERSION_BUMP (ADDITIVE)
+# =====================================================
+try:
+    CODE_VERSION = 'FIX2D2A'
 except Exception:
     pass
