@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2Z"  # PATCH FIX2D2Z (ADD): injection admission + hard unit-family rejection for diff inference
+CODE_VERSION = "FIX2D30"  # PATCH FIX2D30 (ADD): contextual unit-family correction for magnitude M/million units to prevent currency misclassification and enable baseline comparability
 
 
 # ============================================================
@@ -143,6 +143,16 @@ try:
         "summary": "Make injected candidates first-class for Diff Panel inference by unwrapping injected scraped_meta into extracted_numbers pools; enforce hard unit-family rejection (percent/currency/units/magnitude) in fallback inference scoring to prevent leakage.",
         "files": ["FIX2D2Z.py"],
         "supersedes": ["FIX2D2Y"],
+    })
+
+    
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D30",
+        "date": "2026-01-17",
+        "summary": "Contextual unit-family correction: prevent magnitude tags (e.g., M/million) in 'million units / units sold / chargers / vehicles' contexts from being misclassified as currency; remove keyword-only currency upgrades to enable clean baseline comparability without weakening hard unit-family rejection.",
+        "files": ["FIX2D30.py"],
+        "supersedes": ["FIX2D2Z"],
     })
 
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
@@ -2977,31 +2987,90 @@ def normalize_unit_family(unit_tag: str, ctx: str = "", raw: str = "") -> str:
     """
     Deterministic unit-family normalization.
 
-    - Primary signal: normalized unit_tag (%, T/B/M/K, energy tags).
-    - Currency upgrade: if magnitude tag (T/B/M/K) but currency evidence exists in ctx/raw.
+    Goals (FIX2D30):
+    - Keep 'M'/'million' candidates in "million units / units sold / chargers" contexts as *magnitude* (or unit-count/sales downstream),
+      preventing false 'currency' upgrades that block baseline comparability.
+    - Only label a candidate as 'currency' when explicit currency evidence exists (symbols/codes/words), not just generic keywords like "market".
 
-    This helper is intentionally conservative; it never labels a candidate as 'currency'
-    unless explicit currency evidence is present.
+    Notes:
+    - This helper is intentionally conservative.
+    - Hard unit-family rejection (Diff Panel inference) remains the enforcement point; this just fixes upstream family typing.
     """
     ut = (unit_tag or "").strip()
     fam = unit_family(ut)
+
     # PATCH FIX2D2K: infer family from context when unit_tag is missing
     if fam == "" and ut == "":
         try:
-            it, ifam, _phr, _ex = infer_unit_tag_from_context(ctx or "", raw or "")
+            _itag, ifam, _phr, _ex = infer_unit_tag_from_context(ctx or "", raw or "")
         except Exception:
-            it, ifam, _phr, _ex = "", "", "", ""
+            _itag, ifam, _phr, _ex = "", "", "", ""
         if ifam:
             return ifam
+
     if fam == "magnitude":
-        c = (ctx or "").lower() + " " + (raw or "").lower()
-        # explicit currency markers
-        if any(x in c for x in ["$", "us$", "usd", "eur", "€", "gbp", "£", "jpy", "¥", "cny", "rmb", "aud", "cad", "sgd", "inr", "krw"]):
+        c = ((ctx or "") + " " + (raw or "")).lower()
+
+        # Strong unit-count / unit-sales evidence: keep as magnitude.
+        # This blocks the legacy false-positive path where 'M' + 'market' upgraded to currency even when the phrase is "million units".
+        unit_evidence = [
+            "million units",
+            "units sold",
+            "unit sales",
+            "vehicles sold",
+            "ev sales",
+            "sales ytd",
+            "ytd",
+            "chargers",
+            "charger",
+            "charging points",
+            "charging stations",
+            "stations",
+            "units",
+        ]
+        has_unit_evidence = any(u in c for u in unit_evidence)
+
+        # Explicit currency markers only (symbols/codes/words)
+        currency_markers = [
+            "$",
+            "us$",
+            "usd",
+            "sgd",
+            "s$",
+            "eur",
+            "€",
+            "gbp",
+            "£",
+            "jpy",
+            "¥",
+            "cny",
+            "rmb",
+            "aud",
+            "cad",
+            "inr",
+            "krw",
+            "dollar",
+            "dollars",
+            "euro",
+            "euros",
+            "pound",
+            "pounds",
+            "yen",
+            "yuan",
+        ]
+        has_currency_markers = any(x in c for x in currency_markers)
+
+        if has_unit_evidence and not has_currency_markers:
+            return "magnitude"
+
+        if has_currency_markers:
             return "currency"
-        if any(k in c for k in ["revenue", "market", "valuation", "valued", "worth", "price", "sales revenue"]):
-            # keyword-only is weaker; require magnitude tag to avoid false positives
-            return "currency"
+
+        # FIX2D30: Remove keyword-only currency upgrades (e.g., 'market', 'valuation') because they cause false positives
+        # for phrases like "million units" that also mention "market".
+
     return fam
+
 
 
 def canonicalize_numeric_candidate(candidate: dict) -> dict:
