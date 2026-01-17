@@ -79,7 +79,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D40"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D41"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D41
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D41",
+        "date": "2026-01-17",
+        "summary": "Diff Panel V2: Option A policy gate—allow schema-remapped baselines (schema_remap_v1) to be diff-comparable when both sides have numeric values; stamp baseline_remap_* audit fields.",
+        "files": ["FIX2D41.py"],
+        "supersedes": ["FIX2D40"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D34
@@ -21102,6 +21121,44 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             else:
                 baseline_change_type = "unknown"
 
+
+        # =====================================================================
+        # PATCH FIX2D41_SCHEMA_REMAP_BASELINE_DIFF_ADMISSION (ADDITIVE)
+        # Option A: allow schema-remapped baselines (schema_remap_v1==True) to participate
+        # in baseline diffing when BOTH sides have numeric values. Unit/dimension guards
+        # remain in place; this patch only removes the final policy veto against remapped
+        # baselines, while stamping explicit audit fields.
+        # =====================================================================
+        _fix2d41_baseline_remap_used = False
+        _fix2d41_baseline_remap_score = None
+        _fix2d41_baseline_comparability_mode = None
+        try:
+            if isinstance(pm, dict) and pm.get("schema_remap_v1") is True:
+                _fix2d41_baseline_remap_used = True
+                _fix2d41_baseline_remap_score = pm.get("schema_remap_score_v1")
+                if isinstance(prev_val_norm, (int, float)) and isinstance(cur_val_norm, (int, float)):
+                    baseline_is_comparable = True
+                    _fix2d41_baseline_comparability_mode = "schema_remap_allowed"
+                    try:
+                        _d = float(cur_val_norm) - float(prev_val_norm)
+                        baseline_delta_abs = _d
+                        if abs(float(prev_val_norm)) > 1e-12:
+                            baseline_delta_pct = (_d / float(prev_val_norm)) * 100.0
+                        if abs(_d) < 1e-9:
+                            baseline_change_type = "unchanged"
+                        elif _d > 0:
+                            baseline_change_type = "increased"
+                        else:
+                            baseline_change_type = "decreased"
+                    except Exception:
+                        pass
+        except Exception:
+            _fix2d41_baseline_remap_used = False
+            _fix2d41_baseline_remap_score = None
+            _fix2d41_baseline_comparability_mode = None
+        # =====================================================================
+        # END PATCH FIX2D41_SCHEMA_REMAP_BASELINE_DIFF_ADMISSION
+        # =====================================================================
         try:
             summary["baseline_comparable"] = int(summary.get("baseline_comparable") or 0) + (1 if baseline_is_comparable else 0)
             if baseline_change_type == "increased":
@@ -21203,6 +21260,11 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             # PATCH FIX2D35 (ADDITIVE): proxy baseline audit
             "baseline_proxy_used": bool(_fix2d35_baseline_proxy_used),
             "baseline_proxy_type": _fix2d35_baseline_proxy_type,
+
+            # PATCH FIX2D41 (ADDITIVE): schema remap baseline audit
+            "baseline_remap_used": bool(_fix2d41_baseline_remap_used),
+            "baseline_remap_score": _fix2d41_baseline_remap_score,
+            "baseline_comparability_mode_v1": _fix2d41_baseline_comparability_mode,
 
 
             # minimal context fields kept for UI compatibility
@@ -38288,7 +38350,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D40"
+    CODE_VERSION = "FIX2D41"
 except Exception:
     pass
 
