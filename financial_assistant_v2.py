@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D42"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D43"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -214,6 +214,26 @@ try:
 except Exception:
     pass
 
+
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D43
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D43",
+        "date": "2026-01-17",
+        "summary": "Serialize baseline_schema_metrics_v1 from Analysis primary_response into top-level results so Evolution diff can consume it; teach attach_source_snapshots_to_analysis to read/write schema+pmc from primary_response when using the download output wrapper.",
+        "files": ["FIX2D43.py"],
+        "supersedes": ["FIX2D42"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # PATCH TRACKER V1 (ADD): FIX2D40
 try:
@@ -15892,6 +15912,30 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
+    
+    # =====================================================================
+    # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
+    # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
+    #   where schema/pmc live under primary_response.
+    # - Prior FIX2D31/FIX2D38 baseline_schema_metrics_v1 builder reads analysis.*
+    #   and therefore never ran, dropping baseline_schema_metrics_v1 from JSON.
+    # - This shim mirrors metric_schema_frozen / primary_metrics_canonical / metric_anchors
+    #   from primary_response into top-level analysis so the existing builder executes.
+    # - Additive only: does not change selector semantics.
+    # =====================================================================
+    try:
+        _pr = analysis.get('primary_response')
+        if isinstance(_pr, dict):
+            if not isinstance(analysis.get('metric_schema_frozen'), dict) and isinstance(_pr.get('metric_schema_frozen'), dict):
+                analysis['metric_schema_frozen'] = _pr.get('metric_schema_frozen')
+            if not isinstance(analysis.get('primary_metrics_canonical'), dict) and isinstance(_pr.get('primary_metrics_canonical'), dict):
+                analysis['primary_metrics_canonical'] = _pr.get('primary_metrics_canonical')
+            if not isinstance(analysis.get('metric_anchors'), dict) and isinstance(_pr.get('metric_anchors'), dict):
+                analysis['metric_anchors'] = _pr.get('metric_anchors')
+    except Exception:
+        pass
+    # =====================================================================
+
     # PATCH FIX2D31 (ADD): Option A — schema-align Analysis primary_metrics_canonical
     # - When metric_schema_frozen exists in Analysis, rebuild primary_metrics_canonical
     #   by running the authoritative Analysis selector (_analysis_canonical_final_selector_v1)
@@ -15900,13 +15944,13 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     #   and Diff Panel V2 can activate without weakening semantics.
     # =====================================================================
     try:
-        schema = analysis.get("metric_schema_frozen")
-        pmc = analysis.get("primary_metrics_canonical")
+        schema = _core.get("metric_schema_frozen")
+        pmc = _core.get("primary_metrics_canonical")
         sel = globals().get("_analysis_canonical_final_selector_v1")
         if isinstance(schema, dict) and schema and callable(sel):
             # Preserve original unconstrained PMC for diagnostics
             if isinstance(pmc, dict) and pmc and "primary_metrics_canonical_unconstrained_v0" not in analysis:
-                analysis["primary_metrics_canonical_unconstrained_v0"] = dict(pmc)
+                _core["primary_metrics_canonical_unconstrained_v0"] = dict(pmc)
 
             # Flatten candidate universe from baseline_sources_cache + web_context.scraped_meta
             flat = []
@@ -15928,7 +15972,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             except Exception:
                 pass
 
-            anchors = analysis.get("metric_anchors")
+            anchors = (_core.get("metric_anchors") or analysis.get("metric_anchors"))
             if not isinstance(anchors, dict):
                 anchors = {}
 
@@ -16234,18 +16278,24 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
             # Only replace PMC if we got at least one schema metric (avoid wiping PMC on empty candidate universe)
             if new_pmc:
-                analysis['primary_metrics_canonical'] = new_pmc
+                _core['primary_metrics_canonical'] = new_pmc
 
             # FIX2D38: emit schema-keyed baseline metrics map for diffing (always, with schema fallback).
             if baseline_schema:
                 try:
-                    analysis['baseline_schema_metrics_v1'] = dict(baseline_schema)
+                    _core['baseline_schema_metrics_v1'] = dict(baseline_schema)
                 except Exception:
-                    analysis['baseline_schema_metrics_v1'] = baseline_schema
+                    _core['baseline_schema_metrics_v1'] = baseline_schema
                 try:
                     if not isinstance(analysis.get('results'), dict):
                         analysis['results'] = {}
-                    analysis['results']['baseline_schema_metrics_v1'] = analysis.get('baseline_schema_metrics_v1')
+                    analysis['results']['baseline_schema_metrics_v1'] = _core.get('baseline_schema_metrics_v1')
+                    try:
+                        if _core is not analysis and isinstance(_core, dict) and 'baseline_schema_metrics_v1' in _core:
+                            # keep it visible under primary_response for inspection
+                            pass
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -33921,7 +33971,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D42"
+    CODE_VERSION = "FIX2D43"
 except Exception:
     pass
 # =====================================================================
@@ -36617,7 +36667,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D42"
+        CODE_VERSION = "FIX2D43"
 except Exception:
     pass
 
@@ -37125,7 +37175,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2D42"
+    CODE_VERSION = "FIX2D43"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -37137,7 +37187,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D42"
+    CODE_VERSION = "FIX2D43"
 except Exception:
     pass
 # =====================================================================
@@ -37382,7 +37432,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D42"
+    CODE_VERSION = "FIX2D43"
 except Exception:
     pass
 
@@ -37649,7 +37699,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D42"
+    CODE_VERSION = "FIX2D43"
 except Exception:
     pass
 
