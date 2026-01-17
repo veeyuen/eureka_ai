@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D35"  # PATCH FIX2D34 (ADD): prev-key driven diff universe for Diff Panel V2 (prefer PMC current)
+CODE_VERSION = "FIX2D36"  # PATCH FIX2D36 (ADD): schema-authoritative dimension/unit_family coercion for schema-aligned baseline metrics
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D34
@@ -113,6 +113,25 @@ try:
         "summary": "Diff Panel V2: allow schema-mandated proxy baselines (is_proxy=True) to participate in baseline comparability/diffing when both sides have numeric values; stamp baseline_proxy_used diagnostics for audit.",
         "files": ["FIX2D35.py"],
         "supersedes": ["FIX2D34"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D36
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D36",
+        "date": "2026-01-17",
+        "summary": "Analysis schema-primary rebuild: coerce baseline winner dimension/unit_family from schema spec when baseline fields are missing/unknown but numeric value_norm is present; stamp dimension_coerced_from_schema_v1 and unit_family_coerced_from_schema_v1 for audit.",
+        "files": ["FIX2D36.py"],
+        "supersedes": ["FIX2D35"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -15811,6 +15830,28 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                             except Exception:
                                 pass
                         if out_m.get("value_norm") is not None:
+                            # FIX2D36: schema-authoritative dimension/unit_family coercion.
+                            # If baseline winner is numeric but dimension/unit_family are unknown or empty,
+                            # coerce them to the schema spec so baseline diffing can proceed under schema authority.
+                            try:
+                                spec_dim = ""
+                                spec_uf = ""
+                                if isinstance(spec, dict):
+                                    spec_dim = str(spec.get("dimension") or spec.get("dim") or "")
+                                    spec_uf = str(spec.get("unit_family") or spec.get("unitFamily") or "")
+                                prior_dim = out_m.get("dimension")
+                                prior_uf = out_m.get("unit_family")
+                                # Only coerce when baseline fields are missing/unknown; never override a concrete non-unknown dimension.
+                                if spec_dim and (prior_dim is None or str(prior_dim).strip() in ("", "unknown")):
+                                    out_m["dimension"] = spec_dim
+                                    out_m["dimension_coerced_from_schema_v1"] = True
+                                    out_m["dimension_prior_v1"] = prior_dim
+                                if spec_uf and (prior_uf is None or str(prior_uf).strip() in ("", "unknown")):
+                                    out_m["unit_family"] = spec_uf
+                                    out_m["unit_family_coerced_from_schema_v1"] = True
+                                    out_m["unit_family_prior_v1"] = prior_uf
+                            except Exception:
+                                pass
                             new_pmc[ckey] = out_m
                     sel_trace[ckey] = meta if isinstance(meta, dict) else {"blocked_reason": "no_meta"}
                 except Exception as _e:
@@ -37924,7 +37965,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D35"
+    CODE_VERSION = "FIX2D36"
 except Exception:
     pass
 
