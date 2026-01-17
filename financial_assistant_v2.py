@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D36"  # PATCH FIX2D36 (ADD): schema-authoritative dimension/unit_family coercion for schema-aligned baseline metrics
+CODE_VERSION = "FIX2D37"  # PATCH FIX2D37 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D34
@@ -137,6 +137,26 @@ try:
 except Exception:
     pass
 
+
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D37
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D37",
+        "date": "2026-01-17",
+        "summary": "Analysis: emit baseline_schema_metrics_v1 (schema-keyed baseline metric map) for diffing; Diff Panel V2 prefers this schema baseline map when present to ensure prev universe is explicitly schema-keyed and stable.",
+        "files": ["FIX2D37.py"],
+        "supersedes": ["FIX2D36"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # PATCH TRACKER V1 (ADD): FIX2D32
 # ============================================================
@@ -15860,6 +15880,20 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             # Only replace PMC if we got at least one schema metric (avoid wiping PMC on empty candidate universe)
             if new_pmc:
                 analysis["primary_metrics_canonical"] = new_pmc
+
+                # FIX2D37: emit schema-keyed baseline metrics map for diffing.
+                # This is an explicit, stable prev universe that downstream diff logic can prefer.
+                try:
+                    analysis["baseline_schema_metrics_v1"] = dict(new_pmc)
+                except Exception:
+                    analysis["baseline_schema_metrics_v1"] = new_pmc
+                try:
+                    if not isinstance(analysis.get("results"), dict):
+                        analysis["results"] = {}
+                    analysis["results"]["baseline_schema_metrics_v1"] = analysis.get("baseline_schema_metrics_v1")
+                except Exception:
+                    pass
+
                 try:
                     if not isinstance(analysis.get("results"), dict):
                         analysis["results"] = {}
@@ -34205,9 +34239,24 @@ except Exception:
 # ==============================================================================
 
 def _diffpanel_v2__unwrap_primary_metrics_canonical(_resp):
-    """Best-effort unwrap of a response-like dict to {canonical_key: metric_dict}."""
+    """Best-effort unwrap of a response-like dict to {canonical_key: metric_dict}.
+
+    FIX2D37: prefer schema-keyed baseline map (baseline_schema_metrics_v1) when present.
+    This keeps the diff universe explicitly schema-keyed and stable.
+    """
     try:
         if isinstance(_resp, dict):
+            # FIX2D37: schema baseline override (prev-side)
+            try:
+                res = _resp.get("results")
+                if isinstance(res, dict) and isinstance(res.get("baseline_schema_metrics_v1"), dict):
+                    return res.get("baseline_schema_metrics_v1")
+            except Exception:
+                pass
+            bsm = _resp.get("baseline_schema_metrics_v1")
+            if isinstance(bsm, dict):
+                return bsm
+
             pmc = _resp.get("primary_metrics_canonical")
             if isinstance(pmc, dict):
                 return pmc
@@ -37965,7 +38014,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D36"
+    CODE_VERSION = "FIX2D37"
 except Exception:
     pass
 
