@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D43"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D44"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -235,6 +235,61 @@ try:
 except Exception:
     pass
 
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D44
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D44",
+        "date": "2026-01-17",
+        "summary": "Analysis: define _core in attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 schema-baseline materialization runs and baseline_schema_metrics_v1 is serialized for Evolution diff.",
+        "files": ["FIX2D44.py"],
+        "supersedes": ["FIX2D43"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D44
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D44",
+        "date": "2026-01-17",
+        "summary": "Fix Analysis baseline schema emission: define _core correctly in attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 builder executes and serializes results.baseline_schema_metrics_v1 for Evolution diff.",
+        "files": ["FIX2D44.py"],
+        "supersedes": ["FIX2D43"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D44
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D44",
+        "date": "2026-01-17",
+        "summary": "Fix Analysis baseline schema baseline materialisation: define _core in attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 baseline_schema_metrics_v1 builder executes; emit results.baseline_schema_metrics_v1 for Evolution diff join.",
+        "files": ["FIX2D44.py"],
+        "supersedes": ["FIX2D43"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 # PATCH TRACKER V1 (ADD): FIX2D40
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -15944,6 +15999,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     #   and Diff Panel V2 can activate without weakening semantics.
     # =====================================================================
     try:
+        _core = analysis
         schema = _core.get("metric_schema_frozen")
         pmc = _core.get("primary_metrics_canonical")
         sel = globals().get("_analysis_canonical_final_selector_v1")
@@ -33971,7 +34027,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D43"
+    CODE_VERSION = "FIX2D44"
 except Exception:
     pass
 # =====================================================================
@@ -36667,7 +36723,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D43"
+        CODE_VERSION = "FIX2D44"
 except Exception:
     pass
 
@@ -37175,7 +37231,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2D43"
+    CODE_VERSION = "FIX2D44"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -37187,7 +37243,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D43"
+    CODE_VERSION = "FIX2D44"
 except Exception:
     pass
 # =====================================================================
@@ -37432,7 +37488,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D43"
+    CODE_VERSION = "FIX2D44"
 except Exception:
     pass
 
@@ -37699,7 +37755,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D43"
+    CODE_VERSION = "FIX2D44"
 except Exception:
     pass
 
@@ -38465,7 +38521,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D41"
+    CODE_VERSION = "FIX2D44"
 except Exception:
     pass
 
