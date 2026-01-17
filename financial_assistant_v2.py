@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2Y"  # PATCH FIX2D2X (ADD): parity – reuse Analysis selector for Evolution baseline-key current
+CODE_VERSION = "FIX2D2Z"  # PATCH FIX2D2Z (ADD): injection admission + hard unit-family rejection for diff inference
 
 
 # ============================================================
@@ -136,6 +136,15 @@ try:
         "date": "2026-01-16",
         "summary": "Context-driven unit backfill when unit_tag is empty, plus unit_family/measure_kind corrections trace (context_unit_backfill_v1).",
     })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2Z",
+        "date": "2026-01-17",
+        "summary": "Make injected candidates first-class for Diff Panel inference by unwrapping injected scraped_meta into extracted_numbers pools; enforce hard unit-family rejection (percent/currency/units/magnitude) in fallback inference scoring to prevent leakage.",
+        "files": ["FIX2D2Z.py"],
+        "supersedes": ["FIX2D2Y"],
+    })
+
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 
     PATCH_TRACKER_V1.append({
@@ -34992,6 +35001,127 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                     unit_family = 'magnitude'
                         except Exception:
                             unit_family = unit_family
+
+                        pool.append({
+                            'value_norm': fvn,
+                            'unit_tag': unit_tag,
+                            'raw': raw,
+                            'context_snippet': ctx,
+                            'unit_family': unit_family,
+                            'measure_kind': n.get('measure_kind'),
+                            'measure_assoc': n.get('measure_assoc'),
+                            'source_url': str(su).strip() if su else None,
+                        })
+
+            # prefer direct keys
+            _add_from_sources(_resp.get('baseline_sources_cache_current'))
+            if not pool:
+                _add_from_sources(_resp.get('baseline_sources_cache'))
+
+            # nested under results
+            res = _resp.get('results')
+            if isinstance(res, dict):
+                if not pool:
+                    _add_from_sources(res.get('baseline_sources_cache_current'))
+                if not pool:
+                    _add_from_sources(res.get('baseline_sources_cache'))
+                if not pool:
+                    _add_from_sources(res.get('source_results'))
+
+            # PATCH FIX2D2Z (ADD): also unwrap candidates from web_context.scraped_meta (injection lane)
+            # Some evolution runs fetch injected delta via fetch_web_context() but do not fully materialise
+            # baseline_sources_cache_current in the response payload. scraped_meta contains extracted_numbers.
+            try:
+                wc = _resp.get('web_context')
+                if not isinstance(wc, dict) and isinstance(res, dict):
+                    wc = res.get('web_context')
+                if isinstance(wc, dict):
+                    sm = wc.get('scraped_meta') or {}
+                    if isinstance(sm, dict):
+                        for u, m in sm.items():
+                            if not isinstance(m, dict):
+                                continue
+                            su = m.get('url') or u
+                            nums = m.get('extracted_numbers') or []
+                            if not isinstance(nums, list):
+                                continue
+                            for n in nums:
+                                if not isinstance(n, dict):
+                                    continue
+                                vn = n.get('value_norm')
+                                if vn is None:
+                                    vn = n.get('value')
+                                try:
+                                    fvn = float(vn)
+                                except Exception:
+                                    continue
+                                unit_tag = str(n.get('unit_tag') or n.get('base_unit') or n.get('unit') or '').strip()
+                                if _fix2d2g_is_yearlike_candidate({'value_norm': fvn, 'unit_tag': unit_tag}):
+                                    continue
+                                raw = str(n.get('raw') or n.get('display_value') or n.get('value') or '').strip()
+                                ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '').strip()
+                                unit_family = str(n.get('unit_family') or '').strip()
+                                try:
+                                    if not unit_family:
+                                        nf = globals().get('normalize_unit_family')
+                                        if callable(nf):
+                                            unit_family = str(nf(unit_tag, ctx=ctx, raw=raw) or '').strip()
+                                except Exception:
+                                    pass
+                                pool.append({
+                                    'value_norm': fvn,
+                                    'unit_tag': unit_tag,
+                                    'raw': raw,
+                                    'context_snippet': ctx,
+                                    'unit_family': unit_family,
+                                    'measure_kind': n.get('measure_kind'),
+                                    'measure_assoc': n.get('measure_assoc'),
+                                    'source_url': str(su).strip() if su else None,
+                                })
+            except Exception:
+                pass
+
+            return pool
+
+            def _add_from_sources(_sources):
+                if not isinstance(_sources, list):
+                    return
+                for s in _sources:
+                    if not isinstance(s, dict):
+                        continue
+                    su = s.get('source_url') or s.get('url') or None
+                    nums = s.get('extracted_numbers')
+                    if not isinstance(nums, list):
+                        continue
+                    for n in nums:
+                        if not isinstance(n, dict):
+                            continue
+                        vn = n.get('value_norm')
+                        if vn is None:
+                            vn = n.get('value')
+                        try:
+                            fvn = float(vn)
+                        except Exception:
+                            continue
+                        unit_tag = str(n.get('unit_tag') or n.get('unit') or n.get('base_unit') or '').strip()
+                        raw = str(n.get('raw') or n.get('display') or n.get('value') or '').strip()
+                        ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '')
+
+                        # PATCH FIX2D2I (ADD): Backfill unit_family for inference
+                        unit_family = str(n.get('unit_family') or '').strip()
+                        try:
+                            if not unit_family:
+                                ut_l = unit_tag.lower()
+                                raw_l = raw.lower()
+                                ctx_l = str(ctx or '').lower()
+                                if '%' in raw_l or '%' in ut_l or 'percent' in raw_l or 'percent' in ut_l:
+                                    unit_family = 'percent'
+                                elif '$' in raw_l or '$' in ut_l or 'usd' in ut_l or 'usd' in ctx_l or 'billion' in ctx_l or 'bn' in ctx_l:
+                                    unit_family = 'currency'
+                                elif ut_l in ('m','mn') or 'million' in raw_l or 'million' in ctx_l or ' units' in ctx_l or 'units' in raw_l:
+                                    unit_family = 'magnitude'
+                        except Exception:
+                            unit_family = unit_family
                         pool.append({
                             'value_norm': fvn,
                             'unit_tag': unit_tag,
@@ -35066,6 +35196,42 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 # try to detect reference year in canonical key
                 m = re.search(r'(19\d{2}|20\d{2})', ck_l)
                 ref_year = m.group(1) if m else None
+                # -----------------------------------------------------------------
+                # PATCH FIX2D2Z_UNIT_FAMILY_HARD_REJECT (ADD)
+                # Derive expected unit_family from frozen schema (authoritative) or
+                # fall back to prev_unit_tag normalization. Used for hard rejection
+                # to prevent currency≠percent leakage.
+                # -----------------------------------------------------------------
+                expected_family = ''
+                try:
+                    _msf = (cur_response.get('metric_schema_frozen') or (cur_response.get('results') or {}).get('metric_schema_frozen')) if isinstance(cur_response, dict) else None
+                    if isinstance(_msf, dict):
+                        _sch = _msf.get(prev_ckey)
+                        if isinstance(_sch, dict):
+                            expected_family = str(_sch.get('unit_family') or '').strip().lower()
+                except Exception:
+                    expected_family = expected_family
+                if not expected_family:
+                    try:
+                        nf = globals().get('normalize_unit_family')
+                        if callable(nf):
+                            expected_family = str(nf(str(prev_unit or ''), ctx=str(pm.get('name') or ''), raw=str(prev_raw or '')) or '').strip().lower()
+                    except Exception:
+                        expected_family = ''
+
+                def _has_currency_evidence_local(raw: str, ctx: str) -> bool:
+                    r = (raw or '')
+                    c = (ctx or '').lower()
+                    if any(s in r for s in ['$', 'S$', '€', '£']):
+                        return True
+                    if any(code in c for code in [' usd', 'sgd', ' eur', ' gbp', ' aud', ' cad', ' jpy', ' cny', ' rmb']):
+                        return True
+                    if any(k in c for k in ['revenue','turnover','valuation','market value','market size','sales value','net profit','operating profit','gross profit','ebitda','earnings','income','capex','opex']):
+                        return True
+                    return False
+                # -----------------------------------------------------------------
+                # END PATCH FIX2D2Z_UNIT_FAMILY_HARD_REJECT
+                # -----------------------------------------------------------------
 
                 def _score(n):
                     try:
@@ -35080,6 +35246,54 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         raw = str(n.get('raw') or n.get('value') or '').lower()
                         ctx = str(n.get('context_snippet') or n.get('context') or n.get('context_window') or '').lower()
                         unit = str(n.get('unit_tag') or n.get('base_unit') or n.get('unit') or '').lower()
+                        # PATCH FIX2D2Z (ADD): hard unit-family rejection (schema-aligned)
+                        expected_family = ''
+                        try:
+                            _msf = (cur_response.get('metric_schema_frozen') if isinstance(cur_response, dict) else None)
+                            if isinstance(_msf, dict):
+                                _sch = _msf.get(prev_ckey)
+                                if isinstance(_sch, dict):
+                                    expected_family = str(_sch.get('unit_family') or '').lower().strip()
+                        except Exception:
+                            expected_family = expected_family
+                        if not expected_family:
+                            try:
+                                _nf = globals().get('normalize_unit_family')
+                                if callable(_nf):
+                                    expected_family = str(_nf(prev_unit or '', ctx=str(pm.get('name') or ''), raw=str(prev_raw or '')) or '').lower().strip()
+                            except Exception:
+                                expected_family = ''
+
+                        cand_family = str(n.get('unit_family') or '').lower().strip()
+                        if not cand_family:
+                            try:
+                                _nf = globals().get('normalize_unit_family')
+                                if callable(_nf):
+                                    cand_family = str(_nf(unit or '', ctx=ctx, raw=raw) or '').lower().strip()
+                            except Exception:
+                                cand_family = ''
+
+                        def _has_currency_evidence_local(r: str, c: str) -> bool:
+                            rr = (r or '')
+                            cc = (c or '').lower()
+                            if any(s in rr for s in ['$', 'S$', '€', '£']):
+                                return True
+                            if any(code in cc for code in [' usd', 'sgd', ' eur', ' gbp', ' aud', ' cad', ' jpy', ' cny', ' rmb']):
+                                return True
+                            if any(k in cc for k in ['revenue','turnover','valuation','market size','market value','sales value','net profit','operating profit','gross profit','ebitda','earnings','income']):
+                                return True
+                            return False
+
+                        if expected_family and cand_family:
+                            if expected_family == 'currency':
+                                # allow magnitude only when currency evidence exists
+                                if cand_family == 'magnitude' and not _has_currency_evidence_local(raw, ctx):
+                                    return -1e9
+                                if cand_family not in ('currency', 'magnitude'):
+                                    return -1e9
+                            else:
+                                if cand_family != expected_family:
+                                    return -1e9
                         s = raw + ' ' + unit
                         vn = n.get('value_norm')
                         try:
@@ -35090,6 +35304,25 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                             return -1e9
 
                         sc = 0.0
+                # FIX2D2Z: hard unit-family incompatibility
+                        try:
+                            c_fam = str(n.get('unit_family') or '').strip().lower()
+                            if not c_fam:
+                                nf = globals().get('normalize_unit_family')
+                                if callable(nf):
+                                    c_fam = str(nf(unit, ctx=ctx, raw=raw) or '').strip().lower()
+                        except Exception:
+                            c_fam = ''
+                        if expected_family:
+                            if expected_family == 'currency':
+                                # allow magnitude only when currency evidence exists (mirrors Analysis selector)
+                                if c_fam not in ('currency','magnitude'):
+                                    return -1e9
+                                if c_fam == 'magnitude' and not _has_currency_evidence_local(raw, ctx):
+                                    return -1e9
+                            else:
+                                if c_fam and c_fam != expected_family:
+                                    return -1e9
                         # unit-family gates
                         if want_percent:
                             if '%' not in raw and 'percent' not in s and 'pct' not in s:
