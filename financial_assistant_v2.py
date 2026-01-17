@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2W"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2X"  # PATCH FIX2D2X (ADD): parity – reuse Analysis selector for Evolution baseline-key current
 
 
 # ============================================================
@@ -36574,4 +36574,350 @@ except Exception:
 
 # =====================================================================
 # END PATCH FIX2D2T
+# =====================================================================
+
+# =====================================================================
+
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX2D2X (PARITY): Reuse Analysis selector for Evolution baseline-key current
+# ---------------------------------------------------------------------
+# Rationale:
+#   - Analysis has the authoritative semantic eligibility gates.
+#   - Evolution schema_only_rebuild is a legacy shortcut that can mis-assign values.
+#   - For Analysis→Evolution diffing, Evolution must populate CURRENT for the Analysis
+#     keyspace using the same selector/gates, differing only in source preference
+#     (injected-first).
+# Implementation (additive override):
+#   - Provide a new rebuild_metrics_from_snapshots_schema_only_fix17 that:
+#       * derives a schema spec per baseline key (adds keyword hints from key/name)
+#       * builds candidates from baseline_sources_cache extracted_numbers
+#       * runs a strict injected-first two-pass selection via _analysis_canonical_final_selector_v1
+#         with preferred-source locking disabled
+#       * commits the chosen candidate under the same canonical_key
+#   - This makes Evolution and Analysis share the same semantic gates for this step.
+# ---------------------------------------------------------------------
+# Supersedes (functionally): FIX2D2U/FIX2D2V/FIX2D2W schema_only_rebuild gating patches.
+# =====================================================================
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2X",
+        "date": "2026-01-17",
+        "summary": "Parity patch: replace Evolution schema-only slot filling for baseline-key current with Analysis authoritative selector (_analysis_canonical_final_selector_v1) using injected-first two-pass selection and synthesized keyword hints from canonical_key/name; prevents cross-metric misassignment (e.g., China sales -> chargers 2040) and aligns gating with Analysis.",
+        "files": ["FIX2D2X.py"],
+        "supersedes": ["FIX2D2W", "FIX2D2V", "FIX2D2U"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+def _fix2d2x_parse_injected_urls(web_context: dict) -> list:
+    """Best-effort extraction of injected/extra URLs from web_context."""
+    urls = []
+    try:
+        wc = web_context if isinstance(web_context, dict) else {}
+        for k in ("diag_extra_urls", "extra_urls", "injected_urls"):
+            v = wc.get(k)
+            if isinstance(v, list):
+                for u in v:
+                    if isinstance(u, str) and u.strip():
+                        urls.append(u.strip())
+        # raw UI fields (string) used in earlier patches
+        for k in ("diag_extra_urls_ui_raw", "extra_urls_ui_raw"):
+            raw = wc.get(k)
+            if isinstance(raw, str) and raw.strip():
+                # split on whitespace / commas
+                for part in re.split(r"[\s,]+", raw.strip()):
+                    if part.startswith("http"):
+                        urls.append(part)
+    except Exception:
+        pass
+
+    # Stable de-dupe
+    out = []
+    seen = set()
+    for u in urls:
+        uu = str(u or "").strip()
+        if not uu or uu in seen:
+            continue
+        seen.add(uu)
+        out.append(uu)
+    return out
+
+
+def _fix2d2x_keywords_from_key_and_name(canonical_key: str, name: str) -> list:
+    """Synthesize keyword hints when schema_frozen came from baseline (often lacks keywords)."""
+    toks = []
+    try:
+        ck = str(canonical_key or "")
+        nm = str(name or "")
+        # split key on underscores
+        for t in ck.replace("__", "_").split("_"):
+            t = t.strip().lower()
+            if not t:
+                continue
+            # drop pure years and very short tokens
+            if re.fullmatch(r"(19\d{2}|20\d{2})", t):
+                continue
+            if len(t) <= 2:
+                continue
+            toks.append(t)
+        # add name tokens
+        for t in re.split(r"[^a-zA-Z0-9]+", nm.lower()):
+            if not t:
+                continue
+            if re.fullmatch(r"(19\d{2}|20\d{2})", t):
+                continue
+            if len(t) <= 2:
+                continue
+            toks.append(t)
+    except Exception:
+        toks = []
+
+    # small normalization + de-dupe
+    out = []
+    seen = set()
+    stop = {"global", "world", "worldwide", "ev", "electric", "vehicle", "vehicles", "unknown"}
+    for t in toks:
+        if t in stop:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out[:24]
+
+
+def _fix2d2x_required_years_from_key(canonical_key: str) -> list:
+    ys = []
+    try:
+        for m in re.findall(r"\b(19\d{2}|20\d{2})\b", str(canonical_key or "")):
+            ys.append(m)
+    except Exception:
+        ys = []
+    # de-dupe preserve
+    out = []
+    seen = set()
+    for y in ys:
+        if y in seen:
+            continue
+        seen.add(y)
+        out.append(y)
+    return out
+
+
+def _fix2d2x_local_text_for_candidate(c: dict) -> str:
+    try:
+        return " ".join([
+            str(c.get("context_snippet") or ""),
+            str(c.get("raw") or ""),
+            str(c.get("unit") or c.get("unit_tag") or ""),
+        ]).lower()
+    except Exception:
+        return ""
+
+
+def _fix2d2x_filter_candidates_for_key(canonical_key: str, spec: dict, candidates: list) -> list:
+    """Pre-filter: enforce key-year presence and at least one key-specific keyword hit in local context."""
+    out = []
+    req_years = _fix2d2x_required_years_from_key(canonical_key)
+    kws = spec.get("keywords") or []
+    kws = [str(k).lower() for k in kws if isinstance(k, str) and k.strip()]
+
+    for c in candidates or []:
+        if not isinstance(c, dict):
+            continue
+        lt = _fix2d2x_local_text_for_candidate(c)
+        if not lt:
+            continue
+        # required years: must appear in local text when key encodes them
+        ok_year = True
+        if req_years:
+            ok_year = all((y in lt) for y in req_years)
+        if not ok_year:
+            continue
+        # at least one keyword hit if keywords exist
+        if kws:
+            hit = False
+            for k in kws:
+                if k and k in lt:
+                    hit = True
+                    break
+            if not hit:
+                continue
+        out.append(c)
+    return out
+
+
+def _fix2d2x_select_current_for_key(
+    canonical_key: str,
+    spec_in: dict,
+    candidates_all: list,
+    injected_urls: list,
+) -> tuple:
+    """Injected-first two-pass selection using Analysis authoritative selector."""
+    spec = dict(spec_in or {})
+
+    # Disable preferred source locking for Evolution (parity gates but different policy)
+    for k in ("preferred_url", "source_url"):
+        if k in spec:
+            spec.pop(k, None)
+
+    # Ensure keywords exist for selector scoring/eligibility
+    if not spec.get("keywords"):
+        nm = str(spec.get("name") or "")
+        spec["keywords"] = _fix2d2x_keywords_from_key_and_name(canonical_key, nm)
+
+    # local pre-filter (prevents cross-metric pollution when baseline schema lacks rich keywords)
+    candidates_all = _fix2d2x_filter_candidates_for_key(canonical_key, spec, candidates_all)
+
+    # pass 1: injected-only
+    injected_norm = set(_ph2b_norm_url(u) for u in (injected_urls or []) if isinstance(u, str))
+    cands_inj = []
+    if injected_norm:
+        for c in candidates_all:
+            cu = _ph2b_norm_url(c.get("source_url") or "")
+            if cu and cu in injected_norm:
+                cands_inj.append(c)
+
+    fn_sel = globals().get("_analysis_canonical_final_selector_v1")
+    if not callable(fn_sel):
+        return None, {"blocked_reason": "missing_analysis_selector"}
+
+    if cands_inj:
+        best, meta = fn_sel(canonical_key, spec, cands_inj, anchors=None, prev_metric=None, web_context=None)
+        if isinstance(best, dict):
+            try:
+                meta = dict(meta or {})
+                meta["fix2d2x_pass"] = "injected_only"
+            except Exception:
+                pass
+            return best, meta
+
+    # pass 2: global
+    best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
+    try:
+        meta = dict(meta or {})
+        meta["fix2d2x_pass"] = "global"
+    except Exception:
+        pass
+    return best, meta
+
+
+# ---------------------------------------------------------------------
+# OVERRIDE: schema-only rebuild FIX17
+# ---------------------------------------------------------------------
+
+def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    """Parity rebuild: populate CURRENT for baseline keyspace using Analysis selector."""
+    if not isinstance(prev_response, dict):
+        return {}
+
+    # Schema keyspace
+    schema_frozen = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or {}
+    )
+    if not isinstance(schema_frozen, dict) or not schema_frozen:
+        return {}
+
+    # Candidate pool from baseline_sources_cache
+    bsc = baseline_sources_cache
+    if not isinstance(bsc, list):
+        # try prev_response locations
+        bsc = (prev_response.get("results") or {}).get("baseline_sources_cache")
+    if not isinstance(bsc, list):
+        bsc = []
+
+    all_candidates = []
+    for item in bsc:
+        if not isinstance(item, dict):
+            continue
+        src = item.get("source_url") or item.get("url") or ""
+        nums = item.get("extracted_numbers")
+        if not isinstance(nums, list):
+            # sometimes nested in scraped_meta
+            sm = item.get("scraped_meta")
+            if isinstance(sm, dict):
+                nums = sm.get("extracted_numbers")
+        if not isinstance(nums, list):
+            continue
+        for c in nums:
+            if not isinstance(c, dict):
+                continue
+            cc = dict(c)
+            if src and not cc.get("source_url"):
+                cc["source_url"] = src
+            all_candidates.append(cc)
+
+    injected_urls = _fix2d2x_parse_injected_urls(web_context)
+
+    rebuilt = {}
+    debug = {}
+    reject_counts = {}
+    filled = 0
+
+    for ck, spec0 in schema_frozen.items():
+        if not isinstance(ck, str) or not ck:
+            continue
+        spec = spec0 if isinstance(spec0, dict) else {}
+        best, meta = _fix2d2x_select_current_for_key(ck, spec, all_candidates, injected_urls)
+        if not isinstance(best, dict):
+            # track block reasons (selector meta)
+            try:
+                br = str((meta or {}).get("blocked_reason") or "")
+                if br:
+                    reject_counts[br] = int(reject_counts.get(br, 0)) + 1
+            except Exception:
+                pass
+            continue
+
+        # Commit minimal metric object
+        try:
+            m = {
+                "canonical_key": ck,
+                "value": best.get("value"),
+                "value_norm": best.get("value_norm"),
+                "unit": best.get("unit") or best.get("unit_tag") or best.get("unit_cmp"),
+                "unit_tag": best.get("unit_tag") or best.get("unit") or best.get("unit_cmp"),
+                "unit_family": best.get("unit_family") or spec.get("unit_family") or "",
+                "source_url": best.get("source_url") or "",
+                "raw": best.get("raw") or "",
+                "context_snippet": best.get("context_snippet") or "",
+                "method": "analysis_selector_shared_fix2d2x",
+                "selection_meta": meta or {},
+            }
+            rebuilt[ck] = m
+            filled += 1
+        except Exception:
+            continue
+
+    # Attach debug to web_context if present
+    try:
+        debug["fix2d2x_selector_shared_summary_v1"] = {
+            "filled": int(filled),
+            "schema_keys": int(len(schema_frozen)),
+            "candidates_total": int(len(all_candidates)),
+            "injected_urls": injected_urls,
+            "reject_counts": reject_counts,
+        }
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].update(debug)
+    except Exception:
+        pass
+
+    return rebuilt
+
+# =====================================================================
+# END PATCH FIX2D2X
 # =====================================================================
