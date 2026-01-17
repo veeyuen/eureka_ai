@@ -35965,3 +35965,258 @@ try:
     CODE_VERSION = "FIX2D2S"
 except Exception:
     pass
+
+# =====================================================================
+# PATCH FIX2D2T (ADDITIVE): Baseline->Current projection for Diff Panel V2
+# Why:
+# - We have proven Evolution can extract/commit injected values, but diffing
+#   still shows 0 increased/decreased/unchanged when baseline rows never get
+#   current_value_norm populated.
+# - This patch makes the final "handoff" explicit: for each baseline ckey
+#   (prev row), if cur_response contains a canonical metric object for that
+#   same ckey (prefer primary_metrics_canonical_for_diff), project it into
+#   metric_changes[*].current_value/_norm and mark comparable.
+# Safety:
+# - Render/diff-layer only. No changes to extraction, hashing, anchors,
+#   canonical key generation, or snapshot pools.
+# - Only fills CURRENT when the metric object exists under the SAME ckey.
+# =====================================================================
+
+try:
+    diff_metrics_by_name_FIX2D2T_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_FIX2D2T_BASE = None  # type: ignore
+
+
+def _fix2d2t_s(x):
+    try:
+        return "" if x is None else str(x)
+    except Exception:
+        return ""
+
+
+def _fix2d2t_f(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = _fix2d2t_s(x).strip().replace(",", "")
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _fix2d2t_get_cur_maps(cur_response: dict):
+    """Return (cur_for_diff, cur_primary) dicts."""
+    cur_for_diff = {}
+    cur_primary = {}
+    try:
+        if isinstance(cur_response, dict):
+            cfd = cur_response.get("primary_metrics_canonical_for_diff")
+            if not isinstance(cfd, dict) and isinstance(cur_response.get("results"), dict):
+                cfd = cur_response["results"].get("primary_metrics_canonical_for_diff")
+            if isinstance(cfd, dict):
+                cur_for_diff = cfd
+            pmc = cur_response.get("primary_metrics_canonical")
+            if not isinstance(pmc, dict) and isinstance(cur_response.get("results"), dict):
+                pmc = cur_response["results"].get("primary_metrics_canonical")
+            if isinstance(pmc, dict):
+                cur_primary = pmc
+    except Exception:
+        pass
+    return cur_for_diff, cur_primary
+
+
+def diff_metrics_by_name_FIX2D2T_PROJECT_BASELINE_CURRENT(prev_response: dict, cur_response: dict):
+    """Wrapper over current diff that ensures baseline rows receive current values when available under same ckey."""
+    if not callable(diff_metrics_by_name_FIX2D2T_BASE):
+        return ([], 0, 0, 0, 0)
+
+    metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_FIX2D2T_BASE(prev_response, cur_response)
+
+    cur_for_diff, cur_primary = _fix2d2t_get_cur_maps(cur_response if isinstance(cur_response, dict) else {})
+
+    proj_applied = 0
+    proj_filled = 0
+    proj_source_injected = 0
+    samples = []
+
+    def _is_missing(row: dict):
+        try:
+            cvn = row.get("current_value_norm")
+            if cvn is None:
+                cvn = row.get("cur_value_norm")
+            if cvn is not None:
+                return False
+            cv = row.get("current_value")
+            cvs = _fix2d2t_s(cv).strip().upper()
+            return (not cvs) or (cvs == "N/A")
+        except Exception:
+            return True
+
+    def _build_display(vn, unit):
+        try:
+            if vn is None:
+                return None
+            if unit:
+                return f"{vn} {unit}".strip()
+            return _fix2d2t_s(vn)
+        except Exception:
+            return _fix2d2t_s(vn)
+
+    if isinstance(metric_changes, list):
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+            prev_ckey = _fix2d2t_s(row.get("canonical_key") or row.get("ckey") or "").strip()
+            if not prev_ckey:
+                continue
+
+            # We only project into baseline rows (i.e., rows with prev_value_norm present)
+            pv = row.get("prev_value_norm")
+            if pv is None:
+                pv = row.get("previous_value_norm")
+            if pv is None:
+                continue
+
+            if not _is_missing(row):
+                continue
+
+            proj_applied += 1
+
+            # Prefer baseline-keyed current mapping, then fallback to primary_metrics_canonical.
+            cm = cur_for_diff.get(prev_ckey) if isinstance(cur_for_diff, dict) else None
+            used_map = "primary_metrics_canonical_for_diff"
+            if not isinstance(cm, dict) or not cm:
+                cm = cur_primary.get(prev_ckey) if isinstance(cur_primary, dict) else None
+                used_map = "primary_metrics_canonical"
+
+            if not isinstance(cm, dict) or not cm:
+                continue
+
+            vn = cm.get("value_norm") if cm.get("value_norm") is not None else cm.get("value")
+            vn = _fix2d2t_f(vn)
+            if vn is None:
+                continue
+            unit = _fix2d2t_s(cm.get("unit_tag") or cm.get("unit") or cm.get("unit_cmp") or "").strip() or None
+            src = _fix2d2t_s(cm.get("source_url") or "").strip()
+
+            # Fill row
+            row["current_value_norm"] = vn
+            row["cur_value_norm"] = vn
+            row["current_value"] = _build_display(vn, unit) or row.get("current_value")
+            if unit:
+                row["current_unit"] = unit
+                row["cur_unit_cmp"] = unit
+
+            # Diagnostics
+            row.setdefault("diag", {})
+            if isinstance(row.get("diag"), dict):
+                row["diag"].setdefault("fix2d2t_baseline_projection_v1", {})
+                if isinstance(row["diag"].get("fix2d2t_baseline_projection_v1"), dict):
+                    row["diag"]["fix2d2t_baseline_projection_v1"].update({
+                        "applied": True,
+                        "used_map": used_map,
+                        "resolved_cur_ckey": prev_ckey,
+                        "current_source_url": src or None,
+                    })
+
+            # Provenance labels (align with FIX2D2Q concept)
+            if src:
+                if "github.io" in src or "injection" in src:
+                    row["current_source_type_fix2d2q"] = "injected"
+                    row["current_selection_mode_fix2d2q"] = "baseline_projection_injected"
+                    proj_source_injected += 1
+                else:
+                    row["current_source_type_fix2d2q"] = row.get("current_source_type_fix2d2q") or "base"
+                    row["current_selection_mode_fix2d2q"] = row.get("current_selection_mode_fix2d2q") or "baseline_projection_base"
+
+            # Recompute comparability and change_type
+            try:
+                pv_num = _fix2d2t_f(pv)
+                if pv_num is not None and vn is not None:
+                    row["baseline_is_comparable"] = True
+                    if abs(vn - pv_num) < 1e-9:
+                        row["baseline_change_type"] = "unchanged"
+                    elif vn > pv_num:
+                        row["baseline_change_type"] = "increased"
+                    else:
+                        row["baseline_change_type"] = "decreased"
+            except Exception:
+                pass
+
+            proj_filled += 1
+            if len(samples) < 8:
+                samples.append({
+                    "ckey": prev_ckey,
+                    "used_map": used_map,
+                    "pv": _fix2d2t_f(pv),
+                    "cv": vn,
+                    "src": src,
+                })
+
+    # Recompute counters from rows (authoritative)
+    try:
+        u = i = d = 0
+        f = 0
+        if isinstance(metric_changes, list):
+            for r in metric_changes:
+                if not isinstance(r, dict):
+                    continue
+                ct = _fix2d2t_s(r.get("baseline_change_type") or r.get("change_type") or "").strip().lower()
+                if ct in ("unchanged",):
+                    u += 1; f += 1
+                elif ct in ("increased",):
+                    i += 1; f += 1
+                elif ct in ("decreased",):
+                    d += 1; f += 1
+        unchanged, increased, decreased, found = u, i, d, f
+    except Exception:
+        pass
+
+    # Attach top-level debug
+    try:
+        if isinstance(cur_response, dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"]["fix2d2t_baseline_projection_summary_v1"] = {
+                    "applied_to_missing_rows": int(proj_applied),
+                    "filled_rows": int(proj_filled),
+                    "filled_from_injected": int(proj_source_injected),
+                    "samples": samples,
+                }
+    except Exception:
+        pass
+
+    return metric_changes, unchanged, increased, decreased, found
+
+
+# Wire wrapper
+try:
+    if callable(diff_metrics_by_name_FIX2D2T_PROJECT_BASELINE_CURRENT):
+        diff_metrics_by_name = diff_metrics_by_name_FIX2D2T_PROJECT_BASELINE_CURRENT  # type: ignore
+except Exception:
+    pass
+
+# Patch tracker + version bump
+try:
+    if isinstance(globals().get('PATCH_TRACKER_V1'), list):
+        PATCH_TRACKER_V1.append({
+            "patch_id": "FIX2D2T",
+            "summary": "Add explicit baseline->current projection in diff layer: if baseline row is missing CURRENT but cur_response has same canonical_key in primary_metrics_canonical_for_diff/primary_metrics_canonical, project into metric_changes current_value/_norm and recompute diff counters; attach debug summary.",
+            "ts": "2026-01-16",
+        })
+except Exception:
+    pass
+
+try:
+    CODE_VERSION = "FIX2D2T"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2D2T
+# =====================================================================
