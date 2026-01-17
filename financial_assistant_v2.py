@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D41"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D42"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -994,11 +994,59 @@ def _fix2d8_promote_nested_results_v1(output_obj):
         except Exception:
             pass
 
+
+        # FIX2D42: Ensure baseline_schema_metrics_v1 is promoted and visible under primary_response (and results)
+        try:
+            # Promote baseline_schema_metrics_v1 from nested if present
+            _nested_bsm = None
+            try:
+                _nested_bsm = nested.get("baseline_schema_metrics_v1")
+            except Exception:
+                _nested_bsm = None
+            if isinstance(_nested_bsm, dict) and _nested_bsm and (not isinstance(results.get("baseline_schema_metrics_v1"), dict) or not results.get("baseline_schema_metrics_v1")):
+                results["baseline_schema_metrics_v1"] = dict(_nested_bsm)
+                diag["notes"].append("promoted_results.baseline_schema_metrics_v1_from_nested")
+                diag["applied"] = True
+
+            # Ensure primary_response.baseline_schema_metrics_v1 exists when available
+            if isinstance(results.get("primary_response"), dict):
+                _bsm_top = results.get("baseline_schema_metrics_v1")
+                if not isinstance(_bsm_top, dict):
+                    _bsm_top = None
+                if isinstance(_bsm_top, dict) and _bsm_top and ("baseline_schema_metrics_v1" not in results["primary_response"]):
+                    results["primary_response"]["baseline_schema_metrics_v1"] = _bsm_top
+                    diag["notes"].append("filled_primary_response.baseline_schema_metrics_v1_from_results")
+                    diag["applied"] = True
+        except Exception:
+            pass
+        # FIX2D42: Ensure baseline_schema_metrics_v1 is promoted and visible under primary_response (and results)
+        try:
+            # Promote baseline_schema_metrics_v1 from nested if present
+            _nested_bsm = None
+            try:
+                _nested_bsm = nested.get("baseline_schema_metrics_v1")
+            except Exception:
+                _nested_bsm = None
+            if isinstance(_nested_bsm, dict) and _nested_bsm and (not isinstance(results.get("baseline_schema_metrics_v1"), dict) or not results.get("baseline_schema_metrics_v1")):
+                results["baseline_schema_metrics_v1"] = dict(_nested_bsm)
+                diag["notes"].append("promoted_results.baseline_schema_metrics_v1_from_nested")
+                diag["applied"] = True
+            # If analysis builder stored it at results.baseline_schema_metrics_v1, mirror into primary_response
+            if isinstance(results.get("primary_response"), dict) and isinstance(results.get("baseline_schema_metrics_v1"), dict):
+                if "baseline_schema_metrics_v1" not in results["primary_response"]:
+                    results["primary_response"]["baseline_schema_metrics_v1"] = results.get("baseline_schema_metrics_v1")
+                    diag["notes"].append("filled_primary_response.baseline_schema_metrics_v1_from_results")
+                    diag["applied"] = True
+        except Exception:
+            pass
+
+
         try:
             results.setdefault("debug", {})
             results["debug"]["fix2d8_promote_nested_results_v1"] = diag
         except Exception:
             pass
+
 
         return diag
     except Exception as _e:
@@ -1420,30 +1468,30 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "FIX2D2W"
+#CODE_VERSION = "FIX2D42"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "FIX2D2W"
+#CODE_VERSION = "FIX2D42"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "FIX2D2W"
+#CODE_VERSION = "FIX2D42"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2W"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2W"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D42"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D42"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "FIX2D2W"
+#CODE_VERSION = "FIX2D42"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -33873,7 +33921,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D42"
 except Exception:
     pass
 # =====================================================================
@@ -36569,7 +36617,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D2W"
+        CODE_VERSION = "FIX2D42"
 except Exception:
     pass
 
@@ -37077,7 +37125,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D42"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -37089,7 +37137,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D42"
 except Exception:
     pass
 # =====================================================================
@@ -37314,10 +37362,27 @@ except Exception:
     pass
 
 # =========================
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D42
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D42",
+        "date": "2026-01-17",
+        "summary": "Serialize/promote baseline_schema_metrics_v1 into Analysis primary_response/results so Evolution diff can consume it; extend nested results promotion to mirror baseline_schema_metrics_v1.",
+        "files": ["FIX2D42.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D42"
 except Exception:
     pass
 
@@ -37584,7 +37649,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D42"
 except Exception:
     pass
 
