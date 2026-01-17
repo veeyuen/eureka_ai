@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D46"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D47"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -38677,3 +38677,327 @@ def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
 # ---- invoke FIX2D45 in Analysis finalisation ----
 if "_fix2d45_force_baseline_schema_materialisation" not in globals():
     pass
+
+
+# FIX2D47 — Diff Panel V2: Schema-union row universe + cross-source current winner
+# --------------------------------------------------------------------------------
+# Objective:
+#   Implement the behaviour you described:
+#     - Evolution may discover new sources
+#     - If a discovered metric binds to the SAME schema canonical key as a baseline metric,
+#       the diff panel should treat it as "current" and compute deltas (even if source differs).
+#
+# What this patch does:
+#   1) Builds the diff row universe as: schema_keys = prev_schema_keys ∪ cur_schema_keys
+#   2) Uses Analysis baseline_schema_metrics_v1 (schema-keyed) as the prev map (when available)
+#   3) Builds a schema-keyed current map from ALL current canonical metrics (any source),
+#      selecting a deterministic "winner" per schema key
+#   4) Joins strictly by schema key (not by source universe), computes change_type + pct.
+#
+# Safety:
+#   - Additive: defines a new builder and (optionally) swaps it in behind a join_mode gate.
+#   - Deterministic: stable tie-breaks for current winner selection.
+#
+# Versioning:
+CODE_VERSION = "FIX2D47"
+
+def _fix2d47_get_nested(d, path, default=None):
+    try:
+        x = d
+        for k in path:
+            if not isinstance(x, dict):
+                return default
+            x = x.get(k)
+        return x if x is not None else default
+    except Exception:
+        return default
+
+def _fix2d47_first_present(d, paths, default=None):
+    for p in paths:
+        v = _fix2d47_get_nested(d, p, None)
+        if v is not None:
+            return v
+    return default
+
+def _fix2d47_unwrap_baseline_schema_metrics(prev_response: dict) -> dict:
+    # Where Analysis should serialize it (post FIX2D45):
+    #   - results.baseline_schema_metrics_v1 (preferred)
+    #   - baseline_schema_metrics_v1 (mirror)
+    # plus a few legacy wrapper shapes.
+    paths = [
+        ["results","baseline_schema_metrics_v1"],
+        ["baseline_schema_metrics_v1"],
+        ["primary_response","results","baseline_schema_metrics_v1"],
+        ["results","primary_response","results","baseline_schema_metrics_v1"],
+        ["primary_response","baseline_schema_metrics_v1"],
+    ]
+    v = _fix2d47_first_present(prev_response or {}, paths, default={})
+    return v if isinstance(v, dict) else {}
+
+def _fix2d47_unwrap_primary_metrics_canonical(resp: dict) -> dict:
+    if not isinstance(resp, dict):
+        return {}
+    if isinstance(resp.get("primary_metrics_canonical"), dict) and resp.get("primary_metrics_canonical"):
+        return resp.get("primary_metrics_canonical") or {}
+    pr = resp.get("primary_response")
+    if isinstance(pr, dict):
+        if isinstance(pr.get("primary_metrics_canonical"), dict) and pr.get("primary_metrics_canonical"):
+            return pr.get("primary_metrics_canonical") or {}
+        res = pr.get("results")
+        if isinstance(res, dict) and isinstance(res.get("primary_metrics_canonical"), dict) and res.get("primary_metrics_canonical"):
+            return res.get("primary_metrics_canonical") or {}
+    res = resp.get("results")
+    if isinstance(res, dict) and isinstance(res.get("primary_metrics_canonical"), dict) and res.get("primary_metrics_canonical"):
+        return res.get("primary_metrics_canonical") or {}
+    return {}
+
+def _fix2d47_schema_key_for_metric(ckey: str, m: dict) -> str:
+    # Prefer explicit schema/canonical_key fields; fall back to dict key.
+    if isinstance(m, dict):
+        for k in ("canonical_key", "schema_key", "schema_canonical_key", "schema_ckey"):
+            v = m.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    if isinstance(ckey, str) and ckey.strip():
+        return ckey.strip()
+    return ""
+
+def _fix2d47_metric_confidence(m: dict) -> float:
+    if not isinstance(m, dict):
+        return 0.0
+    for k in ("confidence", "score", "match_confidence", "bind_confidence"):
+        v = m.get(k)
+        try:
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+    return 0.0
+
+def _fix2d47_pick_cur_winner(existing: dict, challenger: dict) -> dict:
+    # Deterministic winner selection:
+    #   1) higher confidence
+    #   2) higher anchor_confidence (if present)
+    #   3) stable tie-break by source_url then raw then canonical_id
+    if not isinstance(existing, dict):
+        return challenger
+    if not isinstance(challenger, dict):
+        return existing
+
+    ce = _fix2d47_metric_confidence(existing)
+    cc = _fix2d47_metric_confidence(challenger)
+    if cc != ce:
+        return challenger if cc > ce else existing
+
+    def _af(m):
+        try:
+            return float(m.get("anchor_confidence") or 0.0)
+        except Exception:
+            return 0.0
+
+    ae = _af(existing)
+    ac = _af(challenger)
+    if ac != ae:
+        return challenger if ac > ae else existing
+
+    def _k(m):
+        try:
+            su = m.get("source_url") or ""
+            raw = m.get("raw") or m.get("value") or ""
+            cid = m.get("canonical_id") or ""
+            return (str(su), str(raw), str(cid))
+        except Exception:
+            return ("", "", "")
+
+    return challenger if _k(challenger) < _k(existing) else existing
+
+def _fix2d47_build_cur_map_by_schema_key(cur_response: dict) -> dict:
+    cur_metrics = _fix2d47_unwrap_primary_metrics_canonical(cur_response or {})
+    out = {}
+    if not isinstance(cur_metrics, dict):
+        return out
+    for ck, m in cur_metrics.items():
+        if not isinstance(m, dict):
+            continue
+        sk = _fix2d47_schema_key_for_metric(ck, m)
+        if not sk:
+            continue
+        out[sk] = _fix2d47_pick_cur_winner(out.get(sk), m)
+    return out
+
+def _fix2d47_raw_display_value(m: dict):
+    if not isinstance(m, dict):
+        return None
+    if m.get("raw") is not None:
+        return m.get("raw")
+    if m.get("value") is not None:
+        return m.get("value")
+    # baseline_schema_metrics_v1 often stores display in prev_raw/current_raw fields elsewhere; keep None if absent
+    return None
+
+def _fix2d47_value_norm(m: dict):
+    if not isinstance(m, dict):
+        return None
+    for k in ("value_norm", "valuenorm", "current_value_norm", "prev_value_norm", "cur_value_norm"):
+        if m.get(k) is None:
+            continue
+        try:
+            return float(m.get(k))
+        except Exception:
+            pass
+    return None
+
+def _fix2d47_unit_tag(m: dict) -> str:
+    if not isinstance(m, dict):
+        return ""
+    for k in ("base_unit", "unit", "unit_tag", "unittag", "baseunit"):
+        v = m.get(k)
+        if v is not None:
+            return str(v).strip()
+    return ""
+
+def _fix2d47_metric_name(schema_key: str, prev_m: dict, cur_m: dict) -> str:
+    for m in (prev_m, cur_m):
+        if isinstance(m, dict):
+            for k in ("name", "metric_name", "label", "title"):
+                v = m.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+    return schema_key
+
+def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict):
+    """Return (rows, summary) for Diff Metrics Panel V2 (schema-union + cross-source current)."""
+    rows = []
+
+    prev_map = _fix2d47_unwrap_baseline_schema_metrics(prev_response or {})
+    cur_map = _fix2d47_build_cur_map_by_schema_key(cur_response or {})
+
+    prev_keys = set([k for k in prev_map.keys() if isinstance(k, str) and k])
+    cur_keys = set([k for k in cur_map.keys() if isinstance(k, str) and k])
+    all_keys = sorted(prev_keys | cur_keys)
+
+    both_count = 0
+    prev_only_count = 0
+    cur_only_count = 0
+
+    inc = dec = unc = add = rem = not_found = 0
+
+    for skey in all_keys:
+        pm = prev_map.get(skey) if isinstance(prev_map, dict) else None
+        pm = pm if isinstance(pm, dict) else {}
+        cm = cur_map.get(skey) if isinstance(cur_map, dict) else None
+        cm = cm if isinstance(cm, dict) else {}
+
+        has_prev = skey in prev_keys
+        has_cur = skey in cur_keys
+
+        if has_prev and has_cur:
+            both_count += 1
+        elif has_prev and not has_cur:
+            prev_only_count += 1
+        elif has_cur and not has_prev:
+            cur_only_count += 1
+
+        prev_raw = pm.get("value_raw") if pm.get("value_raw") is not None else _fix2d47_raw_display_value(pm)
+        cur_raw = cm.get("value_raw") if cm.get("value_raw") is not None else _fix2d47_raw_display_value(cm)
+
+        prev_val_norm = _fix2d47_value_norm(pm)
+        cur_val_norm = _fix2d47_value_norm(cm)
+
+        prev_unit = pm.get("unit_tag") if pm.get("unit_tag") is not None else _fix2d47_unit_tag(pm)
+        cur_unit = cm.get("unit_tag") if cm.get("unit_tag") is not None else _fix2d47_unit_tag(cm)
+
+        name = _fix2d47_metric_name(skey, pm, cm)
+
+        change_type = "unknown"
+        change_pct = None
+        delta_abs = None
+
+        # Semantics:
+        # - both present + numeric => increased/decreased/unchanged
+        # - prev present, cur missing => removed (vs baseline)
+        # - cur present, prev missing => added (new discovery)
+        if has_prev and not has_cur:
+            change_type = "removed"
+            rem += 1
+        elif has_cur and not has_prev:
+            change_type = "added"
+            add += 1
+        else:
+            # both
+            if isinstance(prev_val_norm, (int, float)) and isinstance(cur_val_norm, (int, float)):
+                delta_abs = float(cur_val_norm) - float(prev_val_norm)
+                if abs(prev_val_norm) > 1e-12:
+                    change_pct = (delta_abs / float(prev_val_norm)) * 100.0
+                # tolerance for float jitter
+                if abs(delta_abs) <= max(1e-9, abs(float(prev_val_norm)) * 0.0005):
+                    change_type = "unchanged"
+                    unc += 1
+                elif delta_abs > 0:
+                    change_type = "increased"
+                    inc += 1
+                else:
+                    change_type = "decreased"
+                    dec += 1
+            else:
+                # both present but not numerically comparable
+                change_type = "unknown"
+                not_found += 1
+
+        rows.append({
+            "canonical_key": skey,               # schema key
+            "name": name,
+            "previous_value": prev_raw if has_prev else None,
+            "current_value": cur_raw if has_cur else None,
+            "prev_value_norm": prev_val_norm if has_prev else None,
+            "cur_value_norm": cur_val_norm if has_cur else None,
+            "previous_unit": prev_unit if has_prev else None,
+            "current_unit": cur_unit if has_cur else None,
+            "change_type": change_type,
+            "change_pct": change_pct,
+            "delta_abs": delta_abs,
+            # provenance helpers
+            "prev_source_url": pm.get("source_url"),
+            "cur_source_url": cm.get("source_url"),
+            "cur_confidence": _fix2d47_metric_confidence(cm),
+            "method": "schema_key",              # explicit: joined by schema key
+        })
+
+    summary = {
+        "join_mode": "schema_union",
+        "rows_total": len(rows),
+        "both_count": both_count,
+        "prev_only_count": prev_only_count,
+        "cur_only_count": cur_only_count,
+        "metrics_increased": inc,
+        "metrics_decreased": dec,
+        "metrics_unchanged": unc,
+        "metrics_added": add,
+        "metrics_removed": rem,
+        "metrics_unknown": not_found,
+    }
+    return rows, summary
+
+
+# -------------------------------
+# OPTIONAL WIRING HOOK:
+# If your code already calls build_diff_metrics_panel_v2(prev, cur),
+# replace it with build_diff_metrics_panel_v2_FIX2D47 behind your join-mode flag.
+#
+# Example drop-in (inside compute_source_anchored_diff before calling the builder):
+#   jm = _fix2d6_get_diff_join_mode_v1()
+#   if jm in ("schema_union","schema","cross","schema_cross_source","x"):
+#       rows, summary = build_diff_metrics_panel_v2_FIX2D47(prev_response, cur_response)
+#   else:
+#       rows, summary = build_diff_metrics_panel_v2(prev_response, cur_response)
+#
+# Patch tracker entry (manual):
+#   - FIX2D47: Diff Panel V2 schema-union universe + cross-source current winner selection
+
+
+
+# =========================================================
+# FIX2D47 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+# Ensure the authoritative code version reflects this patch.
+CODE_VERSION = "FIX2D47"
