@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D32"  # PATCH FIX2D30 (ADD): contextual unit-family correction for magnitude M/million units to prevent currency misclassification and enable baseline comparability
+CODE_VERSION = "FIX2D33"  # PATCH FIX2D30 (ADD): contextual unit-family correction for magnitude M/million units to prevent currency misclassification and enable baseline comparability
 
 
 # ============================================================
@@ -95,6 +95,26 @@ try:
         "summary": "Diff Panel V2: treat anchor_hash mismatches as still diffable when canonical_key + unit-family gates pass; stamp row-level anchor_mismatch_diffable_v1 diagnostics and count such joins for audit.",
         "files": ["FIX2D32.py"],
         "supersedes": ["FIX2D31"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D33
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D33",
+        "date": "2026-01-17",
+        "summary": "Analysis schema-primary rebuild: baseline commitment for schema keys by backfilling missing value_norm from raw/value via deterministic parser when selector chooses a candidate but value_norm is None; improves baseline comparability without weakening semantic gates.",
+        "files": ["FIX2D33.py"],
+        "supersedes": ["FIX2D32"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -15731,8 +15751,31 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         prev_metric=(pmc or {}).get(ckey) if isinstance(pmc, dict) else None,
                         web_context=web_context,
                     )
-                    if isinstance(out_m, dict) and out_m.get("value_norm") is not None:
-                        new_pmc[ckey] = out_m
+                    if isinstance(out_m, dict):
+                        # FIX2D33: baseline commitment for schema keys.
+                        # If selector chose a winner but value_norm is missing, deterministically parse from value/raw.
+                        if out_m.get("value_norm") is None:
+                            try:
+                                fn_parse = globals().get("_parse_num")
+                                if callable(fn_parse):
+                                    unit_hint = str(out_m.get("unit") or "")
+                                    v_try = fn_parse(out_m.get("value"), unit_hint)
+                                    if v_try is None:
+                                        # fall back to evidence raw
+                                        ev0 = None
+                                        if isinstance(out_m.get("evidence"), list) and out_m.get("evidence"):
+                                            ev0 = out_m.get("evidence")[0]
+                                        if isinstance(ev0, dict):
+                                            v_try = fn_parse(ev0.get("raw"), unit_hint)
+                                    if v_try is not None:
+                                        try:
+                                            out_m["value_norm"] = float(v_try)
+                                        except Exception:
+                                            out_m["value_norm"] = v_try
+                            except Exception:
+                                pass
+                        if out_m.get("value_norm") is not None:
+                            new_pmc[ckey] = out_m
                     sel_trace[ckey] = meta if isinstance(meta, dict) else {"blocked_reason": "no_meta"}
                 except Exception as _e:
                     sel_trace[ckey] = {"blocked_reason": "selector_exception", "error": str(_e)[:200]}
