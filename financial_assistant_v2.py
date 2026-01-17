@@ -79,7 +79,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D31"  # PATCH FIX2D30 (ADD): contextual unit-family correction for magnitude M/million units to prevent currency misclassification and enable baseline comparability
+CODE_VERSION = "FIX2D32"  # PATCH FIX2D30 (ADD): contextual unit-family correction for magnitude M/million units to prevent currency misclassification and enable baseline comparability
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D32
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D32",
+        "date": "2026-01-17",
+        "summary": "Diff Panel V2: treat anchor_hash mismatches as still diffable when canonical_key + unit-family gates pass; stamp row-level anchor_mismatch_diffable_v1 diagnostics and count such joins for audit.",
+        "files": ["FIX2D32.py"],
+        "supersedes": ["FIX2D31"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 
 # ============================================================
@@ -1233,30 +1252,30 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "FIX2D31"
+#CODE_VERSION = "FIX2D2W"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "FIX2D31"
+#CODE_VERSION = "FIX2D2W"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "FIX2D31"
+#CODE_VERSION = "FIX2D2W"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D31"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D31"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2W"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2W"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "FIX2D31"
+#CODE_VERSION = "FIX2D2W"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -20043,7 +20062,9 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                 },
             }
             _diff_v2_rows = [_sent]
-            _diff_v2_summary = {"rows_total": 1, "joined_by_ckey": 0, "joined_by_anchor_hash": 0, "not_found": 1, "sentinel": True}
+            _diff_v2_summary = {"rows_total": 1, "joined_by_ckey": 0, "joined_by_anchor_hash": 0,
+            "joined_by_ckey_anchor_mismatch": 0,
+        "joined_by_ckey_anchor_mismatch": 0, "not_found": 1, "sentinel": True}
             output["metric_changes_v2"] = _diff_v2_rows
             _dbg = output.setdefault("debug", {})
             if isinstance(_dbg, dict):
@@ -20668,6 +20689,44 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         except Exception:
             pass
         # END PATCH FIX2D13_BASELINE_SEMANTICS_V1
+
+        # =====================================================================
+        # PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE (ADDITIVE)
+        # If we joined by canonical_key, anchors may legitimately differ in production
+        # (new source / updated page). Treat as diffable; stamp diagnostics.
+        # =====================================================================
+        _fix2d32_anchor_mismatch = False
+        try:
+            if method_effective == "ckey" and prev_ah and cur_ah_effective and str(prev_ah) != str(cur_ah_effective):
+                _fix2d32_anchor_mismatch = True
+                try:
+                    summary["joined_by_ckey_anchor_mismatch"] = int(summary.get("joined_by_ckey_anchor_mismatch") or 0) + 1
+                except Exception:
+                    pass
+        except Exception:
+            _fix2d32_anchor_mismatch = False
+        # =====================================================================
+        # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
+        # =====================================================================
+
+        # =====================================================================
+        # PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE (ADDITIVE)
+        # Treat anchor_hash mismatches as still diffable when joined by canonical_key.
+        # Stamp diagnostics and count mismatches for audit.
+        # =====================================================================
+        _fix2d32_anchor_mismatch = False
+        try:
+            if method_effective == "ckey" and prev_ah and cur_ah_effective and str(prev_ah) != str(cur_ah_effective):
+                _fix2d32_anchor_mismatch = True
+                try:
+                    summary["joined_by_ckey_anchor_mismatch"] = int(summary.get("joined_by_ckey_anchor_mismatch") or 0) + 1
+                except Exception:
+                    pass
+        except Exception:
+            _fix2d32_anchor_mismatch = False
+        # =====================================================================
+        # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
+        # =====================================================================
 
         display_name = pm.get("name") or pm.get("display_name") or pm.get("original_name") or prev_ckey
 
@@ -33295,7 +33354,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D31"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 # =====================================================================
@@ -35640,21 +35699,27 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         elif method_effective == "anchor_hash":
             match_conf = 85.0
 
-        if resolved_cur_ckey_effective is None:
-            change_type = "not_found"
-        else:
-            if isinstance(prev_val_norm, (int, float)) and isinstance(cur_val_norm_effective, (int, float)):
-                if abs(prev_val_norm - cur_val_norm_effective) <= max(1e-9, abs(prev_val_norm) * 0.0005):
-                    change_type = "unchanged"
-                    change_pct = 0.0
-                elif cur_val_norm_effective > prev_val_norm:
-                    change_type = "increased"
-                    change_pct = ((cur_val_norm_effective - prev_val_norm) / max(1e-9, abs(prev_val_norm))) * 100.0
-                else:
-                    change_type = "decreased"
-                    change_pct = ((cur_val_norm_effective - prev_val_norm) / max(1e-9, abs(prev_val_norm))) * 100.0
-            else:
-                change_type = "unknown"
+
+        # =====================================================================
+        # PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE (ADDITIVE)
+        # Treat anchor_hash mismatches as still diffable when canonical_key join
+        # succeeds and unit-family guards pass. Stamp diagnostics for audit.
+        # =====================================================================
+        _fix2d32_anchor_mismatch = False
+        try:
+            if method_effective == "ckey" and prev_ah and cur_ah_effective and str(prev_ah) != str(cur_ah_effective):
+                _fix2d32_anchor_mismatch = True
+                try:
+                    summary["joined_by_ckey_anchor_mismatch"] = int(summary.get("joined_by_ckey_anchor_mismatch") or 0) + 1
+                except Exception:
+                    pass
+        except Exception:
+            _fix2d32_anchor_mismatch = False
+        # =====================================================================
+        # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
+        # =====================================================================
+
+
 
         display_name = pm.get("name") or pm.get("display_name") or pm.get("original_name") or prev_ckey
 
@@ -35683,6 +35748,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             "anchor_used": (method_effective == "anchor_hash"),
             "prev_anchor_hash": prev_ah,
             "cur_anchor_hash": cur_ah_effective,
+            "anchor_mismatch_diffable_v1": bool(_fix2d32_anchor_mismatch),
             "prev_value_norm": prev_val_norm,
             "cur_value_norm": cur_val_norm_effective,
             "diag": {
@@ -35694,6 +35760,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     "method": method_effective,
                     "prev_anchor_hash": prev_ah,
                     "cur_anchor_hash": cur_ah_effective,
+                    "anchor_mismatch_diffable_v1": bool(_fix2d32_anchor_mismatch),
                     "pool_size": (_fix2d2i_pool_size if '_fix2d2i_pool_size' in locals() else None),
                     "top_candidates": (_fix2d2i_top_candidates if '_fix2d2i_top_candidates' in locals() else None),
                 },
@@ -35964,7 +36031,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D31"
+        CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 
@@ -36472,7 +36539,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2D31"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -36484,7 +36551,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D31"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 # =====================================================================
@@ -36712,7 +36779,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D31"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 
@@ -36979,7 +37046,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D31"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 
