@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D39"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D40"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D34
@@ -190,6 +190,22 @@ try:
         "summary": "Analysis schema-baseline: enforce schema-authoritative dimension/unit_family as hard-binding for schema keys. Reject baseline_schema entries whose non-unknown dimension/unit_family conflict with schema; otherwise set dimension/unit_family to schema spec (with audit flags). This prevents unknown/mis-typed baseline values from blocking diff comparability.",
         "files": ["FIX2D39.py"],
         "supersedes": ["FIX2D38"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# PATCH TRACKER V1 (ADD): FIX2D40
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D40",
+        "summary": "Analysis: when schema is frozen, remap best-fit baseline metrics from generic canonical keys onto schema canonical keys (one-to-one) to enable baseline diffing; stamps explicit schema_remap audit fields; retains FIX2D39 hard unit/dimension rejection.",
+        "files": ["FIX2D40.py"],
+        "supersedes": ["FIX2D39"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -15944,6 +15960,130 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             try:
                 if isinstance(new_pmc, dict) and new_pmc:
                     baseline_schema.update(new_pmc)
+            except Exception:
+                pass
+            # FIX2D40: Remap baseline metrics from generic canonical keys onto schema canonical keys (one-to-one).
+            # Rationale: Analysis may emit strong baseline metrics under generic keys (e.g., "2025_global_ev_sales__unknown")
+            # while Evolution/injection emits schema keys (e.g., "global_ev_sales_ytd_2025__unit_sales"). Without remap,
+            # prev_value_norm stays null and diff cannot activate.
+            try:
+                pmc_src = analysis.get('primary_metrics_canonical')
+                used_src_keys = set()
+                if isinstance(schema, dict) and isinstance(pmc_src, dict):
+                    def _fix2d40_score(_ck, _m, _schema_key, _spec):
+                        try:
+                            txt = " ".join([
+                                str(_ck or ""),
+                                str(_m.get('name') or ""),
+                                str(_m.get('context_snippet') or ""),
+                                str(_m.get('source_url') or ""),
+                            ]).lower()
+                        except Exception:
+                            txt = str(_ck or "").lower()
+                        s = 0
+                        # Basic topic cues
+                        if 'sales' in _schema_key and 'sales' in txt:
+                            s += 3
+                        if 'chargers' in _schema_key and ('charger' in txt or 'charging' in txt):
+                            s += 3
+                        if 'cagr' in _schema_key and ('cagr' in txt or 'growth' in txt or 'rate' in txt):
+                            s += 3
+                        if 'investment' in _schema_key and ('invest' in txt or 'capex' in txt):
+                            s += 3
+                        # Year cues
+                        if '2025' in _schema_key and '2025' in txt:
+                            s += 2
+                        if '2040' in _schema_key and '2040' in txt:
+                            s += 2
+                        if '2026' in _schema_key and '2026' in txt:
+                            s += 1
+                        if '2030' in _schema_key and '2030' in txt:
+                            s += 1
+                        # Penalize obvious mismatches
+                        if 'china' in txt and 'global' in _schema_key:
+                            s -= 5
+                        # Unit-family compatibility quick check
+                        try:
+                            spec_dim = str((_spec or {}).get('dimension') or '').strip().lower()
+                            spec_uf = str((_spec or {}).get('unit_family') or (_spec or {}).get('unitFamily') or '').strip().lower()
+                            prior_uf = str(_m.get('unit_family') or '').strip().lower()
+                            if spec_uf and prior_uf and prior_uf not in ('unknown',) and prior_uf != spec_uf:
+                                s -= 4
+                            prior_dim = str(_m.get('dimension') or '').strip().lower()
+                            if spec_dim and prior_dim and prior_dim not in ('unknown',) and prior_dim != spec_dim:
+                                s -= 4
+                        except Exception:
+                            pass
+                        # Prefer numeric
+                        if _m.get('value_norm') is not None:
+                            s += 2
+                        return s
+
+                    # For each schema key missing from baseline_schema, pick best candidate from pmc_src
+                    for _skey, _spec in schema.items():
+                        if not _skey or _skey in baseline_schema:
+                            continue
+                        best_k = None
+                        best_m = None
+                        best_score = None
+                        for _ck, _m in pmc_src.items():
+                            if _ck in used_src_keys:
+                                continue
+                            if not isinstance(_m, dict):
+                                continue
+                            sc = _fix2d40_score(_ck, _m, _skey, _spec)
+                            if best_score is None or sc > best_score:
+                                best_score = sc
+                                best_k = _ck
+                                best_m = _m
+                        # Require a minimum positive score to avoid accidental remaps
+                        if best_m is None or (best_score is None) or (best_score < 4):
+                            continue
+
+                        out_m = dict(best_m)
+                        # Mark remap audit
+                        out_m['schema_remap_v1'] = True
+                        out_m['schema_remap_from_ckey_v1'] = best_k
+                        out_m['schema_remap_to_ckey_v1'] = _skey
+                        out_m['schema_remap_score_v1'] = best_score
+                        out_m['is_proxy'] = True
+                        out_m['proxy_type'] = 'schema_remap'
+                        out_m['proxy_reason'] = 'schema_remap'
+
+                        # Enforce FIX2D39 hard-binding against schema (reject conflicts)
+                        try:
+                            spec_dim = str((_spec or {}).get('dimension') or (_spec or {}).get('dim') or '').strip()
+                            spec_uf = str((_spec or {}).get('unit_family') or (_spec or {}).get('unitFamily') or '').strip()
+                            prior_dim = out_m.get('dimension')
+                            prior_uf = out_m.get('unit_family')
+                            prior_dim_s = ('' if prior_dim is None else str(prior_dim).strip())
+                            prior_uf_s = ('' if prior_uf is None else str(prior_uf).strip())
+                            if spec_dim and prior_dim_s and prior_dim_s not in ('unknown',) and prior_dim_s != spec_dim:
+                                continue
+                            if spec_uf and prior_uf_s and prior_uf_s not in ('unknown',) and prior_uf_s != spec_uf:
+                                continue
+                            if spec_dim:
+                                if prior_dim_s != spec_dim:
+                                    out_m['dimension_prior_v1'] = prior_dim
+                                    out_m['dimension_coerced_from_schema_v1'] = True
+                                out_m['dimension'] = spec_dim
+                            if spec_uf:
+                                if prior_uf_s != spec_uf:
+                                    out_m['unit_family_prior_v1'] = prior_uf
+                                    out_m['unit_family_coerced_from_schema_v1'] = True
+                                out_m['unit_family'] = spec_uf
+                        except Exception:
+                            pass
+
+                        # Override canonical key fields if present
+                        try:
+                            out_m['canonical_key'] = _skey
+                            out_m['ckey'] = _skey
+                        except Exception:
+                            pass
+
+                        baseline_schema[_skey] = out_m
+                        used_src_keys.add(best_k)
             except Exception:
                 pass
 
@@ -38148,7 +38288,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D39"
+    CODE_VERSION = "FIX2D40"
 except Exception:
     pass
 
