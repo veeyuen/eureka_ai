@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D30"  # PATCH FIX2D30 (ADD): contextual unit-family correction for magnitude M/million units to prevent currency misclassification and enable baseline comparability
+CODE_VERSION = "FIX2D31"  # PATCH FIX2D30 (ADD): contextual unit-family correction for magnitude M/million units to prevent currency misclassification and enable baseline comparability
 
 
 # ============================================================
@@ -153,6 +153,14 @@ try:
         "summary": "Contextual unit-family correction: prevent magnitude tags (e.g., M/million) in 'million units / units sold / chargers / vehicles' contexts from being misclassified as currency; remove keyword-only currency upgrades to enable clean baseline comparability without weakening hard unit-family rejection.",
         "files": ["FIX2D30.py"],
         "supersedes": ["FIX2D2Z"],
+    })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D31",
+        "date": "2026-01-17",
+        "summary": "Option A schema authority: when metric_schema_frozen is present in Analysis, rebuild primary_metrics_canonical by running the authoritative Analysis selector (_analysis_canonical_final_selector_v1) constrained to the frozen schema keys. This makes Analysis emit schema-aligned baseline metrics so Evolution injection can overlap and Diff Panel V2 can activate without weakening semantics.",
+        "files": ["FIX2D31.py"],
+        "supersedes": ["FIX2D30"],
     })
 
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
@@ -1225,30 +1233,30 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "FIX2D2W"
+#CODE_VERSION = "FIX2D31"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "FIX2D2W"
+#CODE_VERSION = "FIX2D31"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "FIX2D2W"
+#CODE_VERSION = "FIX2D31"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2W"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2W"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D31"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D31"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "FIX2D2W"
+#CODE_VERSION = "FIX2D31"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -1765,6 +1773,8 @@ def add_to_history(analysis: dict) -> bool:
         pass
     # =====================================================================
 
+
+    # =====================================================================
     import json
     import re
     import streamlit as st
@@ -15643,6 +15653,105 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
 
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH FIX2D31 (ADD): Option A — schema-align Analysis primary_metrics_canonical
+    # - When metric_schema_frozen exists in Analysis, rebuild primary_metrics_canonical
+    #   by running the authoritative Analysis selector (_analysis_canonical_final_selector_v1)
+    #   constrained to the frozen schema keys, over the same baseline candidate universe.
+    # - This makes Analysis emit schema-aligned baseline metrics so Evolution injection can overlap
+    #   and Diff Panel V2 can activate without weakening semantics.
+    # =====================================================================
+    try:
+        schema = analysis.get("metric_schema_frozen")
+        pmc = analysis.get("primary_metrics_canonical")
+        sel = globals().get("_analysis_canonical_final_selector_v1")
+        if isinstance(schema, dict) and schema and callable(sel):
+            # Preserve original unconstrained PMC for diagnostics
+            if isinstance(pmc, dict) and pmc and "primary_metrics_canonical_unconstrained_v0" not in analysis:
+                analysis["primary_metrics_canonical_unconstrained_v0"] = dict(pmc)
+
+            # Flatten candidate universe from baseline_sources_cache + web_context.scraped_meta
+            flat = []
+            bsc = analysis.get("baseline_sources_cache")
+            if isinstance(bsc, list):
+                for src in bsc:
+                    if isinstance(src, dict) and isinstance(src.get("extracted_numbers"), list):
+                        flat.extend([n for n in src.get("extracted_numbers") if isinstance(n, dict)])
+            if isinstance(web_context, dict):
+                sm = web_context.get("scraped_meta")
+                if isinstance(sm, dict) and isinstance(sm.get("extracted_numbers"), list):
+                    flat.extend([n for n in sm.get("extracted_numbers") if isinstance(n, dict)])
+
+            # Best-effort canonicalize candidates (if helper exists)
+            try:
+                fn_can = globals().get("canonicalize_numeric_candidate")
+                if callable(fn_can):
+                    flat = [fn_can(dict(n)) if isinstance(n, dict) else n for n in flat]
+            except Exception:
+                pass
+
+            anchors = analysis.get("metric_anchors")
+            if not isinstance(anchors, dict):
+                anchors = {}
+
+            new_pmc = {}
+            sel_trace = {}
+            for ckey in sorted(schema.keys()):
+                spec = schema.get(ckey) or {}
+                if not isinstance(spec, dict):
+                    continue
+                try:
+                    out_m, meta = sel(
+                        ckey,
+                        spec,
+                        flat,
+                        anchors=anchors,
+                        prev_metric=(pmc or {}).get(ckey) if isinstance(pmc, dict) else None,
+                        web_context=web_context,
+                    )
+                    if isinstance(out_m, dict) and out_m.get("value_norm") is not None:
+                        new_pmc[ckey] = out_m
+                    sel_trace[ckey] = meta if isinstance(meta, dict) else {"blocked_reason": "no_meta"}
+                except Exception as _e:
+                    sel_trace[ckey] = {"blocked_reason": "selector_exception", "error": str(_e)[:200]}
+
+            # Only replace PMC if we got at least one schema metric (avoid wiping PMC on empty candidate universe)
+            if new_pmc:
+                analysis["primary_metrics_canonical"] = new_pmc
+                try:
+                    if not isinstance(analysis.get("results"), dict):
+                        analysis["results"] = {}
+                    if not isinstance(analysis["results"].get("debug"), dict):
+                        analysis["results"]["debug"] = {}
+                    analysis["results"]["debug"]["fix2d31_schema_primary_rebuild"] = {
+                        "enabled": True,
+                        "schema_key_count": int(len(schema)),
+                        "flat_candidate_count": int(len(flat)),
+                        "new_pmc_count": int(len(new_pmc)),
+                        "trace_by_key": sel_trace,
+                    }
+                except Exception:
+                    pass
+            else:
+                try:
+                    if not isinstance(analysis.get("results"), dict):
+                        analysis["results"] = {}
+                    if not isinstance(analysis["results"].get("debug"), dict):
+                        analysis["results"]["debug"] = {}
+                    analysis["results"]["debug"]["fix2d31_schema_primary_rebuild"] = {
+                        "enabled": True,
+                        "schema_key_count": int(len(schema)),
+                        "flat_candidate_count": int(len(flat)),
+                        "new_pmc_count": 0,
+                        "note": "no_schema_metrics_selected; leaving existing primary_metrics_canonical unchanged",
+                    }
+                except Exception:
+                    pass
+    except Exception:
+        pass
     # =====================================================================
     # PATCH V1 (ADDITIVE): analysis & schema version stamping
     # - Pure metadata, NO logic impact
@@ -33186,7 +33295,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D31"
 except Exception:
     pass
 # =====================================================================
@@ -35855,7 +35964,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D2W"
+        CODE_VERSION = "FIX2D31"
 except Exception:
     pass
 
@@ -36363,7 +36472,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D31"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -36375,7 +36484,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D31"
 except Exception:
     pass
 # =====================================================================
@@ -36603,7 +36712,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D31"
 except Exception:
     pass
 
@@ -36870,7 +36979,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D2W"
+    CODE_VERSION = "FIX2D31"
 except Exception:
     pass
 
