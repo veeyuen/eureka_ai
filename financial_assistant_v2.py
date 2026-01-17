@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D37"  # PATCH FIX2D37 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D38"  # PATCH FIX2D38 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D34
@@ -153,6 +153,25 @@ try:
         "summary": "Analysis: emit baseline_schema_metrics_v1 (schema-keyed baseline metric map) for diffing; Diff Panel V2 prefers this schema baseline map when present to ensure prev universe is explicitly schema-keyed and stable.",
         "files": ["FIX2D37.py"],
         "supersedes": ["FIX2D36"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D38
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D38",
+        "date": "2026-01-17",
+        "summary": "Analysis: always emit baseline_schema_metrics_v1 for schema keys; fill missing schema keys from flat candidates as proxy baselines (schema_fallback) when selector yields no schema selections; Diff Panel continues to prefer schema baseline map when present.",
+        "files": ["FIX2D38.py"],
+        "supersedes": ["FIX2D37"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -15877,52 +15896,115 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 except Exception as _e:
                     sel_trace[ckey] = {"blocked_reason": "selector_exception", "error": str(_e)[:200]}
 
+            # FIX2D38: Always build a schema-keyed baseline map for diffing.
+            # Even when no schema metric wins selection (new_pmc empty), we still emit a baseline_schema_metrics_v1
+            # by filling missing schema keys from flat candidates as proxy baselines. This ensures the prev universe
+            # is schema-keyed and numeric where possible, so baseline diffing can activate.
+            baseline_schema = {}
+            try:
+                if isinstance(new_pmc, dict) and new_pmc:
+                    baseline_schema.update(new_pmc)
+            except Exception:
+                pass
+
+            # Fill gaps with schema fallback from flat candidates (proxy baselines)
+            try:
+                if isinstance(schema, dict) and isinstance(flat, list):
+                    for ckey, spec in schema.items():
+                        if not ckey or ckey in baseline_schema:
+                            continue
+                        best = None
+                        for cand in flat:
+                            try:
+                                if not isinstance(cand, dict):
+                                    continue
+                                ck = cand.get('canonical_key') or cand.get('ckey') or cand.get('canon_key')
+                                if ck != ckey:
+                                    continue
+                                # Prefer numeric candidates
+                                if cand.get('value_norm') is not None:
+                                    best = cand
+                                    break
+                                if best is None:
+                                    best = cand
+                            except Exception:
+                                continue
+                        if best is None:
+                            continue
+                        out_m = dict(best)
+                        # Ensure normalized numeric when possible (reuse FIX2D33 parsing helper if present)
+                        try:
+                            if out_m.get('value_norm') is None:
+                                _vraw = out_m.get('value')
+                                if (_vraw is None) and isinstance(out_m.get('evidence'), list) and out_m['evidence']:
+                                    _ev0 = out_m['evidence'][0]
+                                    if isinstance(_ev0, dict):
+                                        _vraw = _ev0.get('raw') or _ev0.get('text')
+                                if _vraw is not None:
+                                    try:
+                                        _parsed = _fix2d33_parse_value_norm_v1(_vraw, out_m) if ' _fix2d33_parse_value_norm_v1'.strip() else None
+                                    except Exception:
+                                        _parsed = None
+                                    if _parsed is not None:
+                                        out_m['value_norm'] = _parsed
+                            # Coerce dimension/unit_family from schema when missing/unknown
+                            spec_dim = ''
+                            spec_uf = ''
+                            if isinstance(spec, dict):
+                                spec_dim = str(spec.get('dimension') or spec.get('dim') or '')
+                                spec_uf = str(spec.get('unit_family') or spec.get('unitFamily') or '')
+                            prior_dim = out_m.get('dimension')
+                            prior_uf = out_m.get('unit_family')
+                            if spec_dim and (prior_dim is None or str(prior_dim).strip() in ('', 'unknown')):
+                                out_m['dimension'] = spec_dim
+                                out_m['dimension_coerced_from_schema_v1'] = True
+                                out_m['dimension_prior_v1'] = prior_dim
+                            if spec_uf and (prior_uf is None or str(prior_uf).strip() in ('', 'unknown')):
+                                out_m['unit_family'] = spec_uf
+                                out_m['unit_family_coerced_from_schema_v1'] = True
+                                out_m['unit_family_prior_v1'] = prior_uf
+                        except Exception:
+                            pass
+                        # Mark as proxy baseline fallback
+                        out_m['is_proxy'] = True
+                        out_m['proxy_type'] = 'schema_fallback'
+                        out_m['proxy_reason'] = 'schema_fallback'
+                        baseline_schema[ckey] = out_m
+            except Exception:
+                pass
+
             # Only replace PMC if we got at least one schema metric (avoid wiping PMC on empty candidate universe)
             if new_pmc:
-                analysis["primary_metrics_canonical"] = new_pmc
+                analysis['primary_metrics_canonical'] = new_pmc
 
-                # FIX2D37: emit schema-keyed baseline metrics map for diffing.
-                # This is an explicit, stable prev universe that downstream diff logic can prefer.
+            # FIX2D38: emit schema-keyed baseline metrics map for diffing (always, with schema fallback).
+            if baseline_schema:
                 try:
-                    analysis["baseline_schema_metrics_v1"] = dict(new_pmc)
+                    analysis['baseline_schema_metrics_v1'] = dict(baseline_schema)
                 except Exception:
-                    analysis["baseline_schema_metrics_v1"] = new_pmc
+                    analysis['baseline_schema_metrics_v1'] = baseline_schema
                 try:
-                    if not isinstance(analysis.get("results"), dict):
-                        analysis["results"] = {}
-                    analysis["results"]["baseline_schema_metrics_v1"] = analysis.get("baseline_schema_metrics_v1")
+                    if not isinstance(analysis.get('results'), dict):
+                        analysis['results'] = {}
+                    analysis['results']['baseline_schema_metrics_v1'] = analysis.get('baseline_schema_metrics_v1')
                 except Exception:
                     pass
 
-                try:
-                    if not isinstance(analysis.get("results"), dict):
-                        analysis["results"] = {}
-                    if not isinstance(analysis["results"].get("debug"), dict):
-                        analysis["results"]["debug"] = {}
-                    analysis["results"]["debug"]["fix2d31_schema_primary_rebuild"] = {
-                        "enabled": True,
-                        "schema_key_count": int(len(schema)),
-                        "flat_candidate_count": int(len(flat)),
-                        "new_pmc_count": int(len(new_pmc)),
-                        "trace_by_key": sel_trace,
-                    }
-                except Exception:
-                    pass
-            else:
-                try:
-                    if not isinstance(analysis.get("results"), dict):
-                        analysis["results"] = {}
-                    if not isinstance(analysis["results"].get("debug"), dict):
-                        analysis["results"]["debug"] = {}
-                    analysis["results"]["debug"]["fix2d31_schema_primary_rebuild"] = {
-                        "enabled": True,
-                        "schema_key_count": int(len(schema)),
-                        "flat_candidate_count": int(len(flat)),
-                        "new_pmc_count": 0,
-                        "note": "no_schema_metrics_selected; leaving existing primary_metrics_canonical unchanged",
-                    }
-                except Exception:
-                    pass
+            # Debug trace
+            try:
+                if not isinstance(analysis.get('results'), dict):
+                    analysis['results'] = {}
+                if not isinstance(analysis['results'].get('debug'), dict):
+                    analysis['results']['debug'] = {}
+                analysis['results']['debug']['fix2d38_schema_baseline_map'] = {
+                    'enabled': True,
+                    'schema_key_count': int(len(schema)) if isinstance(schema, dict) else 0,
+                    'flat_candidate_count': int(len(flat)) if isinstance(flat, list) else 0,
+                    'selected_schema_count': int(len(new_pmc)) if isinstance(new_pmc, dict) else 0,
+                    'baseline_schema_count': int(len(baseline_schema)) if isinstance(baseline_schema, dict) else 0,
+                }
+            except Exception:
+                pass
     except Exception:
         pass
     # =====================================================================
@@ -38014,7 +38096,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D37"
+    CODE_VERSION = "FIX2D38"
 except Exception:
     pass
 
