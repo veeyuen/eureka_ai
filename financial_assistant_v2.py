@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2V"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2W"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -1206,30 +1206,30 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "FIX2D2V"
+#CODE_VERSION = "FIX2D2W"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "FIX2D2V"
+#CODE_VERSION = "FIX2D2W"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "FIX2D2V"
+#CODE_VERSION = "FIX2D2W"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2V"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2V"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2W"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2W"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "FIX2D2V"
+#CODE_VERSION = "FIX2D2W"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -29878,7 +29878,7 @@ def _fix2d2v_tight_window(cand: dict, width: int = 120) -> str:
 def _fix2d2v_years_from_key(canonical_key: str):
     try:
         import re
-        return re.findall(r"(19\d{2}|20\d{2})", str(canonical_key or ''))
+        return re.findall(r"\b(19\d{2}|20\d{2})\b", str(canonical_key or ''))
     except Exception:
         return []
 
@@ -29886,7 +29886,7 @@ def _fix2d2v_years_from_key(canonical_key: str):
 def _fix2d2v_semantic_eligible_commit(cand: dict, spec: dict, canonical_key: str, web_context=None) -> tuple:
     """Stricter eligibility used immediately before committing schema_only_rebuild outputs."""
     try:
-        if not _FIX2D2U_ENABLE:
+        if not bool(globals().get("_FIX2D2U_ENABLE", True)):
             return True, ''
         # 1) Start with FIX2D2U required-token groups, but only check within a tight window
         groups = _fix2d2u_required_token_groups(canonical_key, spec)
@@ -30786,7 +30786,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
 
             # PATCH FIX2D2V (ADD): require explicit year tokens from canonical_key to appear locally
             try:
-                _yrs = re.findall(r"(19\d{2}|20\d{2})", str(canonical_key or ""))
+                _yrs = re.findall(r"\b(19\d{2}|20\d{2})\b", str(canonical_key or ""))
                 if _yrs:
                     _hit_all = True
                     for _y in _yrs:
@@ -31185,7 +31185,7 @@ def _fix2d2u_required_token_groups(canonical_key: str, spec: dict) -> list:
 
 def _fix2d2u_semantic_eligible(cand: dict, spec: dict, canonical_key: str) -> tuple:
     try:
-        if not _FIX2D2U_ENABLE:
+        if not bool(globals().get("_FIX2D2U_ENABLE", True)):
             return True, ""
         groups = _fix2d2u_required_token_groups(canonical_key, spec)
         if not groups:
@@ -33108,7 +33108,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D2V"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 # =====================================================================
@@ -35553,7 +35553,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D2V"
+        CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 
@@ -36061,7 +36061,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2D2V"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -36073,7 +36073,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D2V"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 # =====================================================================
@@ -36301,7 +36301,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2V"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 
@@ -36556,11 +36556,19 @@ try:
         "files": ["FIX2D2U.py"],
         "supersedes": ["FIX2D2T"],
     })
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2W",
+        "date": "2026-01-17",
+        "summary": "Fix parity leak: ensure schema_only_rebuild commit-time semantic gate is always active (avoid NameError when _FIX2D2U_ENABLE defined later) and fix year-token extraction regex for required-year checks; bump CODE_VERSION.",
+        "files": ["FIX2D2W.py"],
+        "supersedes": ["FIX2D2V"],
+    })
+
 except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D2V"
+    CODE_VERSION = "FIX2D2W"
 except Exception:
     pass
 
