@@ -79,7 +79,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D33"  # PATCH FIX2D30 (ADD): contextual unit-family correction for magnitude M/million units to prevent currency misclassification and enable baseline comparability
+CODE_VERSION = "FIX2D34"  # PATCH FIX2D34 (ADD): prev-key driven diff universe for Diff Panel V2 (prefer PMC current)
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D34
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D34",
+        "date": "2026-01-17",
+        "summary": "Diff Panel V2: force prev-key driven diff universe (iterate baseline canonical keys only); for each prev key, hydrate current strictly from cur_response.primary_metrics_canonical when available to prevent cur-only keys from suppressing overlap and to stabilize join behavior.",
+        "files": ["FIX2D34.py"],
+        "supersedes": ["FIX2D33"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 
 # ============================================================
@@ -37635,3 +37654,230 @@ except Exception:
 # =====================================================================
 # END PATCH FIX2D2Y
 # =====================================================================
+
+
+# ============================================================
+# PATCH START: FIX2D34_PREV_KEY_DRIVEN_DIFF_UNIVERSE_V1
+# Purpose:
+#   - Force Diff Panel V2 universe to be PREV-key driven (baseline canonical keys)
+#   - Source CURRENT strictly from cur_response.primary_metrics_canonical for the same ckey
+#   - Do NOT emit cur-only "added" rows (those are not baseline diffs)
+# Safety:
+#   - Diff layer only. Does not affect extraction, hashing, fastpath, snapshots.
+#   - Keeps existing unit-family gates in later layers.
+# ============================================================
+
+def diff_metrics_by_name_FIX2D34(prev_response: dict, cur_response: dict):
+    """Prev-key driven diff: iterate prev canonical keys only; hydrate current from PMC."""
+    import re
+
+    ABS_EPS = 1e-9
+    REL_EPS = 0.0005
+
+    def _s(x):
+        try:
+            return str(x)
+        except Exception:
+            return ""
+
+    def _norm_name(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    def _parse_num(v, unit=""):
+        fn = globals().get("parse_human_number")
+        if callable(fn):
+            try:
+                return fn(_s(v), unit)
+            except Exception:
+                return None
+        try:
+            return float(_s(v).replace(",", "").strip())
+        except Exception:
+            return None
+
+    def _get_val_unit(m: dict, is_current: bool=False):
+        m = m if isinstance(m, dict) else {}
+        # Prefer canonical numeric
+        if m.get("value_norm") is not None:
+            try:
+                v = float(m.get("value_norm"))
+                u = _s(m.get("base_unit") or m.get("unit") or m.get("unit_tag") or "").strip()
+                return v, u
+            except Exception:
+                pass
+        # For current side, respect v27 disable flag
+        try:
+            if is_current and isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
+                u = _s(m.get("unit") or m.get("unit_tag") or "").strip()
+                return None, u
+        except Exception:
+            pass
+        u = _s(m.get("unit") or m.get("unit_tag") or "").strip()
+        return _parse_num(m.get("value"), u), u
+
+    def _get_schema(prev: dict):
+        if not isinstance(prev, dict):
+            return {}
+        sch = prev.get("metric_schema_frozen")
+        if isinstance(sch, dict) and sch:
+            return sch
+        pr = prev.get("primary_response")
+        if isinstance(pr, dict):
+            sch = pr.get("metric_schema_frozen")
+            if isinstance(sch, dict) and sch:
+                return sch
+        return {}
+
+    def _display_name(ckey: str) -> str:
+        ckey = _s(ckey).strip()
+        if not ckey:
+            return "Unknown Metric"
+        left, _, right = ckey.partition("__")
+        left = " ".join(w.capitalize() for w in left.replace("_", " ").split())
+        right = right.replace("_", " ").strip()
+        return f"{left} ({right})" if right else left
+
+    def _metric_def(schema: dict, ckey: str):
+        md = schema.get(ckey) if isinstance(schema, dict) else None
+        return md if isinstance(md, dict) else {}
+
+    prev_can = None
+    try:
+        prev_can = (prev_response or {}).get("primary_metrics_canonical")
+        if not isinstance(prev_can, dict) or not prev_can:
+            pr = (prev_response or {}).get("primary_response")
+            if isinstance(pr, dict):
+                prev_can = pr.get("primary_metrics_canonical")
+    except Exception:
+        prev_can = None
+    prev_can = prev_can if isinstance(prev_can, dict) else {}
+
+    cur_pmc = None
+    try:
+        cur_pmc = (cur_response or {}).get("primary_metrics_canonical")
+        if not isinstance(cur_pmc, dict) or not cur_pmc:
+            pr = (cur_response or {}).get("primary_response")
+            if isinstance(pr, dict):
+                cur_pmc = pr.get("primary_metrics_canonical")
+    except Exception:
+        cur_pmc = None
+    cur_pmc = cur_pmc if isinstance(cur_pmc, dict) else {}
+
+    schema = _get_schema(prev_response)
+
+    metric_changes = []
+    unchanged = increased = decreased = found = 0
+
+    # PREV-KEY DRIVEN UNIVERSE
+    for ckey, pm in prev_can.items():
+        if not isinstance(ckey, str):
+            ckey = _s(ckey)
+        ckey = ckey.strip()
+        if not ckey:
+            continue
+        pm = pm if isinstance(pm, dict) else {}
+
+        cm = cur_pmc.get(ckey)
+        cm = cm if isinstance(cm, dict) else {}
+
+        name = _display_name(ckey)
+        definition = _metric_def(schema, ckey)
+
+        prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
+
+        if not cm:
+            metric_changes.append({
+                "name": name,
+                "previous_value": prev_raw,
+                "current_value": "N/A",
+                "change_pct": None,
+                "change_type": "not_found",
+                "match_confidence": 0.0,
+                "canonical_key": ckey,
+                "metric_definition": definition,
+            })
+            continue
+
+        found += 1
+        cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
+
+        pv, pu = _get_val_unit(pm, is_current=False)
+        cv, cu = _get_val_unit(cm, is_current=True)
+
+        change_type = "unknown"
+        change_pct = None
+
+        if pv is not None and cv is not None:
+            if abs(pv - cv) <= max(ABS_EPS, abs(pv) * REL_EPS):
+                change_type = "unchanged"
+                change_pct = 0.0
+                unchanged += 1
+            elif cv > pv:
+                change_type = "increased"
+                change_pct = ((cv - pv) / max(ABS_EPS, abs(pv))) * 100.0
+                increased += 1
+            else:
+                change_type = "decreased"
+                change_pct = ((cv - pv) / max(ABS_EPS, abs(pv))) * 100.0
+                decreased += 1
+        else:
+            if pv is None and cv is not None:
+                change_type = "invalid_previous"
+            elif pv is not None and cv is None:
+                change_type = "invalid_current"
+            else:
+                change_type = "unknown"
+
+        # Build display current
+        cur_unit_tag = _s(cm.get("unit") or cm.get("unit_tag") or "").strip()
+        cur_disp = _s(cur_raw).strip() if cur_raw is not None else ""
+        if cur_disp and cur_unit_tag and (cur_unit_tag not in cur_disp):
+            cur_disp = f"{cur_disp} {cur_unit_tag}".strip()
+
+        metric_changes.append({
+            "name": name,
+            "previous_value": prev_raw,
+            "current_value": cur_disp or ("N/A" if cv is None else _s(cv)),
+            "change_pct": change_pct,
+            "change_type": change_type,
+            "match_confidence": 1.0,
+            "canonical_key": ckey,
+            "metric_definition": definition,
+            "previous_value_norm": pv,
+            "current_value_norm": cv,
+            "prev_unit_cmp": pu,
+            "cur_unit_cmp": cu,
+        })
+
+    # Attach top-level summary diagnostics
+    try:
+        if isinstance(cur_response, dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"].setdefault("fix2d34_prev_key_driven_diff_v1", {})
+                cur_response["debug"]["fix2d34_prev_key_driven_diff_v1"] = {
+                    "prev_keys": int(len(prev_can)) if isinstance(prev_can, dict) else 0,
+                    "cur_pmc_keys": int(len(cur_pmc)) if isinstance(cur_pmc, dict) else 0,
+                    "rows_emitted": int(len(metric_changes)),
+                    "found_both": int(found),
+                    "note": "Universe iterates prev canonical keys only; current sourced from primary_metrics_canonical.",
+                }
+    except Exception:
+        pass
+
+    return metric_changes, unchanged, increased, decreased, found
+
+# Wire FIX2D34 as the active diff function (last-wins override)
+try:
+    diff_metrics_by_name = diff_metrics_by_name_FIX2D34  # type: ignore
+except Exception:
+    pass
+
+try:
+    CODE_VERSION = "FIX2D34"
+except Exception:
+    pass
+
+# ============================================================
+# PATCH END: FIX2D34_PREV_KEY_DRIVEN_DIFF_UNIVERSE_V1
+# ============================================================
