@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2S"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2U"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -137,6 +137,15 @@ try:
         "summary": "Context-driven unit backfill when unit_tag is empty, plus unit_family/measure_kind corrections trace (context_unit_backfill_v1).",
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2U",
+        "date": "2026-01-17",
+        "summary": "Introduce shared semantic eligibility gate (Analysis parity) using local context_snippet; enforce it in Evolution schema-only rebuild(s) and Analysis selector to prevent cross-metric pollution (e.g., China sales value mapping into chargers 2040).",
+        "files": ["FIX2D2U.py"],
+        "supersedes": ["FIX2D2T"],
+    })
+
 except Exception:
     pass
 
@@ -1197,30 +1206,30 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2s1_observed_to_canonical_rules_v1_syntaxfix"
+#CODE_VERSION = "FIX2D2U"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
+#CODE_VERSION = "FIX2D2U"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
+#CODE_VERSION = "FIX2D2U"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2U"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2U"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
+#CODE_VERSION = "FIX2D2U"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -25804,10 +25813,26 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
         best_score = None
 
         for c in filtered:
-            ctx = _norm(c.get("context") or c.get("context_window") or "")
+            ctx = _norm((c.get("context_snippet") or c.get("context") or c.get("context_window") or ""))
             raw = _norm(c.get("raw") or "")
             unit = c.get("unit") or ""
             fam = _unit_family_guess(unit)
+
+            # PATCH FIX2D2U: shared semantic gate (local snippet required tokens)
+            try:
+                _ok_u, _why_u = _fix2d2u_semantic_eligible_global(c, sch, str(canonical_key))
+                if not _ok_u:
+                    # track rejects in web_context/debug when available
+                    try:
+                        if isinstance(web_context, dict):
+                            web_context.setdefault('debug', {})
+                            web_context['debug'].setdefault('fix2d2u_schema_only_rejects', {})
+                            web_context['debug']['fix2d2u_schema_only_rejects'][_why_u] = int(web_context['debug']['fix2d2u_schema_only_rejects'].get(_why_u) or 0) + 1
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                pass
 
             # FIX2D2R: strict expected-kind token evidence
             if expected_kind == 'currency' and not _fix27_has_currency_evidence(c):
@@ -25816,6 +25841,15 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
                 continue
             if expected_kind == 'unit' and not _fix2d2r_has_required_evidence(c, 'unit'):
                 continue
+
+
+            # PATCH FIX2D2U: shared semantic eligibility gate (local snippet required tokens)
+            try:
+                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, sch, canonical_key)
+                if not _ok_u:
+                    continue
+            except Exception:
+                pass
 
             # FIX2D2R: reject bare-year token when a better sibling exists in the same snippet
             if expected_kind != 'year' and _fix2d2r_is_bare_year_cand(c) and not _fix27_has_any_unit_evidence(c):
@@ -28704,6 +28738,14 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
         if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
             continue
 
+            # PATCH FIX2D2U: shared semantic gate (local snippet required tokens)
+            try:
+                _ok_u, _why_u = _fix2d2u_semantic_eligible_global(c, spec, str(canonical_key))
+                if not _ok_u:
+                    continue
+            except Exception:
+                pass
+
         rebuilt[canonical_key] = {
             "canonical_key": canonical_key,
             "name": spec.get("name") or canonical_key,
@@ -29602,6 +29644,22 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
 
+            # PATCH FIX2D2U: semantic eligibility gate (parity with evolution schema rebuild)
+            try:
+                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, canonical_key)
+                if not _ok_u:
+                    continue
+            except Exception:
+                pass
+
+            # PATCH FIX2D2U: enforce shared semantic eligibility (parity with Evolution)
+            try:
+                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, canonical_key)
+                if not _ok_u:
+                    continue
+            except Exception:
+                pass
+
             # FIX2D2R: forbid bare-year tokens when a better sibling exists nearby (parity guard)
             try:
                 _ek = 'other'
@@ -29709,6 +29767,106 @@ def _ph2b_norm_url(url: str) -> str:
     except Exception:
         pass
     return str((url or "").strip())
+
+
+
+# =====================================================================
+# PATCH FIX2D2U (ADD): Shared semantic eligibility gate (Analysis parity)
+# - Uses LOCAL context_snippet (tight window) instead of page-wide context_window.
+# - Prevents cross-metric pollution in schema-only rebuild paths.
+# - Applied in BOTH Analysis selector and Evolution schema-only rebuild(s).
+# =====================================================================
+
+def _fix2d2u_norm_text(s: str) -> str:
+    try:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+    except Exception:
+        return ""
+
+
+def _fix2d2u_local_text(cand: dict) -> str:
+    """Prefer the tightest snippet around the number."""
+    try:
+        if not isinstance(cand, dict):
+            return ""
+        for k in ("context_snippet", "context", "context_window", "context_window_raw", "context_window_text"):
+            v = cand.get(k)
+            if isinstance(v, str) and v.strip():
+                return v
+        return str(cand.get("raw") or cand.get("value") or "")
+    except Exception:
+        return ""
+
+
+def _fix2d2u_required_token_groups(canonical_key: str, spec: dict) -> list:
+    """Return OR-groups; every group must have at least one hit in local snippet."""
+    try:
+        ck = str(canonical_key or "").lower()
+        nm = str((spec or {}).get("name") or (spec or {}).get("metric_name") or "").lower()
+        base = (ck + " " + nm).strip()
+
+        groups = []
+
+        # Geo cues
+        if "china" in base:
+            groups.append(["china", "chinese"])
+
+        # Time cues: require explicit 4-digit years present in key/name
+        years = re.findall(r"\b(19\d{2}|20\d{2})\b", base)
+        for y in years[:3]:
+            groups.append([y])
+
+        # Metric family cues
+        if ("charger" in base) or ("charging" in base):
+            groups.append(["charger", "chargers", "charging", "station", "stations", "infrastructure"])
+        if ("investment" in base) or ("capex" in base) or ("spend" in base) or (str((spec or {}).get("unit_family") or "").lower() == "currency"):
+            groups.append(["investment", "invest", "capex", "spend", "spending", "cost", "expenditure"])
+        if ("share" in base) or (str((spec or {}).get("unit_family") or "").lower() == "percent"):
+            groups.append(["market share", "share", "%", "percent"])
+        if ("sale" in base) or ("sales" in base) or ("unit_sales" in base):
+            groups.append(["sales", "sold", "deliveries", "registrations", "units"])
+        if "ytd" in base:
+            groups.append(["ytd", "year to date"])
+
+        # De-dupe
+        out=[]
+        for g in groups:
+            gg=[]
+            for t in g:
+                tt=str(t or "").strip().lower()
+                if tt and tt not in gg:
+                    gg.append(tt)
+            if gg:
+                out.append(gg)
+        return out
+    except Exception:
+        return []
+
+
+def _fix2d2u_semantic_eligible_global(cand: dict, spec: dict, canonical_key: str) -> tuple:
+    """(ok, reason) gate; no-op when no required groups."""
+    try:
+        groups = _fix2d2u_required_token_groups(canonical_key, spec or {})
+        if not groups:
+            return True, ""
+        txt = _fix2d2u_local_text(cand)
+        blob = " ".join([_fix2d2u_norm_text(txt), _fix2d2u_norm_text(str(cand.get("raw") or ""))]).strip()
+        for g in groups:
+            hit=False
+            for tok in g:
+                tn=_fix2d2u_norm_text(tok)
+                if tn and tn in blob:
+                    hit=True
+                    break
+            if not hit:
+                return False, "missing_required_tokens:" + "|".join(g[:3])
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX2D2U
+# =====================================================================
 
 def _analysis_canonical_final_selector_v1(
     canonical_key: str,
@@ -30744,6 +30902,13 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             ok, _reason = _fix17_candidate_allowed_with_reason(_c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
+            # PATCH FIX2D2U: shared semantic eligibility gate (local required tokens)
+            try:
+                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, canonical_key=str(canonical_key))
+                if not _ok_u:
+                    continue
+            except Exception:
+                pass
             try:
                 _ok2, _why2 = _fix2d22_candidate_eligible(_c, spec, canonical_key=str(canonical_key), kw_norm=kw_norm)
                 if not _ok2:
@@ -30785,7 +30950,17 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         for c in (_fix2d2s_eligible or []):
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
-                continue            # PATCH FIX2D22 (ADD): eligibility-before-scoring gate
+                continue
+
+            # PATCH FIX2D2U: semantic eligibility gate (local snippet required tokens)
+            try:
+                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, str(canonical_key))
+                if not _ok_u:
+                    dbg.setdefault('fix2d2u_reject_reasons_fix17', {})
+                    dbg['fix2d2u_reject_reasons_fix17'][_why_u] = int(dbg['fix2d2u_reject_reasons_fix17'].get(_why_u) or 0) + 1
+                    continue
+            except Exception:
+                pass            # PATCH FIX2D22 (ADD): eligibility-before-scoring gate
             try:
                 _ok2, _why2 = _fix2d22_candidate_eligible(c, spec, canonical_key=str(canonical_key), kw_norm=kw_norm)
                 if not _ok2:
@@ -30869,6 +31044,106 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         }
 
     return rebuilt
+
+
+# =====================================================================
+# PATCH FIX2D2U (ADD): Shared semantic eligibility gate (Analysis parity)
+# - Uses LOCAL context_snippet (not page-wide context_window)
+# - Prevents cross-metric pollution in schema-only rebuild and other projections
+# - Called by BOTH Analysis selector and Evolution rebuild paths
+# =====================================================================
+
+_FIX2D2U_ENABLE = True
+
+def _fix2d2u_norm(s: str) -> str:
+    try:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+    except Exception:
+        return ""
+
+def _fix2d2u_local_text(cand: dict) -> str:
+    try:
+        if not isinstance(cand, dict):
+            return ""
+        for k in ("context_snippet", "context", "context_window", "context_window_raw", "context_window_text"):
+            v=cand.get(k)
+            if isinstance(v, str) and v.strip():
+                return v
+        return str(cand.get("raw") or cand.get("value") or "")
+    except Exception:
+        return ""
+
+def _fix2d2u_required_token_groups(canonical_key: str, spec: dict) -> list:
+    """Return a list of OR-groups; each group must have at least one hit in local text."""
+    try:
+        ck = str(canonical_key or "").lower()
+        nm = str((spec or {}).get("name") or (spec or {}).get("metric_name") or "").lower()
+        uf = str((spec or {}).get("unit_family") or "").lower()
+        dim = str((spec or {}).get("dimension") or (spec or {}).get("value_type") or "").lower()
+        base = ck + " " + nm
+
+        groups = []
+
+        # Geo cues
+        if "china" in base or re.search(r"\bcn\b", base):
+            groups.append(["china", "chinese"])
+
+        # Time cues: if canonical key/name includes a year, require it locally
+        years = re.findall(r"\b(19\d{2}|20\d{2})\b", base)
+        for y in years[:2]:
+            groups.append([y])
+
+        # Metric family cues
+        if ("charger" in base) or ("charging" in base):
+            groups.append(["charger", "chargers", "charging", "station", "stations", "infrastructure"])
+        if ("investment" in base) or ("capex" in base) or ("spend" in base) or (uf == "currency") or (dim == "currency"):
+            groups.append(["investment", "invest", "capex", "spend", "spending", "cost", "expenditure"])
+        if ("share" in base) or (uf == "percent") or (dim == "percent"):
+            groups.append(["market share", "share", "%", "percent"])
+        if ("sale" in base) or ("sales" in base) or (uf in ("unit_sales", "sales", "units")) or (dim in ("unit_sales", "sales", "units")):
+            groups.append(["sales", "sold", "deliveries", "registrations", "units"])
+        if "ytd" in base:
+            groups.append(["ytd", "year to date"])
+
+        # De-dupe groups
+        out=[]
+        for g in groups:
+            gg=[]
+            for t in g:
+                tt=str(t or "").strip().lower()
+                if tt and tt not in gg:
+                    gg.append(tt)
+            if gg:
+                out.append(gg)
+        return out
+    except Exception:
+        return []
+
+def _fix2d2u_semantic_eligible(cand: dict, spec: dict, canonical_key: str) -> tuple:
+    try:
+        if not _FIX2D2U_ENABLE:
+            return True, ""
+        groups = _fix2d2u_required_token_groups(canonical_key, spec)
+        if not groups:
+            return True, ""
+        txt = _fix2d2u_local_text(cand)
+        blob = _fix2d2u_norm(txt + " " + str(cand.get('raw') or ''))
+        for g in groups:
+            hit=False
+            for tok in g:
+                tn=_fix2d2u_norm(tok)
+                if tn and tn in blob:
+                    hit=True
+                    break
+            if not hit:
+                return False, "missing_required_tokens"
+        return True, ""
+    except Exception:
+        return True, ""
+
+# =====================================================================
+# END PATCH FIX2D2U
+# =====================================================================
 
 
 # =====================================================================
@@ -32769,7 +33044,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v25"
+    CODE_VERSION = "FIX2D2U"
 except Exception:
     pass
 # =====================================================================
@@ -35214,7 +35489,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2j_diffpanel_v2_unit_mismatch_split_and_raw_current_rows"
+        CODE_VERSION = "FIX2D2U"
 except Exception:
     pass
 
@@ -35722,7 +35997,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2u_ev_chargers_canon_schema_unit_count"
+    CODE_VERSION = "FIX2D2U"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -35734,7 +36009,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2y_candidate_autopsy_v1"
+    CODE_VERSION = "FIX2D2U"
 except Exception:
     pass
 # =====================================================================
@@ -35962,7 +36237,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2S"
+    CODE_VERSION = "FIX2D2U"
 except Exception:
     pass
 
@@ -36209,11 +36484,19 @@ try:
             "summary": "Add explicit baseline->current projection in diff layer: if baseline row is missing CURRENT but cur_response has same canonical_key in primary_metrics_canonical_for_diff/primary_metrics_canonical, project into metric_changes current_value/_norm and recompute diff counters; attach debug summary.",
             "ts": "2026-01-16",
         })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2U",
+        "date": "2026-01-17",
+        "summary": "Introduce shared semantic eligibility gate (local-snippet required tokens) and apply it across Analysis selector and Evolution schema-only rebuild paths to prevent cross-metric pollution (e.g., China sales value mapping to chargers 2040).",
+        "files": ["FIX2D2U.py"],
+        "supersedes": ["FIX2D2T"],
+    })
 except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D2T"
+    CODE_VERSION = "FIX2D2U"
 except Exception:
     pass
 
