@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D38"  # PATCH FIX2D38 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D39"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D34
@@ -176,6 +176,25 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D39
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D39",
+        "date": "2026-01-17",
+        "summary": "Analysis schema-baseline: enforce schema-authoritative dimension/unit_family as hard-binding for schema keys. Reject baseline_schema entries whose non-unknown dimension/unit_family conflict with schema; otherwise set dimension/unit_family to schema spec (with audit flags). This prevents unknown/mis-typed baseline values from blocking diff comparability.",
+        "files": ["FIX2D39.py"],
+        "supersedes": ["FIX2D38"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 # PATCH TRACKER V1 (ADD): FIX2D32
 # ============================================================
@@ -15869,26 +15888,47 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                             except Exception:
                                 pass
                         if out_m.get("value_norm") is not None:
-                            # FIX2D36: schema-authoritative dimension/unit_family coercion.
-                            # If baseline winner is numeric but dimension/unit_family are unknown or empty,
-                            # coerce them to the schema spec so baseline diffing can proceed under schema authority.
+                            # FIX2D39: schema-authoritative dimension/unit_family hard-binding.
+                            # - If winner has a concrete (non-unknown) dimension/unit_family that CONFLICTS with schema, reject it.
+                            # - Otherwise, set dimension/unit_family to schema spec (authoritative) and stamp audit flags.
                             try:
                                 spec_dim = ""
                                 spec_uf = ""
                                 if isinstance(spec, dict):
-                                    spec_dim = str(spec.get("dimension") or spec.get("dim") or "")
-                                    spec_uf = str(spec.get("unit_family") or spec.get("unitFamily") or "")
+                                    spec_dim = str(spec.get("dimension") or spec.get("dim") or "").strip()
+                                    spec_uf = str(spec.get("unit_family") or spec.get("unitFamily") or "").strip()
                                 prior_dim = out_m.get("dimension")
                                 prior_uf = out_m.get("unit_family")
-                                # Only coerce when baseline fields are missing/unknown; never override a concrete non-unknown dimension.
-                                if spec_dim and (prior_dim is None or str(prior_dim).strip() in ("", "unknown")):
+                                prior_dim_s = ("" if prior_dim is None else str(prior_dim).strip())
+                                prior_uf_s = ("" if prior_uf is None else str(prior_uf).strip())
+
+                                # Reject conflicts: non-unknown prior value disagrees with schema.
+                                if spec_dim and prior_dim_s and prior_dim_s not in ("unknown",) and prior_dim_s != spec_dim:
+                                    meta = dict(meta) if isinstance(meta, dict) else {}
+                                    meta["fix2d39_schema_dim_conflict_v1"] = True
+                                    meta["fix2d39_schema_dim_prior_v1"] = prior_dim_s
+                                    meta["fix2d39_schema_dim_spec_v1"] = spec_dim
+                                    sel_trace[ckey] = meta
+                                    continue
+                                if spec_uf and prior_uf_s and prior_uf_s not in ("unknown",) and prior_uf_s != spec_uf:
+                                    meta = dict(meta) if isinstance(meta, dict) else {}
+                                    meta["fix2d39_schema_uf_conflict_v1"] = True
+                                    meta["fix2d39_schema_uf_prior_v1"] = prior_uf_s
+                                    meta["fix2d39_schema_uf_spec_v1"] = spec_uf
+                                    sel_trace[ckey] = meta
+                                    continue
+
+                                # Apply schema authority (overwrite empty/unknown, and also normalize same-values).
+                                if spec_dim:
+                                    if prior_dim_s != spec_dim:
+                                        out_m["dimension_prior_v1"] = prior_dim
+                                        out_m["dimension_coerced_from_schema_v1"] = True
                                     out_m["dimension"] = spec_dim
-                                    out_m["dimension_coerced_from_schema_v1"] = True
-                                    out_m["dimension_prior_v1"] = prior_dim
-                                if spec_uf and (prior_uf is None or str(prior_uf).strip() in ("", "unknown")):
+                                if spec_uf:
+                                    if prior_uf_s != spec_uf:
+                                        out_m["unit_family_prior_v1"] = prior_uf
+                                        out_m["unit_family_coerced_from_schema_v1"] = True
                                     out_m["unit_family"] = spec_uf
-                                    out_m["unit_family_coerced_from_schema_v1"] = True
-                                    out_m["unit_family_prior_v1"] = prior_uf
                             except Exception:
                                 pass
                             new_pmc[ckey] = out_m
@@ -15947,22 +15987,34 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                         _parsed = None
                                     if _parsed is not None:
                                         out_m['value_norm'] = _parsed
-                            # Coerce dimension/unit_family from schema when missing/unknown
+                            # FIX2D39: schema-authoritative dimension/unit_family hard-binding (fallback path)
                             spec_dim = ''
                             spec_uf = ''
                             if isinstance(spec, dict):
-                                spec_dim = str(spec.get('dimension') or spec.get('dim') or '')
-                                spec_uf = str(spec.get('unit_family') or spec.get('unitFamily') or '')
+                                spec_dim = str(spec.get('dimension') or spec.get('dim') or '').strip()
+                                spec_uf = str(spec.get('unit_family') or spec.get('unitFamily') or '').strip()
                             prior_dim = out_m.get('dimension')
                             prior_uf = out_m.get('unit_family')
-                            if spec_dim and (prior_dim is None or str(prior_dim).strip() in ('', 'unknown')):
+                            prior_dim_s = ('' if prior_dim is None else str(prior_dim).strip())
+                            prior_uf_s = ('' if prior_uf is None else str(prior_uf).strip())
+
+                            # Reject conflicts: non-unknown prior value disagrees with schema.
+                            if spec_dim and prior_dim_s and prior_dim_s not in ('unknown',) and prior_dim_s != spec_dim:
+                                continue
+                            if spec_uf and prior_uf_s and prior_uf_s not in ('unknown',) and prior_uf_s != spec_uf:
+                                continue
+
+                            # Apply schema authority.
+                            if spec_dim:
+                                if prior_dim_s != spec_dim:
+                                    out_m['dimension_coerced_from_schema_v1'] = True
+                                    out_m['dimension_prior_v1'] = prior_dim
                                 out_m['dimension'] = spec_dim
-                                out_m['dimension_coerced_from_schema_v1'] = True
-                                out_m['dimension_prior_v1'] = prior_dim
-                            if spec_uf and (prior_uf is None or str(prior_uf).strip() in ('', 'unknown')):
+                            if spec_uf:
+                                if prior_uf_s != spec_uf:
+                                    out_m['unit_family_coerced_from_schema_v1'] = True
+                                    out_m['unit_family_prior_v1'] = prior_uf
                                 out_m['unit_family'] = spec_uf
-                                out_m['unit_family_coerced_from_schema_v1'] = True
-                                out_m['unit_family_prior_v1'] = prior_uf
                         except Exception:
                             pass
                         # Mark as proxy baseline fallback
@@ -38096,7 +38148,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D38"
+    CODE_VERSION = "FIX2D39"
 except Exception:
     pass
 
