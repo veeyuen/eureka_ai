@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D34"  # PATCH FIX2D34 (ADD): prev-key driven diff universe for Diff Panel V2 (prefer PMC current)
+CODE_VERSION = "FIX2D35"  # PATCH FIX2D34 (ADD): prev-key driven diff universe for Diff Panel V2 (prefer PMC current)
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D34
@@ -100,8 +100,25 @@ except Exception:
     pass
 
 
-
 # ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D35
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D35",
+        "date": "2026-01-17",
+        "summary": "Diff Panel V2: allow schema-mandated proxy baselines (is_proxy=True) to participate in baseline comparability/diffing when both sides have numeric values; stamp baseline_proxy_used diagnostics for audit.",
+        "files": ["FIX2D35.py"],
+        "supersedes": ["FIX2D34"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
 # PATCH TRACKER V1 (ADD): FIX2D32
 # ============================================================
 try:
@@ -20790,6 +20807,31 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
         # =====================================================================
 
+        
+
+        # =====================================================================
+        # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
+        # Allow schema-mandated proxy baselines (is_proxy=True) to remain diffable
+        # when numeric prev_value_norm exists. Anchors/units guards remain in place.
+        # Stamp diagnostics for audit.
+        # =====================================================================
+        _fix2d35_baseline_proxy_used = False
+        _fix2d35_baseline_proxy_type = None
+        try:
+            if isinstance(pm, dict) and pm.get('is_proxy'):
+                _fix2d35_baseline_proxy_used = True
+                _fix2d35_baseline_proxy_type = pm.get('proxy_type') or pm.get('proxy_reason') or None
+                try:
+                    summary['baseline_proxy_rows'] = int(summary.get('baseline_proxy_rows') or 0) + 1
+                except Exception:
+                    pass
+        except Exception:
+            _fix2d35_baseline_proxy_used = False
+            _fix2d35_baseline_proxy_type = None
+        # =====================================================================
+        # END PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION
+        # =====================================================================
+
         display_name = pm.get("name") or pm.get("display_name") or pm.get("original_name") or prev_ckey
 
         row = {
@@ -20808,6 +20850,10 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             "baseline_delta_pct": baseline_delta_pct,
             "baseline_change_type": baseline_change_type,
             "baseline_is_comparable": baseline_is_comparable,
+
+            # PATCH FIX2D35 (ADDITIVE): proxy baseline audit
+            "baseline_proxy_used": bool(_fix2d35_baseline_proxy_used),
+            "baseline_proxy_type": _fix2d35_baseline_proxy_type,
 
 
             # minimal context fields kept for UI compatibility
@@ -35805,6 +35851,10 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             "baseline_change_type": baseline_change_type,
             "baseline_is_comparable": baseline_is_comparable,
 
+            # PATCH FIX2D35 (ADDITIVE): proxy baseline audit
+            "baseline_proxy_used": bool(_fix2d35_baseline_proxy_used),
+            "baseline_proxy_type": _fix2d35_baseline_proxy_type,
+
             "context_snippet": None,
             "source_url": None,
             "anchor_used": (method_effective == "anchor_hash"),
@@ -37874,7 +37924,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D34"
+    CODE_VERSION = "FIX2D35"
 except Exception:
     pass
 
