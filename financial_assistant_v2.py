@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D2U"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
+CODE_VERSION = "FIX2D2V"  # PATCH FIX2D2O (ADD): bump CODE_VERSION to match patch id/filename
 
 
 # ============================================================
@@ -1206,30 +1206,30 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "FIX2D2U"
+#CODE_VERSION = "FIX2D2V"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "FIX2D2U"
+#CODE_VERSION = "FIX2D2V"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "FIX2D2U"
+#CODE_VERSION = "FIX2D2V"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2U"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2U"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2V"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D2V"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "FIX2D2U"
+#CODE_VERSION = "FIX2D2V"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -25817,19 +25817,10 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
             raw = _norm(c.get("raw") or "")
             unit = c.get("unit") or ""
             fam = _unit_family_guess(unit)
-
-            # PATCH FIX2D2U: shared semantic gate (local snippet required tokens)
+            # PATCH FIX2D2V: enforce semantic eligibility at commit point (local window, year/tokens)
             try:
-                _ok_u, _why_u = _fix2d2u_semantic_eligible_global(c, sch, str(canonical_key))
-                if not _ok_u:
-                    # track rejects in web_context/debug when available
-                    try:
-                        if isinstance(web_context, dict):
-                            web_context.setdefault('debug', {})
-                            web_context['debug'].setdefault('fix2d2u_schema_only_rejects', {})
-                            web_context['debug']['fix2d2u_schema_only_rejects'][_why_u] = int(web_context['debug']['fix2d2u_schema_only_rejects'].get(_why_u) or 0) + 1
-                    except Exception:
-                        pass
+                _ok_v, _why_v = _fix2d2v_semantic_eligible_commit(c, sch, str(canonical_key), web_context=web_context)
+                if not _ok_v:
                     continue
             except Exception:
                 pass
@@ -25841,15 +25832,6 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
                 continue
             if expected_kind == 'unit' and not _fix2d2r_has_required_evidence(c, 'unit'):
                 continue
-
-
-            # PATCH FIX2D2U: shared semantic eligibility gate (local snippet required tokens)
-            try:
-                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, sch, canonical_key)
-                if not _ok_u:
-                    continue
-            except Exception:
-                pass
 
             # FIX2D2R: reject bare-year token when a better sibling exists in the same snippet
             if expected_kind != 'year' and _fix2d2r_is_bare_year_cand(c) and not _fix27_has_any_unit_evidence(c):
@@ -29864,6 +29846,73 @@ def _fix2d2u_semantic_eligible_global(cand: dict, spec: dict, canonical_key: str
     except Exception:
         return True, ""
 
+
+
+# =====================================================================
+# PATCH FIX2D2V (ADDITIVE): enforce semantic gates at schema_only_rebuild
+# commit point using a tight local window around the numeric token.
+# - Prevents cross-metric pollution where a China sales snippet populates
+#   chargers/investment/CAGR schema keys.
+# - Requires canonical-key year tokens to appear locally (if present).
+# - Logs reject counts into web_context.debug.fix2d2v_schema_commit_rejects.
+# =====================================================================
+
+def _fix2d2v_tight_window(cand: dict, width: int = 120) -> str:
+    try:
+        txt = str(cand.get('context_snippet') or cand.get('context') or cand.get('context_window') or '')
+        if not txt:
+            return ''
+        raw = str(cand.get('raw') or cand.get('value') or '')
+        if raw:
+            i = txt.find(raw)
+            if i >= 0:
+                a = max(0, i - width)
+                b = min(len(txt), i + len(raw) + width)
+                return txt[a:b]
+        # fallback: just trim
+        return txt[: (2*width)]
+    except Exception:
+        return ''
+
+
+def _fix2d2v_years_from_key(canonical_key: str):
+    try:
+        import re
+        return re.findall(r"(19\d{2}|20\d{2})", str(canonical_key or ''))
+    except Exception:
+        return []
+
+
+def _fix2d2v_semantic_eligible_commit(cand: dict, spec: dict, canonical_key: str, web_context=None) -> tuple:
+    """Stricter eligibility used immediately before committing schema_only_rebuild outputs."""
+    try:
+        if not _FIX2D2U_ENABLE:
+            return True, ''
+        # 1) Start with FIX2D2U required-token groups, but only check within a tight window
+        groups = _fix2d2u_required_token_groups(canonical_key, spec)
+        win = _fix2d2u_norm(_fix2d2v_tight_window(cand) + ' ' + str(cand.get('raw') or ''))
+        for g in groups or []:
+            hit = False
+            for tok in g:
+                tn = _fix2d2u_norm(tok)
+                if tn and tn in win:
+                    hit = True
+                    break
+            if not hit:
+                return False, 'missing_required_tokens_tight'
+        # 2) If the canonical key contains explicit years, require them locally as well
+        years = _fix2d2v_years_from_key(canonical_key)
+        if years:
+            for y in years:
+                if y and (_fix2d2u_norm(y) not in win):
+                    return False, 'missing_required_year_tight'
+        return True, ''
+    finally:
+        pass
+
+# =====================================================================
+# END PATCH FIX2D2V
+# =====================================================================
 # =====================================================================
 # END PATCH FIX2D2U
 # =====================================================================
@@ -30734,6 +30783,21 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             # 3) Required domain token binding (strong)
             ctx = _norm(cand.get('context_snippet') or cand.get('context') or cand.get('context_window') or '')
             rawn = _norm(cand.get('raw') or '')
+
+            # PATCH FIX2D2V (ADD): require explicit year tokens from canonical_key to appear locally
+            try:
+                _yrs = re.findall(r"(19\d{2}|20\d{2})", str(canonical_key or ""))
+                if _yrs:
+                    _hit_all = True
+                    for _y in _yrs:
+                        if _y and (_y not in ctx) and (_y not in rawn):
+                            _hit_all = False
+                            break
+                    if not _hit_all:
+                        return False, 'missing_required_year_token'
+            except Exception:
+                pass
+
 
             req_dom = _fix2d19_required_domain_tokens(canonical_key, spec)
             if req_dom:
@@ -33044,7 +33108,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D2U"
+    CODE_VERSION = "FIX2D2V"
 except Exception:
     pass
 # =====================================================================
@@ -35489,7 +35553,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 try:
     CODE_VERSION = str(globals().get("CODE_VERSION") or "")
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D2U"
+        CODE_VERSION = "FIX2D2V"
 except Exception:
     pass
 
@@ -35997,7 +36061,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2D2U"
+    CODE_VERSION = "FIX2D2V"
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -36009,7 +36073,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D2U"
+    CODE_VERSION = "FIX2D2V"
 except Exception:
     pass
 # =====================================================================
@@ -36237,7 +36301,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D2U"
+    CODE_VERSION = "FIX2D2V"
 except Exception:
     pass
 
@@ -36496,7 +36560,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D2U"
+    CODE_VERSION = "FIX2D2V"
 except Exception:
     pass
 
