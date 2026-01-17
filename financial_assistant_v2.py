@@ -36921,3 +36921,196 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 # END PATCH FIX2D2X
 # =====================================================================
+
+# =====================================================================
+# PATCH FIX2D2Y (PARITY HARDWIRE)
+# Objective:
+# - Ensure Evolution's current-metric rebuild (including fix41afc19 override path)
+#   uses the SAME authoritative Analysis selector for baseline-keyed diffing.
+# - This addresses the observed issue where fix41afc19 applied a different rebuild
+#   function (rebuild_metrics_from_snapshots_analysis_canonical_v1) which produced
+#   a disjoint keyset (overlap_count==0), preventing diff activation.
+#
+# What:
+# - Override `rebuild_metrics_from_snapshots_analysis_canonical_v1` so it performs a
+#   baseline-keyed rebuild using the shared selector helper from FIX2D2X.
+# - This makes the fix41afc19 path call the parity-correct rebuild automatically.
+#
+# Safety:
+# - Additive override only; does not modify hashing, snapshot attach, or fastpath.
+# - Only affects display/diff "current" semantics.
+# =====================================================================
+
+# Version stamp (ensure last-wins in monolithic file)
+CODE_VERSION = "FIX2D2Y"
+
+# Patch tracker entry
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2Y",
+        "date": "2026-01-17",
+        "summary": "Hardwire Evolution rebuild_metrics_from_snapshots_analysis_canonical_v1 to use the shared Analysis final selector for baseline-keyed diff current metrics (fix41afc19 parity); eliminates disjoint keyset that blocks diff activation.",
+        "files": ["FIX2D2Y.py"],
+        "supersedes": ["FIX2D2X"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response, snapshot_pool, web_context=None):
+    """FIX2D2Y override: baseline-keyed current rebuild using Analysis selector.
+
+    Returns a dict keyed by baseline canonical keys (from prev_response.primary_metrics_canonical)
+    so Analysis↔Evolution overlap can be non-zero and diffing can activate.
+    """
+    # Resolve baseline schema (keys + minimal specs) from Analysis prev_response
+    schema_keys = []
+    schema_specs = {}
+    try:
+        _pmc = None
+        if isinstance(prev_response, dict):
+            _pmc = prev_response.get("primary_metrics_canonical")
+            if not isinstance(_pmc, dict):
+                _pmc = prev_response.get("results", {}).get("primary_metrics_canonical")
+        if isinstance(_pmc, dict) and _pmc:
+            for ck, mv in _pmc.items():
+                if not isinstance(ck, str):
+                    continue
+                schema_keys.append(ck)
+                mv = mv if isinstance(mv, dict) else {}
+                schema_specs[ck] = {
+                    "canonical_key": ck,
+                    "unit_family": mv.get("unit_family") or "",
+                    "unit_tag": mv.get("unit_tag") or mv.get("unit") or mv.get("unit_cmp") or "",
+                    "display_name": mv.get("display_name") or mv.get("metric_name") or ck,
+                }
+    except Exception:
+        schema_keys = []
+        schema_specs = {}
+
+    if not schema_keys:
+        return {}
+
+    # Build candidate universe from snapshot_pool extracted_numbers
+    all_candidates = []
+    try:
+        if isinstance(snapshot_pool, list):
+            for src in snapshot_pool:
+                if not isinstance(src, dict):
+                    continue
+                url = src.get("url") or src.get("source_url") or ""
+                nums = src.get("extracted_numbers")
+                if not isinstance(nums, list):
+                    continue
+                for n in nums:
+                    if not isinstance(n, dict):
+                        continue
+                    cand = dict(n)
+                    cand["source_url"] = cand.get("source_url") or url
+                    all_candidates.append(cand)
+    except Exception:
+        pass
+
+    # Determine injected URLs (if any)
+    injected_urls = []
+    try:
+        if isinstance(web_context, dict):
+            inj = (
+                web_context.get("diag_extra_urls")
+                or web_context.get("extra_urls")
+                or web_context.get("diag_extra_urls_final")
+                or []
+            )
+            if isinstance(inj, list):
+                injected_urls = [u for u in inj if isinstance(u, str) and u.strip()]
+    except Exception:
+        injected_urls = []
+
+    # Select best candidate per baseline key using the shared selector helper
+    rebuilt = {}
+    debug = {
+        "fix2d2y_analysis_selector_rebuild_v1": {
+            "baseline_keys": int(len(schema_keys)),
+            "candidates_total": int(len(all_candidates)),
+            "injected_urls": injected_urls,
+            "filled": 0,
+            "reject_counts": {},
+        }
+    }
+
+    filled = 0
+    reject_counts = {}
+
+    for ck in schema_keys:
+        spec = schema_specs.get(ck) or {"canonical_key": ck}
+
+        best = None
+        meta = None
+        try:
+            # Reuse FIX2D2X selector if present
+            if callable(globals().get("_fix2d2x_select_best")):
+                best, meta = globals()["_fix2d2x_select_best"](ck, spec, all_candidates, injected_urls=injected_urls)
+            else:
+                # Fallback: no selection helper available
+                best, meta = None, {"error": "missing_fix2d2x_select_best"}
+        except Exception as e:
+            best, meta = None, {"error": str(e)}
+
+        if not isinstance(best, dict):
+            # Count rejects if available
+            try:
+                rsn = None
+                if isinstance(meta, dict):
+                    rsn = meta.get("reject_reason") or meta.get("reason")
+                if isinstance(rsn, str) and rsn:
+                    reject_counts[rsn] = int(reject_counts.get(rsn, 0)) + 1
+            except Exception:
+                pass
+            continue
+
+        try:
+            m = {
+                "canonical_key": ck,
+                "value": best.get("value"),
+                "value_norm": best.get("value_norm"),
+                "unit": best.get("unit") or best.get("unit_tag") or best.get("unit_cmp"),
+                "unit_tag": best.get("unit_tag") or best.get("unit") or best.get("unit_cmp"),
+                "unit_family": best.get("unit_family") or spec.get("unit_family") or "",
+                "source_url": best.get("source_url") or "",
+                "raw": best.get("raw") or "",
+                "context_snippet": best.get("context_snippet") or "",
+                "method": "analysis_selector_shared_fix2d2y",
+                "selection_meta": meta or {},
+            }
+            rebuilt[ck] = m
+            filled += 1
+        except Exception:
+            continue
+
+    debug["fix2d2y_analysis_selector_rebuild_v1"]["filled"] = int(filled)
+    debug["fix2d2y_analysis_selector_rebuild_v1"]["reject_counts"] = reject_counts
+
+    # Attach debug to web_context if provided
+    try:
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].update(debug)
+    except Exception:
+        pass
+
+    return rebuilt
+
+# Ensure global override binding
+try:
+    globals()["rebuild_metrics_from_snapshots_analysis_canonical_v1"] = rebuild_metrics_from_snapshots_analysis_canonical_v1
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2D2Y
+# =====================================================================
