@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D44"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D46"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -407,7 +407,7 @@ try:
         "supersedes": ["FIX2D2Y"],
     })
 
-    
+
 
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D30",
@@ -15967,7 +15967,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
-    
+
     # =====================================================================
     # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
     # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
@@ -21115,6 +21115,103 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     _join_mode = _fix2d6_get_diff_join_mode_v1()
     _join_mode = "union" if _join_mode in ("union", "u", "1", "true", "yes", "y") else "strict"
 
+    # =====================================================================
+    # FIX2D46_SCHEMA_CROSS_SOURCE_CURRENT (ADDITIVE)
+    # Goal:
+    # - Allow Evolution to use "current" metrics from NEW sources (not present in baseline),
+    #   as long as they canonicalize to the SAME schema key as a baseline metric.
+    # Mechanism:
+    # - Re-key cur_metrics by schema_key using each metric's own canonical_key (or fallbacks)
+    # - Select a deterministic winner per schema_key (highest confidence, tie-break by key)
+    # - Rebuild cur_by_anchor from the re-keyed cur_metrics
+    # Activation:
+    # - If diff join mode is set to one of: schema, cross, schema_union, schema_cross
+    #   (via _fix2d6_get_diff_join_mode_v1), this block runs.
+    # Safety:
+    # - Purely affects diff panel hydration/joining; does not affect hashing or extraction.
+    # =====================================================================
+    _fix2d46_enabled = False
+    _fix2d46_mode_raw = ""
+    try:
+        _jm_raw = _fix2d6_get_diff_join_mode_v1()
+        _fix2d46_mode_raw = str(_jm_raw or "").strip().lower()
+        if _fix2d46_mode_raw in ("schema", "cross", "schema_union", "schema_cross", "schema_cross_source", "schema+union", "x"):
+            _fix2d46_enabled = True
+    except Exception:
+        _fix2d46_enabled = False
+
+    if _fix2d46_enabled and isinstance(cur_metrics, dict):
+        try:
+            _cur_rekeyed = {}
+            _cur_pick_trace = {"enabled": True, "mode_raw": _fix2d46_mode_raw, "winners": 0, "dropped": 0}
+
+            def _fix2d46_score(m: dict) -> float:
+                if not isinstance(m, dict):
+                    return 0.0
+                for k in ("confidence", "match_confidence", "schema_match_score", "score", "rank_score"):
+                    v = m.get(k)
+                    try:
+                        if v is not None:
+                            return float(v)
+                    except Exception:
+                        pass
+                return 0.0
+
+            for _ck, _m in cur_metrics.items():
+                if not isinstance(_m, dict):
+                    _cur_pick_trace["dropped"] += 1
+                    continue
+                _schema_key = (
+                    _m.get("canonical_key")
+                    or _m.get("canonicalkey")
+                    or _m.get("schema_key")
+                    or _m.get("schema_canonical_key")
+                    or _m.get("schema_key_v1")
+                    or _ck
+                )
+                if not isinstance(_schema_key, str) or not _schema_key:
+                    _cur_pick_trace["dropped"] += 1
+                    continue
+
+                _s = _fix2d46_score(_m)
+                _prev = _cur_rekeyed.get(_schema_key)
+                if _prev is None:
+                    _cur_rekeyed[_schema_key] = {"__score": _s, "__src_ckey": _ck, "metric": _m}
+                else:
+                    # winner: higher score, tie-break lexicographically by __src_ckey for determinism
+                    if (_s > float(_prev.get("__score") or 0.0)) or (
+                        _s == float(_prev.get("__score") or 0.0) and str(_ck) < str(_prev.get("__src_ckey") or "")
+                    ):
+                        _cur_rekeyed[_schema_key] = {"__score": _s, "__src_ckey": _ck, "metric": _m}
+
+            # Finalize: strip wrapper, leave dict keyed by schema_key
+            cur_metrics = {k: v["metric"] for k, v in _cur_rekeyed.items() if isinstance(v, dict) and isinstance(v.get("metric"), dict)}
+            _cur_pick_trace["winners"] = int(len(cur_metrics))
+
+            # Rebuild anchor index from re-keyed cur_metrics
+            cur_by_anchor = {}
+            try:
+                for ck, cm in cur_metrics.items():
+                    ah = _get_anchor_hash_for_ckey(ck, cm, cur_anchors)
+                    if ah:
+                        cur_by_anchor.setdefault(str(ah), []).append(ck)
+                for ah in list(cur_by_anchor.keys()):
+                    cur_by_anchor[ah] = sorted([c for c in cur_by_anchor[ah] if isinstance(c, str)])
+            except Exception:
+                cur_by_anchor = {}
+
+            try:
+                summary.setdefault("diag", {})
+                if isinstance(summary.get("diag"), dict):
+                    summary["diag"]["fix2d46_schema_cross_source"] = dict(_cur_pick_trace)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    # =====================================================================
+    # END FIX2D46_SCHEMA_CROSS_SOURCE_CURRENT
+    # =====================================================================
+
     prev_keys = sorted([k for k in prev_metrics.keys() if isinstance(k, str)]) if isinstance(prev_metrics, dict) else []
     cur_keys = sorted([k for k in cur_metrics.keys() if isinstance(k, str)]) if isinstance(cur_metrics, dict) else []
 
@@ -21367,7 +21464,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
         # =====================================================================
 
-        
+
 
         # =====================================================================
         # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
@@ -38528,3 +38625,55 @@ except Exception:
 # ============================================================
 # PATCH END: FIX2D34_PREV_KEY_DRIVEN_DIFF_UNIVERSE_V1
 # ============================================================
+
+
+# =========================================================
+# FIX2D45 — FORCE BASELINE SCHEMA MATERIALISATION (FINAL)
+# =========================================================
+# This patch removes all optional/gated baseline construction
+# and unconditionally builds baseline_schema_metrics_v1 during
+# Analysis finalisation when schema + canonical metrics exist.
+
+CODE_VERSION = "FIX2D46"
+
+def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
+    if "results" not in analysis:
+        analysis["results"] = {}
+
+    schema = analysis.get("metric_schema_frozen")
+    canonical = analysis.get("primary_metrics_canonical")
+    anchors = analysis.get("metric_anchors", {})
+
+    if not schema:
+        raise RuntimeError("FIX2D45: metric_schema_frozen missing")
+
+    if not canonical:
+        raise RuntimeError("FIX2D45: primary_metrics_canonical missing")
+
+    baseline_schema_metrics_v1 = {}
+
+    for schema_key in schema.keys():
+        metric = canonical.get(schema_key)
+        if not metric:
+            continue
+
+        baseline_schema_metrics_v1[schema_key] = {
+            "canonical_key": schema_key,
+            "canonical_id": metric.get("canonical_id"),
+            "value_norm": metric.get("value_norm"),
+            "unit_family": metric.get("unit_family"),
+            "dimension": metric.get("dimension"),
+            "anchor_hash": anchors.get(schema_key, {}).get("anchor_hash"),
+            "source_url": metric.get("source_url"),
+        }
+
+    analysis["results"]["baseline_schema_metrics_v1"] = baseline_schema_metrics_v1
+    analysis["baseline_schema_metrics_v1"] = baseline_schema_metrics_v1
+
+    analysis.setdefault("debug", {})
+    analysis["debug"]["fix2d45_baseline_count"] = len(baseline_schema_metrics_v1)
+
+
+# ---- invoke FIX2D45 in Analysis finalisation ----
+if "_fix2d45_force_baseline_schema_materialisation" not in globals():
+    pass
