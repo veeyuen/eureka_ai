@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D60"  # PATCH FIX2D60: schema-only canonical enforcement + yearlike rejection at schema-only commit
+CODE_VERSION = "FIX2D61"  # PATCH FIX2D60: schema-only canonical enforcement + yearlike rejection at schema-only commit
 
 
 # ============================================================
@@ -106,9 +106,6 @@ try:
         "supersedes": ["FIX2D43"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 
 # =========================
 # PATCH FIX2D59 (ADDITIVE): Canonical Identity Resolver (shared authority)
@@ -144,8 +141,44 @@ try:
 except Exception:
     pass
 
+# =========================
+# PATCH FIX2D61 (ADDITIVE): Schema Promotion Path (Option A)
+# - Propose schema entries from primary_metrics_provisional
+# - Allow deterministic promotion into metric_schema_frozen (analysis-side)
+# - Record proposals and promotions for audit
+# =========================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D61",
+        "summary": "Option A schema extension: generate promotion proposals from primary_metrics_provisional and (optionally) promote them into metric_schema_frozen with full audit metadata; enables closing remaining coverage gaps without reintroducing heuristic canonical minting.",
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+except Exception:
+    pass
+# =========================
+# PATCH FIX2D61 (ADDITIVE): Schema Promotion Path (Option A)
+# - Propose schema entries from primary_metrics_provisional
+# - Deterministically promote selected proposals into metric_schema_frozen
+# - Record proposals/promotions for audit
+# =========================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D61",
+        "summary": "Option A schema extension path: generate schema proposals from primary_metrics_provisional, allow deterministic promotion into metric_schema_frozen, and rekey through identity resolver for immediate alignment.",
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): FIX2D40
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -29112,6 +29145,29 @@ def main():
                 except Exception:
                     pass
                 # END PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_APPLY_V1
+
+                # =========================================================
+                # PATCH FIX2D61 (ADDITIVE): Option A schema extension from provisional metrics
+                # - Build schema proposals from primary_metrics_provisional using freeze_metric_schema.
+                # - Auto-promote into metric_schema_frozen (governance can later restrict via allowlist).
+                # - Record proposals/promotions for audit.
+                # =========================================================
+                try:
+                    _prov = primary_data.get("primary_metrics_provisional")
+                    _schema = primary_data.get("metric_schema_frozen")
+                    if isinstance(_prov, dict) and _prov and isinstance(_schema, dict):
+                        _prov_schema = freeze_metric_schema(_prov)
+                        if isinstance(_prov_schema, dict) and _prov_schema:
+                            primary_data["schema_promotion_proposals_v1"] = sorted([str(k) for k in _prov_schema.keys()])
+                            # Auto-promote: merge proposals into frozen schema
+                            for _k, _spec in _prov_schema.items():
+                                if _k not in _schema:
+                                    _schema[_k] = _spec
+                            primary_data["metric_schema_frozen"] = _schema
+                            primary_data["schema_promoted_v1"] = sorted([str(k) for k in _prov_schema.keys() if str(k) in _schema])
+                except Exception:
+                    pass
+                # END PATCH FIX2D61
                 # =========================================================
 
 
@@ -29138,6 +29194,25 @@ def main():
                     pass
 
                 # =========================================================
+
+                # =========================================================
+                # PATCH FIX2D61 (ADDITIVE): feed provisional into canonical before schema-only enforcement
+                # - After schema promotion + rekey, merge provisional into canonical so bound rows can be retained.
+                # =========================================================
+                try:
+                    _prov = primary_data.get("primary_metrics_provisional")
+                    if isinstance(_prov, dict) and _prov:
+                        _can = primary_data.get("primary_metrics_canonical")
+                        if not isinstance(_can, dict):
+                            _can = {}
+                        for _k, _v in _prov.items():
+                            _can[_k] = _v
+                        primary_data["primary_metrics_canonical"] = _can
+                        primary_data["primary_metrics_provisional"] = {}
+                except Exception:
+                    pass
+                # END PATCH FIX2D61 MERGE
+
                 # PATCH FIX2D60 (ADDITIVE): schema-only canonical enforcement
                 # - After rekeying, keep ONLY schema-bound keys in primary_metrics_canonical.
                 # - Move everything else into primary_metrics_provisional (quarantined for audit).
