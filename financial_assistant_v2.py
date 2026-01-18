@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D52"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D44"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -407,7 +407,7 @@ try:
         "supersedes": ["FIX2D2Y"],
     })
 
-
+    
 
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D30",
@@ -15967,7 +15967,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
-
+    
     # =====================================================================
     # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
     # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
@@ -21464,7 +21464,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
         # =====================================================================
 
-
+        
 
         # =====================================================================
         # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
@@ -38226,7 +38226,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D52"
+CODE_VERSION = "FIX2D53"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38633,7 +38633,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D52"
+CODE_VERSION = "FIX2D53"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38697,7 +38697,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D52"
+CODE_VERSION = "FIX2D53"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -38997,7 +38997,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D52"
+CODE_VERSION = "FIX2D53"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39242,7 +39242,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D52"
+CODE_VERSION = "FIX2D53"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39769,7 +39769,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D52"
+CODE_VERSION = "FIX2D53"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -40061,8 +40061,177 @@ def _fix2d52_try_bind_output_obj(output_obj: dict, web_context: dict | None = No
 # END FIX2D52
 # =========================================================
 
+# =========================================================
+# FIX2D53 — Legacy->Schema Baseline Remap (Option A)
+# =========================================================
+# Objective:
+#   Allow schema-bound diffing to activate even when Analysis produced legacy/text-derived keys,
+#   by deterministically remapping a small set of known legacy key shapes onto existing schema keys.
+#
+# Rationale:
+#   - Analysis may emit keys like "2025_global_ev_sales__unknown"
+#   - Schema key is "global_ev_sales_ytd_2025__unit_sales"
+#   - Without remap, prev/cur overlap is zero -> both_count stays 0.
+#
+# Policy:
+#   - Only remap when the destination schema key exists in metric_schema_frozen.
+#   - Only remap when the source key fails schema allowlisting OR has dimension "unknown".
+#   - Remap is deterministic and narrow (pattern-based); it does NOT invoke any LLM/NLP.
+#
+# Enablement:
+#   - web_context["diag_fix2d53_remap"] = True
+#   - OR web_context["enforce_schema_bound_pmc"] = True
+#
+# Output:
+#   - debug.fix2d53_legacy_remap = {enabled,total,mapped,examples}
+# =========================================================
+
+def _fix2d53_should_remap(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d53_remap") or web_context.get("enforce_schema_bound_pmc"))
+    except Exception:
+        return False
+
+def _fix2d53_extract_year_from_key(ckey: str) -> str:
+    if not isinstance(ckey, str):
+        return ""
+    m = re.search(r"\b(20\d{2})\b", ckey)
+    return m.group(1) if m else ""
+
+def _fix2d53_schema_key_exists(metric_schema_frozen: dict, skey: str) -> bool:
+    return isinstance(metric_schema_frozen, dict) and isinstance(skey, str) and skey in metric_schema_frozen
+
+def _fix2d53_schema_dim(metric_schema_frozen: dict, skey: str) -> str:
+    try:
+        spec = metric_schema_frozen.get(skey)
+        if isinstance(spec, dict):
+            d = spec.get("dimension")
+            if isinstance(d, str) and d.strip():
+                return _fix2d48_norm_token(d)
+    except Exception:
+        pass
+    return ""
+
+def _fix2d53_apply_legacy_schema_remaps(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
+    rep = {"enabled": True, "total": 0, "mapped": 0, "examples": []}
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc, rep
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        rep["note"] = "metric_schema_frozen missing; remap skipped"
+        return pmc, rep
+
+    out = {}
+    for k in sorted(pmc.keys(), key=lambda x: str(x)):
+        rep["total"] += 1
+        key = str(k)
+        m = pmc.get(k)
+        if not isinstance(m, dict):
+            out[key] = m
+            continue
+
+        md = _fix2d50_get_dimension_from_metric(m)
+
+        # Only consider remap for non-schema keys OR unknown dimension
+        if key in metric_schema_frozen and md != "unknown":
+            out[key] = m
+            continue
+
+        year = _fix2d53_extract_year_from_key(key) or _fix2d53_extract_year_from_key(m.get("name",""))
+
+        mapped = False
+        dest = None
+
+        # --- Remap Rule 1: global EV sales legacy key -> schema YTD key (demo-enabler)
+        # Examples:
+        #   "2025_global_ev_sales__unknown" -> "global_ev_sales_ytd_2025__unit_sales"
+        if year and re.fullmatch(rf"{year}_global_ev_sales__unknown", key):
+            cand = f"global_ev_sales_ytd_{year}__unit_sales"
+            if _fix2d53_schema_key_exists(metric_schema_frozen, cand):
+                dest = cand
+                mapped = True
+
+        # --- Remap Rule 2: china EV sales legacy key -> schema YTD key if present
+        #   "2025_china_ev_sales__unknown" -> "china_ev_sales_ytd_2025__unit_sales"
+        if (not mapped) and year and re.fullmatch(rf"{year}_china_ev_sales__unknown", key):
+            cand = f"china_ev_sales_ytd_{year}__unit_sales"
+            if _fix2d53_schema_key_exists(metric_schema_frozen, cand):
+                dest = cand
+                mapped = True
+
+        if mapped and dest:
+            # adopt schema dimension if unknown/missing
+            sd = _fix2d53_schema_dim(metric_schema_frozen, dest)
+            if (not md) or md == "unknown":
+                if sd:
+                    m["dimension"] = sd
+            m["canonical_key"] = dest
+
+            # collision handling deterministic
+            if dest in out and isinstance(out[dest], dict):
+                out[dest] = _fix2d47_pick_cur_winner(out[dest], m)
+            else:
+                out[dest] = m
+
+            rep["mapped"] += 1
+            if len(rep["examples"]) < 10:
+                rep["examples"].append({"from": key, "to": dest})
+            continue
+
+        out[key] = m
+
+    return out, rep
+
+def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    if not _fix2d53_should_remap(web_context):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict):
+        new_pmc, rep = _fix2d53_apply_legacy_schema_remaps(pmc, metric_schema_frozen, web_context)
+        output_obj["debug"]["fix2d53_legacy_remap"] = rep
+
+        if pmc_path == ("primary_metrics_canonical",):
+            output_obj["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("primary_response","primary_metrics_canonical"):
+            output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("results","primary_metrics_canonical"):
+            output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d53_legacy_remap"] = {"enabled": True, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D53
+# =========================================================
+
+
+
 
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D52"
+CODE_VERSION = "FIX2D53"
