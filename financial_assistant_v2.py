@@ -106,6 +106,9 @@ try:
         "supersedes": ["FIX2D43"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 # =========================
 # PATCH FIX2D59 (ADDITIVE): Canonical Identity Resolver (shared authority)
