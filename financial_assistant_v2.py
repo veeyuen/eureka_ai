@@ -124,8 +124,6 @@ try:
 except Exception:
     pass
 
-except Exception:
-    pass
 # PATCH TRACKER V1 (ADD): FIX2D40
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
