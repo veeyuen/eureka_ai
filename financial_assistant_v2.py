@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D57"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D57B"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -38242,7 +38242,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38649,7 +38649,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38713,7 +38713,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -39013,7 +39013,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39258,7 +39258,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39785,7 +39785,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -40250,7 +40250,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -40568,7 +40568,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -40669,4 +40669,9 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57"
+CODE_VERSION = "FIX2D57B"
+
+# =========================================================
+# FIX2D57B — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D57B"
