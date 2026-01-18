@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D62"  # PATCH FIX2D60: schema-only canonical enforcement + yearlike rejection at schema-only commit
+CODE_VERSION = "FIX2D63"  # PATCH FIX2D63: harden schema_only_rebuild_fix17 against injected-year pollution
 
 
 # ============================================================
@@ -175,6 +175,24 @@ try:
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D62",
         "summary": "Normalize time tokens into identity tuple (year/YTD/forecast) + schema-first resolver uses metric_token+time_scope to match schema; prevents 2024/2025 contamination of metric_token and improves Analysis/Evolution convergence.",
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# =========================
+# PATCH FIX2D63 (ADDITIVE): schema_only_rebuild yearlike hardening for unit/count metrics
+# - Fixes a variable typo that could disable FIX2D2U gating in the prefilter.
+# - Rejects yearlike numeric candidates for unit/count schema keys unless they carry unit evidence.
+# - Records reject counts under _evolution_rebuild_debug.fix2d63_reject_yearlike_no_unit_evidence.
+# =========================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D63",
+        "summary": "Harden schema_only_rebuild_fix17 against injected-year pollution for unit/count metrics: fix _c variable typo in FIX2D2U gate and reject yearlike candidates without unit evidence upstream.",
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -31325,6 +31343,85 @@ def _fix2d2v_semantic_eligible_commit(cand: dict, spec: dict, canonical_key: str
 # END PATCH FIX2D2U
 # =====================================================================
 
+# =====================================================================
+# PATCH FIX2D63 (ADDITIVE): harden schema_only_rebuild_fix17 selection
+# against injected-year pollution for unit/count metrics.
+#
+# Motivation:
+#   Even with downstream yearlike blocking, schema_only_rebuild_fix17 can
+#   still select a nearby year token (e.g., 2024/2025) as the VALUE for a
+#   unit_sales metric when the context includes headings like "YTD 2025".
+#   This patch moves the rejection upstream, at candidate-eligibility time,
+#   and fixes a variable typo that could silently disable FIX2D2U gating.
+#
+# Policy (for unit/count-like schema keys):
+#   - Reject yearlike numeric candidates unless they carry unit evidence.
+#   - Prefer candidates with unit evidence (unit_tag/unit/unit_family/context).
+#   - Keep existing bare-year token guards as a last-mile safety net.
+# =====================================================================
+
+def _fix2d63_is_yearlike_value(cand: dict) -> bool:
+    try:
+        v = cand.get('value_norm')
+        if v is None:
+            try:
+                v = float(cand.get('value') or 0.0)
+            except Exception:
+                v = None
+        if v is None:
+            return False
+        iv = int(float(v))
+        # Conservative year window
+        return (1900 <= iv <= 2100) and abs(float(v) - float(iv)) < 1e-9
+    except Exception:
+        return False
+
+
+def _fix2d63_has_unit_evidence(cand: dict) -> bool:
+    try:
+        ut = str(cand.get('unit_tag') or cand.get('unit') or '').strip()
+        uf = str(cand.get('unit_family') or '').strip().lower()
+        mk = str(cand.get('measure_kind') or '').strip().lower()
+        ma = str(cand.get('measure_assoc') or '').strip().lower()
+        if ut:
+            return True
+        if uf in ('magnitude', 'percent', 'currency', 'energy', 'index'):
+            return True
+        if mk in ('count_units', 'count', 'quantity'):
+            return True
+        if ma in ('units', 'unit_sales', 'sales'):
+            return True
+        ctx = (str(cand.get('context_snippet') or cand.get('context') or cand.get('context_window') or '') + ' ' + str(cand.get('raw') or '')).lower()
+        # Contextual unit hints
+        if any(w in ctx for w in ['million', 'billion', 'thousand', 'trillion', 'units', 'unit', 'vehicles', '%', 'percent', 'usd', 'sgd', 'eur', '$', '€', '£', '¥']):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _fix2d63_schema_expects_unit_or_count(canonical_key: str, spec: dict) -> bool:
+    try:
+        ck = str(canonical_key or '')
+        dim = str((spec or {}).get('dimension') or '').strip().lower()
+        uf = str((spec or {}).get('unit_family') or '').strip().lower()
+        # Suffix-based (most reliable given existing schema patterns)
+        if ck.endswith('__unit_sales') or ck.endswith('__units') or ck.endswith('__unit'):
+            return True
+        # Schema hints
+        if dim in ('unit_sales', 'count', 'quantity'):
+            return True
+        if uf == 'magnitude' and dim:
+            # magnitude metrics are generally non-year values unless explicitly year metrics
+            return True
+        return False
+    except Exception:
+        return False
+
+# =====================================================================
+# END PATCH FIX2D63
+# =====================================================================
+
 def _analysis_canonical_final_selector_v1(
     canonical_key: str,
     schema_frozen: dict,
@@ -32376,9 +32473,21 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 continue
             # PATCH FIX2D2U: shared semantic eligibility gate (local required tokens)
             try:
-                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, canonical_key=str(canonical_key))
+                # FIX2D63: bugfix - use the correct candidate variable (_c), not the outer loop's c.
+                _ok_u, _why_u = _fix2d2u_semantic_eligible(_c, spec, canonical_key=str(canonical_key))
                 if not _ok_u:
                     continue
+            except Exception:
+                pass
+
+            # FIX2D63: upstream reject yearlike numeric tokens for unit/count metrics
+            # unless the candidate carries unit evidence (prevents YTD 2025 headings from hijacking values).
+            try:
+                if _fix2d63_schema_expects_unit_or_count(str(canonical_key), spec):
+                    if _fix2d63_is_yearlike_value(_c) and (not _fix2d63_has_unit_evidence(_c)):
+                        dbg.setdefault('fix2d63_reject_yearlike_no_unit_evidence', 0)
+                        dbg['fix2d63_reject_yearlike_no_unit_evidence'] = int(dbg.get('fix2d63_reject_yearlike_no_unit_evidence') or 0) + 1
+                        continue
             except Exception:
                 pass
             try:
