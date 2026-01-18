@@ -107,6 +107,10 @@ try:
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 
+except Exception:
+    pass
+
+
 # =========================
 # PATCH FIX2D59 (ADDITIVE): Canonical Identity Resolver (shared authority)
 # - Introduces a single deterministic identity tuple and a schema-first resolver.
