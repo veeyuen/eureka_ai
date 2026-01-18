@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D56"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D57"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -38242,7 +38242,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D56"
+CODE_VERSION = "FIX2D57"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38649,7 +38649,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D56"
+CODE_VERSION = "FIX2D57"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38713,7 +38713,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D56"
+CODE_VERSION = "FIX2D57"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -39013,7 +39013,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D56"
+CODE_VERSION = "FIX2D57"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39258,7 +39258,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D56"
+CODE_VERSION = "FIX2D57"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39785,7 +39785,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D56"
+CODE_VERSION = "FIX2D57"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -40250,7 +40250,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D56"
+CODE_VERSION = "FIX2D57"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -40568,4 +40568,105 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D56"
+CODE_VERSION = "FIX2D57"
+# =========================================================
+# FIX2D57 — Analysis-side Schema Baseline Materialisation
+# =========================================================
+# Objective:
+#   Ensure the Analysis baseline (Run A) already contains schema-keyed PMC entries with
+#   numeric values, so Evolution can diff against Analysis without requiring Analysis injection.
+#
+# Problem observed:
+#   Analysis emits legacy/text keys (e.g., "2025_global_ev_sales__unknown") while Evolution emits
+#   schema keys (e.g., "global_ev_sales_ytd_2025__unit_sales"). No overlap => both_count=0.
+#
+# Solution:
+#   After run_source_anchored_analysis returns its output object, force-run the schema pipeline:
+#     FIX2D53 remap -> FIX2D52 bind -> FIX2D54 materialise -> FIX2D50 gate
+#   using a temporary web_context with enforce_schema_bound_pmc=True.
+#
+# Safety:
+#   - Only runs when metric_schema_frozen exists and PMC appears to contain legacy/unknown keys.
+#   - Does not invent values; only rehomes extracted metrics onto schema keys.
+#
+# Output:
+#   - debug.fix2d57_analysis_lift
+# =========================================================
+
+def _fix2d57_pmc_looks_legacy(pmc):
+    if not isinstance(pmc, dict) or not pmc:
+        return False
+    for k, m in list(pmc.items())[:200]:
+        ks = str(k)
+        if ks.endswith("__unknown"):
+            return True
+        if re.match(r"^20\d{2}_.+__unknown$", ks):
+            return True
+        if isinstance(m, dict):
+            d = m.get("dimension")
+            if isinstance(d, str) and d.strip().lower() == "unknown":
+                return True
+    return False
+
+def _fix2d57_force_schema_pipeline(output_obj, web_context):
+    if not isinstance(output_obj, dict):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        output_obj["debug"]["fix2d57_analysis_lift"] = {"enabled": True, "ran": False, "reason": "metric_schema_frozen_missing"}
+        return
+    if not isinstance(pmc, dict) or not pmc:
+        output_obj["debug"]["fix2d57_analysis_lift"] = {"enabled": True, "ran": False, "reason": "pmc_missing"}
+        return
+    if not _fix2d57_pmc_looks_legacy(pmc):
+        output_obj["debug"]["fix2d57_analysis_lift"] = {"enabled": True, "ran": False, "reason": "pmc_not_legacy"}
+        return
+
+    wc2 = dict(web_context) if isinstance(web_context, dict) else {}
+    wc2["enforce_schema_bound_pmc"] = True
+    wc2["diag_fix2d53_remap"] = True
+    wc2["diag_fix2d52_bind"] = True
+    wc2["diag_fix2d54_materialize"] = True
+    wc2["diag_fix2d50_gate"] = True
+
+    # Apply in order (in-place on output_obj)
+    _fix2d53_try_remap_output_obj(output_obj, wc2)
+    _fix2d52_try_bind_output_obj(output_obj, wc2)
+    _fix2d54_try_materialize_output_obj(output_obj, wc2)
+    _fix2d50_try_gate_output_obj(output_obj, wc2)
+
+    rep = {"enabled": True, "ran": True}
+    dbg = output_obj.get("debug") if isinstance(output_obj.get("debug"), dict) else {}
+    if isinstance(dbg, dict):
+        for k in ("fix2d53_legacy_remap", "fix2d52_schema_bind", "fix2d54_materialize", "fix2d50_pmc_gate"):
+            if k in dbg:
+                rep[k] = dbg.get(k)
+    output_obj["debug"]["fix2d57_analysis_lift"] = rep
+
+# =========================================================
+# END FIX2D57
+# =========================================================
+
+
+# =========================================================
+# FIX2D57 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D57"
