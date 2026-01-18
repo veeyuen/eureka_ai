@@ -407,7 +407,7 @@ try:
         "supersedes": ["FIX2D2Y"],
     })
 
-
+    
 
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D30",
@@ -15967,7 +15967,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
-
+    
     # =====================================================================
     # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
     # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
@@ -21464,7 +21464,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
         # =====================================================================
 
-
+        
 
         # =====================================================================
         # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
@@ -38226,7 +38226,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D50"
+CODE_VERSION = "FIX2D52"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38633,7 +38633,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D50"
+CODE_VERSION = "FIX2D52"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38697,7 +38697,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D50"
+CODE_VERSION = "FIX2D52"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -38997,7 +38997,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D50"
+CODE_VERSION = "FIX2D52"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39242,7 +39242,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D50"
+CODE_VERSION = "FIX2D52"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39488,12 +39488,32 @@ def _fix2d49_apply_postprocess_if_enabled(output_obj, web_context):
     if not isinstance(output_obj, dict):
         return output_obj
 
+    # FIX2D48 validation (opt-in)
     if _fix2d48_should_validate_ckeys(web_context):
         _fix2d48_try_validate_outputs(output_obj)
 
+    # FIX2D49 audit/rekey (opt-in via flags inside the function)
     _fix2d49_try_audit_and_rekey_outputs(output_obj, web_context)
 
+    # FIX2D50 gatekeeper (opt-in)
     _fix2d50_try_gate_output_obj(output_obj, web_context)
+
+    return output_obj
+
+    # FIX2D48 validation (opt-in)
+    try:
+        if _fix2d48_should_validate_ckeys(web_context):
+            _fix2d48_try_validate_outputs(output_obj)
+    except Exception:
+        # keep behaviour consistent: validation failures are surfaced only when flag enabled;
+        # if enabled, allow exception to propagate.
+        raise
+
+    # FIX2D49 audit/rekey (opt-in via flags inside the function)
+    try:
+        _fix2d49_try_audit_and_rekey_outputs(output_obj, web_context)
+    except Exception:
+        raise
 
     return output_obj
 
@@ -39749,4 +39769,300 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D50"
+CODE_VERSION = "FIX2D52"
+# =========================================================
+# FIX2D52 — Schema-first canonical key resolution (binder)
+# =========================================================
+# Objective:
+#   Close the canonical-key convergence gap by deterministically binding PMC metrics
+#   to existing schema keys (metric_schema_frozen) BEFORE the FIX2D50 gate runs.
+#
+# Mechanism:
+#   - For each metric in primary_metrics_canonical, attempt to match a schema key using:
+#       * schema keywords overlap (authoritative allowlist)
+#       * dimension compatibility (prefer schema dimension; allow unknown->schema)
+#       * time-qualifier hint extracted from current key/name (year/ytd/asof/range)
+#   - If a high-confidence match is found, rekey the PMC entry to that schema key and
+#     set metric["canonical_key"] = schema_key and metric["dimension"] = schema_dimension (if unknown).
+#
+# Enablement (recommended ON for now):
+#   - web_context["diag_fix2d52_bind"] = True
+#   - OR web_context["enforce_schema_bound_pmc"] = True
+#
+# Strictness:
+#   - If web_context["diag_fix2d52_strict"] is True, raise if any metric cannot be bound
+#     AND is not already a valid schema key.
+#
+# Output:
+#   - debug.fix2d52_schema_bind = {total, bound, already_schema, unbound, examples}
+# =========================================================
+
+def _fix2d52_should_bind(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d52_bind") or web_context.get("enforce_schema_bound_pmc"))
+    except Exception:
+        return False
+
+def _fix2d52_is_strict(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d52_strict"))
+    except Exception:
+        return False
+
+def _fix2d52_norm_text(s: str) -> str:
+    s = (s or "").lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _fix2d52_extract_time_hint(s: str) -> str:
+    """
+    Return a time qualifier hint in canonical form if found (best-effort):
+      - ytd_YYYY
+      - YYYY
+      - YYYY_YYYY (range)
+    """
+    s2 = (s or "").lower()
+    # ytd patterns
+    m = re.search(r"\b(ytd|year to date|year-to-date)\s*(20\d{2})\b", s2)
+    if m:
+        return f"ytd_{m.group(2)}"
+    # range patterns (2026-2040 etc)
+    m = re.search(r"\b(20\d{2})\s*(?:-|–|to)\s*(20\d{2})\b", s2)
+    if m:
+        a, b = m.group(1), m.group(2)
+        if int(b) >= int(a):
+            return f"{a}_{b}"
+    # single year
+    m = re.search(r"\b(20\d{2})\b", s2)
+    if m:
+        return m.group(1)
+    return ""
+
+def _fix2d52_schema_candidates(metric_schema_frozen: dict) -> list:
+    cands = []
+    if not isinstance(metric_schema_frozen, dict):
+        return cands
+    for skey, spec in metric_schema_frozen.items():
+        if not isinstance(skey, str) or "__" not in skey:
+            continue
+        if not isinstance(spec, dict):
+            spec = {}
+        kw = spec.get("keywords")
+        if isinstance(kw, list):
+            keywords = [_fix2d52_norm_text(str(x)) for x in kw if str(x).strip()]
+        else:
+            keywords = []
+        dim = spec.get("dimension")
+        dim = _fix2d48_norm_token(str(dim)) if dim else ""
+        # also build a normalized name bag from metric_name/name and the key itself
+        nm = spec.get("metric_name") or spec.get("name") or ""
+        name_norm = _fix2d52_norm_text(str(nm))
+        key_norm = _fix2d52_norm_text(skey.replace("__", " "))
+        cands.append({
+            "skey": skey,
+            "dimension": dim,
+            "keywords": keywords,
+            "name_norm": name_norm,
+            "key_norm": key_norm,
+            "time_hint": _fix2d52_extract_time_hint(skey),
+        })
+    return cands
+
+def _fix2d52_score_match(metric: dict, dict_key: str, schema_cand: dict) -> float:
+    # Base: keyword overlap
+    text_fields = []
+    if isinstance(metric, dict):
+        for k in ("name", "metric_name", "label", "title", "snippet", "raw_text"):
+            v = metric.get(k)
+            if isinstance(v, str) and v.strip():
+                text_fields.append(v)
+    text_fields.append(dict_key or "")
+    blob = _fix2d52_norm_text(" ".join(text_fields))
+    if not blob:
+        return 0.0
+
+    blob_set = set(blob.split(" "))
+    kw = schema_cand.get("keywords") or []
+    kw_hits = 0
+    for k in kw:
+        # keyword list may contain multi-word phrases; count a hit if all tokens present
+        toks = k.split(" ")
+        if toks and all(t in blob_set for t in toks):
+            kw_hits += 1
+
+    # Name/key soft overlap
+    name_norm = schema_cand.get("name_norm") or ""
+    key_norm = schema_cand.get("key_norm") or ""
+    name_hits = 0
+    for t in name_norm.split(" "):
+        if t and t in blob_set:
+            name_hits += 0.2  # soft
+    for t in key_norm.split(" "):
+        if t and t in blob_set:
+            name_hits += 0.05  # very soft
+
+    # Dimension compatibility
+    sd = schema_cand.get("dimension") or ""
+    md = _fix2d50_get_dimension_from_metric(metric) if isinstance(metric, dict) else ""
+    dim_score = 0.0
+    if sd and md:
+        if md == "unknown":
+            dim_score = 0.4
+        elif md == sd:
+            dim_score = 0.8
+        else:
+            dim_score = -1.0  # hard penalty
+    elif sd and not md:
+        dim_score = 0.2
+
+    # Time qualifier hint
+    mh = _fix2d52_extract_time_hint(blob)
+    th = schema_cand.get("time_hint") or ""
+    time_score = 0.0
+    if mh and th and mh == th:
+        time_score = 0.6
+    elif mh and th and (mh in th or th in mh):
+        time_score = 0.2
+
+    score = (kw_hits * 1.0) + name_hits + dim_score + time_score
+    return float(score)
+
+def _fix2d52_bind_pmc_to_schema(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
+    report = {
+        "enabled": True,
+        "total": 0,
+        "already_schema": 0,
+        "bound": 0,
+        "unbound": 0,
+        "examples": [],
+        "threshold": 2.0,
+    }
+    if not isinstance(pmc, dict) or not pmc:
+        report["enabled"] = True
+        return pmc, report
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        report["enabled"] = True
+        report["note"] = "metric_schema_frozen missing; bind skipped"
+        return pmc, report
+
+    # Precompute schema candidates once
+    cands = _fix2d52_schema_candidates(metric_schema_frozen)
+    thresh = float(web_context.get("diag_fix2d52_threshold") or report["threshold"]) if isinstance(web_context, dict) else report["threshold"]
+    report["threshold"] = thresh
+
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen) or None
+
+    out = {}
+    strict = _fix2d52_is_strict(web_context)
+
+    for old_key in sorted(pmc.keys(), key=lambda x: str(x)):
+        report["total"] += 1
+        key = str(old_key)
+        m = pmc.get(old_key)
+        if not isinstance(m, dict):
+            continue
+
+        # If already a valid schema key, keep.
+        if key in metric_schema_frozen:
+            out[key] = m
+            m["canonical_key"] = key
+            report["already_schema"] += 1
+            continue
+
+        # If key is grammatically invalid, we still attempt schema bind (that's the whole point).
+        best = None
+        best_score = -1e9
+        for cand in cands:
+            s = _fix2d52_score_match(m, key, cand)
+            if s > best_score:
+                best_score = s
+                best = cand
+
+        if best is not None and best_score >= thresh:
+            skey = best["skey"]
+            # Validate schema key (should always validate, but keep safe)
+            try:
+                validate_canonical_key_v1(skey, allowed_dimensions=allowed_dims)
+            except Exception:
+                # If somehow invalid, treat as unbound
+                best_score = -1e9
+                best = None
+            else:
+                # Apply binding
+                m["canonical_key"] = skey
+                # If dimension unknown, adopt schema dimension
+                md = _fix2d50_get_dimension_from_metric(m)
+                sd = best.get("dimension") or ""
+                if (not md) or md == "unknown":
+                    if sd:
+                        m["dimension"] = sd
+                out[skey] = _fix2d47_pick_cur_winner(out.get(skey), m)
+                report["bound"] += 1
+                if len(report["examples"]) < 10:
+                    report["examples"].append({"from": key, "to": skey, "score": round(best_score, 3)})
+                continue
+
+        # Unbound: keep original in out (so downstream audit can see it), unless strict.
+        report["unbound"] += 1
+        if strict:
+            raise RuntimeError(f"FIX2D52 strict: could not bind PMC key '{key}' to schema (best_score={best_score})")
+        out[key] = m
+
+    return out, report
+
+def _fix2d52_try_bind_output_obj(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    if not _fix2d52_should_bind(web_context):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    # Locate PMC in common shapes
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict):
+        new_pmc, rep = _fix2d52_bind_pmc_to_schema(pmc, metric_schema_frozen, web_context)
+        output_obj["debug"]["fix2d52_schema_bind"] = rep
+
+        if pmc_path == ("primary_metrics_canonical",):
+            output_obj["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("primary_response","primary_metrics_canonical"):
+            output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("results","primary_metrics_canonical"):
+            output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d52_schema_bind"] = {"enabled": True, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D52
+# =========================================================
+
+
+# =========================================================
+# FIX2D52 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D52"
