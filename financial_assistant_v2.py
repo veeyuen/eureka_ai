@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D61"  # PATCH FIX2D60: schema-only canonical enforcement + yearlike rejection at schema-only commit
+CODE_VERSION = "FIX2D62"  # PATCH FIX2D60: schema-only canonical enforcement + yearlike rejection at schema-only commit
 
 
 # ============================================================
@@ -106,9 +106,9 @@ try:
         "supersedes": ["FIX2D43"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+
 except Exception:
     pass
-
 
 # =========================
 # PATCH FIX2D59 (ADDITIVE): Canonical Identity Resolver (shared authority)
@@ -162,25 +162,24 @@ try:
 except Exception:
     pass
 
-except Exception:
-    pass
 # =========================
-# PATCH FIX2D61 (ADDITIVE): Schema Promotion Path (Option A)
-# - Propose schema entries from primary_metrics_provisional
-# - Deterministically promote selected proposals into metric_schema_frozen
-# - Record proposals/promotions for audit
+# PATCH FIX2D62 (ADDITIVE): Time token normalization into identity tuple
+# - Split embedded year/YTD/forecast tokens out of metric_token and into time_scope.
+# - Resolver matches schema on metric_token + '_' + time_scope, preventing 2024/2025 being glued into metric_token.
+# - Also adds required except/pass closure for early patch-tracker try block.
 # =========================
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D61",
-        "summary": "Option A schema extension path: generate schema proposals from primary_metrics_provisional, allow deterministic promotion into metric_schema_frozen, and rekey through identity resolver for immediate alignment.",
+        "patch_id": "FIX2D62",
+        "summary": "Normalize time tokens into identity tuple (year/YTD/forecast) + schema-first resolver uses metric_token+time_scope to match schema; prevents 2024/2025 contamination of metric_token and improves Analysis/Evolution convergence.",
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
 
 # PATCH TRACKER V1 (ADD): FIX2D40
 try:
@@ -9828,6 +9827,54 @@ def merge_group_proxy(group: List[Dict[str, Any]]) -> Dict[str, Any]:
 #   This resolver is intended to be used by BOTH Analysis and Evolution finalizers.
 # =========================
 
+def normalize_metric_token_time_scope_v1(metric_token: str, time_scope: str = '') -> tuple:
+    """Split embedded time tokens out of metric_token into time_scope (v1).
+
+    Rules (deterministic):
+      - Leading year prefix: '2024_global_ev_sales' -> metric_token='global_ev_sales', time_scope='2024'
+      - Trailing year suffix: 'global_ev_sales_2024' -> metric_token='global_ev_sales', time_scope='2024'
+      - YTD forms: 'global_ev_sales_ytd_2025' -> metric_token='global_ev_sales', time_scope='ytd_2025'
+      - Forecast/projected forms: 'forecast_2035_sales' -> metric_token='sales', time_scope='forecast_2035'
+
+    If time_scope is already provided, it is preserved.
+    """
+    mt = str(metric_token or '').strip().lower()
+    ts = str(time_scope or '').strip().lower()
+    if not mt:
+        return '', ts
+    if ts:
+        return re.sub(r'_+', '_', mt).strip('_'), ts
+
+    # ytd patterns
+    m = re.search(r'(?:^|_)ytd[_-]?(20\d{2})(?:$|_)', mt)
+    if m:
+        year = m.group(1)
+        ts = f'ytd_{year}'
+        mt = re.sub(r'(?:^|_)ytd[_-]?%s(?:$|_)' % re.escape(year), '_', mt)
+
+    # forecast/projected patterns (treat as forecast)
+    m = re.search(r'(?:^|_)(forecast|projected|projection|estimate|estimated|target)[_-]?(20\d{2})(?:$|_)', mt)
+    if m:
+        year = m.group(2)
+        ts = f'forecast_{year}'
+        mt = re.sub(r'(?:^|_)(forecast|projected|projection|estimate|estimated|target)[_-]?%s(?:$|_)' % re.escape(year), '_', mt)
+
+    # leading year
+    m = re.match(r'^(20\d{2})_(.+)$', mt)
+    if m and not ts:
+        ts = m.group(1)
+        mt = m.group(2)
+
+    # trailing year
+    m = re.match(r'^(.+?)_(20\d{2})$', mt)
+    if m and not ts:
+        mt = m.group(1)
+        ts = m.group(2)
+
+    mt = re.sub(r'_+', '_', mt).strip('_')
+    ts = re.sub(r'_+', '_', ts).strip('_')
+    return mt, ts
+
 def build_identity_tuple_v1(*, metric_token: str, time_scope: str = '', geo_scope: str = '', dims=None,
                             dimension: str = '', unit_family: str = '', unit_tag: str = '',
                             statistic: str = '', aggregation: str = '') -> dict:
@@ -9836,6 +9883,7 @@ def build_identity_tuple_v1(*, metric_token: str, time_scope: str = '', geo_scop
         dims = ()
     if not isinstance(dims, (list, tuple)):
         dims = (str(dims),)
+    metric_token, time_scope = normalize_metric_token_time_scope_v1(metric_token, time_scope)
     return {
         'metric_token': str(metric_token or '').strip().lower(),
         'time_scope': str(time_scope or '').strip().lower(),
@@ -9855,13 +9903,15 @@ def resolve_canonical_identity_v1(identity: dict, metric_schema: dict = None) ->
     metric_schema = metric_schema if isinstance(metric_schema, dict) else {}
 
     mt = str(identity.get('metric_token') or '').strip().lower()
+    ts = str(identity.get('time_scope') or '').strip().lower()
+    mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
     dim = str(identity.get('dimension') or '').strip().lower()
     uf = str(identity.get('unit_family') or '').strip().lower()
     ut = str(identity.get('unit_tag') or '').strip()
 
     # Under-specified identities are never allowed to be treated as canonical.
     if (not mt) or (not dim) or dim == 'unknown' or (not uf and bool(ut)):
-        provisional_key = f"{mt}__{dim or 'unknown'}" if mt else f"__provisional__{dim or 'unknown'}"
+        provisional_key = f"{mt_eff}__{dim or 'unknown'}" if mt else f"__provisional__{dim or 'unknown'}"
         return {
             'canonical_key': provisional_key,
             'bound': False,
@@ -9870,7 +9920,7 @@ def resolve_canonical_identity_v1(identity: dict, metric_schema: dict = None) ->
         }
 
     # Direct schema key hit (fastpath)
-    direct = f"{mt}__{dim}"
+    direct = f"{mt_eff}__{dim}"
     if direct in metric_schema:
         return {
             'canonical_key': direct,
@@ -9890,7 +9940,7 @@ def resolve_canonical_identity_v1(identity: dict, metric_schema: dict = None) ->
             # allow fallback: infer metric_token from schema key prefix
             s_mt = str(skey).split('__')[0].strip().lower()
         s_dim = str(spec.get('dimension') or '').strip().lower() or str(skey).split('__')[-1].strip().lower()
-        if s_mt != mt or s_dim != dim:
+        if s_mt != mt_eff or s_dim != dim:
             continue
         s_uf = str(spec.get('unit_family') or '').strip().lower()
         s_ut = str(spec.get('unit_tag') or '').strip()
@@ -9934,10 +9984,13 @@ def rekey_metrics_via_identity_resolver_v1(pmc: dict, metric_schema: dict) -> di
             out[k] = v
             continue
         mt = str(v.get('canonical_id') or '').strip().lower() or str(k).split('__')[0].strip().lower()
+        _ts = str(v.get('time_scope') or '')
+        mt, _ts = normalize_metric_token_time_scope_v1(mt, _ts)
+
         dim = str(v.get('dimension') or '').strip().lower() or str(k).split('__')[-1].strip().lower()
         ident = build_identity_tuple_v1(
             metric_token=mt,
-            time_scope=str(v.get('time_scope') or ''),
+            time_scope=str(_ts or ''),
             geo_scope=str(v.get('geo_scope') or ''),
             dims=tuple(v.get('dims') or ()),
             dimension=dim,
