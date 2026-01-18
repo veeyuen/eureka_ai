@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D57B"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D58A"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -10089,22 +10089,55 @@ def canonicalize_metrics(
         # =========================
 
         unit_norm = raw_unit.upper()  # keep original behavior (do not change)
-        dim = infer_metric_dimension(str(original_name), raw_unit)
+
+        # =========================
+        # PATCH TRACE1 (ADDITIVE): canonical key mint trace
+        # - Adds an auditable trace showing *how* dimension + canonical_key were minted.
+        # - This is intentionally local (no new dependencies) and additive only.
+        # - Downstream UI/JSON can surface these fields to diagnose drift (e.g., __unknown).
+        # =========================
+        dim_inferred = infer_metric_dimension(str(original_name), raw_unit)
+        dim = dim_inferred
 
         # =========================
         # PATCH CM1 (ADDITIVE): apply registry hint as override / guardrail
         # - If registry says currency/percent, force that dimension.
         # - If registry says count, prevent accidental "currency"/"percent".
         # =========================
+        _trace_dim_override = ""
         if registry_dim_hint in ("currency", "percent"):
             dim = registry_dim_hint
+            _trace_dim_override = "registry_force"
         elif registry_dim_hint == "count":
             # Allow unit_sales if name clearly indicates it; else keep "count"
             if dim in ("currency", "percent"):
                 dim = "count"
+                _trace_dim_override = "registry_guard"
         # =========================
 
         canonical_key = f"{canonical_id}__{dim}"
+
+        # =========================
+        # PATCH TRACE1.B (ADDITIVE): attach trace onto metric_enriched.debug.key_mint_trace
+        # NOTE: metric_enriched is created below; stash trace ingredients now.
+        # =========================
+        _key_mint_trace = {
+            "mint_fn": "canonicalize_metrics",
+            "canonical_id": canonical_id,
+            "canonical_key": canonical_key,
+            "original_name": original_name,
+            "canonical_name": canonical_name,
+            "raw_unit": raw_unit,
+            "unit_norm": unit_norm,
+            "unit_tag": unit_tag,
+            "unit_family": unit_family_tag,
+            "dim_inferred": dim_inferred,
+            "dim_final": dim,
+            "registry_unit_type": registry_unit_type,
+            "registry_dim_hint": registry_dim_hint,
+            "dim_override": _trace_dim_override,
+            "key_mint_path": ("REGISTRY_OVERRIDE" if _trace_dim_override else "NAME_UNIT_INFER"),
+        }
 
         parsed_val = parse_to_float(metric.get("value"))
         value_for_sort = parsed_val if parsed_val is not None else str(metric.get("value", ""))
@@ -10150,6 +10183,14 @@ def canonicalize_metrics(
         # Ensure minimal canonical fields exist (additive)
         metric_enriched.setdefault("unit_tag", unit_tag)
         metric_enriched.setdefault("unit_family", unit_family_tag)
+
+        # Add mint trace (additive). Keep it under debug to avoid polluting top-level.
+        try:
+            metric_enriched.setdefault("debug", {})
+            if isinstance(metric_enriched.get("debug"), dict):
+                metric_enriched["debug"]["key_mint_trace"] = _key_mint_trace
+        except Exception:
+            pass
         # =========================
 
         candidates.append({
