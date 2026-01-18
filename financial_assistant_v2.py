@@ -38226,8 +38226,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D2Y"
-
+CODE_VERSION = "FIX2D50"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38634,8 +38633,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D46"
-
+CODE_VERSION = "FIX2D50"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38699,8 +38697,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D47"
-
+CODE_VERSION = "FIX2D50"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -39000,10 +38997,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D47"
-
-
-
+CODE_VERSION = "FIX2D50"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39248,10 +39242,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D48"
-
-
-
+CODE_VERSION = "FIX2D50"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39495,7 +39486,10 @@ def _fix2d49_extract_web_context_from_call(args, kwargs):
 
 def _fix2d49_apply_postprocess_if_enabled(output_obj, web_context):
     if not isinstance(output_obj, dict):
-        return output_obj
+        
+    # FIX2D50 gatekeeper (opt-in)
+    _fix2d50_try_gate_output_obj(output_obj, web_context)
+    return output_obj
     # FIX2D48 validation (opt-in)
     try:
         if _fix2d48_should_validate_ckeys(web_context):
@@ -39553,6 +39547,211 @@ except Exception:
 # END AUTO-HOOK
 # =========================================================
 
+# =========================================================
+# FIX2D50 — PMC Gatekeeper: Schema-bound canonical keys only
+# =========================================================
+# Objective:
+#   Close the remaining gap by making schema binding authoritative at the PMC boundary.
+#
+# Rule enforced (when enabled):
+#   - primary_metrics_canonical may only contain keys that:
+#       (a) validate under FIX2D48 grammar
+#       (b) exist in metric_schema_frozen (schema allowlist)
+#       (c) have a non-"unknown" dimension compatible with schema
+#   - dict key is the canonical key; metric["canonical_key"] is set to the same key.
+#
+# Enablement:
+#   Gate runs when any of these is true:
+#     - web_context["diag_fix2d50_gate"] = True
+#     - web_context["enforce_schema_bound_pmc"] = True
+#     - web_context["diag_fix2d49_rekey"] = True   (rekey implies intent to canonicalize)
+#
+# Strictness:
+#   - If web_context["diag_fix2d50_strict"] or web_context["diag_fix2d49_strict"] is True,
+#     the gate raises if it drops any PMC entries or finds invalid keys.
+#
+# Output:
+#   - Writes debug.fix2d50_pmc_gate = {kept, dropped, dropped_examples, strict, enabled}
+# =========================================================
+
+def _fix2d50_should_gate(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(
+            web_context.get("diag_fix2d50_gate")
+            or web_context.get("enforce_schema_bound_pmc")
+            or web_context.get("diag_fix2d49_rekey")
+        )
+    except Exception:
+        return False
+
+def _fix2d50_is_strict(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d50_strict") or web_context.get("diag_fix2d49_strict"))
+    except Exception:
+        return False
+
+def _fix2d50_get_dimension_from_metric(m: dict) -> str:
+    if not isinstance(m, dict):
+        return ""
+    for k in ("dimension", "dim", "metric_dimension"):
+        v = m.get(k)
+        if isinstance(v, str) and v.strip():
+            return _fix2d48_norm_token(v)
+    return ""
+
+def _fix2d50_get_schema_dimension(metric_schema_frozen: dict, ckey: str) -> str:
+    try:
+        spec = metric_schema_frozen.get(ckey)
+        if isinstance(spec, dict):
+            d = spec.get("dimension")
+            if isinstance(d, str) and d.strip():
+                return _fix2d48_norm_token(d)
+    except Exception:
+        pass
+    return ""
+
+def _fix2d50_gate_primary_metrics_canonical(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
+    report = {
+        "enabled": True,
+        "strict": _fix2d50_is_strict(web_context),
+        "total_in": 0,
+        "kept": 0,
+        "dropped": 0,
+        "dropped_examples": [],
+        "reasons": {},  # reason -> count
+    }
+    if not isinstance(pmc, dict) or not pmc:
+        report["enabled"] = True
+        report["total_in"] = 0
+        return pmc, report
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        # Can't enforce allowlist if schema absent; keep but record.
+        report["enabled"] = True
+        report["note"] = "metric_schema_frozen missing/empty; gate skipped"
+        report["total_in"] = len(pmc)
+        report["kept"] = len(pmc)
+        return pmc, report
+
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen)  # normalized set or None
+
+    out = {}
+    for k in sorted(pmc.keys(), key=lambda x: str(x)):
+        report["total_in"] += 1
+        key = str(k)
+
+        # (a) grammar validation
+        try:
+            validate_canonical_key_v1(key, allowed_dimensions=allowed_dims)
+        except Exception as e:
+            reason = "invalid_grammar"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason, "error": str(e)})
+            continue
+
+        # (b) schema allowlist
+        if key not in metric_schema_frozen:
+            reason = "not_in_schema"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason})
+            continue
+
+        m = pmc.get(k)
+        if not isinstance(m, dict):
+            reason = "non_dict_metric"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason})
+            continue
+
+        # (c) dimension guard
+        md = _fix2d50_get_dimension_from_metric(m)
+        sd = _fix2d50_get_schema_dimension(metric_schema_frozen, key)
+        # reject unknowns explicitly
+        if md == "unknown" or sd == "unknown":
+            reason = "unknown_dimension"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason, "metric_dim": md, "schema_dim": sd})
+            continue
+        # If both known and disagree, drop (prevents silent unit/dim leakage)
+        if md and sd and md != sd:
+            reason = "dimension_mismatch"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason, "metric_dim": md, "schema_dim": sd})
+            continue
+
+        # Make canonical_key authoritative at boundary
+        m["canonical_key"] = key
+
+        out[key] = m
+        report["kept"] += 1
+
+    # Strict raising if anything dropped
+    if report["strict"] and report["dropped"] > 0:
+        raise RuntimeError(f"FIX2D50 strict: dropped {report['dropped']} PMC entries; examples={report['dropped_examples'][:3]}")
+
+    return out, report
+
+def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    if not _fix2d50_should_gate(web_context):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    # Locate PMC in common shapes
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict):
+        new_pmc, rep = _fix2d50_gate_primary_metrics_canonical(pmc, metric_schema_frozen, web_context)
+        output_obj["debug"]["fix2d50_pmc_gate"] = rep
+
+        if pmc_path == ("primary_metrics_canonical",):
+            output_obj["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("primary_response","primary_metrics_canonical"):
+            output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("results","primary_metrics_canonical"):
+            output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d50_pmc_gate"] = {"enabled": True, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D50
+# =========================================================
+
+
+
 
 
 
@@ -39560,4 +39759,4 @@ except Exception:
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D49"
+CODE_VERSION = "FIX2D50"
