@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D59"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D60"  # PATCH FIX2D60: schema-only canonical enforcement + yearlike rejection at schema-only commit
 
 
 # ============================================================
@@ -107,10 +107,6 @@ try:
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 
-except Exception:
-    pass
-
-
 # =========================
 # PATCH FIX2D59 (ADDITIVE): Canonical Identity Resolver (shared authority)
 # - Introduces a single deterministic identity tuple and a schema-first resolver.
@@ -128,6 +124,25 @@ try:
 except Exception:
     pass
 
+# =========================
+# PATCH FIX2D60 (ADDITIVE): schema-only canonical enforcement + yearlike rejection at schema-only commit
+# - Analysis: after identity rekey, keep ONLY schema-bound metrics in primary_metrics_canonical.
+# - Evolution schema_only rebuild: never allow a bare year token to commit for expected_kind=='unit' keys.
+# =========================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D60",
+        "summary": "Enforce schema-only canonical store (Analysis) and hard-reject bare-year candidates for unit/count keys at schema_only_rebuild commit point (Evolution).",
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+except Exception:
+    pass
 # PATCH TRACKER V1 (ADD): FIX2D40
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -10492,6 +10507,38 @@ def _fix2d58b_split_primary_metrics_canonical(pmc: dict):
         return canonical_ok, provisional
     except Exception:
         # Fail-safe: never drop metrics silently if the splitter errors
+        return pmc if isinstance(pmc, dict) else {}, {}
+
+
+# =========================
+# PATCH FIX2D60 (ADDITIVE): enforce schema-only canonical store (Analysis)
+# - After FIX2D59 rekeying, primary_metrics_canonical must contain ONLY schema-bound keys.
+# - Any PROVISIONAL/UNSPECIFIED rows are moved into primary_metrics_provisional.
+# =========================
+def _fix2d60_split_schema_bound_only(pmc: dict):
+    try:
+        if not isinstance(pmc, dict):
+            return {}, {}
+        bound = {}
+        prov = {}
+        for k, v in pmc.items():
+            if not isinstance(v, dict):
+                prov[k] = v
+                continue
+            dbg = v.get('debug') if isinstance(v.get('debug'), dict) else {}
+            res = dbg.get('identity_resolve_v1') if isinstance(dbg.get('identity_resolve_v1'), dict) else {}
+            status = str(res.get('status') or '').strip().upper()
+            if status == 'CANONICAL_SCHEMA':
+                bound[k] = v
+            else:
+                vv = dict(v)
+                vv.setdefault('debug', {})
+                if isinstance(vv.get('debug'), dict):
+                    vv['debug']['quarantined_v1'] = True
+                    vv['debug']['quarantine_reason_v1'] = vv['debug'].get('quarantine_reason_v1') or 'not_schema_bound_after_identity_resolver'
+                prov[k] = vv
+        return bound, prov
+    except Exception:
         return pmc if isinstance(pmc, dict) else {}, {}
 
 
@@ -27003,6 +27050,21 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
             if expected_kind == 'unit' and not _fix2d2r_has_required_evidence(c, 'unit'):
                 continue
 
+            # =====================================================================
+            # PATCH FIX2D60 (ADDITIVE): hard reject bare-year candidates for unit/count
+            # schema keys at schema_only_rebuild commit point.
+            #
+            # Motivation:
+            #   - Some injected snippets contain both a year token and a unit-bearing value.
+            #   - Even with sibling checks, the year token can still win when index/window
+            #     metadata is missing or the sibling is filtered earlier.
+            # Rule:
+            #   - For expected_kind == 'unit' (incl. __unit_sales), never allow a bare year
+            #     token as the committed value.
+            # =====================================================================
+            if expected_kind == 'unit' and _fix2d2r_is_bare_year_cand(c):
+                continue
+
             # FIX2D2R: reject bare-year token when a better sibling exists in the same snippet
             if expected_kind != 'year' and _fix2d2r_is_bare_year_cand(c) and not _fix27_has_any_unit_evidence(c):
                 if _fix2d2r_has_better_sibling(c, filtered, expected_kind):
@@ -29069,6 +29131,26 @@ def main():
                             primary_data.get('primary_metrics_provisional') or {},
                             primary_data.get('metric_schema_frozen') or {},
                         )
+                except Exception:
+                    pass
+
+                # =========================================================
+                # PATCH FIX2D60 (ADDITIVE): schema-only canonical enforcement
+                # - After rekeying, keep ONLY schema-bound keys in primary_metrics_canonical.
+                # - Move everything else into primary_metrics_provisional (quarantined for audit).
+                # =========================================================
+                try:
+                    _pmc_bound, _pmc_not_bound = _fix2d60_split_schema_bound_only(primary_data.get('primary_metrics_canonical') or {})
+                    if isinstance(_pmc_bound, dict):
+                        primary_data['primary_metrics_canonical'] = _pmc_bound
+                    if isinstance(_pmc_not_bound, dict) and _pmc_not_bound:
+                        _prov = primary_data.get('primary_metrics_provisional')
+                        if not isinstance(_prov, dict):
+                            _prov = {}
+                        # merge (schema-bound rule is stronger than any earlier provisional split)
+                        for _k, _v in _pmc_not_bound.items():
+                            _prov[_k] = _v
+                        primary_data['primary_metrics_provisional'] = _prov
                 except Exception:
                     pass
 
@@ -38418,7 +38500,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38825,7 +38907,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38889,7 +38971,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -39189,7 +39271,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39434,7 +39516,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39961,7 +40043,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -40426,7 +40508,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -40744,7 +40826,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -40845,9 +40927,9 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D59"
+CODE_VERSION = "FIX2D60"
