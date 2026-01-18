@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D55"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D44"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -407,7 +407,7 @@ try:
         "supersedes": ["FIX2D2Y"],
     })
 
-
+    
 
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D30",
@@ -15967,7 +15967,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
-
+    
     # =====================================================================
     # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
     # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
@@ -21464,7 +21464,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
         # =====================================================================
 
-
+        
 
         # =====================================================================
         # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
@@ -32912,7 +32912,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         _fix41afc6_inj = _inj_diag_norm_url_list((_fix41afc6_wc or {}).get("extra_urls") or [])
         _fix41afc6_base = _inj_diag_norm_url_list(_fix24_extract_source_urls(prev_full) or [])
         _fix41afc6_delta = sorted(list(set(_fix41afc6_inj) - set(_fix41afc6_base))) if _fix41afc6_inj else []
-        if _fix41afc6_delta:
+        if _fix41afc6_inj:
             _fix41afc6_q = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
             _fix41afc6_prev_snap = (prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None
 
@@ -32939,6 +32939,18 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             # Bubble up a small marker so inj_trace_v1 can report whether evolution actually called FWC
             if isinstance(web_context, dict):
                 web_context["evolution_calls_fetch_web_context"] = True
+                try:
+                    # FIX2D56: record that injection fetch is allowed/enabled
+                    web_context.setdefault("debug", {})
+                    if isinstance(web_context.get("debug"), dict):
+                        web_context["debug"].setdefault("fix2d56", {})
+                        if isinstance(web_context["debug"].get("fix2d56"), dict):
+                            web_context["debug"]["fix2d56"].update({
+                                "force_fetch_injection": True,
+                                "injected_urls_count": int(len(_fix41afc6_inj or [])),
+                            })
+                except Exception:
+                    pass
                 web_context.setdefault("debug", {})
                 if isinstance(web_context.get("debug"), dict):
                     web_context["debug"].setdefault("fix41afc6", {})
@@ -38230,7 +38242,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D55"
+CODE_VERSION = "FIX2D56"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38637,7 +38649,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D55"
+CODE_VERSION = "FIX2D56"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38701,7 +38713,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D55"
+CODE_VERSION = "FIX2D56"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -39001,7 +39013,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D55"
+CODE_VERSION = "FIX2D56"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39246,7 +39258,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D55"
+CODE_VERSION = "FIX2D56"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39773,7 +39785,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D55"
+CODE_VERSION = "FIX2D56"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -40238,7 +40250,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D55"
+CODE_VERSION = "FIX2D56"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -40420,6 +40432,9 @@ def _fix2d55_should_prev_lift(web_context: dict | None) -> bool:
             return False
         if web_context.get("diag_fix2d55_prev_lift"):
             return True
+        # FIX2D56: auto-enable prev-lift when injection present
+        if _fix2d56_should_enable(web_context):
+            return True
         # If any of the schema-bound pipeline flags are enabled, lift prev as well.
         for k in (
             "diag_fix2d54_materialize",
@@ -40500,6 +40515,52 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
 
 # =========================================================
 # END FIX2D55
+
+
+# =========================================================
+# FIX2D56 — Force-fetch injected URLs in Evolution + auto prev-lift
+# =========================================================
+# A) Force-fetch injected URLs:
+#   Evolution previously recorded injected URLs as admitted but never fetched them,
+#   leaving inj_trace_v1.attempted empty. When injection is present, we now force
+#   a fetch_web_context(... identity_only=False, force_scrape_extra_urls=True,
+#   force_admit_extra_urls=True) call.
+#
+# B) Auto-enable prev_full lifting:
+#   When injection is present, automatically enable FIX2D55 prev_lift (schema remap/bind/materialise)
+#   so Analysis baseline can participate under schema keys without requiring extra flags.
+#
+# Enablement:
+#   - Always-on when injection is present.
+#   - Optional explicit opt-in via web_context['diag_fix2d56'].
+
+
+def _fix2d56_has_injection(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        if isinstance(web_context.get('extra_urls'), (list, tuple)) and len(web_context.get('extra_urls') or []) > 0:
+            return True
+        raw = web_context.get('diag_extra_urls_ui_raw') or web_context.get('extra_urls_ui_raw')
+        return isinstance(raw, str) and raw.strip() != ''
+    except Exception:
+        return False
+
+
+def _fix2d56_should_enable(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        if web_context.get('diag_fix2d56') or web_context.get('enforce_schema_bound_pmc'):
+            return True
+        return _fix2d56_has_injection(web_context)
+    except Exception:
+        return False
+
+# =========================================================
+# END FIX2D56
+# =========================================================
+
 # =========================================================
 
 
@@ -40507,4 +40568,4 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D55"
+CODE_VERSION = "FIX2D56"
