@@ -407,7 +407,7 @@ try:
         "supersedes": ["FIX2D2Y"],
     })
 
-    
+
 
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D30",
@@ -15967,7 +15967,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
-    
+
     # =====================================================================
     # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
     # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
@@ -21464,7 +21464,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
         # =====================================================================
 
-        
+
 
         # =====================================================================
         # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
@@ -39486,24 +39486,14 @@ def _fix2d49_extract_web_context_from_call(args, kwargs):
 
 def _fix2d49_apply_postprocess_if_enabled(output_obj, web_context):
     if not isinstance(output_obj, dict):
-        
-    # FIX2D50 gatekeeper (opt-in)
-    _fix2d50_try_gate_output_obj(output_obj, web_context)
-    return output_obj
-    # FIX2D48 validation (opt-in)
-    try:
-        if _fix2d48_should_validate_ckeys(web_context):
-            _fix2d48_try_validate_outputs(output_obj)
-    except Exception:
-        # keep behaviour consistent: validation failures are surfaced only when flag enabled;
-        # if enabled, allow exception to propagate.
-        raise
+        return output_obj
 
-    # FIX2D49 audit/rekey (opt-in via flags inside the function)
-    try:
-        _fix2d49_try_audit_and_rekey_outputs(output_obj, web_context)
-    except Exception:
-        raise
+    if _fix2d48_should_validate_ckeys(web_context):
+        _fix2d48_try_validate_outputs(output_obj)
+
+    _fix2d49_try_audit_and_rekey_outputs(output_obj, web_context)
+
+    _fix2d50_try_gate_output_obj(output_obj, web_context)
 
     return output_obj
 
