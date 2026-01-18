@@ -79,217 +79,16 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D58F"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D58G"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D58F
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D58F",
-        "date": "2026-01-18",
-        "summary": "Normalize composite unit phrases like 'million units' to magnitude tags (M/B/T/K) to eliminate unit_family=unknown; extend schema-only rebuild unit-required gate to treat __unit_sales as unit-required, preventing bare-year tokens from being selected as values.",
-        "files": ["FIX2D58F_full_codebase.py"],
-        "supersedes": ["FIX2D58E"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D41",
-        "date": "2026-01-17",
-        "summary": "Diff Panel V2: Option A policy gate—allow schema-remapped baselines (schema_remap_v1) to be diff-comparable when both sides have numeric values; stamp baseline_remap_* audit fields.",
-        "files": ["FIX2D41.py"],
-        "supersedes": ["FIX2D40"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D34
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D34",
-        "date": "2026-01-17",
-        "summary": "Diff Panel V2: force prev-key driven diff universe (iterate baseline canonical keys only); for each prev key, hydrate current strictly from cur_response.primary_metrics_canonical when available to prevent cur-only keys from suppressing overlap and to stabilize join behavior.",
-        "files": ["FIX2D34.py"],
-        "supersedes": ["FIX2D33"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D35
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D35",
-        "date": "2026-01-17",
-        "summary": "Diff Panel V2: allow schema-mandated proxy baselines (is_proxy=True) to participate in baseline comparability/diffing when both sides have numeric values; stamp baseline_proxy_used diagnostics for audit.",
-        "files": ["FIX2D35.py"],
-        "supersedes": ["FIX2D34"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D36
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D36",
-        "date": "2026-01-17",
-        "summary": "Analysis schema-primary rebuild: coerce baseline winner dimension/unit_family from schema spec when baseline fields are missing/unknown but numeric value_norm is present; stamp dimension_coerced_from_schema_v1 and unit_family_coerced_from_schema_v1 for audit.",
-        "files": ["FIX2D36.py"],
-        "supersedes": ["FIX2D35"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D37
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D37",
-        "date": "2026-01-17",
-        "summary": "Analysis: emit baseline_schema_metrics_v1 (schema-keyed baseline metric map) for diffing; Diff Panel V2 prefers this schema baseline map when present to ensure prev universe is explicitly schema-keyed and stable.",
-        "files": ["FIX2D37.py"],
-        "supersedes": ["FIX2D36"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D38
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D38",
-        "date": "2026-01-17",
-        "summary": "Analysis: always emit baseline_schema_metrics_v1 for schema keys; fill missing schema keys from flat candidates as proxy baselines (schema_fallback) when selector yields no schema selections; Diff Panel continues to prefer schema baseline map when present.",
-        "files": ["FIX2D38.py"],
-        "supersedes": ["FIX2D37"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D39
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D39",
-        "date": "2026-01-17",
-        "summary": "Analysis schema-baseline: enforce schema-authoritative dimension/unit_family as hard-binding for schema keys. Reject baseline_schema entries whose non-unknown dimension/unit_family conflict with schema; otherwise set dimension/unit_family to schema spec (with audit flags). This prevents unknown/mis-typed baseline values from blocking diff comparability.",
-        "files": ["FIX2D39.py"],
-        "supersedes": ["FIX2D38"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D43
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D43",
-        "date": "2026-01-17",
-        "summary": "Serialize baseline_schema_metrics_v1 from Analysis primary_response into top-level results so Evolution diff can consume it; teach attach_source_snapshots_to_analysis to read/write schema+pmc from primary_response when using the download output wrapper.",
-        "files": ["FIX2D43.py"],
-        "supersedes": ["FIX2D42"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D44
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D44",
-        "date": "2026-01-17",
-        "summary": "Analysis: define _core in attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 schema-baseline materialization runs and baseline_schema_metrics_v1 is serialized for Evolution diff.",
-        "files": ["FIX2D44.py"],
-        "supersedes": ["FIX2D43"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D44
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D44",
-        "date": "2026-01-17",
-        "summary": "Fix Analysis baseline schema emission: define _core correctly in attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 builder executes and serializes results.baseline_schema_metrics_v1 for Evolution diff.",
-        "files": ["FIX2D44.py"],
-        "supersedes": ["FIX2D43"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 
 
 # ============================================================
@@ -1527,6 +1326,15 @@ def _fix2af_classify_fetch_failure(status, txt):
             return "redirect"
         if "error" in s or "exception" in s or "fail" in s:
             return "error"
+
+        # PATCH FIX2D58G (ADDITIVE): magnitude/count units + 'sales' implies unit_sales
+        # - Some sources label unit counts as "million units" while metric_name is "... Sales ...".
+        # - If we see sales language AND a magnitude-like unit, bind to unit_sales.
+        try:
+            if ("sales" in n or "sold" in n) and any(tok in u for tok in ("million", "billion", "thousand", "units", "unit", "vehicles", "pcs", "pieces")):
+                return "unit_sales"
+        except Exception:
+            pass
         return "unknown"
     except Exception:
         return "unknown"
@@ -5123,6 +4931,23 @@ def rebuild_metrics_from_snapshots_schema_only(
             try:
                 _req = _fix33_schema_unit_required(spec_unit_family, spec_unit_tag, canonical_key)
                 _has_unit_ev = _fix33_candidate_has_unit_evidence(c)
+                # PATCH FIX2D58G (ADDITIVE): reject year-like candidates for unit_sales metrics
+                # unit_sales keys represent quantities; they must never take a bare year token as the value.
+                try:
+                    if str(canonical_key or '').strip().lower().endswith('__unit_sales'):
+                        _v = c.get('value_norm', None)
+                        if _v is None:
+                            _v = c.get('value', None)
+                        if _is_yearish_value(_v):
+                            if _fix33_dbg:
+                                try:
+                                    _fix33_rej['rejected_year_for_unit_sales'] = int(_fix33_rej.get('rejected_year_for_unit_sales', 0) or 0) + 1
+                                except Exception:
+                                    pass
+                            continue
+                except Exception:
+                    pass
+
                 if _req and not _has_unit_ev:
                     # Track rejection (debug)
                     if _fix33_dbg:
@@ -5131,6 +4956,7 @@ def rebuild_metrics_from_snapshots_schema_only(
                         except Exception:
                             pass
                     continue
+
 
                 # Track top candidates (debug)
                 if _fix33_dbg:
@@ -10001,9 +9827,18 @@ def canonicalize_metrics(
             return "currency"
 
         # Unit sales / shipments
-        unit_tokens = ["unit", "units", "sold", "sales volume", "shipments", "registrations", "deliveries", "vehicles", "pcs", "pieces", "volume"]
+        unit_tokens = ["unit", "units", "sold", "sales", "sales volume", "shipments", "registrations", "deliveries", "vehicles", "pcs", "pieces", "volume"]
         if any(t in n for t in unit_tokens) or any(t in u for t in ["unit", "units", "vehicle", "vehicles", "pcs", "pieces"]):
             return "unit_sales"
+
+        # PATCH FIX2D58G (ADDITIVE): sales-like names + magnitude/count unit evidence => unit_sales
+        # Handles cases like 'Global EV Sales 2024' with unit 'million units' where name contains 'sales'
+        # but unit tokens may not include 'units' in the name itself.
+        if ('sales' in n or 'ev sales' in n) and (
+            ('million' in u) or ('billion' in u) or ('thousand' in u) or ('mn' in u) or ('bn' in u) or
+            ('unit' in u) or ('units' in u) or ('vehicle' in u) or ('vehicles' in u)
+        ):
+            return 'unit_sales'
 
         # Pure counts
         if any(t in n for t in ["count", "number of", "install base", "installed base", "users", "subscribers"]) and "revenue" not in n:
