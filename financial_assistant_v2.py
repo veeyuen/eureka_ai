@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D44"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D53"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -407,7 +407,7 @@ try:
         "supersedes": ["FIX2D2Y"],
     })
 
-    
+
 
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D30",
@@ -15967,7 +15967,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
-    
+
     # =====================================================================
     # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
     # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
@@ -21464,7 +21464,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
         # =====================================================================
 
-        
+
 
         # =====================================================================
         # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
