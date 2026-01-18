@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D47"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D49"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -39001,3 +39001,469 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
 CODE_VERSION = "FIX2D47"
+
+
+
+# =========================================================
+# FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
+# =========================================================
+# Purpose:
+#   Establish a single authoritative canonical key grammar and validator,
+#   and route canonical-key minting through it.
+#
+# Key format:
+#   <scope>_<entity>_<metric>_<time_qualifier>[_<qualifier>...]__<dimension>
+#
+# Determinism:
+#   - No free-text hashing.
+#   - Normalization + strict validation.
+#
+# Integration:
+#   - Use build_canonical_key_v1(...) only in schema-binding / key minting.
+#   - Validate keys at the point primary_metrics_canonical is finalized.
+
+import re
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Tuple
+
+_FIX2D48_TOKEN_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
+
+def _fix2d48_parse_canonical_key_v1(key: str) -> Tuple[str, str]:
+    if not isinstance(key, str) or not key:
+        raise ValueError("canonical_key: empty")
+    if key.count("__") != 1:
+        raise ValueError(f"canonical_key: expected exactly one '__' separator, got {key.count('__')}")
+    subject, dimension = key.split("__", 1)
+    if not subject or not dimension:
+        raise ValueError("canonical_key: missing subject or dimension")
+    return subject, dimension
+
+def _fix2d48_norm_token(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
+
+def _fix2d48_validate_token(name: str, token: str) -> None:
+    if not token:
+        raise ValueError(f"{name}: missing")
+    if "__" in token:
+        raise ValueError(f"{name}: contains '__' (reserved)")
+    if not _FIX2D48_TOKEN_RE.match(token):
+        raise ValueError(f"{name}: invalid token '{token}' (must match {_FIX2D48_TOKEN_RE.pattern})")
+
+def _fix2d48_validate_dimension(dimension: str, allowed_dimensions: Optional[Iterable[str]] = None) -> None:
+    _fix2d48_validate_token("dimension", dimension)
+    if allowed_dimensions is not None:
+        allowed = set(_fix2d48_norm_token(x) for x in allowed_dimensions)
+        if dimension not in allowed:
+            raise ValueError(f"dimension: '{dimension}' not in allowed dimensions ({sorted(allowed)})")
+
+def _fix2d48_validate_time_qualifier(time_q: str) -> None:
+    _fix2d48_validate_token("time_qualifier", time_q)
+
+    if re.fullmatch(r"\d{4}", time_q):
+        return
+    if re.fullmatch(r"ytd_\d{4}", time_q):
+        return
+    if re.fullmatch(r"\d{4}_\d{4}", time_q):
+        a, b = time_q.split("_", 1)
+        if int(b) < int(a):
+            raise ValueError(f"time_qualifier: range out of order '{time_q}'")
+        return
+    if re.fullmatch(r"asof_\d{4}_\d{2}", time_q):
+        parts = time_q.split("_")
+        mm = int(parts[2])
+        if not (1 <= mm <= 12):
+            raise ValueError(f"time_qualifier: invalid month in '{time_q}'")
+        return
+    if re.fullmatch(r"asof_\d{4}_\d{2}_\d{2}", time_q):
+        parts = time_q.split("_")
+        mm, dd = int(parts[2]), int(parts[3])
+        if not (1 <= mm <= 12):
+            raise ValueError(f"time_qualifier: invalid month in '{time_q}'")
+        if not (1 <= dd <= 31):
+            raise ValueError(f"time_qualifier: invalid day in '{time_q}'")
+        return
+
+    raise ValueError(f"time_qualifier: '{time_q}' does not match allowed families")
+
+@dataclass(frozen=True)
+class CanonicalKeyFieldsV1:
+    scope: str
+    entity: str
+    metric: str
+    time_qualifier: str
+    dimension: str
+    qualifiers: Tuple[str, ...] = ()
+
+def build_canonical_key_v1(
+    fields: CanonicalKeyFieldsV1,
+    *,
+    allowed_dimensions: Optional[Iterable[str]] = None,
+) -> str:
+    scope = _fix2d48_norm_token(fields.scope)
+    entity = _fix2d48_norm_token(fields.entity)
+    metric = _fix2d48_norm_token(fields.metric)
+    time_q = _fix2d48_norm_token(fields.time_qualifier)
+    dimension = _fix2d48_norm_token(fields.dimension)
+    qualifiers = tuple(_fix2d48_norm_token(q) for q in (fields.qualifiers or ()))
+
+    _fix2d48_validate_token("scope", scope)
+    _fix2d48_validate_token("entity", entity)
+    _fix2d48_validate_token("metric", metric)
+    _fix2d48_validate_time_qualifier(time_q)
+    _fix2d48_validate_dimension(dimension, allowed_dimensions=allowed_dimensions)
+
+    if qualifiers:
+        for q in qualifiers:
+            _fix2d48_validate_token("qualifier", q)
+
+    subject_parts: List[str] = [scope, entity, metric, time_q] + list(qualifiers)
+    subject = "_".join(subject_parts)
+    key = f"{subject}__{dimension}"
+
+    validate_canonical_key_v1(key, allowed_dimensions=allowed_dimensions)
+    return key
+
+def validate_canonical_key_v1(key: str, *, allowed_dimensions: Optional[Iterable[str]] = None) -> Dict[str, str]:
+    subject, dimension = _fix2d48_parse_canonical_key_v1(key)
+
+    _fix2d48_validate_token("subject", subject)
+    _fix2d48_validate_dimension(_fix2d48_norm_token(dimension), allowed_dimensions=allowed_dimensions)
+
+    parts = subject.split("_")
+    if len(parts) < 4:
+        raise ValueError(
+            f"canonical_key: subject must have >=4 parts (scope_entity_metric_time), got {len(parts)}: '{subject}'"
+        )
+
+    scope, entity, metric = parts[0], parts[1], parts[2]
+
+    if parts[3] == "ytd" and len(parts) >= 5:
+        time_q = f"ytd_{parts[4]}"
+        remaining = parts[5:]
+    elif parts[3] == "asof" and len(parts) >= 6:
+        if len(parts) >= 7 and re.fullmatch(r"\d{2}", parts[6]):
+            time_q = f"asof_{parts[4]}_{parts[5]}_{parts[6]}"
+            remaining = parts[7:]
+        else:
+            time_q = f"asof_{parts[4]}_{parts[5]}"
+            remaining = parts[6:]
+    elif re.fullmatch(r"\d{4}", parts[3]) and len(parts) >= 5 and re.fullmatch(r"\d{4}", parts[4]):
+        time_q = f"{parts[3]}_{parts[4]}"
+        remaining = parts[5:]
+    else:
+        time_q = parts[3]
+        remaining = parts[4:]
+
+    _fix2d48_validate_token("scope", scope)
+    _fix2d48_validate_token("entity", entity)
+    _fix2d48_validate_token("metric", metric)
+    _fix2d48_validate_time_qualifier(time_q)
+
+    for q in remaining:
+        _fix2d48_validate_token("qualifier", q)
+
+    return {
+        "subject": subject,
+        "dimension": _fix2d48_norm_token(dimension),
+        "scope": scope,
+        "entity": entity,
+        "metric": metric,
+        "time_qualifier": time_q,
+    }
+
+def _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen: dict) -> Optional[set]:
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        return None
+    dims = set()
+    for skey, spec in metric_schema_frozen.items():
+        if isinstance(spec, dict):
+            d = spec.get("dimension")
+            if d:
+                dims.add(_fix2d48_norm_token(str(d)))
+    return dims or None
+
+def validate_primary_metrics_canonical_keys_v1(primary_metrics_canonical: dict, metric_schema_frozen: Optional[dict] = None) -> None:
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen or {})
+    if not isinstance(primary_metrics_canonical, dict):
+        return
+    for ckey in list(primary_metrics_canonical.keys()):
+        validate_canonical_key_v1(str(ckey), allowed_dimensions=allowed_dims)
+
+# =========================================================
+# END FIX2D48 CANONICAL KEY MODULE
+# =========================================================
+
+
+
+# =========================================================
+# FIX2D48 — Integration Hook (non-invasive)
+# =========================================================
+# Where to call this:
+#   - Right before serializing Analysis/Evolution output (after primary_metrics_canonical is finalized),
+#     call:
+#       validate_primary_metrics_canonical_keys_v1(primary_metrics_canonical, metric_schema_frozen)
+#
+# This will crash early in dev runs if any minted key violates the grammar.
+#
+# NOTE:
+#   This patch does not attempt to rewrite all minting sites automatically in this single-file
+#   environment; it provides the authoritative builder+validator and a validator tripwire.
+#   The next patch should audit and route minting through build_canonical_key_v1(...).
+# =========================================================
+def _fix2d48_try_validate_outputs(output_obj: dict) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    )
+
+    pmc = (
+        output_obj.get("primary_metrics_canonical") if isinstance(output_obj.get("primary_metrics_canonical"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("primary_metrics_canonical") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("primary_metrics_canonical") if isinstance(output_obj.get("results"), dict) else None
+    )
+
+    if isinstance(pmc, dict) and pmc:
+        validate_primary_metrics_canonical_keys_v1(pmc, metric_schema_frozen=metric_schema_frozen)
+
+def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("validate_canonical_keys_v1") or web_context.get("diag_validate_ckeys_v1"))
+    except Exception:
+        return False
+
+
+
+# =========================================================
+# FIX2D48 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D48"
+
+
+
+# =========================================================
+# FIX2D49 — Audit canonical-key minting + optional rekeying
+# =========================================================
+# Goal:
+#   (1) Identify where canonical keys are being minted in a way that violates the v1 grammar,
+#       or where a metric dict's own canonical_key disagrees with the dict key.
+#   (2) Provide an optional, deterministic "rekey" pass that repairs obvious mismatches by:
+#       - moving entries to metric["canonical_key"] if it validates
+#       - or moving entries to metric["schema_key"/"schema_canonical_key"] if present + validates
+#   (3) Emit a compact diagnostics ledger into output_obj["debug"] so you can see drift immediately.
+#
+# Safety:
+#   Off by default. Enable via web_context:
+#     - web_context["diag_fix2d49_audit"] = True
+#     - web_context["diag_fix2d49_rekey"] = True   (optional)
+#     - web_context["diag_fix2d49_strict"] = True  (raise on invalid keys)
+#
+# Note:
+#   In a single-file patch environment we can’t reliably refactor every minting site.
+#   This audit/rekey pass makes those sites visible and stabilizes downstream joins
+#   while you convert minting sites to use build_canonical_key_v1(...) in subsequent cleanup.
+# =========================================================
+
+from typing import Any
+
+def _fix2d49_get_schema_key_hint(m: dict) -> str:
+    if not isinstance(m, dict):
+        return ""
+    for k in ("canonical_key", "schema_key", "schema_canonical_key", "schema_ckey"):
+        v = m.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+def _fix2d49_is_suspicious_key(key: str) -> bool:
+    # Heuristics (non-blocking): help surface "free-text" keys or hashed keys.
+    if not isinstance(key, str):
+        return True
+    if len(key) > 120:
+        return True
+    if " " in key or "(" in key or ")" in key or "/" in key:
+        return True
+    # looks like a hash-heavy identifier
+    if sum(ch.isdigit() for ch in key) > 50:
+        return True
+    return False
+
+def _fix2d49_audit_primary_metrics_canonical(pmc: dict, metric_schema_frozen: dict | None = None) -> dict:
+    """
+    Returns an audit report dict:
+      {
+        "total": int,
+        "invalid_keys": [..],
+        "mismatch_key_vs_metric": [..],
+        "suspicious_keys": [..],
+      }
+    """
+    rep = {
+        "total": 0,
+        "invalid_keys": [],
+        "mismatch_key_vs_metric": [],
+        "suspicious_keys": [],
+    }
+    if not isinstance(pmc, dict):
+        return rep
+
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen or {})
+
+    for k, m in pmc.items():
+        rep["total"] += 1
+        sk_hint = _fix2d49_get_schema_key_hint(m)
+        if sk_hint and isinstance(k, str) and sk_hint != k:
+            rep["mismatch_key_vs_metric"].append({"dict_key": k, "metric_key": sk_hint})
+
+        if isinstance(k, str) and _fix2d49_is_suspicious_key(k):
+            rep["suspicious_keys"].append(k)
+
+        try:
+            validate_canonical_key_v1(str(k), allowed_dimensions=allowed_dims)
+        except Exception as e:
+            rep["invalid_keys"].append({"key": str(k), "error": str(e)})
+
+    return rep
+
+def _fix2d49_rekey_primary_metrics_canonical(pmc: dict, metric_schema_frozen: dict | None = None) -> tuple[dict, dict]:
+    """
+    Deterministically rekeys pmc by metric's own canonical_key/schema_key when valid.
+    Returns: (new_pmc, rekey_report)
+    """
+    report = {
+        "moved": [],
+        "dropped": [],
+        "kept": 0,
+    }
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc, report
+
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen or {})
+
+    new_pmc = {}
+    # stable iteration for determinism
+    for old_key in sorted(pmc.keys(), key=lambda x: str(x)):
+        m = pmc.get(old_key)
+        if not isinstance(m, dict):
+            continue
+
+        # Candidate preferred: metric's explicit canonical_key
+        candidate = m.get("canonical_key")
+        if not (isinstance(candidate, str) and candidate.strip()):
+            # next: schema hints
+            candidate = m.get("schema_key") or m.get("schema_canonical_key") or m.get("schema_ckey")
+
+        candidate = candidate.strip() if isinstance(candidate, str) else ""
+
+        chosen_key = str(old_key) if old_key is not None else ""
+
+        # If candidate exists and validates, use it; else keep old_key if it validates.
+        def _valid(k: str) -> bool:
+            try:
+                validate_canonical_key_v1(k, allowed_dimensions=allowed_dims)
+                return True
+            except Exception:
+                return False
+
+        if candidate and _valid(candidate):
+            chosen_key = candidate
+        elif chosen_key and _valid(chosen_key):
+            pass
+        else:
+            # can't validate either; keep old_key but mark dropped/invalid for downstream stability
+            report["dropped"].append({"old_key": str(old_key), "candidate": candidate})
+            continue
+
+        # deterministic collision handling: prefer higher confidence, else stable tie-break
+        if chosen_key in new_pmc:
+            existing = new_pmc[chosen_key]
+            winner = _fix2d47_pick_cur_winner(existing, m)  # reuse deterministic picker from FIX2D47
+            new_pmc[chosen_key] = winner
+        else:
+            new_pmc[chosen_key] = m
+
+        if str(old_key) != chosen_key:
+            report["moved"].append({"from": str(old_key), "to": chosen_key})
+        else:
+            report["kept"] += 1
+
+    return new_pmc, report
+
+def _fix2d49_try_audit_and_rekey_outputs(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+
+    do_audit = bool(web_context and web_context.get("diag_fix2d49_audit"))
+    do_rekey = bool(web_context and web_context.get("diag_fix2d49_rekey"))
+    strict = bool(web_context and web_context.get("diag_fix2d49_strict"))
+
+    if not (do_audit or do_rekey):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    # Locate pmc in common shapes
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+    else:
+        pmc = None
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict) and pmc:
+        audit = _fix2d49_audit_primary_metrics_canonical(pmc, metric_schema_frozen=metric_schema_frozen)
+        output_obj["debug"]["fix2d49_pmc_audit"] = audit
+
+        if strict and audit.get("invalid_keys"):
+            raise RuntimeError(f"FIX2D49 strict: invalid canonical keys detected: {audit.get('invalid_keys')[:3]}")
+
+        if do_rekey:
+            new_pmc, rep = _fix2d49_rekey_primary_metrics_canonical(pmc, metric_schema_frozen=metric_schema_frozen)
+            output_obj["debug"]["fix2d49_pmc_rekey"] = rep
+
+            # Write back to the same location
+            if pmc_path == ("primary_metrics_canonical",):
+                output_obj["primary_metrics_canonical"] = new_pmc
+            elif pmc_path == ("primary_response","primary_metrics_canonical"):
+                output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+            elif pmc_path == ("results","primary_metrics_canonical"):
+                output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d49_pmc_audit"] = {"total": 0, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D49
+# =========================================================
+
+
+
+# =========================================================
+# FIX2D49 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D49"
