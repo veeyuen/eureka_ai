@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D49"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D44"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -407,7 +407,7 @@ try:
         "supersedes": ["FIX2D2Y"],
     })
 
-
+    
 
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D30",
@@ -15967,7 +15967,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
-
+    
     # =====================================================================
     # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
     # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
@@ -21464,7 +21464,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
         # =====================================================================
 
-
+        
 
         # =====================================================================
         # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
@@ -39460,6 +39460,100 @@ def _fix2d49_try_audit_and_rekey_outputs(output_obj: dict, web_context: dict | N
 # =========================================================
 # END FIX2D49
 # =========================================================
+
+# =========================================================
+# FIX2D49 — AUTO-HOOK FINAL OUTPUT (NO NEED TO FIND FINALIZER)
+# =========================================================
+# Problem:
+#   You don't know which function "finalizes" primary_metrics_canonical.
+#
+# Solution:
+#   Wrap the top-level run entrypoints (if present) and apply:
+#     - FIX2D48 validation (optional flag)
+#     - FIX2D49 audit/rekey (optional flags)
+#   to the returned output object right before it is handed back to the UI / serializer.
+#
+# Enable via web_context flags (same as before):
+#   web_context["validate_canonical_keys_v1"] = True
+#   web_context["diag_fix2d49_audit"] = True
+#   web_context["diag_fix2d49_rekey"] = True
+#   web_context["diag_fix2d49_strict"] = True
+#
+# This is additive and does not change behaviour unless flags are enabled.
+# =========================================================
+
+def _fix2d49_extract_web_context_from_call(args, kwargs):
+    # Try kwargs first
+    wc = kwargs.get("web_context")
+    if isinstance(wc, dict):
+        return wc
+    # Heuristic: scan args for a dict that looks like web_context
+    for a in args:
+        if isinstance(a, dict) and any(k in a for k in ("diag_fix2d49_audit","diag_fix2d49_rekey","validate_canonical_keys_v1","diag_validate_ckeys_v1")):
+            return a
+    return None
+
+def _fix2d49_apply_postprocess_if_enabled(output_obj, web_context):
+    if not isinstance(output_obj, dict):
+        return output_obj
+    # FIX2D48 validation (opt-in)
+    try:
+        if _fix2d48_should_validate_ckeys(web_context):
+            _fix2d48_try_validate_outputs(output_obj)
+    except Exception:
+        # keep behaviour consistent: validation failures are surfaced only when flag enabled;
+        # if enabled, allow exception to propagate.
+        raise
+
+    # FIX2D49 audit/rekey (opt-in via flags inside the function)
+    try:
+        _fix2d49_try_audit_and_rekey_outputs(output_obj, web_context)
+    except Exception:
+        raise
+
+    return output_obj
+
+def _fix2d49_wrap_entrypoint(fn_name: str):
+    fn = globals().get(fn_name)
+    if not callable(fn):
+        return
+    # Avoid double-wrapping
+    if getattr(fn, "_fix2d49_wrapped", False):
+        return
+
+    def _wrapped(*args, **kwargs):
+        web_context = _fix2d49_extract_web_context_from_call(args, kwargs)
+        out = fn(*args, **kwargs)
+        return _fix2d49_apply_postprocess_if_enabled(out, web_context)
+
+    _wrapped._fix2d49_wrapped = True
+    _wrapped.__name__ = getattr(fn, "__name__", fn_name)
+    _wrapped.__doc__ = getattr(fn, "__doc__", None)
+    globals()[fn_name] = _wrapped
+
+def _fix2d49_install_autohooks():
+    # Common entrypoints in your project (safe no-ops if absent)
+    for name in (
+        "run_source_anchored_analysis",
+        "run_source_anchored_evolution",
+        "run_source_anchored_evolution_previous_data",
+        "run_source_anchored_evolution_previousdata",  # legacy spelling
+        "run_analysis",
+        "run_evolution",
+    ):
+        _fix2d49_wrap_entrypoint(name)
+
+# Install at import time (additive)
+try:
+    _fix2d49_install_autohooks()
+except Exception:
+    pass
+
+# =========================================================
+# END AUTO-HOOK
+# =========================================================
+
+
 
 
 
