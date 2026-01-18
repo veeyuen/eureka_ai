@@ -79,7 +79,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D58E"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D58F"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D58F
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D58F",
+        "date": "2026-01-18",
+        "summary": "Normalize composite unit phrases like 'million units' to magnitude tags (M/B/T/K) to eliminate unit_family=unknown; extend schema-only rebuild unit-required gate to treat __unit_sales as unit-required, preventing bare-year tokens from being selected as values.",
+        "files": ["FIX2D58F_full_codebase.py"],
+        "supersedes": ["FIX2D58E"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -3233,6 +3252,22 @@ def normalize_unit_tag(unit_str: str) -> str:
     if ul in ("k", "thousand", "000"):
         return "K"
 
+
+
+    # composite phrases (e.g. "million units")
+    # Some extractors pass unit strings like "million units" as a single tag.
+    # Normalize these into the same magnitude tags used elsewhere (M/B/T/K) so
+    # unit_family can be typed deterministically.
+    if ("unit" in ul) or ("units" in ul):
+        if ("trillion" in ul) or ul.startswith("tn") or ul.startswith("t") and ul.endswith("units"):
+            return "T"
+        if ("billion" in ul) or ul.startswith("bn"):
+            return "B"
+        if ("million" in ul) or ul.startswith("mn") or ul.startswith("mio"):
+            return "M"
+        if ("thousand" in ul) or ul.startswith("k"):
+            return "K"
+
     # percent
     if ul in ("%", "pct", "percent"):
         return "%"
@@ -4778,9 +4813,13 @@ def rebuild_metrics_from_snapshots_schema_only(
         uf = str(spec_unit_family or "").strip().lower()
         ut = str(spec_unit_tag or "").strip().lower()
         ck = str(canonical_key or "").strip().lower()
+        # Explicit unit families
         if uf in {"currency", "percent", "rate", "ratio"}:
             return True
         if ut in {"%", "percent"}:
+            return True
+        # Unit-sales metrics require a unit (prevents bare-year selection)
+        if ck.endswith("__unit_sales") or ck.endswith("__units") or ck.endswith("__unit"):
             return True
         # Canonical-key suffix conventions (backstop)
         if ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio"):
