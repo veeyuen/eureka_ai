@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D58A"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D58E"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -9897,6 +9897,17 @@ def canonicalize_metrics(
         # minimal fallback (kept conservative)
         uu = (u or "").strip()
         ul = uu.lower().replace(" ", "")
+        # PATCH FIX2D58B (ADDITIVE): handle composite phrases like 'million units'
+        # - Legacy extracted units often arrive as phrases (e.g., 'million units', 'billion USD').
+        # - We deterministically map magnitude words even when other tokens are present.
+        if 'trillion' in ul or ul.endswith('tn') or ' tn' in (uu.lower()):
+            return 'T'
+        if 'billion' in ul or ul.endswith('bn') or ' bn' in (uu.lower()):
+            return 'B'
+        if 'million' in ul or ul.endswith('mn') or ' mn' in (uu.lower()) or 'mio' in ul:
+            return 'M'
+        if 'thousand' in ul or ul.endswith('k') or ' k' in (uu.lower()):
+            return 'K'
         if ul in ("%", "pct", "percent"):
             return "%"
         if ul in ("twh",):
@@ -9952,7 +9963,7 @@ def canonicalize_metrics(
 
         # Unit sales / shipments
         unit_tokens = ["unit", "units", "sold", "sales volume", "shipments", "registrations", "deliveries", "vehicles", "pcs", "pieces", "volume"]
-        if any(t in n for t in unit_tokens):
+        if any(t in n for t in unit_tokens) or any(t in u for t in ["unit", "units", "vehicle", "vehicles", "pcs", "pieces"]):
             return "unit_sales"
 
         # Pure counts
@@ -10380,6 +10391,46 @@ def canonicalize_metrics(
         canonicalized[ckey] = base_metric
 
     return canonicalized
+
+
+# =========================
+# PATCH FIX2D58B (ADDITIVE): quarantine unknown/under-specified canonical keys
+# - Do NOT allow dimension=='unknown' or missing unit_family to enter primary_metrics_canonical.
+# - Preserve them under primary_metrics_provisional with full debug trace for audit.
+# =========================
+def _fix2d58b_split_primary_metrics_canonical(pmc: dict):
+    try:
+        if not isinstance(pmc, dict):
+            return {}, {}
+        canonical_ok = {}
+        provisional = {}
+        for k, v in pmc.items():
+            if not isinstance(v, dict):
+                provisional[k] = v
+                continue
+            dim = str(v.get('dimension') or '').strip().lower()
+            uf = str(v.get('unit_family') or '').strip().lower()
+            ut = str(v.get('unit_tag') or '').strip()
+            # If dimension already implies family, fill it deterministically (additive).
+            if dim in ('currency', 'percent') and not uf:
+                vv = dict(v)
+                vv['unit_family'] = dim
+                v = vv
+                uf = dim
+            # Quarantine: unknown dimension OR missing family when we at least have a unit tag.
+            if dim == 'unknown' or (not uf and bool(ut)):
+                vv = dict(v)
+                vv.setdefault('debug', {})
+                if isinstance(vv.get('debug'), dict):
+                    vv['debug']['quarantined_v1'] = True
+                    vv['debug']['quarantine_reason_v1'] = 'unknown_dimension_or_missing_unit_family'
+                provisional[k] = vv
+            else:
+                canonical_ok[k] = v
+        return canonical_ok, provisional
+    except Exception:
+        # Fail-safe: never drop metrics silently if the splitter errors
+        return pmc if isinstance(pmc, dict) else {}, {}
 
 
 
@@ -28885,16 +28936,19 @@ def main():
             final_conf = calculate_final_confidence(base_conf, veracity_scores.get("overall", 0))
 
             # Optional: canonicalize + attribution + schema freeze (only if your codebase defines these)
-            # Optional: canonicalize + attribution + schema freeze (only if your codebase defines these)
             try:
                 # 1) canonicalize (unchanged)
                 if primary_data.get("primary_metrics"):
-                    primary_data["primary_metrics_canonical"] = canonicalize_metrics(
+                    _pmc_raw = canonicalize_metrics(
                         primary_data.get("primary_metrics", {}),
                         merge_duplicates_to_range=True,
                         question_text=query,
                         category_hint=str(primary_data.get("question_category", ""))
                     )
+                    _pmc_ok, _pmc_prov = _fix2d58b_split_primary_metrics_canonical(_pmc_raw)
+                    primary_data["primary_metrics_canonical"] = _pmc_ok
+                    if _pmc_prov:
+                        primary_data["primary_metrics_provisional"] = _pmc_prov
 
                 # 2) freeze schema FIRST ✅ (so attribution can be schema-first)
                 if primary_data.get("primary_metrics_canonical"):
@@ -38283,7 +38337,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38690,7 +38744,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38754,7 +38808,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -39054,7 +39108,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39299,7 +39353,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39826,7 +39880,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -40291,7 +40345,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -40609,7 +40663,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -40710,9 +40764,9 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D57B"
+CODE_VERSION = "FIX2D58E"
