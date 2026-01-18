@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D54"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D55"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D41
@@ -33650,6 +33650,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     fn = globals().get("compute_source_anchored_diff")
     if callable(fn):
         try:
+            # FIX2D55: lift prev_full onto schema keys BEFORE diff computation
+
+            _fix2d55_apply_prev_lift(prev_full, wc)
+
             out_changed = fn(prev_full, web_context=wc)
             # =====================================================================
             # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to changed output
@@ -38226,7 +38230,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D54"
+CODE_VERSION = "FIX2D55"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38633,7 +38637,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D54"
+CODE_VERSION = "FIX2D55"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38697,7 +38701,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D54"
+CODE_VERSION = "FIX2D55"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -38997,7 +39001,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D54"
+CODE_VERSION = "FIX2D55"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39242,7 +39246,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D54"
+CODE_VERSION = "FIX2D55"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39769,7 +39773,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D54"
+CODE_VERSION = "FIX2D55"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -40234,7 +40238,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D54"
+CODE_VERSION = "FIX2D55"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -40386,9 +40390,121 @@ def _fix2d54_try_materialize_output_obj(output_obj: dict, web_context: dict | No
 # =========================================================
 # END FIX2D54
 # =========================================================
+# =========================================================
+# FIX2D55 — Pre-Diff Schema Lift for Prev Full Payload
+# =========================================================
+# Objective:
+#   Ensure the rehydrated previous analysis payload (prev_full) has schema-keyed
+#   baseline values materialised BEFORE compute_source_anchored_diff runs.
+#
+# Why:
+#   Even if Analysis produced legacy keys, Evolution diff is prev-key driven; if the
+#   schema key has no prev_value_norm, it becomes "added" and both_count stays 0.
+#
+# What it does:
+#   - Applies FIX2D53 remap + FIX2D54 materialisation + FIX2D52 bind + FIX2D50 gate
+#     to prev_full (in-place) just before diff computation.
+#
+# Enablement:
+#   - web_context["diag_fix2d55_prev_lift"] = True
+#   - OR web_context["diag_fix2d54_materialize"] / ["diag_fix2d53_remap"] / ["diag_fix2d52_bind"]
+#     / ["diag_fix2d50_gate"] are enabled (any of them).
+#
+# Output:
+#   - web_context.debug.fix2d55_prev_lift
+# =========================================================
+
+def _fix2d55_should_prev_lift(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        if web_context.get("diag_fix2d55_prev_lift"):
+            return True
+        # If any of the schema-bound pipeline flags are enabled, lift prev as well.
+        for k in (
+            "diag_fix2d54_materialize",
+            "diag_fix2d53_remap",
+            "diag_fix2d52_bind",
+            "diag_fix2d50_gate",
+            "enforce_schema_bound_pmc",
+        ):
+            if web_context.get(k):
+                return True
+        return False
+    except Exception:
+        return False
+
+def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
+    if not isinstance(prev_full, dict):
+        return
+    if not _fix2d55_should_prev_lift(web_context):
+        return
+
+    try:
+        # Reuse the same postprocess logic you run on outputs, but target prev_full explicitly.
+        # Ensure a debug bucket exists on web_context for quick visibility.
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].setdefault("fix2d55_prev_lift", {"enabled": True})
+
+        # Apply in-place, in the same order as the output postprocess.
+        # 1) FIX2D53 remap (if present)
+        try:
+            _fix2d53_try_remap_output_obj(prev_full, web_context)
+        except Exception:
+            # keep going; remap is best-effort
+            if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["remap_error"] = True
+
+        # 2) FIX2D52 bind (if present)
+        try:
+            _fix2d52_try_bind_output_obj(prev_full, web_context)
+        except Exception:
+            if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["bind_error"] = True
+
+        # 3) FIX2D54 materialise (if present)
+        try:
+            _fix2d54_try_materialize_output_obj(prev_full, web_context)
+        except Exception:
+            if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["materialize_error"] = True
+
+        # 4) FIX2D50 gate (if present)
+        try:
+            _fix2d50_try_gate_output_obj(prev_full, web_context)
+        except Exception:
+            if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["gate_error"] = True
+
+        # Capture quick counters if available in prev_full.debug
+        if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+            _rep = web_context["debug"].get("fix2d55_prev_lift") or {}
+            if isinstance(_rep, dict):
+                _rep["done"] = True
+                # Pull embedded reports if they were attached onto prev_full.debug
+                pd = prev_full.get("debug") if isinstance(prev_full.get("debug"), dict) else {}
+                if isinstance(pd, dict):
+                    for k in ("fix2d53_legacy_remap", "fix2d54_materialize", "fix2d50_pmc_gate", "fix2d52_schema_bind"):
+                        if k in pd:
+                            _rep[k] = pd.get(k)
+                web_context["debug"]["fix2d55_prev_lift"] = _rep
+
+    except Exception:
+        # never break evolution; this is a best-effort lift
+        if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+            web_context["debug"].setdefault("fix2d55_prev_lift", {})
+            if isinstance(web_context["debug"].get("fix2d55_prev_lift"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["crashed"] = True
+
+# =========================================================
+# END FIX2D55
+# =========================================================
+
 
 
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D54"
+CODE_VERSION = "FIX2D55"
