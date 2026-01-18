@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D58G"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
+CODE_VERSION = "FIX2D59"  #  PATCH FIX2D39 (ADD): emit baseline_schema_metrics_v1 and prefer it in Diff Panel V2
 
 
 # ============================================================
@@ -106,6 +106,24 @@ try:
         "supersedes": ["FIX2D43"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+
+# =========================
+# PATCH FIX2D59 (ADDITIVE): Canonical Identity Resolver (shared authority)
+# - Introduces a single deterministic identity tuple and a schema-first resolver.
+# - Cuts old direct key-mint paths by routing canonical_key assignment through the resolver.
+# =========================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D59",
+        "summary": "Canonical identity resolver v1: define identity tuple + schema-first resolver; route canonical key minting through resolver to align Analysis and Evolution key authority.",
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 except Exception:
     pass
 # PATCH TRACKER V1 (ADD): FIX2D40
@@ -9721,8 +9739,172 @@ def merge_group_proxy(group: List[Dict[str, Any]]) -> Dict[str, Any]:
         "proxy_target": best.get("proxy_target", ""),
     }
 
+# =========================
+# FIX2D59 — Canonical Identity Resolver v1
+#
+# Exact identity tuple definition (v1):
+#   IdentityTupleV1 := {
+#       'metric_token':   str,  # schema concept token / canonical_id (concept-level)
+#       'time_scope':     str,  # normalized time token (e.g. '2024', 'ytd_2025') if known
+#       'geo_scope':      str,  # normalized geo token (e.g. 'global', 'us') if known
+#       'dims':           tuple[str,...], # normalized dimension-value tokens (segment/category/channel) if known
+#       'dimension':      str,  # 'currency'|'unit_sales'|'percent'|'count'|'index'|'unknown'
+#       'unit_family':    str,  # 'currency'|'percent'|'magnitude'|'energy'|'index'|''
+#       'unit_tag':       str,  # 'USD'|'%'|'M'|'GWh' etc (normalized)
+#       'statistic':      str,  # e.g. 'level'|'yoy_pct'|'cagr'|'share' (optional)
+#       'aggregation':    str,  # e.g. 'total'|'avg' (optional)
+#   }
+#
+# Resolver contract:
+#   resolve_canonical_identity_v1(identity, metric_schema) -> {
+#       'canonical_key': str,          # schema canonical_key if bound, else provisional key
+#       'bound': bool,                 # True iff schema-bound
+#       'status': str,                 # 'SCHEMA_BOUND' | 'PROVISIONAL'
+#       'matched_schema_key': str|''   # the schema key chosen, if any
+#   }
+#
+# Rules:
+#   1) Schema-first: if metric_schema contains a canonical_key that matches the identity tuple, return it.
+#   2) No silent canonical minting: if identity is under-specified (dimension unknown, or unit_family missing when unit_tag present), return PROVISIONAL.
+#   3) Deterministic: matching and tie-breaks must be stable across runs.
+#
+# Note:
+#   This resolver is intended to be used by BOTH Analysis and Evolution finalizers.
+# =========================
+
+def build_identity_tuple_v1(*, metric_token: str, time_scope: str = '', geo_scope: str = '', dims=None,
+                            dimension: str = '', unit_family: str = '', unit_tag: str = '',
+                            statistic: str = '', aggregation: str = '') -> dict:
+    'Construct a deterministic identity tuple (v1).'
+    if dims is None:
+        dims = ()
+    if not isinstance(dims, (list, tuple)):
+        dims = (str(dims),)
+    return {
+        'metric_token': str(metric_token or '').strip().lower(),
+        'time_scope': str(time_scope or '').strip().lower(),
+        'geo_scope': str(geo_scope or '').strip().lower(),
+        'dims': tuple([str(x or '').strip().lower() for x in list(dims) if str(x or '').strip()]),
+        'dimension': str(dimension or '').strip().lower(),
+        'unit_family': str(unit_family or '').strip().lower(),
+        'unit_tag': str(unit_tag or '').strip(),
+        'statistic': str(statistic or '').strip().lower(),
+        'aggregation': str(aggregation or '').strip().lower(),
+    }
+
+
+def resolve_canonical_identity_v1(identity: dict, metric_schema: dict = None) -> dict:
+    'Schema-first resolver (v1). Returns schema canonical_key if bound, else a provisional key.'
+    identity = identity if isinstance(identity, dict) else {}
+    metric_schema = metric_schema if isinstance(metric_schema, dict) else {}
+
+    mt = str(identity.get('metric_token') or '').strip().lower()
+    dim = str(identity.get('dimension') or '').strip().lower()
+    uf = str(identity.get('unit_family') or '').strip().lower()
+    ut = str(identity.get('unit_tag') or '').strip()
+
+    # Under-specified identities are never allowed to be treated as canonical.
+    if (not mt) or (not dim) or dim == 'unknown' or (not uf and bool(ut)):
+        provisional_key = f"{mt}__{dim or 'unknown'}" if mt else f"__provisional__{dim or 'unknown'}"
+        return {
+            'canonical_key': provisional_key,
+            'bound': False,
+            'status': 'PROVISIONAL',
+            'matched_schema_key': '',
+        }
+
+    # Direct schema key hit (fastpath)
+    direct = f"{mt}__{dim}"
+    if direct in metric_schema:
+        return {
+            'canonical_key': direct,
+            'bound': True,
+            'status': 'SCHEMA_BOUND',
+            'matched_schema_key': direct,
+        }
+
+    # Schema-first match by spec fields (deterministic)
+    best_key = ''
+    best_rank = None
+    for skey, spec in metric_schema.items():
+        if not isinstance(spec, dict):
+            continue
+        s_mt = str(spec.get('canonical_id') or spec.get('metric_token') or '').strip().lower()
+        if not s_mt:
+            # allow fallback: infer metric_token from schema key prefix
+            s_mt = str(skey).split('__')[0].strip().lower()
+        s_dim = str(spec.get('dimension') or '').strip().lower() or str(skey).split('__')[-1].strip().lower()
+        if s_mt != mt or s_dim != dim:
+            continue
+        s_uf = str(spec.get('unit_family') or '').strip().lower()
+        s_ut = str(spec.get('unit_tag') or '').strip()
+
+        # rank: prefer exact unit_family match, then exact unit_tag match
+        rank = (
+            0 if (uf and s_uf and uf == s_uf) else 1,
+            0 if (ut and s_ut and ut == s_ut) else 1,
+            str(skey),
+        )
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_key = str(skey)
+
+    if best_key:
+        return {
+            'canonical_key': best_key,
+            'bound': True,
+            'status': 'SCHEMA_BOUND',
+            'matched_schema_key': best_key,
+        }
+
+    # No schema match: return provisional (still deterministic)
+    return {
+        'canonical_key': direct,
+        'bound': False,
+        'status': 'PROVISIONAL',
+        'matched_schema_key': '',
+    }
+
+
+def rekey_metrics_via_identity_resolver_v1(pmc: dict, metric_schema: dict) -> dict:
+    'Rekey a metrics dict by routing each row through resolve_canonical_identity_v1.'
+    if not isinstance(pmc, dict):
+        return pmc
+    metric_schema = metric_schema if isinstance(metric_schema, dict) else {}
+
+    out = {}
+    for k, v in pmc.items():
+        if not isinstance(v, dict):
+            out[k] = v
+            continue
+        mt = str(v.get('canonical_id') or '').strip().lower() or str(k).split('__')[0].strip().lower()
+        dim = str(v.get('dimension') or '').strip().lower() or str(k).split('__')[-1].strip().lower()
+        ident = build_identity_tuple_v1(
+            metric_token=mt,
+            time_scope=str(v.get('time_scope') or ''),
+            geo_scope=str(v.get('geo_scope') or ''),
+            dims=tuple(v.get('dims') or ()),
+            dimension=dim,
+            unit_family=str(v.get('unit_family') or ''),
+            unit_tag=str(v.get('unit_tag') or ''),
+            statistic=str(v.get('statistic') or ''),
+            aggregation=str(v.get('aggregation') or ''),
+        )
+        res = resolve_canonical_identity_v1(ident, metric_schema)
+        new_k = res.get('canonical_key') or k
+        vv = dict(v)
+        vv.setdefault('debug', {})
+        if isinstance(vv.get('debug'), dict):
+            vv['debug']['identity_tuple_v1'] = ident
+            vv['debug']['identity_resolve_v1'] = res
+        vv['canonical_key'] = new_k
+        out[new_k] = vv
+
+    return out
+
 def canonicalize_metrics(
     metrics: Dict,
+    metric_schema: Dict = None,
     merge_duplicates_to_range: bool = True,
     question_text: str = "",
     category_hint: str = ""
@@ -10000,7 +10182,9 @@ def canonicalize_metrics(
                 _trace_dim_override = "registry_guard"
         # =========================
 
-        canonical_key = f"{canonical_id}__{dim}"
+        _ident = build_identity_tuple_v1(metric_token=canonical_id, dimension=dim, unit_family=unit_family_tag, unit_tag=unit_tag, geo_scope=str(metric.get('geo_scope') or ''), time_scope='')
+        _res = resolve_canonical_identity_v1(_ident, metric_schema)
+        canonical_key = str(_res.get('canonical_key') or f"{canonical_id}__{dim}")
 
         # =========================
         # PATCH TRACE1.B (ADDITIVE): attach trace onto metric_enriched.debug.key_mint_trace
@@ -10022,6 +10206,8 @@ def canonicalize_metrics(
             "registry_dim_hint": registry_dim_hint,
             "dim_override": _trace_dim_override,
             "key_mint_path": ("REGISTRY_OVERRIDE" if _trace_dim_override else "NAME_UNIT_INFER"),
+            "identity_tuple_v1": _ident if '_ident' in locals() else {},
+            "identity_resolve_v1": _res if '_res' in locals() else {},
         }
 
         parsed_val = parse_to_float(metric.get("value"))
@@ -28865,6 +29051,25 @@ def main():
                 # =========================================================
 
 
+                # 2.B) FIX2D59: schema-first canonical identity rekey (Analysis)
+                # - Routes existing pmc keys through the resolver using the frozen schema (after schema extension patches).
+                try:
+                    if isinstance(primary_data.get('primary_metrics_canonical'), dict) and isinstance(primary_data.get('metric_schema_frozen'), dict):
+                        primary_data['primary_metrics_canonical'] = rekey_metrics_via_identity_resolver_v1(
+                            primary_data.get('primary_metrics_canonical') or {},
+                            primary_data.get('metric_schema_frozen') or {},
+                        )
+                except Exception:
+                    pass
+                try:
+                    if isinstance(primary_data.get('primary_metrics_provisional'), dict) and isinstance(primary_data.get('metric_schema_frozen'), dict):
+                        primary_data['primary_metrics_provisional'] = rekey_metrics_via_identity_resolver_v1(
+                            primary_data.get('primary_metrics_provisional') or {},
+                            primary_data.get('metric_schema_frozen') or {},
+                        )
+                except Exception:
+                    pass
+
                 # 3) attribution using frozen schema ✅
                 if primary_data.get("primary_metrics_canonical"):
                     primary_data["primary_metrics_canonical"] = add_range_and_source_attribution_to_canonical_metrics(
@@ -38211,7 +38416,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -38618,7 +38823,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -38682,7 +38887,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -38982,7 +39187,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -39227,7 +39432,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -39754,7 +39959,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -40219,7 +40424,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -40537,7 +40742,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -40638,9 +40843,9 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D58E"
+CODE_VERSION = "FIX2D59"
