@@ -87,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D65B"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D65C"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 
 
@@ -16447,18 +16447,42 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # - No refetch, no heuristic matching. Additive only.
     # =====================================================================
     try:
+        # Collect injected URLs from all known web_context keys (list and ui_raw string variants)
         _inj_urls = []
         if isinstance(web_context, dict):
-            _inj_urls = (
+            _cand = (
                 web_context.get("diag_extra_urls_final")
                 or web_context.get("diag_extra_urls")
                 or web_context.get("extra_urls")
+                or web_context.get("diag_extra_urls_ui")
+                or web_context.get("extra_urls_ui")
                 or []
             )
-        if isinstance(_inj_urls, list):
-            _inj_urls = [u for u in _inj_urls if isinstance(u, str) and u.strip()]
-        else:
-            _inj_urls = []
+            # ui_raw string variants (may contain newlines/commas/spaces)
+            _ui_raw = (
+                web_context.get("diag_extra_urls_ui_raw")
+                or web_context.get("extra_urls_ui_raw")
+                or ""
+            )
+            if isinstance(_cand, str):
+                _ui_raw = (_ui_raw + "\n" + _cand)
+                _cand = []
+            if isinstance(_cand, list):
+                _inj_urls.extend([u for u in _cand if isinstance(u, str)])
+            if isinstance(_ui_raw, str) and _ui_raw.strip():
+                for part in _ui_raw.replace(",", "\n").split():
+                    if part.startswith("http://") or part.startswith("https://"):
+                        _inj_urls.append(part.strip())
+
+        # normalize / de-dup
+        _inj_urls = [u.strip() for u in _inj_urls if isinstance(u, str) and u.strip()]
+        _seen = set()
+        _uniq = []
+        for u in _inj_urls:
+            if u not in _seen:
+                _seen.add(u)
+                _uniq.append(u)
+        _inj_urls = _uniq
 
         if _inj_urls:
             try:
@@ -41807,7 +41831,7 @@ CODE_VERSION = "FIX2D65A"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D65B"
+    CODE_VERSION = "FIX2D65C"
 except Exception:
     pass
 
@@ -41821,6 +41845,31 @@ try:
         "summary": "Force canonical pipeline materialisation when injected URLs exist (seed schema via deterministic extensions so FIX2D31 schema-authority rebuild can run even for narrative queries).",
         "files": ["FIX2D65B_full_codebase.py"],
         "supersedes": ["FIX2D65A"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D65C"
+except Exception:
+    pass
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65C",
+        "date": "2026-01-19",
+        "summary": "Restore analysis->evolution diff contract: broaden injected URL detection (ui_raw + legacy keys) so schema seeding and FIX2D31 schema-authority rebuild reliably run when injection is used; bump version.",
+        "files": ["FIX2D65C_full_codebase.py"],
+        "supersedes": ["FIX2D65B"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
