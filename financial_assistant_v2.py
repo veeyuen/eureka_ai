@@ -88,7 +88,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D67"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D68"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D66G
@@ -8120,18 +8120,33 @@ def fetch_web_context(
 
                 # numeric extraction (analysis-aligned if fn exists)
                 nums = []
+                meta["fix2d68_extract_attempted"] = bool(callable(fn_extract))
+                meta["fix2d68_extract_input_len"] = int(len(cleaned) if isinstance(cleaned, str) else 0)
                 try:
-                    if callable(fn_extract):
-                        _vnames = getattr(getattr(fn_extract, "__code__", None), "co_varnames", ()) or ()
-                        if "source_url" in _vnames:
-                            nums = fn_extract(cleaned, source_url=url)
-                        elif "url" in _vnames:
-                            nums = fn_extract(cleaned, url=url)
-                        else:
-                            nums = fn_extract(cleaned)
+                    meta["fix2d68_extract_input_head"] = (cleaned[:200] if isinstance(cleaned, str) else "")
                 except Exception:
-                    pass
-                    nums = []
+                    meta["fix2d68_extract_input_head"] = ""
+
+                _fix2d68_errors = []
+                if callable(fn_extract):
+                    # Robust dispatcher: try source_url, then url, then plain. Do not fail silently.
+                    for _mode in ("source_url", "url", "plain"):
+                        try:
+                            if _mode == "source_url":
+                                nums = fn_extract(cleaned, source_url=url)
+                            elif _mode == "url":
+                                nums = fn_extract(cleaned, url=url)
+                            else:
+                                nums = fn_extract(cleaned)
+                            meta["fix2d68_extract_call_mode"] = _mode
+                            break
+                        except Exception as _e:
+                            _fix2d68_errors.append({"mode": _mode, "error": repr(_e)})
+                            nums = []
+
+                if _fix2d68_errors:
+                    meta["fix2d68_extract_errors"] = _fix2d68_errors
+
 
                 if isinstance(nums, list):
                     meta["extracted_numbers"] = nums
@@ -39664,7 +39679,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -40072,7 +40087,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -40136,7 +40151,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -40434,7 +40449,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -40679,7 +40694,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -41207,7 +41222,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -41672,7 +41687,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -41995,7 +42010,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -42096,12 +42111,12 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D60"
+CODE_VERSION = "FIX2D68"
 
 
 # =========================
@@ -42479,7 +42494,7 @@ except Exception:
     pass
 
 # Final, authoritative version stamp (last-wins)
-CODE_VERSION = "FIX2D65A"
+CODE_VERSION = "FIX2D68"
 
 # =====================================================================
 # END PATCH FIX2D65
@@ -42490,7 +42505,7 @@ CODE_VERSION = "FIX2D65A"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D65D"
+    CODE_VERSION = "FIX2D68"
 except Exception:
     pass
 
@@ -42515,7 +42530,7 @@ except Exception:
 # PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D65D"
+    CODE_VERSION = "FIX2D68"
 except Exception:
     pass
 
@@ -42540,7 +42555,7 @@ except Exception:
 # PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D65D"
+    CODE_VERSION = "FIX2D68"
 except Exception:
     pass
 
@@ -42565,7 +42580,7 @@ except Exception:
 # PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D66H"
+    CODE_VERSION = "FIX2D68"
 except Exception:
     pass
 
@@ -42621,11 +42636,3908 @@ try:
 except Exception:
     pass
 
+
+
 # =====================================================================
-# PATCH FIX2D67 FINAL VERSION OVERRIDE (ADDITIVE)
+# PATCH FIX2D68 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+
+
+
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2",
+        "date": "2026-01-15",
+        "summary": "Anchor-fill current_metrics for diff/display when schema_frozen is misaligned; add rebuild-fn name fallbacks to prevent fn_missing.",
+        "files": ["FIX2D2.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D67"
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2I",
+        "date": "2026-01-16",
+        "summary": "Authoritative Diff Panel V2 wiring to __rows builder; adds pool/selection/commit trace and preserves guarded inference year-blocking. by defining deterministic extracted_numbers pool unwrapping for Diff Panel V2 __rows (previously undefined, silently disabling inference). Harden sentinel trace, add explicit per-row inference_commit trace fields, and bump CODE_VERSION with final override.",
+        "files": ["FIX2D2I.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D2I (AUTHORITATIVE): Diff Panel V2 — binding inference commit
+# + trace + simplified wiring
+#
+# Problem: multiple legacy V2 builders/wrappers exist; some "attempt" inference
+# but never commit into row[current_value/current_value_norm], leaving Current=N/A.
+#
+# Fix: make the active Diff Panel V2 entrypoint call the proven __rows builder
+# (which already implements guarded soft-match inference and commits into the
+# UI-read fields), and add explicit trace proving candidate pool / selection / commit.
+#
+# Also: treat "yearlike joined current" as a join failure (already handled in __rows)
+# and ensure the trace captures that event.
+#
+# Obsolete patches: prior ad-hoc V2 wrappers (fix2k, etc.) remain defined for
+# backward compatibility but are no longer used by default.
+# =====================================================================
+
+try:
+    # ---- Enhance __rows trace with pool stats / top candidates (non-invasive) ----
+    # We patch via wrapper to avoid risky edits in the core loop.
+    _impl_rows = globals().get('build_diff_metrics_panel_v2__rows')
+    if callable(_impl_rows):
+        def build_diff_metrics_panel_v2__rows_fix2d2i(prev_response: dict, cur_response: dict):
+            rows, summary = _impl_rows(prev_response, cur_response)
+            try:
+                # Add lightweight trace fields if inference_commit_v2 exists.
+                for r in rows:
+                    if not isinstance(r, dict):
+                        continue
+                    diag = r.get('diag')
+                    if not isinstance(diag, dict):
+                        continue
+                    dcs = diag.get('diff_current_source_trace_v1')
+                    if not isinstance(dcs, dict):
+                        continue
+                    ic = dcs.get('inference_commit_v2')
+                    if not isinstance(ic, dict):
+                        continue
+                    # pool stats may have been computed inside __rows; if not present, leave None
+                    if 'pool_size' not in ic:
+                        ic['pool_size'] = diag.get('diff_join_trace_v1', {}).get('pool_size') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
+                    if 'top_candidates' not in ic:
+                        ic['top_candidates'] = diag.get('diff_join_trace_v1', {}).get('top_candidates') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
+            except Exception:
+                return rows, summary
+
+        globals()['build_diff_metrics_panel_v2__rows'] = build_diff_metrics_panel_v2__rows_fix2d2i
+except Exception:
+    pass
+
+try:
+    # ---- Authoritative wiring: Diff Panel V2 entrypoint ----
+    _rows_impl = globals().get('build_diff_metrics_panel_v2__rows')
+    if callable(_rows_impl):
+        def build_diff_metrics_panel_v2_fix2d2i(prev_response: dict, cur_response: dict):
+            return _rows_impl(prev_response, cur_response)
+        # Make this the default V2 builder used by DIFF_PANEL_V2_WIRING.
+        globals()['build_diff_metrics_panel_v2'] = build_diff_metrics_panel_v2_fix2d2i
+except Exception:
+    pass
+
+# END PATCH FIX2D2I
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY: FIX2D2M (ADDITIVE)
+# - Injected-first current-value selection (two-pass: injected pool then global)
+# - Trace fields: pass1_injected_pool_size, pass1_selected, fallback_used, selected_source_url
+# - Final version bump
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2M",
+        "date": "2026-01-16",
+        "summary": "Injected-first current-value inference: two-pass selection (injected-only pool then global fallback) with explicit trace fields and authoritative commit into metric_changes.current_value(_norm).",
+        "files": ["FIX2D2M.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY: FIX2D2N (ADDITIVE)
+# - Baseline-keyed current mapping for Analysis→Evolution diffing
+# - When current canonical keys do not match baseline keys, synthesize current
+#   metric objects for each baseline ckey using injected-first, unit-family-guarded
+#   inference from extracted_numbers pools.
+# - This closes Analysis/Evolution key parity gaps for the diff join without
+#   changing canonical key generation.
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2N",
+        "date": "2026-01-16",
+        "summary": "Baseline-keyed current mapping: for each Analysis baseline canonical key, synthesize a current metric via injected-first, unit-family-guarded inference from extracted_numbers pools when Evolution canonical keys diverge; enables deterministic Analysis→Evolution diff joins even under key parity gaps.",
+        "files": ["FIX2D2N.py"],
+        "supersedes": ["FIX2D2M"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY: FIX2D2O (ADDITIVE)
+# - Persist baseline-keyed augmented current canonical map into the
+#   Evolution/current response under primary_metrics_canonical_for_diff
+#   and mirror into primary_metrics_canonical for demo parity.
+# - This makes Evolution JSON inspection show Analysis keys as the
+#   effective current authority for diffing, while keeping extras possible.
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2O",
+        "date": "2026-01-16",
+        "summary": "Persist baseline-keyed current mapping for diffing: when baseline keys are synthesized into cur_can, expose them as primary_metrics_canonical_for_diff and mirror into primary_metrics_canonical so Evolution output keys align with Analysis for the diff demo.",
+        "files": ["FIX2D2O.py"],
+        "supersedes": ["FIX2D2N"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH TRACKER ENTRIES (CLEAN): FIX2D2Q / FIX2D2R / FIX2D2S
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2Q",
+        "date": "2026-01-16",
+        "summary": "Baseline-aligned current selection for diffing: injected-first with optional base fallback; stamps provenance fields (source_type, selection_mode) to prevent confusion while preserving union pool behavior.",
+        "files": ["FIX2D2Q.py"],
+        "supersedes": ["FIX2D2O"],
+    })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2R",
+        "date": "2026-01-16",
+        "summary": "Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; improves Analysis/Evolution parity for injected content.",
+        "files": ["FIX2D2R.py"],
+        "supersedes": ["FIX2D2Q"],
+    })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2S",
+        "date": "2026-01-16",
+        "summary": "Schema-only rebuild hardening: when non-year candidates exist for a schema key, skip bare-year tokens during winner selection (down-rank/skip) and record diagnostics; reduces year-token pollution before downstream year-blocking.",
+        "files": ["FIX2D2S.py"],
+        "supersedes": ["FIX2D2R"],
+    })
+
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# =========================
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D42
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D42",
+        "date": "2026-01-17",
+        "summary": "Serialize/promote baseline_schema_metrics_v1 into Analysis primary_response/results so Evolution diff can consume it; extend nested results promotion to mirror baseline_schema_metrics_v1.",
+        "files": ["FIX2D42.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# FINAL VERSION OVERRIDE
+# =========================
+try:
+    CODE_VERSION = "FIX2D44"
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX2D2T (ADDITIVE): Baseline->Current projection for Diff Panel V2
+# Why:
+# - We have proven Evolution can extract/commit injected values, but diffing
+#   still shows 0 increased/decreased/unchanged when baseline rows never get
+#   current_value_norm populated.
+# - This patch makes the final "handoff" explicit: for each baseline ckey
+#   (prev row), if cur_response contains a canonical metric object for that
+#   same ckey (prefer primary_metrics_canonical_for_diff), project it into
+#   metric_changes[*].current_value/_norm and mark comparable.
+# Safety:
+# - Render/diff-layer only. No changes to extraction, hashing, anchors,
+#   canonical key generation, or snapshot pools.
+# - Only fills CURRENT when the metric object exists under the SAME ckey.
+# =====================================================================
+
+try:
+    diff_metrics_by_name_FIX2D2T_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    pass
+    diff_metrics_by_name_FIX2D2T_BASE = None  # type: ignore
+
+
+def _fix2d2t_s(x):
+    try:
+        return "" if x is None else str(x)
+    except Exception:
+        return ""
+
+
+def _fix2d2t_f(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = _fix2d2t_s(x).strip().replace(",", "")
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _fix2d2t_get_cur_maps(cur_response: dict):
+    """Return (cur_for_diff, cur_primary) dicts."""
+    cur_for_diff = {}
+    cur_primary = {}
+    try:
+        if isinstance(cur_response, dict):
+            cfd = cur_response.get("primary_metrics_canonical_for_diff")
+            if not isinstance(cfd, dict) and isinstance(cur_response.get("results"), dict):
+                cfd = cur_response["results"].get("primary_metrics_canonical_for_diff")
+            if isinstance(cfd, dict):
+                cur_for_diff = cfd
+            pmc = cur_response.get("primary_metrics_canonical")
+            if not isinstance(pmc, dict) and isinstance(cur_response.get("results"), dict):
+                pmc = cur_response["results"].get("primary_metrics_canonical")
+            if isinstance(pmc, dict):
+                cur_primary = pmc
+    except Exception:
+        return cur_for_diff, cur_primary
+
+
+def diff_metrics_by_name_FIX2D2T_PROJECT_BASELINE_CURRENT(prev_response: dict, cur_response: dict):
+    """Wrapper over current diff that ensures baseline rows receive current values when available under same ckey."""
+    if not callable(diff_metrics_by_name_FIX2D2T_BASE):
+        return ([], 0, 0, 0, 0)
+
+    metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_FIX2D2T_BASE(prev_response, cur_response)
+
+    cur_for_diff, cur_primary = _fix2d2t_get_cur_maps(cur_response if isinstance(cur_response, dict) else {})
+
+    proj_applied = 0
+    proj_filled = 0
+    proj_source_injected = 0
+    samples = []
+
+    def _is_missing(row: dict):
+        try:
+            cvn = row.get("current_value_norm")
+            if cvn is None:
+                cvn = row.get("cur_value_norm")
+            if cvn is not None:
+                return False
+            cv = row.get("current_value")
+            cvs = _fix2d2t_s(cv).strip().upper()
+            return (not cvs) or (cvs == "N/A")
+        except Exception:
+            return True
+
+    def _build_display(vn, unit):
+        try:
+            if vn is None:
+                return None
+            if unit:
+                return f"{vn} {unit}".strip()
+            return _fix2d2t_s(vn)
+        except Exception:
+            return _fix2d2t_s(vn)
+
+    if isinstance(metric_changes, list):
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+            prev_ckey = _fix2d2t_s(row.get("canonical_key") or row.get("ckey") or "").strip()
+            if not prev_ckey:
+                continue
+
+            # We only project into baseline rows (i.e., rows with prev_value_norm present)
+            pv = row.get("prev_value_norm")
+            if pv is None:
+                pv = row.get("previous_value_norm")
+            if pv is None:
+                continue
+
+            if not _is_missing(row):
+                continue
+
+            proj_applied += 1
+
+            # Prefer baseline-keyed current mapping, then fallback to primary_metrics_canonical.
+            cm = cur_for_diff.get(prev_ckey) if isinstance(cur_for_diff, dict) else None
+            used_map = "primary_metrics_canonical_for_diff"
+            if not isinstance(cm, dict) or not cm:
+                cm = cur_primary.get(prev_ckey) if isinstance(cur_primary, dict) else None
+                used_map = "primary_metrics_canonical"
+
+            if not isinstance(cm, dict) or not cm:
+                continue
+
+            vn = cm.get("value_norm") if cm.get("value_norm") is not None else cm.get("value")
+            vn = _fix2d2t_f(vn)
+            if vn is None:
+                continue
+            unit = _fix2d2t_s(cm.get("unit_tag") or cm.get("unit") or cm.get("unit_cmp") or "").strip() or None
+            src = _fix2d2t_s(cm.get("source_url") or "").strip()
+
+            # Fill row
+            row["current_value_norm"] = vn
+            row["cur_value_norm"] = vn
+            row["current_value"] = _build_display(vn, unit) or row.get("current_value")
+            if unit:
+                row["current_unit"] = unit
+                row["cur_unit_cmp"] = unit
+
+            # Diagnostics
+            row.setdefault("diag", {})
+            if isinstance(row.get("diag"), dict):
+                row["diag"].setdefault("fix2d2t_baseline_projection_v1", {})
+                if isinstance(row["diag"].get("fix2d2t_baseline_projection_v1"), dict):
+                    row["diag"]["fix2d2t_baseline_projection_v1"].update({
+                        "applied": True,
+                        "used_map": used_map,
+                        "resolved_cur_ckey": prev_ckey,
+                        "current_source_url": src or None,
+                    })
+
+            # Provenance labels (align with FIX2D2Q concept)
+            if src:
+                if "github.io" in src or "injection" in src:
+                    row["current_source_type_fix2d2q"] = "injected"
+                    row["current_selection_mode_fix2d2q"] = "baseline_projection_injected"
+                    proj_source_injected += 1
+                else:
+                    row["current_source_type_fix2d2q"] = row.get("current_source_type_fix2d2q") or "base"
+                    row["current_selection_mode_fix2d2q"] = row.get("current_selection_mode_fix2d2q") or "baseline_projection_base"
+
+            # Recompute comparability and change_type
+            try:
+                pv_num = _fix2d2t_f(pv)
+                if pv_num is not None and vn is not None:
+                    row["baseline_is_comparable"] = True
+                    if abs(vn - pv_num) < 1e-9:
+                        row["baseline_change_type"] = "unchanged"
+                    elif vn > pv_num:
+                        row["baseline_change_type"] = "increased"
+                    else:
+                        row["baseline_change_type"] = "decreased"
+            except Exception:
+                pass
+
+            proj_filled += 1
+            if len(samples) < 8:
+                samples.append({
+                    "ckey": prev_ckey,
+                    "used_map": used_map,
+                    "pv": _fix2d2t_f(pv),
+                    "cv": vn,
+                    "src": src,
+                })
+
+    # Recompute counters from rows (authoritative)
+    try:
+        u = i = d = 0
+        f = 0
+        if isinstance(metric_changes, list):
+            for r in metric_changes:
+                if not isinstance(r, dict):
+                    continue
+                ct = _fix2d2t_s(r.get("baseline_change_type") or r.get("change_type") or "").strip().lower()
+                if ct in ("unchanged",):
+                    u += 1; f += 1
+                elif ct in ("increased",):
+                    i += 1; f += 1
+                elif ct in ("decreased",):
+                    d += 1; f += 1
+        unchanged, increased, decreased, found = u, i, d, f
+    except Exception:
+        pass
+
+    # Attach top-level debug
+    try:
+        if isinstance(cur_response, dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"]["fix2d2t_baseline_projection_summary_v1"] = {
+                    "applied_to_missing_rows": int(proj_applied),
+                    "filled_rows": int(proj_filled),
+                    "filled_from_injected": int(proj_source_injected),
+                    "samples": samples,
+                }
+    except Exception:
+        return metric_changes, unchanged, increased, decreased, found
+
+
+# Wire wrapper
+try:
+    if callable(diff_metrics_by_name_FIX2D2T_PROJECT_BASELINE_CURRENT):
+        diff_metrics_by_name = diff_metrics_by_name_FIX2D2T_PROJECT_BASELINE_CURRENT  # type: ignore
+except Exception:
+    pass
+
+# Patch tracker + version bump
+try:
+    if isinstance(globals().get('PATCH_TRACKER_V1'), list):
+        PATCH_TRACKER_V1.append({
+            "patch_id": "FIX2D2T",
+            "summary": "Add explicit baseline->current projection in diff layer: if baseline row is missing CURRENT but cur_response has same canonical_key in primary_metrics_canonical_for_diff/primary_metrics_canonical, project into metric_changes current_value/_norm and recompute diff counters; attach debug summary.",
+            "ts": "2026-01-16",
+        })
+
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2U",
+        "date": "2026-01-17",
+        "summary": "Introduce shared semantic eligibility gate (local-snippet required tokens) and apply it across Analysis selector and Evolution schema-only rebuild paths to prevent cross-metric pollution (e.g., China sales value mapping to chargers 2040).",
+        "files": ["FIX2D2U.py"],
+        "supersedes": ["FIX2D2T"],
+    })
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2W",
+        "date": "2026-01-17",
+        "summary": "Fix parity leak: ensure schema_only_rebuild commit-time semantic gate is always active (avoid NameError when _FIX2D2U_ENABLE defined later) and fix year-token extraction regex for required-year checks; bump CODE_VERSION.",
+        "files": ["FIX2D2W.py"],
+        "supersedes": ["FIX2D2V"],
+    })
+
+except Exception:
+    pass
+
+try:
+    CODE_VERSION = "FIX2D44"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2D2T
+# =====================================================================
+
+# =====================================================================
+
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX2D2X (PARITY): Reuse Analysis selector for Evolution baseline-key current
+# ---------------------------------------------------------------------
+# Rationale:
+#   - Analysis has the authoritative semantic eligibility gates.
+#   - Evolution schema_only_rebuild is a legacy shortcut that can mis-assign values.
+#   - For Analysis→Evolution diffing, Evolution must populate CURRENT for the Analysis
+#     keyspace using the same selector/gates, differing only in source preference
+#     (injected-first).
+# Implementation (additive override):
+#   - Provide a new rebuild_metrics_from_snapshots_schema_only_fix17 that:
+#       * derives a schema spec per baseline key (adds keyword hints from key/name)
+#       * builds candidates from baseline_sources_cache extracted_numbers
+#       * runs a strict injected-first two-pass selection via _analysis_canonical_final_selector_v1
+#         with preferred-source locking disabled
+#       * commits the chosen candidate under the same canonical_key
+#   - This makes Evolution and Analysis share the same semantic gates for this step.
+# ---------------------------------------------------------------------
+# Supersedes (functionally): FIX2D2U/FIX2D2V/FIX2D2W schema_only_rebuild gating patches.
+# =====================================================================
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2X",
+        "date": "2026-01-17",
+        "summary": "Parity patch: replace Evolution schema-only slot filling for baseline-key current with Analysis authoritative selector (_analysis_canonical_final_selector_v1) using injected-first two-pass selection and synthesized keyword hints from canonical_key/name; prevents cross-metric misassignment (e.g., China sales -> chargers 2040) and aligns gating with Analysis.",
+        "files": ["FIX2D2X.py"],
+        "supersedes": ["FIX2D2W", "FIX2D2V", "FIX2D2U"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+def _fix2d2x_parse_injected_urls(web_context: dict) -> list:
+    """Best-effort extraction of injected/extra URLs from web_context."""
+    urls = []
+    try:
+        wc = web_context if isinstance(web_context, dict) else {}
+        for k in ("diag_extra_urls", "extra_urls", "injected_urls"):
+            v = wc.get(k)
+            if isinstance(v, list):
+                for u in v:
+                    if isinstance(u, str) and u.strip():
+                        urls.append(u.strip())
+        # raw UI fields (string) used in earlier patches
+        for k in ("diag_extra_urls_ui_raw", "extra_urls_ui_raw"):
+            raw = wc.get(k)
+            if isinstance(raw, str) and raw.strip():
+                # split on whitespace / commas
+                for part in re.split(r"[\s,]+", raw.strip()):
+                    if part.startswith("http"):
+                        urls.append(part)
+    except Exception:
+        pass
+
+    # Stable de-dupe
+    out = []
+    seen = set()
+    for u in urls:
+        uu = str(u or "").strip()
+        if not uu or uu in seen:
+            continue
+        seen.add(uu)
+        out.append(uu)
+    return out
+
+
+def _fix2d2x_keywords_from_key_and_name(canonical_key: str, name: str) -> list:
+    """Synthesize keyword hints when schema_frozen came from baseline (often lacks keywords)."""
+    toks = []
+    try:
+        ck = str(canonical_key or "")
+        nm = str(name or "")
+        # split key on underscores
+        for t in ck.replace("__", "_").split("_"):
+            t = t.strip().lower()
+            if not t:
+                continue
+            # drop pure years and very short tokens
+            if re.fullmatch(r"(19\d{2}|20\d{2})", t):
+                continue
+            if len(t) <= 2:
+                continue
+            toks.append(t)
+        # add name tokens
+        for t in re.split(r"[^a-zA-Z0-9]+", nm.lower()):
+            if not t:
+                continue
+            if re.fullmatch(r"(19\d{2}|20\d{2})", t):
+                continue
+            if len(t) <= 2:
+                continue
+            toks.append(t)
+    except Exception:
+        pass
+        toks = []
+
+    # small normalization + de-dupe
+    out = []
+    seen = set()
+    stop = {"global", "world", "worldwide", "ev", "electric", "vehicle", "vehicles", "unknown"}
+    for t in toks:
+        if t in stop:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out[:24]
+
+
+def _fix2d2x_required_years_from_key(canonical_key: str) -> list:
+    ys = []
+    try:
+        for m in re.findall(r"\b(19\d{2}|20\d{2})\b", str(canonical_key or "")):
+            ys.append(m)
+    except Exception:
+        pass
+        ys = []
+    # de-dupe preserve
+    out = []
+    seen = set()
+    for y in ys:
+        if y in seen:
+            continue
+        seen.add(y)
+        out.append(y)
+    return out
+
+
+def _fix2d2x_local_text_for_candidate(c: dict) -> str:
+    try:
+        return " ".join([
+            str(c.get("context_snippet") or ""),
+            str(c.get("raw") or ""),
+            str(c.get("unit") or c.get("unit_tag") or ""),
+        ]).lower()
+    except Exception:
+        return ""
+
+
+def _fix2d2x_filter_candidates_for_key(canonical_key: str, spec: dict, candidates: list) -> list:
+    """Pre-filter: enforce key-year presence and at least one key-specific keyword hit in local context."""
+    out = []
+    req_years = _fix2d2x_required_years_from_key(canonical_key)
+    kws = spec.get("keywords") or []
+    kws = [str(k).lower() for k in kws if isinstance(k, str) and k.strip()]
+
+    for c in candidates or []:
+        if not isinstance(c, dict):
+            continue
+        lt = _fix2d2x_local_text_for_candidate(c)
+        if not lt:
+            continue
+        # required years: must appear in local text when key encodes them
+        ok_year = True
+        if req_years:
+            ok_year = all((y in lt) for y in req_years)
+        if not ok_year:
+            continue
+        # at least one keyword hit if keywords exist
+        if kws:
+            hit = False
+            for k in kws:
+                if k and k in lt:
+                    hit = True
+                    break
+            if not hit:
+                continue
+        out.append(c)
+    return out
+
+
+def _fix2d2x_select_current_for_key(
+    canonical_key: str,
+    spec_in: dict,
+    candidates_all: list,
+    injected_urls: list,
+) -> tuple:
+    """Injected-first two-pass selection using Analysis authoritative selector.
+
+    NOTE: This early definition is kept syntactically valid; a later FIX2D65 override
+    (noqa: F811) may replace it.
+    """
+    spec = dict(spec_in or {})
+
+    # Disable preferred source locking for Evolution (parity gates but different policy)
+    for k in ("preferred_url", "source_url"):
+        if k in spec:
+            spec.pop(k, None)
+
+    # Ensure keywords exist for selector scoring/eligibility
+    if not spec.get("keywords"):
+        nm = str(spec.get("name") or "")
+        spec["keywords"] = _fix2d2x_keywords_from_key_and_name(canonical_key, nm)
+
+    # local pre-filter (prevents cross-metric pollution when baseline schema lacks rich keywords)
+    candidates_all = _fix2d2x_filter_candidates_for_key(canonical_key, spec, candidates_all)
+
+    # pass 1: injected-only
+    injected_norm = set(_ph2b_norm_url(u) for u in (injected_urls or []) if isinstance(u, str))
+    cands_inj = []
+    if injected_norm:
+        for c in (candidates_all or []):
+            if not isinstance(c, dict):
+                continue
+            cu = _ph2b_norm_url(c.get("source_url") or "")
+            if cu and cu in injected_norm:
+                cands_inj.append(c)
+
+    # PATCH FIX2D65: prune yearlike candidates for unit/count metrics (immune to window backfill)
+    _orig_all = list(candidates_all or [])
+    _orig_inj = list(cands_inj or [])
+
+    try:
+        _p_all, _rej_all = _fix2d65_spine_prune_candidates_for_ck(canonical_key, spec, candidates_all)
+        if _orig_all and not _p_all:
+            # non-fatal: do not allow prune to zero-out the pool
+            candidates_all = _orig_all
+            _rej_all = 0
+            spec.setdefault("debug_meta", {})["fix2d65_prune_reverted_all"] = True
+        else:
+            candidates_all = _p_all
+    except Exception:
+        pass
+        _rej_all = 0
+
+    try:
+        if cands_inj:
+            _p_inj, _rej_inj = _fix2d65_spine_prune_candidates_for_ck(canonical_key, spec, cands_inj)
+            if _orig_inj and not _p_inj:
+                cands_inj = _orig_inj
+                _rej_inj = 0
+                spec.setdefault("debug_meta", {})["fix2d65_prune_reverted_inj"] = True
+            else:
+                cands_inj = _p_inj
+        else:
+            _rej_inj = 0
+    except Exception:
+        pass
+        _rej_inj = 0
+
+    fn_sel = globals().get("_analysis_canonical_final_selector_v1")
+    if not callable(fn_sel):
+        return None, {"blocked_reason": "missing_analysis_selector"}
+
+    if cands_inj:
+        best, meta = fn_sel(canonical_key, spec, cands_inj, anchors=None, prev_metric=None, web_context=None)
+        if isinstance(best, dict):
+            try:
+                meta = dict(meta or {})
+                meta["fix2d2x_pass"] = "injected_only"
+                meta["fix2d65_yearlike_pruned_injected"] = int(_rej_inj or 0)
+                meta["fix2d65_yearlike_pruned_global"] = int(_rej_all or 0)
+            except Exception:
+                return best, meta
+
+    # pass 2: global
+    best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
+    try:
+        meta = dict(meta or {})
+        meta["fix2d2x_pass"] = "global"
+        meta["fix2d65_yearlike_pruned_global"] = int(_rej_all or 0)
+    except Exception:
+        return best, meta
+
+
+# ---------------------------------------------------------------------
+# OVERRIDE: schema-only rebuild FIX17
+# ---------------------------------------------------------------------
+
+def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
+    """Parity rebuild: populate CURRENT for baseline keyspace using Analysis selector."""
+    if not isinstance(prev_response, dict):
+        return {}
+
+    # Schema keyspace
+    schema_frozen = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or {}
+    )
+    if not isinstance(schema_frozen, dict) or not schema_frozen:
+        return {}
+
+    # Candidate pool from baseline_sources_cache
+    bsc = baseline_sources_cache
+    if not isinstance(bsc, list):
+        # try prev_response locations
+        bsc = (prev_response.get("results") or {}).get("baseline_sources_cache")
+    if not isinstance(bsc, list):
+        bsc = []
+
+    all_candidates = []
+    for item in bsc:
+        if not isinstance(item, dict):
+            continue
+        src = item.get("source_url") or item.get("url") or ""
+        nums = item.get("extracted_numbers")
+        if not isinstance(nums, list):
+            # sometimes nested in scraped_meta
+            sm = item.get("scraped_meta")
+            if isinstance(sm, dict):
+                nums = sm.get("extracted_numbers")
+        if not isinstance(nums, list):
+            continue
+        for c in nums:
+            if not isinstance(c, dict):
+                continue
+            cc = dict(c)
+            if src and not cc.get("source_url"):
+                cc["source_url"] = src
+            all_candidates.append(cc)
+
+    injected_urls = _fix2d2x_parse_injected_urls(web_context)
+
+    rebuilt = {}
+    debug = {}
+    reject_counts = {}
+    filled = 0
+
+    for ck, spec0 in schema_frozen.items():
+        if not isinstance(ck, str) or not ck:
+            continue
+        spec = spec0 if isinstance(spec0, dict) else {}
+        best, meta = _fix2d2x_select_current_for_key(ck, spec, all_candidates, injected_urls)
+        if not isinstance(best, dict):
+            # track block reasons (selector meta)
+            try:
+                br = str((meta or {}).get("blocked_reason") or "")
+                if br:
+                    reject_counts[br] = int(reject_counts.get(br, 0)) + 1
+            except Exception:
+                pass
+            continue
+
+        # Commit minimal metric object
+        try:
+            m = {
+                "canonical_key": ck,
+                "value": best.get("value"),
+                "value_norm": best.get("value_norm"),
+                "unit": best.get("unit") or best.get("unit_tag") or best.get("unit_cmp"),
+                "unit_tag": best.get("unit_tag") or best.get("unit") or best.get("unit_cmp"),
+                "unit_family": best.get("unit_family") or spec.get("unit_family") or "",
+                "source_url": best.get("source_url") or "",
+                "raw": best.get("raw") or "",
+                "context_snippet": best.get("context_snippet") or "",
+                "method": "analysis_selector_shared_fix2d2x",
+                "selection_meta": meta or {},
+            }
+            rebuilt[ck] = m
+            filled += 1
+        except Exception:
+            pass
+            continue
+
+    # Attach debug to web_context if present
+    try:
+        debug["fix2d2x_selector_shared_summary_v1"] = {
+            "filled": int(filled),
+            "schema_keys": int(len(schema_frozen)),
+            "candidates_total": int(len(all_candidates)),
+            "injected_urls": injected_urls,
+            "reject_counts": reject_counts,
+        }
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].update(debug)
+    except Exception:
+        return rebuilt
+
+# =====================================================================
+# END PATCH FIX2D2X
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX2D2Y (PARITY HARDWIRE)
+# Objective:
+# - Ensure Evolution's current-metric rebuild (including fix41afc19 override path)
+#   uses the SAME authoritative Analysis selector for baseline-keyed diffing.
+# - This addresses the observed issue where fix41afc19 applied a different rebuild
+#   function (rebuild_metrics_from_snapshots_analysis_canonical_v1) which produced
+#   a disjoint keyset (overlap_count==0), preventing diff activation.
+#
+# What:
+# - Override `rebuild_metrics_from_snapshots_analysis_canonical_v1` so it performs a
+#   baseline-keyed rebuild using the shared selector helper from FIX2D2X.
+# - This makes the fix41afc19 path call the parity-correct rebuild automatically.
+#
+# Safety:
+# - Additive override only; does not modify hashing, snapshot attach, or fastpath.
+# - Only affects display/diff "current" semantics.
+# =====================================================================
+
+# Version stamp (ensure last-wins in monolithic file)
+CODE_VERSION = "FIX2D68"
+# Patch tracker entry
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D2Y",
+        "date": "2026-01-17",
+        "summary": "Hardwire Evolution rebuild_metrics_from_snapshots_analysis_canonical_v1 to use the shared Analysis final selector for baseline-keyed diff current metrics (fix41afc19 parity); eliminates disjoint keyset that blocks diff activation.",
+        "files": ["FIX2D2Y.py"],
+        "supersedes": ["FIX2D2X"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response, snapshot_pool, web_context=None):
+    """FIX2D2Y override: baseline-keyed current rebuild using Analysis selector.
+
+    Returns a dict keyed by baseline canonical keys (from prev_response.primary_metrics_canonical)
+    so Analysis↔Evolution overlap can be non-zero and diffing can activate.
+    """
+    # Resolve baseline schema (keys + minimal specs) from Analysis prev_response
+    schema_keys = []
+    schema_specs = {}
+    try:
+        _pmc = None
+        if isinstance(prev_response, dict):
+            _pmc = prev_response.get("primary_metrics_canonical")
+            if not isinstance(_pmc, dict):
+                _pmc = prev_response.get("results", {}).get("primary_metrics_canonical")
+        if isinstance(_pmc, dict) and _pmc:
+            for ck, mv in _pmc.items():
+                if not isinstance(ck, str):
+                    continue
+                schema_keys.append(ck)
+                mv = mv if isinstance(mv, dict) else {}
+                schema_specs[ck] = {
+                    "canonical_key": ck,
+                    "unit_family": mv.get("unit_family") or "",
+                    "unit_tag": mv.get("unit_tag") or mv.get("unit") or mv.get("unit_cmp") or "",
+                    "display_name": mv.get("display_name") or mv.get("metric_name") or ck,
+                }
+    except Exception:
+        pass
+        schema_keys = []
+        schema_specs = {}
+
+    if not schema_keys:
+        return {}
+
+    # Build candidate universe from snapshot_pool extracted_numbers
+    all_candidates = []
+    try:
+        if isinstance(snapshot_pool, list):
+            for src in snapshot_pool:
+                if not isinstance(src, dict):
+                    continue
+                url = src.get("url") or src.get("source_url") or ""
+                nums = src.get("extracted_numbers")
+                if not isinstance(nums, list):
+                    continue
+                for n in nums:
+                    if not isinstance(n, dict):
+                        continue
+                    cand = dict(n)
+                    cand["source_url"] = cand.get("source_url") or url
+                    all_candidates.append(cand)
+    except Exception:
+        pass
+
+    # Determine injected URLs (if any)
+    injected_urls = []
+    try:
+        if isinstance(web_context, dict):
+            inj = (
+                web_context.get("diag_extra_urls")
+                or web_context.get("extra_urls")
+                or web_context.get("diag_extra_urls_final")
+                or []
+            )
+            if isinstance(inj, list):
+                injected_urls = [u for u in inj if isinstance(u, str) and u.strip()]
+    except Exception:
+        pass
+        injected_urls = []
+
+    # Select best candidate per baseline key using the shared selector helper
+    rebuilt = {}
+    debug = {
+        "fix2d2y_analysis_selector_rebuild_v1": {
+            "baseline_keys": int(len(schema_keys)),
+            "candidates_total": int(len(all_candidates)),
+            "injected_urls": injected_urls,
+            "filled": 0,
+            "reject_counts": {},
+        }
+    }
+
+    filled = 0
+    reject_counts = {}
+
+    for ck in schema_keys:
+        spec = schema_specs.get(ck) or {"canonical_key": ck}
+
+        best = None
+        meta = None
+        try:
+            # Reuse FIX2D2X selector if present
+            if callable(globals().get("_fix2d2x_select_best")):
+                best, meta = globals()["_fix2d2x_select_best"](ck, spec, all_candidates, injected_urls=injected_urls)
+            else:
+                # Fallback: no selection helper available
+                best, meta = None, {"error": "missing_fix2d2x_select_best"}
+        except Exception as e:
+            best, meta = None, {"error": str(e)}
+
+        if not isinstance(best, dict):
+            # Count rejects if available
+            try:
+                rsn = None
+                if isinstance(meta, dict):
+                    rsn = meta.get("reject_reason") or meta.get("reason")
+                if isinstance(rsn, str) and rsn:
+                    reject_counts[rsn] = int(reject_counts.get(rsn, 0)) + 1
+            except Exception:
+                pass
+            continue
+
+        try:
+            m = {
+                "canonical_key": ck,
+                "value": best.get("value"),
+                "value_norm": best.get("value_norm"),
+                "unit": best.get("unit") or best.get("unit_tag") or best.get("unit_cmp"),
+                "unit_tag": best.get("unit_tag") or best.get("unit") or best.get("unit_cmp"),
+                "unit_family": best.get("unit_family") or spec.get("unit_family") or "",
+                "source_url": best.get("source_url") or "",
+                "raw": best.get("raw") or "",
+                "context_snippet": best.get("context_snippet") or "",
+                "method": "analysis_selector_shared_fix2d2y",
+                "selection_meta": meta or {},
+            }
+            rebuilt[ck] = m
+            filled += 1
+        except Exception:
+            pass
+            continue
+
+    debug["fix2d2y_analysis_selector_rebuild_v1"]["filled"] = int(filled)
+    debug["fix2d2y_analysis_selector_rebuild_v1"]["reject_counts"] = reject_counts
+
+    # Attach debug to web_context if provided
+    try:
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].update(debug)
+    except Exception:
+        return rebuilt
+
+# Ensure global override binding
+try:
+    globals()["rebuild_metrics_from_snapshots_analysis_canonical_v1"] = rebuild_metrics_from_snapshots_analysis_canonical_v1
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2D2Y
+# =====================================================================
+
+
+# ============================================================
+# PATCH START: FIX2D34_PREV_KEY_DRIVEN_DIFF_UNIVERSE_V1
+# Purpose:
+#   - Force Diff Panel V2 universe to be PREV-key driven (baseline canonical keys)
+#   - Source CURRENT strictly from cur_response.primary_metrics_canonical for the same ckey
+#   - Do NOT emit cur-only "added" rows (those are not baseline diffs)
+# Safety:
+#   - Diff layer only. Does not affect extraction, hashing, fastpath, snapshots.
+#   - Keeps existing unit-family gates in later layers.
+# ============================================================
+
+def diff_metrics_by_name_FIX2D34(prev_response: dict, cur_response: dict):
+    """Prev-key driven diff: iterate prev canonical keys only; hydrate current from PMC."""
+    import re
+
+    ABS_EPS = 1e-9
+    REL_EPS = 0.0005
+
+    def _s(x):
+        try:
+            return str(x)
+        except Exception:
+            return ""
+
+    def _norm_name(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    def _parse_num(v, unit=""):
+        fn = globals().get("parse_human_number")
+        if callable(fn):
+            try:
+                return fn(_s(v), unit)
+            except Exception:
+                return None
+        try:
+            return float(_s(v).replace(",", "").strip())
+        except Exception:
+            return None
+
+    def _get_val_unit(m: dict, is_current: bool=False):
+        m = m if isinstance(m, dict) else {}
+        # Prefer canonical numeric
+        if m.get("value_norm") is not None:
+            try:
+                v = float(m.get("value_norm"))
+                u = _s(m.get("base_unit") or m.get("unit") or m.get("unit_tag") or "").strip()
+                return v, u
+            except Exception:
+                pass
+        # For current side, respect v27 disable flag
+        try:
+            if is_current and isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
+                u = _s(m.get("unit") or m.get("unit_tag") or "").strip()
+                return None, u
+        except Exception:
+            pass
+        u = _s(m.get("unit") or m.get("unit_tag") or "").strip()
+        return _parse_num(m.get("value"), u), u
+
+    def _get_schema(prev: dict):
+        if not isinstance(prev, dict):
+            return {}
+        sch = prev.get("metric_schema_frozen")
+        if isinstance(sch, dict) and sch:
+            return sch
+        pr = prev.get("primary_response")
+        if isinstance(pr, dict):
+            sch = pr.get("metric_schema_frozen")
+            if isinstance(sch, dict) and sch:
+                return sch
+        return {}
+
+    def _display_name(ckey: str) -> str:
+        ckey = _s(ckey).strip()
+        if not ckey:
+            return "Unknown Metric"
+        left, _, right = ckey.partition("__")
+        left = " ".join(w.capitalize() for w in left.replace("_", " ").split())
+        right = right.replace("_", " ").strip()
+        return f"{left} ({right})" if right else left
+
+    def _metric_def(schema: dict, ckey: str):
+        md = schema.get(ckey) if isinstance(schema, dict) else None
+        return md if isinstance(md, dict) else {}
+
+    prev_can = None
+    try:
+        prev_can = (prev_response or {}).get("primary_metrics_canonical")
+        if not isinstance(prev_can, dict) or not prev_can:
+            pr = (prev_response or {}).get("primary_response")
+            if isinstance(pr, dict):
+                prev_can = pr.get("primary_metrics_canonical")
+    except Exception:
+        pass
+        prev_can = None
+    prev_can = prev_can if isinstance(prev_can, dict) else {}
+
+    cur_pmc = None
+    try:
+        cur_pmc = (cur_response or {}).get("primary_metrics_canonical")
+        if not isinstance(cur_pmc, dict) or not cur_pmc:
+            pr = (cur_response or {}).get("primary_response")
+            if isinstance(pr, dict):
+                cur_pmc = pr.get("primary_metrics_canonical")
+    except Exception:
+        pass
+        cur_pmc = None
+    cur_pmc = cur_pmc if isinstance(cur_pmc, dict) else {}
+
+    schema = _get_schema(prev_response)
+
+    metric_changes = []
+    unchanged = increased = decreased = found = 0
+
+    # PREV-KEY DRIVEN UNIVERSE
+    for ckey, pm in prev_can.items():
+        if not isinstance(ckey, str):
+            ckey = _s(ckey)
+        ckey = ckey.strip()
+        if not ckey:
+            continue
+        pm = pm if isinstance(pm, dict) else {}
+
+        cm = cur_pmc.get(ckey)
+        cm = cm if isinstance(cm, dict) else {}
+
+        name = _display_name(ckey)
+        definition = _metric_def(schema, ckey)
+
+        prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
+
+        if not cm:
+            metric_changes.append({
+                "name": name,
+                "previous_value": prev_raw,
+                "current_value": "N/A",
+                "change_pct": None,
+                "change_type": "not_found",
+                "match_confidence": 0.0,
+                "canonical_key": ckey,
+                "metric_definition": definition,
+            })
+            continue
+
+        found += 1
+        cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
+
+        pv, pu = _get_val_unit(pm, is_current=False)
+        cv, cu = _get_val_unit(cm, is_current=True)
+
+        change_type = "unknown"
+        change_pct = None
+
+        if pv is not None and cv is not None:
+            if abs(pv - cv) <= max(ABS_EPS, abs(pv) * REL_EPS):
+                change_type = "unchanged"
+                change_pct = 0.0
+                unchanged += 1
+            elif cv > pv:
+                change_type = "increased"
+                change_pct = ((cv - pv) / max(ABS_EPS, abs(pv))) * 100.0
+                increased += 1
+            else:
+                change_type = "decreased"
+                change_pct = ((cv - pv) / max(ABS_EPS, abs(pv))) * 100.0
+                decreased += 1
+        else:
+            if pv is None and cv is not None:
+                change_type = "invalid_previous"
+            elif pv is not None and cv is None:
+                change_type = "invalid_current"
+            else:
+                change_type = "unknown"
+
+        # Build display current
+        cur_unit_tag = _s(cm.get("unit") or cm.get("unit_tag") or "").strip()
+        cur_disp = _s(cur_raw).strip() if cur_raw is not None else ""
+        if cur_disp and cur_unit_tag and (cur_unit_tag not in cur_disp):
+            cur_disp = f"{cur_disp} {cur_unit_tag}".strip()
+
+        metric_changes.append({
+            "name": name,
+            "previous_value": prev_raw,
+            "current_value": cur_disp or ("N/A" if cv is None else _s(cv)),
+            "change_pct": change_pct,
+            "change_type": change_type,
+            "match_confidence": 1.0,
+            "canonical_key": ckey,
+            "metric_definition": definition,
+            "previous_value_norm": pv,
+            "current_value_norm": cv,
+            "prev_unit_cmp": pu,
+            "cur_unit_cmp": cu,
+        })
+
+    # Attach top-level summary diagnostics
+    try:
+        if isinstance(cur_response, dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"].setdefault("fix2d34_prev_key_driven_diff_v1", {})
+                cur_response["debug"]["fix2d34_prev_key_driven_diff_v1"] = {
+                    "prev_keys": int(len(prev_can)) if isinstance(prev_can, dict) else 0,
+                    "cur_pmc_keys": int(len(cur_pmc)) if isinstance(cur_pmc, dict) else 0,
+                    "rows_emitted": int(len(metric_changes)),
+                    "found_both": int(found),
+                    "note": "Universe iterates prev canonical keys only; current sourced from primary_metrics_canonical.",
+                }
+    except Exception:
+        return metric_changes, unchanged, increased, decreased, found
+
+# Wire FIX2D34 as the active diff function (last-wins override)
+try:
+    diff_metrics_by_name = diff_metrics_by_name_FIX2D34  # type: ignore
+except Exception:
+    pass
+
+try:
+    CODE_VERSION = "FIX2D44"
+except Exception:
+    pass
+
+# ============================================================
+# PATCH END: FIX2D34_PREV_KEY_DRIVEN_DIFF_UNIVERSE_V1
+# ============================================================
+
+
+# =========================================================
+# FIX2D45 — FORCE BASELINE SCHEMA MATERIALISATION (FINAL)
+# =========================================================
+# This patch removes all optional/gated baseline construction
+# and unconditionally builds baseline_schema_metrics_v1 during
+# Analysis finalisation when schema + canonical metrics exist.
+
+CODE_VERSION = "FIX2D68"
+def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
+    if "results" not in analysis:
+        analysis["results"] = {}
+
+    schema = analysis.get("metric_schema_frozen")
+    canonical = analysis.get("primary_metrics_canonical")
+    anchors = analysis.get("metric_anchors", {})
+
+    if not schema:
+        raise RuntimeError("FIX2D45: metric_schema_frozen missing")
+
+    if not canonical:
+        raise RuntimeError("FIX2D45: primary_metrics_canonical missing")
+
+    baseline_schema_metrics_v1 = {}
+
+    for schema_key in schema.keys():
+        metric = canonical.get(schema_key)
+        if not metric:
+            continue
+
+        baseline_schema_metrics_v1[schema_key] = {
+            "canonical_key": schema_key,
+            "canonical_id": metric.get("canonical_id"),
+            "value_norm": metric.get("value_norm"),
+            "unit_family": metric.get("unit_family"),
+            "dimension": metric.get("dimension"),
+            "anchor_hash": anchors.get(schema_key, {}).get("anchor_hash"),
+            "source_url": metric.get("source_url"),
+        }
+
+    analysis["results"]["baseline_schema_metrics_v1"] = baseline_schema_metrics_v1
+    analysis["baseline_schema_metrics_v1"] = baseline_schema_metrics_v1
+
+    analysis.setdefault("debug", {})
+    analysis["debug"]["fix2d45_baseline_count"] = len(baseline_schema_metrics_v1)
+
+
+# ---- invoke FIX2D45 in Analysis finalisation ----
+if "_fix2d45_force_baseline_schema_materialisation" not in globals():
+    pass
+
+
+# FIX2D47 — Diff Panel V2: Schema-union row universe + cross-source current winner
+# --------------------------------------------------------------------------------
+# Objective:
+#   Implement the behaviour you described:
+#     - Evolution may discover new sources
+#     - If a discovered metric binds to the SAME schema canonical key as a baseline metric,
+#       the diff panel should treat it as "current" and compute deltas (even if source differs).
+#
+# What this patch does:
+#   1) Builds the diff row universe as: schema_keys = prev_schema_keys ∪ cur_schema_keys
+#   2) Uses Analysis baseline_schema_metrics_v1 (schema-keyed) as the prev map (when available)
+#   3) Builds a schema-keyed current map from ALL current canonical metrics (any source),
+#      selecting a deterministic "winner" per schema key
+#   4) Joins strictly by schema key (not by source universe), computes change_type + pct.
+#
+# Safety:
+#   - Additive: defines a new builder and (optionally) swaps it in behind a join_mode gate.
+#   - Deterministic: stable tie-breaks for current winner selection.
+#
+# Versioning:
+CODE_VERSION = "FIX2D68"
+def _fix2d47_get_nested(d, path, default=None):
+    try:
+        x = d
+        for k in path:
+            if not isinstance(x, dict):
+                return default
+            x = x.get(k)
+        return x if x is not None else default
+    except Exception:
+        return default
+
+def _fix2d47_first_present(d, paths, default=None):
+    for p in paths:
+        v = _fix2d47_get_nested(d, p, None)
+        if v is not None:
+            return v
+    return default
+
+def _fix2d47_unwrap_baseline_schema_metrics(prev_response: dict) -> dict:
+    # Where Analysis should serialize it (post FIX2D45):
+    #   - results.baseline_schema_metrics_v1 (preferred)
+    #   - baseline_schema_metrics_v1 (mirror)
+    # plus a few legacy wrapper shapes.
+    paths = [
+        ["results","baseline_schema_metrics_v1"],
+        ["baseline_schema_metrics_v1"],
+        ["primary_response","results","baseline_schema_metrics_v1"],
+        ["results","primary_response","results","baseline_schema_metrics_v1"],
+        ["primary_response","baseline_schema_metrics_v1"],
+    ]
+    v = _fix2d47_first_present(prev_response or {}, paths, default={})
+    return v if isinstance(v, dict) else {}
+
+def _fix2d47_unwrap_primary_metrics_canonical(resp: dict) -> dict:
+    if not isinstance(resp, dict):
+        return {}
+    if isinstance(resp.get("primary_metrics_canonical"), dict) and resp.get("primary_metrics_canonical"):
+        return resp.get("primary_metrics_canonical") or {}
+    pr = resp.get("primary_response")
+    if isinstance(pr, dict):
+        if isinstance(pr.get("primary_metrics_canonical"), dict) and pr.get("primary_metrics_canonical"):
+            return pr.get("primary_metrics_canonical") or {}
+        res = pr.get("results")
+        if isinstance(res, dict) and isinstance(res.get("primary_metrics_canonical"), dict) and res.get("primary_metrics_canonical"):
+            return res.get("primary_metrics_canonical") or {}
+    res = resp.get("results")
+    if isinstance(res, dict) and isinstance(res.get("primary_metrics_canonical"), dict) and res.get("primary_metrics_canonical"):
+        return res.get("primary_metrics_canonical") or {}
+    return {}
+
+def _fix2d47_schema_key_for_metric(ckey: str, m: dict) -> str:
+    # Prefer explicit schema/canonical_key fields; fall back to dict key.
+    if isinstance(m, dict):
+        for k in ("canonical_key", "schema_key", "schema_canonical_key", "schema_ckey"):
+            v = m.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    if isinstance(ckey, str) and ckey.strip():
+        return ckey.strip()
+    return ""
+
+def _fix2d47_metric_confidence(m: dict) -> float:
+    if not isinstance(m, dict):
+        return 0.0
+    for k in ("confidence", "score", "match_confidence", "bind_confidence"):
+        v = m.get(k)
+        try:
+            if v is not None:
+                return float(v)
+        except Exception:
+            return 0.0
+
+def _fix2d47_pick_cur_winner(existing: dict, challenger: dict) -> dict:
+    # Deterministic winner selection:
+    #   1) higher confidence
+    #   2) higher anchor_confidence (if present)
+    #   3) stable tie-break by source_url then raw then canonical_id
+    if not isinstance(existing, dict):
+        return challenger
+    if not isinstance(challenger, dict):
+        return existing
+
+    ce = _fix2d47_metric_confidence(existing)
+    cc = _fix2d47_metric_confidence(challenger)
+    if cc != ce:
+        return challenger if cc > ce else existing
+
+    def _af(m):
+        try:
+            return float(m.get("anchor_confidence") or 0.0)
+        except Exception:
+            return 0.0
+
+    ae = _af(existing)
+    ac = _af(challenger)
+    if ac != ae:
+        return challenger if ac > ae else existing
+
+    def _k(m):
+        try:
+            su = m.get("source_url") or ""
+            raw = m.get("raw") or m.get("value") or ""
+            cid = m.get("canonical_id") or ""
+            return (str(su), str(raw), str(cid))
+        except Exception:
+            return ("", "", "")
+
+    return challenger if _k(challenger) < _k(existing) else existing
+
+def _fix2d47_build_cur_map_by_schema_key(cur_response: dict) -> dict:
+    cur_metrics = _fix2d47_unwrap_primary_metrics_canonical(cur_response or {})
+    out = {}
+    if not isinstance(cur_metrics, dict):
+        return out
+    for ck, m in cur_metrics.items():
+        if not isinstance(m, dict):
+            continue
+        sk = _fix2d47_schema_key_for_metric(ck, m)
+        if not sk:
+            continue
+        out[sk] = _fix2d47_pick_cur_winner(out.get(sk), m)
+    return out
+
+def _fix2d47_raw_display_value(m: dict):
+    if not isinstance(m, dict):
+        return None
+    if m.get("raw") is not None:
+        return m.get("raw")
+    if m.get("value") is not None:
+        return m.get("value")
+    # baseline_schema_metrics_v1 often stores display in prev_raw/current_raw fields elsewhere; keep None if absent
+    return None
+
+def _fix2d47_value_norm(m: dict):
+    if not isinstance(m, dict):
+        return None
+    for k in ("value_norm", "valuenorm", "current_value_norm", "prev_value_norm", "cur_value_norm"):
+        if m.get(k) is None:
+            continue
+        try:
+            return float(m.get(k))
+        except Exception:
+            return None
+
+def _fix2d47_unit_tag(m: dict) -> str:
+    if not isinstance(m, dict):
+        return ""
+    for k in ("base_unit", "unit", "unit_tag", "unittag", "baseunit"):
+        v = m.get(k)
+        if v is not None:
+            return str(v).strip()
+    return ""
+
+def _fix2d47_metric_name(schema_key: str, prev_m: dict, cur_m: dict) -> str:
+    for m in (prev_m, cur_m):
+        if isinstance(m, dict):
+            for k in ("name", "metric_name", "label", "title"):
+                v = m.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+    return schema_key
+
+def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict):
+    """Return (rows, summary) for Diff Metrics Panel V2 (schema-union + cross-source current)."""
+    rows = []
+
+    prev_map = _fix2d47_unwrap_baseline_schema_metrics(prev_response or {})
+    cur_map = _fix2d47_build_cur_map_by_schema_key(cur_response or {})
+
+    prev_keys = set([k for k in prev_map.keys() if isinstance(k, str) and k])
+    cur_keys = set([k for k in cur_map.keys() if isinstance(k, str) and k])
+    all_keys = sorted(prev_keys | cur_keys)
+
+    both_count = 0
+    prev_only_count = 0
+    cur_only_count = 0
+
+    inc = dec = unc = add = rem = not_found = 0
+
+    for skey in all_keys:
+        pm = prev_map.get(skey) if isinstance(prev_map, dict) else None
+        pm = pm if isinstance(pm, dict) else {}
+        cm = cur_map.get(skey) if isinstance(cur_map, dict) else None
+        cm = cm if isinstance(cm, dict) else {}
+
+        has_prev = skey in prev_keys
+        has_cur = skey in cur_keys
+
+        if has_prev and has_cur:
+            both_count += 1
+        elif has_prev and not has_cur:
+            prev_only_count += 1
+        elif has_cur and not has_prev:
+            cur_only_count += 1
+
+        prev_raw = pm.get("value_raw") if pm.get("value_raw") is not None else _fix2d47_raw_display_value(pm)
+        cur_raw = cm.get("value_raw") if cm.get("value_raw") is not None else _fix2d47_raw_display_value(cm)
+
+        prev_val_norm = _fix2d47_value_norm(pm)
+        cur_val_norm = _fix2d47_value_norm(cm)
+
+        prev_unit = pm.get("unit_tag") if pm.get("unit_tag") is not None else _fix2d47_unit_tag(pm)
+        cur_unit = cm.get("unit_tag") if cm.get("unit_tag") is not None else _fix2d47_unit_tag(cm)
+
+        name = _fix2d47_metric_name(skey, pm, cm)
+
+        change_type = "unknown"
+        change_pct = None
+        delta_abs = None
+
+        # Semantics:
+        # - both present + numeric => increased/decreased/unchanged
+        # - prev present, cur missing => removed (vs baseline)
+        # - cur present, prev missing => added (new discovery)
+        if has_prev and not has_cur:
+            change_type = "removed"
+            rem += 1
+        elif has_cur and not has_prev:
+            change_type = "added"
+            add += 1
+        else:
+            # both
+            if isinstance(prev_val_norm, (int, float)) and isinstance(cur_val_norm, (int, float)):
+                delta_abs = float(cur_val_norm) - float(prev_val_norm)
+                if abs(prev_val_norm) > 1e-12:
+                    change_pct = (delta_abs / float(prev_val_norm)) * 100.0
+                # tolerance for float jitter
+                if abs(delta_abs) <= max(1e-9, abs(float(prev_val_norm)) * 0.0005):
+                    change_type = "unchanged"
+                    unc += 1
+                elif delta_abs > 0:
+                    change_type = "increased"
+                    inc += 1
+                else:
+                    change_type = "decreased"
+                    dec += 1
+            else:
+                # both present but not numerically comparable
+                change_type = "unknown"
+                not_found += 1
+
+        rows.append({
+            "canonical_key": skey,               # schema key
+            "name": name,
+            "previous_value": prev_raw if has_prev else None,
+            "current_value": cur_raw if has_cur else None,
+            "prev_value_norm": prev_val_norm if has_prev else None,
+            "cur_value_norm": cur_val_norm if has_cur else None,
+            "previous_unit": prev_unit if has_prev else None,
+            "current_unit": cur_unit if has_cur else None,
+            "change_type": change_type,
+            "change_pct": change_pct,
+            "delta_abs": delta_abs,
+            # provenance helpers
+            "prev_source_url": pm.get("source_url"),
+            "cur_source_url": cm.get("source_url"),
+            "cur_confidence": _fix2d47_metric_confidence(cm),
+            "method": "schema_key",              # explicit: joined by schema key
+        })
+
+    summary = {
+        "join_mode": "schema_union",
+        "rows_total": len(rows),
+        "both_count": both_count,
+        "prev_only_count": prev_only_count,
+        "cur_only_count": cur_only_count,
+        "metrics_increased": inc,
+        "metrics_decreased": dec,
+        "metrics_unchanged": unc,
+        "metrics_added": add,
+        "metrics_removed": rem,
+        "metrics_unknown": not_found,
+    }
+    return rows, summary
+
+
+# -------------------------------
+# OPTIONAL WIRING HOOK:
+# If your code already calls build_diff_metrics_panel_v2(prev, cur),
+# replace it with build_diff_metrics_panel_v2_FIX2D47 behind your join-mode flag.
+#
+# Example drop-in (inside compute_source_anchored_diff before calling the builder):
+#   jm = _fix2d6_get_diff_join_mode_v1()
+#   if jm in ("schema_union","schema","cross","schema_cross_source","x"):
+#       rows, summary = build_diff_metrics_panel_v2_FIX2D47(prev_response, cur_response)
+#   else:
+#       rows, summary = build_diff_metrics_panel_v2(prev_response, cur_response)
+#
+# Patch tracker entry (manual):
+#   - FIX2D47: Diff Panel V2 schema-union universe + cross-source current winner selection
+
+
+
+# =========================================================
+# FIX2D47 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+# Ensure the authoritative code version reflects this patch.
+CODE_VERSION = "FIX2D68"
+# =========================================================
+# FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
+# =========================================================
+# Purpose:
+#   Establish a single authoritative canonical key grammar and validator,
+#   and route canonical-key minting through it.
+#
+# Key format:
+#   <scope>_<entity>_<metric>_<time_qualifier>[_<qualifier>...]__<dimension>
+#
+# Determinism:
+#   - No free-text hashing.
+#   - Normalization + strict validation.
+#
+# Integration:
+#   - Use build_canonical_key_v1(...) only in schema-binding / key minting.
+#   - Validate keys at the point primary_metrics_canonical is finalized.
+
+import re
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Tuple
+
+_FIX2D48_TOKEN_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
+
+def _fix2d48_parse_canonical_key_v1(key: str) -> Tuple[str, str]:
+    if not isinstance(key, str) or not key:
+        raise ValueError("canonical_key: empty")
+    if key.count("__") != 1:
+        raise ValueError(f"canonical_key: expected exactly one '__' separator, got {key.count('__')}")
+    subject, dimension = key.split("__", 1)
+    if not subject or not dimension:
+        raise ValueError("canonical_key: missing subject or dimension")
+    return subject, dimension
+
+def _fix2d48_norm_token(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
+
+def _fix2d48_validate_token(name: str, token: str) -> None:
+    if not token:
+        raise ValueError(f"{name}: missing")
+    if "__" in token:
+        raise ValueError(f"{name}: contains '__' (reserved)")
+    if not _FIX2D48_TOKEN_RE.match(token):
+        raise ValueError(f"{name}: invalid token '{token}' (must match {_FIX2D48_TOKEN_RE.pattern})")
+
+def _fix2d48_validate_dimension(dimension: str, allowed_dimensions: Optional[Iterable[str]] = None) -> None:
+    _fix2d48_validate_token("dimension", dimension)
+    if allowed_dimensions is not None:
+        allowed = set(_fix2d48_norm_token(x) for x in allowed_dimensions)
+        if dimension not in allowed:
+            raise ValueError(f"dimension: '{dimension}' not in allowed dimensions ({sorted(allowed)})")
+
+def _fix2d48_validate_time_qualifier(time_q: str) -> None:
+    _fix2d48_validate_token("time_qualifier", time_q)
+
+    if re.fullmatch(r"\d{4}", time_q):
+        return
+    if re.fullmatch(r"ytd_\d{4}", time_q):
+        return
+    if re.fullmatch(r"\d{4}_\d{4}", time_q):
+        a, b = time_q.split("_", 1)
+        if int(b) < int(a):
+            raise ValueError(f"time_qualifier: range out of order '{time_q}'")
+        return
+    if re.fullmatch(r"asof_\d{4}_\d{2}", time_q):
+        parts = time_q.split("_")
+        mm = int(parts[2])
+        if not (1 <= mm <= 12):
+            raise ValueError(f"time_qualifier: invalid month in '{time_q}'")
+        return
+    if re.fullmatch(r"asof_\d{4}_\d{2}_\d{2}", time_q):
+        parts = time_q.split("_")
+        mm, dd = int(parts[2]), int(parts[3])
+        if not (1 <= mm <= 12):
+            raise ValueError(f"time_qualifier: invalid month in '{time_q}'")
+        if not (1 <= dd <= 31):
+            raise ValueError(f"time_qualifier: invalid day in '{time_q}'")
+        return
+
+    raise ValueError(f"time_qualifier: '{time_q}' does not match allowed families")
+
+@dataclass(frozen=True)
+class CanonicalKeyFieldsV1:
+    scope: str
+    entity: str
+    metric: str
+    time_qualifier: str
+    dimension: str
+    qualifiers: Tuple[str, ...] = ()
+
+def build_canonical_key_v1(
+    fields: CanonicalKeyFieldsV1,
+    *,
+    allowed_dimensions: Optional[Iterable[str]] = None,
+) -> str:
+    scope = _fix2d48_norm_token(fields.scope)
+    entity = _fix2d48_norm_token(fields.entity)
+    metric = _fix2d48_norm_token(fields.metric)
+    time_q = _fix2d48_norm_token(fields.time_qualifier)
+    dimension = _fix2d48_norm_token(fields.dimension)
+    qualifiers = tuple(_fix2d48_norm_token(q) for q in (fields.qualifiers or ()))
+
+    _fix2d48_validate_token("scope", scope)
+    _fix2d48_validate_token("entity", entity)
+    _fix2d48_validate_token("metric", metric)
+    _fix2d48_validate_time_qualifier(time_q)
+    _fix2d48_validate_dimension(dimension, allowed_dimensions=allowed_dimensions)
+
+    if qualifiers:
+        for q in qualifiers:
+            _fix2d48_validate_token("qualifier", q)
+
+    subject_parts: List[str] = [scope, entity, metric, time_q] + list(qualifiers)
+    subject = "_".join(subject_parts)
+    key = f"{subject}__{dimension}"
+
+    validate_canonical_key_v1(key, allowed_dimensions=allowed_dimensions)
+    return key
+
+def validate_canonical_key_v1(key: str, *, allowed_dimensions: Optional[Iterable[str]] = None) -> Dict[str, str]:
+    subject, dimension = _fix2d48_parse_canonical_key_v1(key)
+
+    _fix2d48_validate_token("subject", subject)
+    _fix2d48_validate_dimension(_fix2d48_norm_token(dimension), allowed_dimensions=allowed_dimensions)
+
+    parts = subject.split("_")
+    if len(parts) < 4:
+        raise ValueError(
+            f"canonical_key: subject must have >=4 parts (scope_entity_metric_time), got {len(parts)}: '{subject}'"
+        )
+
+    scope, entity, metric = parts[0], parts[1], parts[2]
+
+    if parts[3] == "ytd" and len(parts) >= 5:
+        time_q = f"ytd_{parts[4]}"
+        remaining = parts[5:]
+    elif parts[3] == "asof" and len(parts) >= 6:
+        if len(parts) >= 7 and re.fullmatch(r"\d{2}", parts[6]):
+            time_q = f"asof_{parts[4]}_{parts[5]}_{parts[6]}"
+            remaining = parts[7:]
+        else:
+            time_q = f"asof_{parts[4]}_{parts[5]}"
+            remaining = parts[6:]
+    elif re.fullmatch(r"\d{4}", parts[3]) and len(parts) >= 5 and re.fullmatch(r"\d{4}", parts[4]):
+        time_q = f"{parts[3]}_{parts[4]}"
+        remaining = parts[5:]
+    else:
+        time_q = parts[3]
+        remaining = parts[4:]
+
+    _fix2d48_validate_token("scope", scope)
+    _fix2d48_validate_token("entity", entity)
+    _fix2d48_validate_token("metric", metric)
+    _fix2d48_validate_time_qualifier(time_q)
+
+    for q in remaining:
+        _fix2d48_validate_token("qualifier", q)
+
+    return {
+        "subject": subject,
+        "dimension": _fix2d48_norm_token(dimension),
+        "scope": scope,
+        "entity": entity,
+        "metric": metric,
+        "time_qualifier": time_q,
+    }
+
+def _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen: dict) -> Optional[set]:
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        return None
+    dims = set()
+    for skey, spec in metric_schema_frozen.items():
+        if isinstance(spec, dict):
+            d = spec.get("dimension")
+            if d:
+                dims.add(_fix2d48_norm_token(str(d)))
+    return dims or None
+
+def validate_primary_metrics_canonical_keys_v1(primary_metrics_canonical: dict, metric_schema_frozen: Optional[dict] = None) -> None:
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen or {})
+    if not isinstance(primary_metrics_canonical, dict):
+        return
+    for ckey in list(primary_metrics_canonical.keys()):
+        validate_canonical_key_v1(str(ckey), allowed_dimensions=allowed_dims)
+
+# =========================================================
+# END FIX2D48 CANONICAL KEY MODULE
+# =========================================================
+
+
+
+# =========================================================
+# FIX2D48 — Integration Hook (non-invasive)
+# =========================================================
+# Where to call this:
+#   - Right before serializing Analysis/Evolution output (after primary_metrics_canonical is finalized),
+#     call:
+#       validate_primary_metrics_canonical_keys_v1(primary_metrics_canonical, metric_schema_frozen)
+#
+# This will crash early in dev runs if any minted key violates the grammar.
+#
+# NOTE:
+#   This patch does not attempt to rewrite all minting sites automatically in this single-file
+#   environment; it provides the authoritative builder+validator and a validator tripwire.
+#   The next patch should audit and route minting through build_canonical_key_v1(...).
+# =========================================================
+def _fix2d48_try_validate_outputs(output_obj: dict) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    )
+
+    pmc = (
+        output_obj.get("primary_metrics_canonical") if isinstance(output_obj.get("primary_metrics_canonical"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("primary_metrics_canonical") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("primary_metrics_canonical") if isinstance(output_obj.get("results"), dict) else None
+    )
+
+    if isinstance(pmc, dict) and pmc:
+        validate_primary_metrics_canonical_keys_v1(pmc, metric_schema_frozen=metric_schema_frozen)
+
+def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("validate_canonical_keys_v1") or web_context.get("diag_validate_ckeys_v1"))
+    except Exception:
+        return False
+
+
+
+# =========================================================
+# FIX2D48 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D68"
+# =========================================================
+# FIX2D49 — Audit canonical-key minting + optional rekeying
+# =========================================================
+# Goal:
+#   (1) Identify where canonical keys are being minted in a way that violates the v1 grammar,
+#       or where a metric dict's own canonical_key disagrees with the dict key.
+#   (2) Provide an optional, deterministic "rekey" pass that repairs obvious mismatches by:
+#       - moving entries to metric["canonical_key"] if it validates
+#       - or moving entries to metric["schema_key"/"schema_canonical_key"] if present + validates
+#   (3) Emit a compact diagnostics ledger into output_obj["debug"] so you can see drift immediately.
+#
+# Safety:
+#   Off by default. Enable via web_context:
+#     - web_context["diag_fix2d49_audit"] = True
+#     - web_context["diag_fix2d49_rekey"] = True   (optional)
+#     - web_context["diag_fix2d49_strict"] = True  (raise on invalid keys)
+#
+# Note:
+#   In a single-file patch environment we can’t reliably refactor every minting site.
+#   This audit/rekey pass makes those sites visible and stabilizes downstream joins
+#   while you convert minting sites to use build_canonical_key_v1(...) in subsequent cleanup.
+# =========================================================
+
+from typing import Any
+
+def _fix2d49_get_schema_key_hint(m: dict) -> str:
+    if not isinstance(m, dict):
+        return ""
+    for k in ("canonical_key", "schema_key", "schema_canonical_key", "schema_ckey"):
+        v = m.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+def _fix2d49_is_suspicious_key(key: str) -> bool:
+    # Heuristics (non-blocking): help surface "free-text" keys or hashed keys.
+    if not isinstance(key, str):
+        return True
+    if len(key) > 120:
+        return True
+    if " " in key or "(" in key or ")" in key or "/" in key:
+        return True
+    # looks like a hash-heavy identifier
+    if sum(ch.isdigit() for ch in key) > 50:
+        return True
+    return False
+
+def _fix2d49_audit_primary_metrics_canonical(pmc: dict, metric_schema_frozen: dict | None = None) -> dict:
+    """
+    Returns an audit report dict:
+      {
+        "total": int,
+        "invalid_keys": [..],
+        "mismatch_key_vs_metric": [..],
+        "suspicious_keys": [..],
+      }
+    """
+    rep = {
+        "total": 0,
+        "invalid_keys": [],
+        "mismatch_key_vs_metric": [],
+        "suspicious_keys": [],
+    }
+    if not isinstance(pmc, dict):
+        return rep
+
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen or {})
+
+    for k, m in pmc.items():
+        rep["total"] += 1
+        sk_hint = _fix2d49_get_schema_key_hint(m)
+        if sk_hint and isinstance(k, str) and sk_hint != k:
+            rep["mismatch_key_vs_metric"].append({"dict_key": k, "metric_key": sk_hint})
+
+        if isinstance(k, str) and _fix2d49_is_suspicious_key(k):
+            rep["suspicious_keys"].append(k)
+
+        try:
+            validate_canonical_key_v1(str(k), allowed_dimensions=allowed_dims)
+        except Exception as e:
+            rep["invalid_keys"].append({"key": str(k), "error": str(e)})
+
+    return rep
+
+def _fix2d49_rekey_primary_metrics_canonical(pmc: dict, metric_schema_frozen: dict | None = None) -> tuple[dict, dict]:
+    """
+    Deterministically rekeys pmc by metric's own canonical_key/schema_key when valid.
+    Returns: (new_pmc, rekey_report)
+    """
+    report = {
+        "moved": [],
+        "dropped": [],
+        "kept": 0,
+    }
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc, report
+
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen or {})
+
+    new_pmc = {}
+    # stable iteration for determinism
+    for old_key in sorted(pmc.keys(), key=lambda x: str(x)):
+        m = pmc.get(old_key)
+        if not isinstance(m, dict):
+            continue
+
+        # Candidate preferred: metric's explicit canonical_key
+        candidate = m.get("canonical_key")
+        if not (isinstance(candidate, str) and candidate.strip()):
+            # next: schema hints
+            candidate = m.get("schema_key") or m.get("schema_canonical_key") or m.get("schema_ckey")
+
+        candidate = candidate.strip() if isinstance(candidate, str) else ""
+
+        chosen_key = str(old_key) if old_key is not None else ""
+
+        # If candidate exists and validates, use it; else keep old_key if it validates.
+        def _valid(k: str) -> bool:
+            try:
+                validate_canonical_key_v1(k, allowed_dimensions=allowed_dims)
+                return True
+            except Exception:
+                return False
+
+        if candidate and _valid(candidate):
+            chosen_key = candidate
+        elif chosen_key and _valid(chosen_key):
+            pass
+        else:
+            # can't validate either; keep old_key but mark dropped/invalid for downstream stability
+            report["dropped"].append({"old_key": str(old_key), "candidate": candidate})
+            continue
+
+        # deterministic collision handling: prefer higher confidence, else stable tie-break
+        if chosen_key in new_pmc:
+            existing = new_pmc[chosen_key]
+            winner = _fix2d47_pick_cur_winner(existing, m)  # reuse deterministic picker from FIX2D47
+            new_pmc[chosen_key] = winner
+        else:
+            new_pmc[chosen_key] = m
+
+        if str(old_key) != chosen_key:
+            report["moved"].append({"from": str(old_key), "to": chosen_key})
+        else:
+            report["kept"] += 1
+
+    return new_pmc, report
+
+def _fix2d49_try_audit_and_rekey_outputs(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+
+    do_audit = bool(web_context and web_context.get("diag_fix2d49_audit"))
+    do_rekey = bool(web_context and web_context.get("diag_fix2d49_rekey"))
+    strict = bool(web_context and web_context.get("diag_fix2d49_strict"))
+
+    if not (do_audit or do_rekey):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    # Locate pmc in common shapes
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+    else:
+        pmc = None
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict) and pmc:
+        audit = _fix2d49_audit_primary_metrics_canonical(pmc, metric_schema_frozen=metric_schema_frozen)
+        output_obj["debug"]["fix2d49_pmc_audit"] = audit
+
+        if strict and audit.get("invalid_keys"):
+            raise RuntimeError(f"FIX2D49 strict: invalid canonical keys detected: {audit.get('invalid_keys')[:3]}")
+
+        if do_rekey:
+            new_pmc, rep = _fix2d49_rekey_primary_metrics_canonical(pmc, metric_schema_frozen=metric_schema_frozen)
+            output_obj["debug"]["fix2d49_pmc_rekey"] = rep
+
+            # Write back to the same location
+            if pmc_path == ("primary_metrics_canonical",):
+                output_obj["primary_metrics_canonical"] = new_pmc
+            elif pmc_path == ("primary_response","primary_metrics_canonical"):
+                output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+            elif pmc_path == ("results","primary_metrics_canonical"):
+                output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d49_pmc_audit"] = {"total": 0, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D49
+# =========================================================
+
+# =========================================================
+# FIX2D49 — AUTO-HOOK FINAL OUTPUT (NO NEED TO FIND FINALIZER)
+# =========================================================
+# Problem:
+#   You don't know which function "finalizes" primary_metrics_canonical.
+#
+# Solution:
+#   Wrap the top-level run entrypoints (if present) and apply:
+#     - FIX2D48 validation (optional flag)
+#     - FIX2D49 audit/rekey (optional flags)
+#   to the returned output object right before it is handed back to the UI / serializer.
+#
+# Enable via web_context flags (same as before):
+#   web_context["validate_canonical_keys_v1"] = True
+#   web_context["diag_fix2d49_audit"] = True
+#   web_context["diag_fix2d49_rekey"] = True
+#   web_context["diag_fix2d49_strict"] = True
+#
+# This is additive and does not change behaviour unless flags are enabled.
+# =========================================================
+
+def _fix2d49_extract_web_context_from_call(args, kwargs):
+    # Try kwargs first
+    wc = kwargs.get("web_context")
+    if isinstance(wc, dict):
+        return wc
+    # Heuristic: scan args for a dict that looks like web_context
+    for a in args:
+        if isinstance(a, dict) and any(k in a for k in ("diag_fix2d49_audit","diag_fix2d49_rekey","validate_canonical_keys_v1","diag_validate_ckeys_v1")):
+            return a
+    return None
+
+def _fix2d49_apply_postprocess_if_enabled(output_obj, web_context):
+    if not isinstance(output_obj, dict):
+        return output_obj
+
+    # FIX2D48 validation (opt-in)
+    if _fix2d48_should_validate_ckeys(web_context):
+        _fix2d48_try_validate_outputs(output_obj)
+
+    # FIX2D49 audit/rekey (opt-in via flags inside the function)
+    _fix2d49_try_audit_and_rekey_outputs(output_obj, web_context)
+
+    # FIX2D50 gatekeeper (opt-in)
+    _fix2d50_try_gate_output_obj(output_obj, web_context)
+
+    return output_obj
+
+    # FIX2D48 validation (opt-in)
+    try:
+        if _fix2d48_should_validate_ckeys(web_context):
+            _fix2d48_try_validate_outputs(output_obj)
+    except Exception:
+        pass
+        # keep behaviour consistent: validation failures are surfaced only when flag enabled;
+        # if enabled, allow exception to propagate.
+        raise
+
+    # FIX2D49 audit/rekey (opt-in via flags inside the function)
+    try:
+        _fix2d49_try_audit_and_rekey_outputs(output_obj, web_context)
+    except Exception:
+        pass
+        raise
+
+    return output_obj
+
+def _fix2d49_wrap_entrypoint(fn_name: str):
+    fn = globals().get(fn_name)
+    if not callable(fn):
+        return
+    # Avoid double-wrapping
+    if getattr(fn, "_fix2d49_wrapped", False):
+        return
+
+    def _wrapped(*args, **kwargs):
+        web_context = _fix2d49_extract_web_context_from_call(args, kwargs)
+        out = fn(*args, **kwargs)
+        return _fix2d49_apply_postprocess_if_enabled(out, web_context)
+
+    _wrapped._fix2d49_wrapped = True
+    _wrapped.__name__ = getattr(fn, "__name__", fn_name)
+    _wrapped.__doc__ = getattr(fn, "__doc__", None)
+    globals()[fn_name] = _wrapped
+
+def _fix2d49_install_autohooks():
+    # Common entrypoints in your project (safe no-ops if absent)
+    for name in (
+        "run_source_anchored_analysis",
+        "run_source_anchored_evolution",
+        "run_source_anchored_evolution_previous_data",
+        "run_source_anchored_evolution_previousdata",  # legacy spelling
+        "run_analysis",
+        "run_evolution",
+    ):
+        _fix2d49_wrap_entrypoint(name)
+
+# Install at import time (additive)
+try:
+    _fix2d49_install_autohooks()
+except Exception:
+    pass
+
+# =========================================================
+# END AUTO-HOOK
+# =========================================================
+
+# =========================================================
+# FIX2D50 — PMC Gatekeeper: Schema-bound canonical keys only
+# =========================================================
+# Objective:
+#   Close the remaining gap by making schema binding authoritative at the PMC boundary.
+#
+# Rule enforced (when enabled):
+#   - primary_metrics_canonical may only contain keys that:
+#       (a) validate under FIX2D48 grammar
+#       (b) exist in metric_schema_frozen (schema allowlist)
+#       (c) have a non-"unknown" dimension compatible with schema
+#   - dict key is the canonical key; metric["canonical_key"] is set to the same key.
+#
+# Enablement:
+#   Gate runs when any of these is true:
+#     - web_context["diag_fix2d50_gate"] = True
+#     - web_context["enforce_schema_bound_pmc"] = True
+#     - web_context["diag_fix2d49_rekey"] = True   (rekey implies intent to canonicalize)
+#
+# Strictness:
+#   - If web_context["diag_fix2d50_strict"] or web_context["diag_fix2d49_strict"] is True,
+#     the gate raises if it drops any PMC entries or finds invalid keys.
+#
+# Output:
+#   - Writes debug.fix2d50_pmc_gate = {kept, dropped, dropped_examples, strict, enabled}
+# =========================================================
+
+def _fix2d50_should_gate(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(
+            web_context.get("diag_fix2d50_gate")
+            or web_context.get("enforce_schema_bound_pmc")
+            or web_context.get("diag_fix2d49_rekey")
+        )
+    except Exception:
+        return False
+
+def _fix2d50_is_strict(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d50_strict") or web_context.get("diag_fix2d49_strict"))
+    except Exception:
+        return False
+
+def _fix2d50_get_dimension_from_metric(m: dict) -> str:
+    if not isinstance(m, dict):
+        return ""
+    for k in ("dimension", "dim", "metric_dimension"):
+        v = m.get(k)
+        if isinstance(v, str) and v.strip():
+            return _fix2d48_norm_token(v)
+    return ""
+
+def _fix2d50_get_schema_dimension(metric_schema_frozen: dict, ckey: str) -> str:
+    try:
+        spec = metric_schema_frozen.get(ckey)
+        if isinstance(spec, dict):
+            d = spec.get("dimension")
+            if isinstance(d, str) and d.strip():
+                return _fix2d48_norm_token(d)
+    except Exception:
+        return ""
+
+def _fix2d50_gate_primary_metrics_canonical(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
+    report = {
+        "enabled": True,
+        "strict": _fix2d50_is_strict(web_context),
+        "total_in": 0,
+        "kept": 0,
+        "dropped": 0,
+        "dropped_examples": [],
+        "reasons": {},  # reason -> count
+    }
+    if not isinstance(pmc, dict) or not pmc:
+        report["enabled"] = True
+        report["total_in"] = 0
+        return pmc, report
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        # Can't enforce allowlist if schema absent; keep but record.
+        report["enabled"] = True
+        report["note"] = "metric_schema_frozen missing/empty; gate skipped"
+        report["total_in"] = len(pmc)
+        report["kept"] = len(pmc)
+        return pmc, report
+
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen)  # normalized set or None
+
+    out = {}
+    for k in sorted(pmc.keys(), key=lambda x: str(x)):
+        report["total_in"] += 1
+        key = str(k)
+
+        # (a) grammar validation
+        try:
+            validate_canonical_key_v1(key, allowed_dimensions=allowed_dims)
+        except Exception as e:
+            reason = "invalid_grammar"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason, "error": str(e)})
+            continue
+
+        # (b) schema allowlist
+        if key not in metric_schema_frozen:
+            reason = "not_in_schema"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason})
+            continue
+
+        m = pmc.get(k)
+        if not isinstance(m, dict):
+            reason = "non_dict_metric"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason})
+            continue
+
+        # (c) dimension guard
+        md = _fix2d50_get_dimension_from_metric(m)
+        sd = _fix2d50_get_schema_dimension(metric_schema_frozen, key)
+        # reject unknowns explicitly
+        if md == "unknown" or sd == "unknown":
+            reason = "unknown_dimension"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason, "metric_dim": md, "schema_dim": sd})
+            continue
+        # If both known and disagree, drop (prevents silent unit/dim leakage)
+        if md and sd and md != sd:
+            reason = "dimension_mismatch"
+            report["reasons"][reason] = report["reasons"].get(reason, 0) + 1
+            report["dropped"] += 1
+            if len(report["dropped_examples"]) < 10:
+                report["dropped_examples"].append({"key": key, "reason": reason, "metric_dim": md, "schema_dim": sd})
+            continue
+
+        # Make canonical_key authoritative at boundary
+        m["canonical_key"] = key
+
+        out[key] = m
+        report["kept"] += 1
+
+    # Strict raising if anything dropped
+    if report["strict"] and report["dropped"] > 0:
+        raise RuntimeError(f"FIX2D50 strict: dropped {report['dropped']} PMC entries; examples={report['dropped_examples'][:3]}")
+
+    return out, report
+
+def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    if not _fix2d50_should_gate(web_context):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    # Locate PMC in common shapes
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict):
+        new_pmc, rep = _fix2d50_gate_primary_metrics_canonical(pmc, metric_schema_frozen, web_context)
+        output_obj["debug"]["fix2d50_pmc_gate"] = rep
+
+        if pmc_path == ("primary_metrics_canonical",):
+            output_obj["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("primary_response","primary_metrics_canonical"):
+            output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("results","primary_metrics_canonical"):
+            output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d50_pmc_gate"] = {"enabled": True, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D50
+# =========================================================
+
+
+
+
+
+
+
+# =========================================================
+# FIX2D49 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D68"
+# =========================================================
+# FIX2D52 — Schema-first canonical key resolution (binder)
+# =========================================================
+# Objective:
+#   Close the canonical-key convergence gap by deterministically binding PMC metrics
+#   to existing schema keys (metric_schema_frozen) BEFORE the FIX2D50 gate runs.
+#
+# Mechanism:
+#   - For each metric in primary_metrics_canonical, attempt to match a schema key using:
+#       * schema keywords overlap (authoritative allowlist)
+#       * dimension compatibility (prefer schema dimension; allow unknown->schema)
+#       * time-qualifier hint extracted from current key/name (year/ytd/asof/range)
+#   - If a high-confidence match is found, rekey the PMC entry to that schema key and
+#     set metric["canonical_key"] = schema_key and metric["dimension"] = schema_dimension (if unknown).
+#
+# Enablement (recommended ON for now):
+#   - web_context["diag_fix2d52_bind"] = True
+#   - OR web_context["enforce_schema_bound_pmc"] = True
+#
+# Strictness:
+#   - If web_context["diag_fix2d52_strict"] is True, raise if any metric cannot be bound
+#     AND is not already a valid schema key.
+#
+# Output:
+#   - debug.fix2d52_schema_bind = {total, bound, already_schema, unbound, examples}
+# =========================================================
+
+def _fix2d52_should_bind(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d52_bind") or web_context.get("enforce_schema_bound_pmc"))
+    except Exception:
+        return False
+
+def _fix2d52_is_strict(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d52_strict"))
+    except Exception:
+        return False
+
+def _fix2d52_norm_text(s: str) -> str:
+    s = (s or "").lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _fix2d52_extract_time_hint(s: str) -> str:
+    """
+    Return a time qualifier hint in canonical form if found (best-effort):
+      - ytd_YYYY
+      - YYYY
+      - YYYY_YYYY (range)
+    """
+    s2 = (s or "").lower()
+    # ytd patterns
+    m = re.search(r"\b(ytd|year to date|year-to-date)\s*(20\d{2})\b", s2)
+    if m:
+        return f"ytd_{m.group(2)}"
+    # range patterns (2026-2040 etc)
+    m = re.search(r"\b(20\d{2})\s*(?:-|–|to)\s*(20\d{2})\b", s2)
+    if m:
+        a, b = m.group(1), m.group(2)
+        if int(b) >= int(a):
+            return f"{a}_{b}"
+    # single year
+    m = re.search(r"\b(20\d{2})\b", s2)
+    if m:
+        return m.group(1)
+    return ""
+
+def _fix2d52_schema_candidates(metric_schema_frozen: dict) -> list:
+    cands = []
+    if not isinstance(metric_schema_frozen, dict):
+        return cands
+    for skey, spec in metric_schema_frozen.items():
+        if not isinstance(skey, str) or "__" not in skey:
+            continue
+        if not isinstance(spec, dict):
+            spec = {}
+        kw = spec.get("keywords")
+        if isinstance(kw, list):
+            keywords = [_fix2d52_norm_text(str(x)) for x in kw if str(x).strip()]
+        else:
+            keywords = []
+        dim = spec.get("dimension")
+        dim = _fix2d48_norm_token(str(dim)) if dim else ""
+        # also build a normalized name bag from metric_name/name and the key itself
+        nm = spec.get("metric_name") or spec.get("name") or ""
+        name_norm = _fix2d52_norm_text(str(nm))
+        key_norm = _fix2d52_norm_text(skey.replace("__", " "))
+        cands.append({
+            "skey": skey,
+            "dimension": dim,
+            "keywords": keywords,
+            "name_norm": name_norm,
+            "key_norm": key_norm,
+            "time_hint": _fix2d52_extract_time_hint(skey),
+        })
+    return cands
+
+def _fix2d52_score_match(metric: dict, dict_key: str, schema_cand: dict) -> float:
+    # Base: keyword overlap
+    text_fields = []
+    if isinstance(metric, dict):
+        for k in ("name", "metric_name", "label", "title", "snippet", "raw_text"):
+            v = metric.get(k)
+            if isinstance(v, str) and v.strip():
+                text_fields.append(v)
+    text_fields.append(dict_key or "")
+    blob = _fix2d52_norm_text(" ".join(text_fields))
+    if not blob:
+        return 0.0
+
+    blob_set = set(blob.split(" "))
+    kw = schema_cand.get("keywords") or []
+    kw_hits = 0
+    for k in kw:
+        # keyword list may contain multi-word phrases; count a hit if all tokens present
+        toks = k.split(" ")
+        if toks and all(t in blob_set for t in toks):
+            kw_hits += 1
+
+    # Name/key soft overlap
+    name_norm = schema_cand.get("name_norm") or ""
+    key_norm = schema_cand.get("key_norm") or ""
+    name_hits = 0
+    for t in name_norm.split(" "):
+        if t and t in blob_set:
+            name_hits += 0.2  # soft
+    for t in key_norm.split(" "):
+        if t and t in blob_set:
+            name_hits += 0.05  # very soft
+
+    # Dimension compatibility
+    sd = schema_cand.get("dimension") or ""
+    md = _fix2d50_get_dimension_from_metric(metric) if isinstance(metric, dict) else ""
+    dim_score = 0.0
+    if sd and md:
+        if md == "unknown":
+            dim_score = 0.4
+        elif md == sd:
+            dim_score = 0.8
+        else:
+            dim_score = -1.0  # hard penalty
+    elif sd and not md:
+        dim_score = 0.2
+
+    # Time qualifier hint
+    mh = _fix2d52_extract_time_hint(blob)
+    th = schema_cand.get("time_hint") or ""
+    time_score = 0.0
+    if mh and th and mh == th:
+        time_score = 0.6
+    elif mh and th and (mh in th or th in mh):
+        time_score = 0.2
+
+    score = (kw_hits * 1.0) + name_hits + dim_score + time_score
+    return float(score)
+
+def _fix2d52_bind_pmc_to_schema(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
+    report = {
+        "enabled": True,
+        "total": 0,
+        "already_schema": 0,
+        "bound": 0,
+        "unbound": 0,
+        "examples": [],
+        "threshold": 2.0,
+    }
+    if not isinstance(pmc, dict) or not pmc:
+        report["enabled"] = True
+        return pmc, report
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        report["enabled"] = True
+        report["note"] = "metric_schema_frozen missing; bind skipped"
+        return pmc, report
+
+    # Precompute schema candidates once
+    cands = _fix2d52_schema_candidates(metric_schema_frozen)
+    thresh = float(web_context.get("diag_fix2d52_threshold") or report["threshold"]) if isinstance(web_context, dict) else report["threshold"]
+    report["threshold"] = thresh
+
+    allowed_dims = _fix2d48_allowed_dimensions_from_schema(metric_schema_frozen) or None
+
+    out = {}
+    strict = _fix2d52_is_strict(web_context)
+
+    for old_key in sorted(pmc.keys(), key=lambda x: str(x)):
+        report["total"] += 1
+        key = str(old_key)
+        m = pmc.get(old_key)
+        if not isinstance(m, dict):
+            continue
+
+        # If already a valid schema key, keep.
+        if key in metric_schema_frozen:
+            out[key] = m
+            m["canonical_key"] = key
+            report["already_schema"] += 1
+            continue
+
+        # If key is grammatically invalid, we still attempt schema bind (that's the whole point).
+        best = None
+        best_score = -1e9
+        for cand in cands:
+            s = _fix2d52_score_match(m, key, cand)
+            if s > best_score:
+                best_score = s
+                best = cand
+
+        if best is not None and best_score >= thresh:
+            skey = best["skey"]
+            # Validate schema key (should always validate, but keep safe)
+            try:
+                validate_canonical_key_v1(skey, allowed_dimensions=allowed_dims)
+            except Exception:
+                pass
+                # If somehow invalid, treat as unbound
+                best_score = -1e9
+                best = None
+            else:
+                # Apply binding
+                m["canonical_key"] = skey
+                # If dimension unknown, adopt schema dimension
+                md = _fix2d50_get_dimension_from_metric(m)
+                sd = best.get("dimension") or ""
+                if (not md) or md == "unknown":
+                    if sd:
+                        m["dimension"] = sd
+                out[skey] = _fix2d47_pick_cur_winner(out.get(skey), m)
+                report["bound"] += 1
+                if len(report["examples"]) < 10:
+                    report["examples"].append({"from": key, "to": skey, "score": round(best_score, 3)})
+                continue
+
+        # Unbound: keep original in out (so downstream audit can see it), unless strict.
+        report["unbound"] += 1
+        if strict:
+            raise RuntimeError(f"FIX2D52 strict: could not bind PMC key '{key}' to schema (best_score={best_score})")
+        out[key] = m
+
+    return out, report
+
+def _fix2d52_try_bind_output_obj(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    if not _fix2d52_should_bind(web_context):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    # Locate PMC in common shapes
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict):
+        new_pmc, rep = _fix2d52_bind_pmc_to_schema(pmc, metric_schema_frozen, web_context)
+        output_obj["debug"]["fix2d52_schema_bind"] = rep
+
+        if pmc_path == ("primary_metrics_canonical",):
+            output_obj["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("primary_response","primary_metrics_canonical"):
+            output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("results","primary_metrics_canonical"):
+            output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d52_schema_bind"] = {"enabled": True, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D52
+# =========================================================
+
+# =========================================================
+# FIX2D53 — Legacy->Schema Baseline Remap (Option A)
+# =========================================================
+# Objective:
+#   Allow schema-bound diffing to activate even when Analysis produced legacy/text-derived keys,
+#   by deterministically remapping a small set of known legacy key shapes onto existing schema keys.
+#
+# Rationale:
+#   - Analysis may emit keys like "2025_global_ev_sales__unknown"
+#   - Schema key is "global_ev_sales_ytd_2025__unit_sales"
+#   - Without remap, prev/cur overlap is zero -> both_count stays 0.
+#
+# Policy:
+#   - Only remap when the destination schema key exists in metric_schema_frozen.
+#   - Only remap when the source key fails schema allowlisting OR has dimension "unknown".
+#   - Remap is deterministic and narrow (pattern-based); it does NOT invoke any LLM/NLP.
+#
+# Enablement:
+#   - web_context["diag_fix2d53_remap"] = True
+#   - OR web_context["enforce_schema_bound_pmc"] = True
+#
+# Output:
+#   - debug.fix2d53_legacy_remap = {enabled,total,mapped,examples}
+# =========================================================
+
+def _fix2d53_should_remap(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d53_remap") or web_context.get("enforce_schema_bound_pmc"))
+    except Exception:
+        return False
+
+def _fix2d53_extract_year_from_key(ckey: str) -> str:
+    if not isinstance(ckey, str):
+        return ""
+    m = re.search(r"\b(20\d{2})\b", ckey)
+    return m.group(1) if m else ""
+
+def _fix2d53_schema_key_exists(metric_schema_frozen: dict, skey: str) -> bool:
+    return isinstance(metric_schema_frozen, dict) and isinstance(skey, str) and skey in metric_schema_frozen
+
+def _fix2d53_schema_dim(metric_schema_frozen: dict, skey: str) -> str:
+    try:
+        spec = metric_schema_frozen.get(skey)
+        if isinstance(spec, dict):
+            d = spec.get("dimension")
+            if isinstance(d, str) and d.strip():
+                return _fix2d48_norm_token(d)
+    except Exception:
+        return ""
+
+def _fix2d53_apply_legacy_schema_remaps(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
+    rep = {"enabled": True, "total": 0, "mapped": 0, "examples": []}
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc, rep
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        rep["note"] = "metric_schema_frozen missing; remap skipped"
+        return pmc, rep
+
+    out = {}
+    for k in sorted(pmc.keys(), key=lambda x: str(x)):
+        rep["total"] += 1
+        key = str(k)
+        m = pmc.get(k)
+        if not isinstance(m, dict):
+            out[key] = m
+            continue
+
+        md = _fix2d50_get_dimension_from_metric(m)
+
+        # Only consider remap for non-schema keys OR unknown dimension
+        if key in metric_schema_frozen and md != "unknown":
+            out[key] = m
+            continue
+
+        year = _fix2d53_extract_year_from_key(key) or _fix2d53_extract_year_from_key(m.get("name",""))
+
+        mapped = False
+        dest = None
+
+        # --- Remap Rule 1: global EV sales legacy key -> schema YTD key (demo-enabler)
+        # Examples:
+        #   "2025_global_ev_sales__unknown" -> "global_ev_sales_ytd_2025__unit_sales"
+        if year and re.fullmatch(rf"{year}_global_ev_sales__unknown", key):
+            cand = f"global_ev_sales_ytd_{year}__unit_sales"
+            if _fix2d53_schema_key_exists(metric_schema_frozen, cand):
+                dest = cand
+                mapped = True
+
+        # --- Remap Rule 2: china EV sales legacy key -> schema YTD key if present
+        #   "2025_china_ev_sales__unknown" -> "china_ev_sales_ytd_2025__unit_sales"
+        if (not mapped) and year and re.fullmatch(rf"{year}_china_ev_sales__unknown", key):
+            cand = f"china_ev_sales_ytd_{year}__unit_sales"
+            if _fix2d53_schema_key_exists(metric_schema_frozen, cand):
+                dest = cand
+                mapped = True
+
+        if mapped and dest:
+            # adopt schema dimension if unknown/missing
+            sd = _fix2d53_schema_dim(metric_schema_frozen, dest)
+            if (not md) or md == "unknown":
+                if sd:
+                    m["dimension"] = sd
+            m["canonical_key"] = dest
+
+            # collision handling deterministic
+            if dest in out and isinstance(out[dest], dict):
+                out[dest] = _fix2d47_pick_cur_winner(out[dest], m)
+            else:
+                out[dest] = m
+
+            rep["mapped"] += 1
+            if len(rep["examples"]) < 10:
+                rep["examples"].append({"from": key, "to": dest})
+            continue
+
+        out[key] = m
+
+    return out, rep
+
+def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    if not _fix2d53_should_remap(web_context):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict):
+        new_pmc, rep = _fix2d53_apply_legacy_schema_remaps(pmc, metric_schema_frozen, web_context)
+        output_obj["debug"]["fix2d53_legacy_remap"] = rep
+
+        if pmc_path == ("primary_metrics_canonical",):
+            output_obj["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("primary_response","primary_metrics_canonical"):
+            output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("results","primary_metrics_canonical"):
+            output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d53_legacy_remap"] = {"enabled": True, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D53
+# =========================================================
+
+
+
+
+# =========================================================
+# FIX2D52 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D68"
+# =========================================================
+# FIX2D54 — Schema Baseline Materialisation (PMC lifting)
+# =========================================================
+# Objective:
+#   Ensure Analysis baseline values are materialised under schema keys so that
+#   Evolution can produce BOTH(prev+cur) rows for diffing.
+#
+# What it does (when enabled):
+#   - Scans primary_metrics_canonical (PMC) for legacy keys and/or metrics that
+#     imply a destination schema key.
+#   - If a destination schema key exists in metric_schema_frozen, it creates/updates
+#     PMC[dest_schema_key] using the legacy metric record (value_norm, unit, source, etc.).
+#
+# Enablement:
+#   - web_context["diag_fix2d54_materialize"] = True
+#   - OR web_context["enforce_schema_bound_pmc"] = True
+#
+# Safety:
+#   - Does NOT invent values; only re-homes existing extracted metrics.
+#   - Collision handling is deterministic (reuses FIX2D47 picker).
+#
+# Output:
+#   - debug.fix2d54_materialize = {enabled,total,created,updated,skipped,examples}
+# =========================================================
+
+def _fix2d54_should_materialize(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        return bool(web_context.get("diag_fix2d54_materialize") or web_context.get("enforce_schema_bound_pmc"))
+    except Exception:
+        return False
+
+def _fix2d54_guess_dest_schema_key(legacy_key: str, metric: dict, metric_schema_frozen: dict) -> str:
+    """
+    Deterministic, narrow remap guesses:
+      - <YYYY>_global_ev_sales__unknown -> global_ev_sales_ytd_<YYYY>__unit_sales
+      - <YYYY>_china_ev_sales__unknown  -> china_ev_sales_ytd_<YYYY>__unit_sales (if present)
+    Plus: if metric has canonical_key/schema_key that exists in schema, use it.
+    """
+    if isinstance(metric, dict):
+        for kk in ("canonical_key", "schema_key", "schema_canonical_key", "schema_ckey"):
+            v = metric.get(kk)
+            if isinstance(v, str) and v in metric_schema_frozen:
+                return v
+
+    key = str(legacy_key or "")
+    year = ""
+    m = re.search(r"\b(20\d{2})\b", key)
+    if m:
+        year = m.group(1)
+
+    if year and re.fullmatch(rf"{year}_global_ev_sales__unknown", key):
+        cand = f"global_ev_sales_ytd_{year}__unit_sales"
+        if cand in metric_schema_frozen:
+            return cand
+
+    if year and re.fullmatch(rf"{year}_china_ev_sales__unknown", key):
+        cand = f"china_ev_sales_ytd_{year}__unit_sales"
+        if cand in metric_schema_frozen:
+            return cand
+
+    return ""
+
+def _fix2d54_materialize_schema_baseline(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
+    rep = {"enabled": True, "total": 0, "created": 0, "updated": 0, "skipped": 0, "examples": []}
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc, rep
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        rep["note"] = "metric_schema_frozen missing; materialize skipped"
+        return pmc, rep
+
+    out = dict(pmc)  # copy
+    for k in sorted(pmc.keys(), key=lambda x: str(x)):
+        rep["total"] += 1
+        key = str(k)
+        m = pmc.get(k)
+        if not isinstance(m, dict):
+            rep["skipped"] += 1
+            continue
+
+        dest = _fix2d54_guess_dest_schema_key(key, m, metric_schema_frozen)
+        if not dest or dest == key:
+            rep["skipped"] += 1
+            continue
+
+        # Adopt schema dimension if metric dimension unknown/missing
+        md = _fix2d50_get_dimension_from_metric(m)
+        sd = _fix2d53_schema_dim(metric_schema_frozen, dest) if " _fix2d53_schema_dim" else ""
+        if (not md) or md == "unknown":
+            if sd:
+                m["dimension"] = sd
+
+        m["canonical_key"] = dest
+
+        if dest in out and isinstance(out[dest], dict):
+            out[dest] = _fix2d47_pick_cur_winner(out[dest], m)
+            rep["updated"] += 1
+        else:
+            out[dest] = m
+            rep["created"] += 1
+
+        if len(rep["examples"]) < 10:
+            rep["examples"].append({"from": key, "to": dest})
+
+    return out, rep
+
+def _fix2d54_try_materialize_output_obj(output_obj: dict, web_context: dict | None = None) -> None:
+    if not isinstance(output_obj, dict):
+        return
+    if not _fix2d54_should_materialize(web_context):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    pmc_path = None
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_metrics_canonical",)
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("primary_response", "primary_metrics_canonical")
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc_path = ("results", "primary_metrics_canonical")
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if isinstance(pmc, dict):
+        new_pmc, rep = _fix2d54_materialize_schema_baseline(pmc, metric_schema_frozen, web_context)
+        output_obj["debug"]["fix2d54_materialize"] = rep
+
+        if pmc_path == ("primary_metrics_canonical",):
+            output_obj["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("primary_response","primary_metrics_canonical"):
+            output_obj["primary_response"]["primary_metrics_canonical"] = new_pmc
+        elif pmc_path == ("results","primary_metrics_canonical"):
+            output_obj["results"]["primary_metrics_canonical"] = new_pmc
+    else:
+        output_obj["debug"]["fix2d54_materialize"] = {"enabled": True, "note": "primary_metrics_canonical not found"}
+
+# =========================================================
+# END FIX2D54
+# =========================================================
+# =========================================================
+# FIX2D55 — Pre-Diff Schema Lift for Prev Full Payload
+# =========================================================
+# Objective:
+#   Ensure the rehydrated previous analysis payload (prev_full) has schema-keyed
+#   baseline values materialised BEFORE compute_source_anchored_diff runs.
+#
+# Why:
+#   Even if Analysis produced legacy keys, Evolution diff is prev-key driven; if the
+#   schema key has no prev_value_norm, it becomes "added" and both_count stays 0.
+#
+# What it does:
+#   - Applies FIX2D53 remap + FIX2D54 materialisation + FIX2D52 bind + FIX2D50 gate
+#     to prev_full (in-place) just before diff computation.
+#
+# Enablement:
+#   - web_context["diag_fix2d55_prev_lift"] = True
+#   - OR web_context["diag_fix2d54_materialize"] / ["diag_fix2d53_remap"] / ["diag_fix2d52_bind"]
+#     / ["diag_fix2d50_gate"] are enabled (any of them).
+#
+# Output:
+#   - web_context.debug.fix2d55_prev_lift
+# =========================================================
+
+def _fix2d55_should_prev_lift(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        if web_context.get("diag_fix2d55_prev_lift"):
+            return True
+        # FIX2D56: auto-enable prev-lift when injection present
+        if _fix2d56_should_enable(web_context):
+            return True
+        # If any of the schema-bound pipeline flags are enabled, lift prev as well.
+        for k in (
+            "diag_fix2d54_materialize",
+            "diag_fix2d53_remap",
+            "diag_fix2d52_bind",
+            "diag_fix2d50_gate",
+            "enforce_schema_bound_pmc",
+        ):
+            if web_context.get(k):
+                return True
+        return False
+    except Exception:
+        return False
+
+def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
+    if not isinstance(prev_full, dict):
+        return
+    if not _fix2d55_should_prev_lift(web_context):
+        return
+
+    try:
+        # Reuse the same postprocess logic you run on outputs, but target prev_full explicitly.
+        # Ensure a debug bucket exists on web_context for quick visibility.
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].setdefault("fix2d55_prev_lift", {"enabled": True})
+
+        # Apply in-place, in the same order as the output postprocess.
+        # 1) FIX2D53 remap (if present)
+        try:
+            _fix2d53_try_remap_output_obj(prev_full, web_context)
+        except Exception:
+            pass
+            # keep going; remap is best-effort
+            if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["remap_error"] = True
+
+        # 2) FIX2D52 bind (if present)
+        try:
+            _fix2d52_try_bind_output_obj(prev_full, web_context)
+        except Exception:
+            pass
+            if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["bind_error"] = True
+
+        # 3) FIX2D54 materialise (if present)
+        try:
+            _fix2d54_try_materialize_output_obj(prev_full, web_context)
+        except Exception:
+            pass
+            if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["materialize_error"] = True
+
+        # 4) FIX2D50 gate (if present)
+        try:
+            _fix2d50_try_gate_output_obj(prev_full, web_context)
+        except Exception:
+            pass
+            if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["gate_error"] = True
+
+        # Capture quick counters if available in prev_full.debug
+        if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+            _rep = web_context["debug"].get("fix2d55_prev_lift") or {}
+            if isinstance(_rep, dict):
+                _rep["done"] = True
+                # Pull embedded reports if they were attached onto prev_full.debug
+                pd = prev_full.get("debug") if isinstance(prev_full.get("debug"), dict) else {}
+                if isinstance(pd, dict):
+                    for k in ("fix2d53_legacy_remap", "fix2d54_materialize", "fix2d50_pmc_gate", "fix2d52_schema_bind"):
+                        if k in pd:
+                            _rep[k] = pd.get(k)
+                web_context["debug"]["fix2d55_prev_lift"] = _rep
+
+    except Exception:
+        pass
+        # never break evolution; this is a best-effort lift
+        if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
+            web_context["debug"].setdefault("fix2d55_prev_lift", {})
+            if isinstance(web_context["debug"].get("fix2d55_prev_lift"), dict):
+                web_context["debug"]["fix2d55_prev_lift"]["crashed"] = True
+
+# =========================================================
+# END FIX2D55
+
+
+# =========================================================
+# FIX2D56 — Force-fetch injected URLs in Evolution + auto prev-lift
+# =========================================================
+# A) Force-fetch injected URLs:
+#   Evolution previously recorded injected URLs as admitted but never fetched them,
+#   leaving inj_trace_v1.attempted empty. When injection is present, we now force
+#   a fetch_web_context(... identity_only=False, force_scrape_extra_urls=True,
+#   force_admit_extra_urls=True) call.
+#
+# B) Auto-enable prev_full lifting:
+#   When injection is present, automatically enable FIX2D55 prev_lift (schema remap/bind/materialise)
+#   so Analysis baseline can participate under schema keys without requiring extra flags.
+#
+# Enablement:
+#   - Always-on when injection is present.
+#   - Optional explicit opt-in via web_context['diag_fix2d56'].
+
+
+def _fix2d56_has_injection(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        if isinstance(web_context.get('extra_urls'), (list, tuple)) and len(web_context.get('extra_urls') or []) > 0:
+            return True
+        raw = web_context.get('diag_extra_urls_ui_raw') or web_context.get('extra_urls_ui_raw')
+        return isinstance(raw, str) and raw.strip() != ''
+    except Exception:
+        return False
+
+
+def _fix2d56_should_enable(web_context: dict | None) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        if web_context.get('diag_fix2d56') or web_context.get('enforce_schema_bound_pmc'):
+            return True
+        return _fix2d56_has_injection(web_context)
+    except Exception:
+        return False
+
+# =========================================================
+# END FIX2D56
+# =========================================================
+
+# =========================================================
+
+
+
+# =========================================================
+# FIX2D54 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D68"
+# =========================================================
+# FIX2D57 — Analysis-side Schema Baseline Materialisation
+# =========================================================
+# Objective:
+#   Ensure the Analysis baseline (Run A) already contains schema-keyed PMC entries with
+#   numeric values, so Evolution can diff against Analysis without requiring Analysis injection.
+#
+# Problem observed:
+#   Analysis emits legacy/text keys (e.g., "2025_global_ev_sales__unknown") while Evolution emits
+#   schema keys (e.g., "global_ev_sales_ytd_2025__unit_sales"). No overlap => both_count=0.
+#
+# Solution:
+#   After run_source_anchored_analysis returns its output object, force-run the schema pipeline:
+#     FIX2D53 remap -> FIX2D52 bind -> FIX2D54 materialise -> FIX2D50 gate
+#   using a temporary web_context with enforce_schema_bound_pmc=True.
+#
+# Safety:
+#   - Only runs when metric_schema_frozen exists and PMC appears to contain legacy/unknown keys.
+#   - Does not invent values; only rehomes extracted metrics onto schema keys.
+#
+# Output:
+#   - debug.fix2d57_analysis_lift
+# =========================================================
+
+def _fix2d57_pmc_looks_legacy(pmc):
+    if not isinstance(pmc, dict) or not pmc:
+        return False
+    for k, m in list(pmc.items())[:200]:
+        ks = str(k)
+        if ks.endswith("__unknown"):
+            return True
+        if re.match(r"^20\d{2}_.+__unknown$", ks):
+            return True
+        if isinstance(m, dict):
+            d = m.get("dimension")
+            if isinstance(d, str) and d.strip().lower() == "unknown":
+                return True
+    return False
+
+def _fix2d57_force_schema_pipeline(output_obj, web_context):
+    if not isinstance(output_obj, dict):
+        return
+
+    metric_schema_frozen = (
+        output_obj.get("metric_schema_frozen") if isinstance(output_obj.get("metric_schema_frozen"), dict) else None
+    ) or (
+        output_obj.get("primary_response", {}).get("metric_schema_frozen") if isinstance(output_obj.get("primary_response"), dict) else None
+    ) or (
+        output_obj.get("results", {}).get("metric_schema_frozen") if isinstance(output_obj.get("results"), dict) else None
+    ) or {}
+
+    pmc = None
+    if isinstance(output_obj.get("primary_metrics_canonical"), dict):
+        pmc = output_obj["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("primary_response"), dict) and isinstance(output_obj["primary_response"].get("primary_metrics_canonical"), dict):
+        pmc = output_obj["primary_response"]["primary_metrics_canonical"]
+    elif isinstance(output_obj.get("results"), dict) and isinstance(output_obj["results"].get("primary_metrics_canonical"), dict):
+        pmc = output_obj["results"]["primary_metrics_canonical"]
+
+    output_obj.setdefault("debug", {})
+
+    if not isinstance(metric_schema_frozen, dict) or not metric_schema_frozen:
+        output_obj["debug"]["fix2d57_analysis_lift"] = {"enabled": True, "ran": False, "reason": "metric_schema_frozen_missing"}
+        return
+    if not isinstance(pmc, dict) or not pmc:
+        output_obj["debug"]["fix2d57_analysis_lift"] = {"enabled": True, "ran": False, "reason": "pmc_missing"}
+        return
+    if not _fix2d57_pmc_looks_legacy(pmc):
+        output_obj["debug"]["fix2d57_analysis_lift"] = {"enabled": True, "ran": False, "reason": "pmc_not_legacy"}
+        return
+
+    wc2 = dict(web_context) if isinstance(web_context, dict) else {}
+    wc2["enforce_schema_bound_pmc"] = True
+    wc2["diag_fix2d53_remap"] = True
+    wc2["diag_fix2d52_bind"] = True
+    wc2["diag_fix2d54_materialize"] = True
+    wc2["diag_fix2d50_gate"] = True
+
+    # Apply in order (in-place on output_obj)
+    _fix2d53_try_remap_output_obj(output_obj, wc2)
+    _fix2d52_try_bind_output_obj(output_obj, wc2)
+    _fix2d54_try_materialize_output_obj(output_obj, wc2)
+    _fix2d50_try_gate_output_obj(output_obj, wc2)
+
+    rep = {"enabled": True, "ran": True}
+    dbg = output_obj.get("debug") if isinstance(output_obj.get("debug"), dict) else {}
+    if isinstance(dbg, dict):
+        for k in ("fix2d53_legacy_remap", "fix2d52_schema_bind", "fix2d54_materialize", "fix2d50_pmc_gate"):
+            if k in dbg:
+                rep[k] = dbg.get(k)
+    output_obj["debug"]["fix2d57_analysis_lift"] = rep
+
+# =========================================================
+# END FIX2D57
+# =========================================================
+
+
+# =========================================================
+# FIX2D57 — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D68"
+
+# =========================================================
+# FIX2D57B — FINAL VERSION STAMP OVERRIDE
+# =========================================================
+CODE_VERSION = "FIX2D68"
+
+
+# =========================
+# FINAL VERSION STAMP: FIX2D65 (last-wins)
+# =========================
+try:
+    globals()["CODE_VERSION"] = "FIX2D65"
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX2D65 (AUTHORITY TAKEOVER): Canonical Identity Spine V1 becomes the only authority
+# - Rewire schema-first identity resolution to use canonical_identity_spine.resolve_key_v1
+# - Enforce "no canonical outside spine" at the Analysis schema-bound commit split
+# - Harden Evolution current selection by pruning yearlike candidates even when unit evidence is WINDOW_BACKFILL
+#   (prevents year headings from ever being selected for unit/count metrics)
+# - Deterministic, auditable: stamp authority + trace blocks on every resolved metric
+# =====================================================================
+
+# Patch tracker entry
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65",
+        "date": "2026-01-19",
+        "summary": "Authority takeover: route schema-first identity resolution through canonical_identity_spine (single authority), enforce no-canonical-outside-spine at Analysis commit split, and prune yearlike candidates (immune to WINDOW_BACKFILL) before Evolution selector selection.",
+        "files": ["canonical_identity_spine.py", "FIX2D65_full_codebase.py"],
+        "supersedes": ["FIX2D64"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# Ensure spine module is importable
+try:
+    import canonical_identity_spine as _cis
+    _FIX2D65_SPINE_OK = True
+except Exception:
+    pass
+    _cis = None
+    _FIX2D65_SPINE_OK = False
+
+
+def _fix2d65_build_schema_index_v1(metric_schema: dict) -> dict:
+    """Build schema_index for spine resolver: maps <prefix>__<dim> -> canonical_key.
+
+    Also builds a limited bare-token fallback map only when unique per (metric_token, dim).
+    """
+    idx = {}
+    # track bare token collisions
+    bare_counts = {}
+    bare_last = {}
+
+    if not isinstance(metric_schema, dict) or not metric_schema:
+        return idx
+
+    for skey, spec in metric_schema.items():
+        if not isinstance(skey, str) or '__' not in skey:
+            continue
+        prefix, dim = skey.split('__', 1)
+        dim = (dim or '').strip().lower()
+        k = f"{prefix}__{dim}" if dim else skey
+        idx[k] = skey
+
+        # compute bare token (strip trailing time_scope if present)
+        try:
+            # Use spine's metric-token normalizer (removes time tokens) if available
+            if _FIX2D65_SPINE_OK:
+                tmp = _cis.build_identity_tuple_v1({"metric_token": prefix, "dimension": dim, "unit_family": (spec or {}).get("unit_family") or ""}, context={})
+                bare = f"{tmp.metric_token}__{dim}" if dim else tmp.metric_token
+            else:
+                bare = f"{prefix.split('_')[0]}__{dim}" if dim else prefix
+        except Exception:
+            pass
+            bare = ''
+
+        if bare:
+            bare_counts[bare] = int(bare_counts.get(bare, 0)) + 1
+            bare_last[bare] = skey
+
+    # Add bare fallbacks only if unique (prevents time-scope misbinding)
+    for bare, cnt in bare_counts.items():
+        if cnt == 1:
+            idx.setdefault(bare, bare_last.get(bare))
+
+    return idx
+
+
+def resolve_canonical_identity_v1(identity: dict, metric_schema: dict = None) -> dict:  # noqa: F811
+    """FIX2D65 override: schema-first resolver delegates to canonical_identity_spine (single authority)."""
+    identity = identity if isinstance(identity, dict) else {}
+    metric_schema = metric_schema if isinstance(metric_schema, dict) else {}
+
+    # Under-specified identities remain provisional.
+    mt = str(identity.get('metric_token') or '').strip().lower()
+    dim = str(identity.get('dimension') or '').strip().lower()
+    uf = str(identity.get('unit_family') or '').strip().lower()
+    ut = str(identity.get('unit_tag') or '').strip()
+    ts = str(identity.get('time_scope') or '').strip().lower()
+
+    if (not mt) or (not dim) or dim == 'unknown' or (not uf and bool(ut)):
+        mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
+        provisional_key = f"{mt_eff}__{dim or 'unknown'}" if mt_eff else f"__provisional__{dim or 'unknown'}"
+        return {
+            'canonical_key': provisional_key,
+            'bound': False,
+            'status': 'PROVISIONAL',
+            'matched_schema_key': '',
+            'authority': 'spine_v1' if _FIX2D65_SPINE_OK else 'legacy',
+            'reason': 'underspecified',
+        }
+
+    if not _FIX2D65_SPINE_OK:
+        # fallback to legacy behavior (should be rare; keeps runtime safe)
+        mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
+        direct = f"{mt_eff}__{dim}"
+        if direct in metric_schema:
+            return {
+                'canonical_key': direct,
+                'bound': True,
+                'status': 'CANONICAL_SCHEMA',
+                'matched_schema_key': direct,
+                'authority': 'legacy',
+                'reason': 'direct',
+            }
+        return {
+            'canonical_key': direct,
+            'bound': False,
+            'status': 'PROVISIONAL',
+            'matched_schema_key': '',
+            'authority': 'legacy',
+            'reason': 'not_schema_bound',
+        }
+
+    schema_index = _fix2d65_build_schema_index_v1(metric_schema)
+
+    # Build spine tuple
+    raw = {
+        'metric_token': mt,
+        'time_scope': ts,
+        'dimension': dim,
+        'unit_family': uf,
+        'unit_tag': ut,
+        'geo': identity.get('geo_scope') or '',
+    }
+    try:
+        tup = _cis.normalize_identity_v1(_cis.build_identity_tuple_v1(raw, context={'time_scope': ts}))
+        res = _cis.resolve_key_v1(tup, schema_index)
+    except Exception as e:
+        # Safe fail to provisional
+        mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
+        direct = f"{mt_eff}__{dim}"
+        return {
+            'canonical_key': direct,
+            'bound': False,
+            'status': 'PROVISIONAL',
+            'matched_schema_key': '',
+            'authority': 'spine_v1',
+            'reason': f'spine_error:{e}',
+        }
+
+    if res.bound and res.canonical_key:
+        return {
+            'canonical_key': res.canonical_key,
+            'bound': True,
+            'status': 'CANONICAL_SCHEMA',
+            'matched_schema_key': res.canonical_key,
+            'authority': 'spine_v1',
+            'reason': res.reason,
+            'considered': list(res.considered),
+        }
+
+    # Not schema-bound => provisional (but deterministic)
+    mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
+    direct = f"{mt_eff}__{dim}"
+    return {
+        'canonical_key': direct,
+        'bound': False,
+        'status': 'PROVISIONAL',
+        'matched_schema_key': '',
+        'authority': 'spine_v1',
+        'reason': res.reason,
+        'considered': list(res.considered),
+    }
+
+
+def rekey_metrics_via_identity_resolver_v1(pmc: dict, metric_schema: dict) -> dict:  # noqa: F811
+    """FIX2D65 override: ensure every canonical_key assignment is produced by spine resolver."""
+    if not isinstance(pmc, dict):
+        return pmc
+    metric_schema = metric_schema if isinstance(metric_schema, dict) else {}
+
+    out = {}
+    for k, v in pmc.items():
+        if not isinstance(v, dict):
+            out[k] = v
+            continue
+        mt = str(v.get('canonical_id') or '').strip().lower() or str(k).split('__')[0].strip().lower()
+        _ts = str(v.get('time_scope') or '')
+        try:
+            fn_norm = globals().get('normalize_metric_token_time_scope_v1')
+            if callable(fn_norm):
+                mt, _ts = fn_norm(mt, _ts)
+        except Exception:
+            pass
+
+        dim = str(v.get('dimension') or '').strip().lower() or str(k).split('__')[-1].strip().lower()
+        ident = {
+            'metric_token': mt,
+            'time_scope': str(_ts or ''),
+            'geo_scope': str(v.get('geo_scope') or ''),
+            'dims': tuple(v.get('dims') or ()),
+            'dimension': dim,
+            'unit_family': str(v.get('unit_family') or ''),
+            'unit_tag': str(v.get('unit_tag') or ''),
+            'statistic': str(v.get('statistic') or ''),
+            'aggregation': str(v.get('aggregation') or ''),
+        }
+        res = resolve_canonical_identity_v1(ident, metric_schema)
+        new_k = res.get('canonical_key') or k
+
+        vv = dict(v)
+        vv.setdefault('debug', {})
+        if isinstance(vv.get('debug'), dict):
+            vv['debug']['identity_tuple_v1'] = ident
+            vv['debug']['identity_resolve_v1'] = res
+        vv['canonical_key'] = new_k
+        out[new_k] = vv
+
+    return out
+
+
+def _fix2d60_split_schema_bound_only(pmc: dict):  # noqa: F811
+    """FIX2D65 override: enforce 'no canonical outside spine'.
+
+    Only rows with status==CANONICAL_SCHEMA AND authority==spine_v1 may enter primary_metrics_canonical.
+    Everything else is quarantined to provisional.
+    """
+    try:
+        if not isinstance(pmc, dict):
+            return {}, {}
+        bound = {}
+        prov = {}
+        for k, v in pmc.items():
+            if not isinstance(v, dict):
+                prov[k] = v
+                continue
+            dbg = v.get('debug') if isinstance(v.get('debug'), dict) else {}
+            res = dbg.get('identity_resolve_v1') if isinstance(dbg.get('identity_resolve_v1'), dict) else {}
+            status = str(res.get('status') or '').strip().upper()
+            auth = str(res.get('authority') or '').strip().lower()
+
+            if status == 'CANONICAL_SCHEMA' and auth == 'spine_v1':
+                bound[k] = v
+            else:
+                vv = dict(v)
+                vv.setdefault('debug', {})
+                if isinstance(vv.get('debug'), dict):
+                    vv['debug']['quarantined_v1'] = True
+                    vv['debug']['quarantine_reason_v1'] = vv['debug'].get('quarantine_reason_v1') or 'not_schema_bound_or_not_spine_authority'
+                    vv['debug']['quarantine_status_v1'] = status
+                    vv['debug']['quarantine_authority_v1'] = auth
+                prov[k] = vv
+        return bound, prov
+    except Exception:
+        return pmc if isinstance(pmc, dict) else {}, {}
+
+
+def _fix2d65_prune_yearlike_candidates_for_unit_metrics(candidates: list, canonical_key: str) -> tuple:
+    """Remove yearlike candidates for unit/count metrics when unit evidence is NONE/WINDOW_BACKFILL.
+
+    Returns (pruned_candidates, debug_info).
+    """
+    cands = [c for c in (candidates or []) if isinstance(c, dict)]
+    dim = ''
+    try:
+        if isinstance(canonical_key, str) and '__' in canonical_key:
+            dim = canonical_key.split('__', 1)[1].strip().lower()
+    except Exception:
+        pass
+        dim = ''
+
+    is_unit = dim in ('unit_sales', 'unit_count', 'count', 'units', 'units_sold')
+    if not (_FIX2D65_SPINE_OK and is_unit):
+        return cands, {"applied": False, "rejected": 0, "kept": len(cands), "dimension": dim}
+
+    rejected = 0
+    pruned = []
+    for c in cands:
+        v = c.get('value_norm')
+        if v is None:
+            v = c.get('value')
+        if _cis.is_yearlike_value(v):
+            strength = _cis.classify_unit_evidence_strength(c)
+            if strength in ('NONE', 'WINDOW_BACKFILL'):
+                rejected += 1
+                continue
+        pruned.append(c)
+
+    return pruned, {"applied": True, "rejected": int(rejected), "kept": int(len(pruned)), "dimension": dim}
+
+
+def _fix2d2x_select_current_for_key(  # noqa: F811
+    canonical_key: str,
+    spec_in: dict,
+    candidates_all: list,
+    injected_urls: list,
+) -> tuple:
+    """FIX2D65 override: keep FIX2D2X structure but prune yearlike candidates (immune to WINDOW_BACKFILL) before selection."""
+    spec = dict(spec_in or {})
+
+    # Disable preferred source locking for Evolution
+    for k in ("preferred_url", "source_url"):
+        if k in spec:
+            spec.pop(k, None)
+
+    if not spec.get("keywords"):
+        nm = str(spec.get("name") or "")
+        spec["keywords"] = globals().get('_fix2d2x_keywords_from_key_and_name', lambda ck, nm: [])(canonical_key, nm)
+
+    # prefilter
+    fn_filter = globals().get('_fix2d2x_filter_candidates_for_key')
+    if callable(fn_filter):
+        candidates_all = fn_filter(canonical_key, spec, candidates_all)
+
+    # FIX2D65 prune step
+    candidates_all, prune_dbg = _fix2d65_prune_yearlike_candidates_for_unit_metrics(candidates_all, canonical_key)
+
+    injected_norm = set()
+    try:
+        injected_norm = set(globals().get('_ph2b_norm_url', lambda u: u)(u) for u in (injected_urls or []) if isinstance(u, str))
+    except Exception:
+        pass
+        injected_norm = set()
+
+    cands_inj = []
+    if injected_norm:
+        for c in candidates_all:
+            cu = globals().get('_ph2b_norm_url', lambda u: u)(c.get('source_url') or '')
+            if cu and cu in injected_norm:
+                cands_inj.append(c)
+
+    fn_sel = globals().get('_analysis_canonical_final_selector_v1')
+    if not callable(fn_sel):
+        return None, {"blocked_reason": "missing_analysis_selector", "fix2d65_prune": prune_dbg}
+
+    if cands_inj:
+        best, meta = fn_sel(canonical_key, spec, cands_inj, anchors=None, prev_metric=None, web_context=None)
+        if isinstance(best, dict):
+            try:
+                meta = dict(meta or {})
+                meta["fix2d2x_pass"] = "injected_only"
+                meta["fix2d65_prune"] = prune_dbg
+            except Exception:
+                return best, meta
+
+    best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
+    try:
+        meta = dict(meta or {})
+        meta["fix2d2x_pass"] = "global"
+        meta["fix2d65_prune"] = prune_dbg
+    except Exception:
+        return best, meta
+
+
+# Bind overrides into globals (last-wins)
+try:
+    globals()['resolve_canonical_identity_v1'] = resolve_canonical_identity_v1
+    globals()['rekey_metrics_via_identity_resolver_v1'] = rekey_metrics_via_identity_resolver_v1
+    globals()['_fix2d60_split_schema_bound_only'] = _fix2d60_split_schema_bound_only
+    globals()['_fix2d2x_select_current_for_key'] = _fix2d2x_select_current_for_key
+except Exception:
+    pass
+
+# Final, authoritative version stamp (last-wins)
+CODE_VERSION = "FIX2D68"
+
+# =====================================================================
+# END PATCH FIX2D65
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D68"
+except Exception:
+    pass
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65B",
+        "date": "2026-01-19",
+        "summary": "Force canonical pipeline materialisation when injected URLs exist (seed schema via deterministic extensions so FIX2D31 schema-authority rebuild can run even for narrative queries).",
+        "files": ["FIX2D65B_full_codebase.py"],
+        "supersedes": ["FIX2D65A"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D68"
+except Exception:
+    pass
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65C",
+        "date": "2026-01-19",
+        "summary": "Restore analysis->evolution diff contract: broaden injected URL detection (ui_raw + legacy keys) so schema seeding and FIX2D31 schema-authority rebuild reliably run when injection is used; bump version.",
+        "files": ["FIX2D65C_full_codebase.py"],
+        "supersedes": ["FIX2D65B"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D68"
+except Exception:
+    pass
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65D",
+        "date": "2026-01-19",
+        "summary": "Restore analysis->evolution diff contract by always serializing/seeding metric_schema_frozen (deterministic schema extensions), so Evolution schema-only rebuild has a stable keyspace even when LLM emits no primary_metrics; bump version.",
+        "files": ["FIX2D65D_full_codebase.py"],
+        "supersedes": ["FIX2D65C"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D68"
+except Exception:
+    pass
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D66",
+        "date": "2026-01-19",
+        "summary": "Deterministic injected-URL admission: promote UI raw/diag injection fields into web_context.extra_urls; synthesize diag_injected_urls when missing; ensure inj_trace_v1 and inj_diag reflect injected URLs in snapshot pool and hash inputs (auditable).",
+        "files": ["FIX2D66_full_codebase.py"],
+        "supersedes": ["FIX2D65D"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# =====================================================================
+
+# =====================================================================
+# PATCH TRACKER ENTRY (ADDITIVE): FIX2D66H
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D66H",
+        "date": "2026-01-19",
+        "summary": "Fix Google Sheets history save return semantics: add_to_history() now returns True on successful Sheets append and False on failure (previously fell through as None, triggering spurious 'Saved to session only' warning). Keeps session fallback and captures last Sheets error for diagnostics.",
+        "files": ["FIX2D66H_full_codebase.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY (ADDITIVE): FIX2D67
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D67",
+        "date": "2026-01-19",
+        "summary": "Fix injected numeric extraction missing-link: fetch_web_context() now calls numeric extractor with correct parameter name (source_url vs url), preventing silent TypeError and empty extracted_numbers; restores injected HTML numbers into snapshot pools feeding schema-only rebuild.",
+        "files": ["FIX2D67_full_codebase.py"],
+        "supersedes": ["FIX2D66H"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+# =====================================================================
+# PATCH FIX2D68 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+
+
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D68",
+        "date": "2026-01-19",
+        "summary": "Make numeric extraction failures auditable and robust: fetch_web_context now attempts extractor calls in modes (source_url/url/plain) without silent swallowing; records fix2d68_extract_* diagnostics including input length/head and exception list so injected HTML extraction gaps become visible.",
+        "files": ["FIX2D68_full_codebase.py"],
+        "supersedes": ["FIX2D67"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX2D68 FINAL VERSION OVERRIDE (ADDITIVE)
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D68"
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
