@@ -88,7 +88,25 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D70"
+CODE_VERSION = "FIX2D71"
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D71
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D71",
+        "date": "2026-01-19",
+        "summary": "Commit schema-keyed baseline canonical metrics during Analysis: if schema authority selection yields no winners but baseline_schema_metrics_v1 is non-empty, promote that schema-keyed (auditable proxy) map into primary_metrics_canonical so Evolution has prev canonical metrics for metric_changes_v2 diffing.",
+        "files": ["FIX2D71_full_codebase.py"],
+        "supersedes": ["FIX2D70"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D70
@@ -17467,9 +17485,48 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             except Exception:
                 pass
 
-            # Only replace PMC if we got at least one schema metric (avoid wiping PMC on empty candidate universe)
+            # FIX2D71: Always commit a schema-keyed baseline PMC for downstream diffing.
+            # - If selector produced schema winners (new_pmc), commit those.
+            # - Otherwise, if we have a schema-keyed baseline map (baseline_schema) and PMC is empty,
+            #   commit the proxy baseline map so Evolution has prev canonical metrics to diff against.
+            # This does NOT reintroduce heuristics: baseline_schema is schema-keyed and fully auditable via
+            # is_proxy/proxy_reason flags.
             if new_pmc:
                 _core['primary_metrics_canonical'] = new_pmc
+                try:
+                    if not isinstance(analysis.get('results'), dict):
+                        analysis['results'] = {}
+                    analysis.setdefault('results', {}).setdefault('debug', {})
+                    if isinstance(analysis['results'].get('debug'), dict):
+                        analysis['results']['debug']['fix2d71_committed_pmc_mode'] = 'selector_winners'
+                except Exception:
+                    pass
+            else:
+                try:
+                    _pmc0 = _core.get('primary_metrics_canonical')
+                    _pmc0_empty = (not isinstance(_pmc0, dict)) or (not _pmc0)
+                    if _pmc0_empty and isinstance(baseline_schema, dict) and baseline_schema:
+                        _core['primary_metrics_canonical'] = dict(baseline_schema)
+                        # Stamp audit flag at top-level (lightweight)
+                        try:
+                            if not isinstance(_core.get('debug'), dict):
+                                _core['debug'] = {}
+                            if isinstance(_core.get('debug'), dict):
+                                _core['debug']['fix2d71_committed_proxy_baseline_pmc_v1'] = True
+                                _core['debug']['fix2d71_proxy_baseline_pmc_count_v1'] = len(baseline_schema)
+                        except Exception:
+                            pass
+                        try:
+                            if not isinstance(analysis.get('results'), dict):
+                                analysis['results'] = {}
+                            analysis.setdefault('results', {}).setdefault('debug', {})
+                            if isinstance(analysis['results'].get('debug'), dict):
+                                analysis['results']['debug']['fix2d71_committed_pmc_mode'] = 'proxy_baseline_schema_map'
+                                analysis['results']['debug']['fix2d71_proxy_baseline_pmc_count_v1'] = len(baseline_schema)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
             # FIX2D38: emit schema-keyed baseline metrics map for diffing (always, with schema fallback).
             if baseline_schema:
@@ -46924,9 +46981,9 @@ except Exception:
     pass
 
 
-# PATCH FIX2D70: FINAL_OVERRIDE
-CODE_VERSION = "FIX2D70"  # FINAL_OVERRIDE
+# PATCH FIX2D71: FINAL_OVERRIDE
+CODE_VERSION = "FIX2D71"  # FINAL_OVERRIDE
 
 
-# PATCH FIX2D70: final end-of-file version override (last-wins)
-globals()["CODE_VERSION"] = "FIX2D70"
+# PATCH FIX2D71: final end-of-file version override (last-wins)
+globals()["CODE_VERSION"] = "FIX2D71"
