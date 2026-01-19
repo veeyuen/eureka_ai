@@ -25342,7 +25342,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 flat.append(c)
             except Exception:
                 pass
-                flat = []
+            flat = []
 
             def _cand_has_unit_evidence(c: dict) -> bool:
                 try:
