@@ -24343,7 +24343,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
                     if _txt and isinstance(_txt, str) and len(_txt.strip()) >= 200:
                     # FIX2D69: ensure numeric extraction runs on snapshot_text, with HTML->text fallback and auditable debug
-                    _extract_text = _txt
+                        _extract_text = _txt
                     try:
                         _t0 = str(_txt or "")
                         _looks_html = ('<' in _t0 and '>' in _t0 and ('</' in _t0 or '<html' in _t0.lower() or '<body' in _t0.lower()))
