@@ -87,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D64"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D65"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 
 # ============================================================
@@ -225,6 +225,28 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+# =========================
+# PATCH FIX2D65 (AUTHORITY TAKEOVER): Canonical Identity Spine V1 becomes the only authority
+# - Rewire Analysis + Evolution to resolve canonical keys via canonical_identity_spine.resolve_key_v1 (schema-first)
+# - Enforce no-canonical-outside-spine gate at primary_metrics_canonical commit and schema_only_rebuild selection
+# - Prune yearlike candidates for unit/count metrics even when unit evidence was context/window backfilled
+# =========================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65",
+        "date": "2026-01-19",
+        "summary": "Authority takeover: make Canonical Identity Spine V1 the only key-resolution authority (Analysis+Evolution) and add hard gates; prune yearlike candidates for unit/count metrics immune to context unit backfill.",
+        "files": ["canonical_identity_spine.py", "FIX2D65_full_codebase.py"],
+        "supersedes": ["FIX2D64"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 
 # PATCH TRACKER V1 (ADD): FIX2D40
@@ -9944,78 +9966,135 @@ def build_identity_tuple_v1(*, metric_token: str, time_scope: str = '', geo_scop
 
 
 def resolve_canonical_identity_v1(identity: dict, metric_schema: dict = None) -> dict:
-    'Schema-first resolver (v1). Returns schema canonical_key if bound, else a provisional key.'
+    """Schema-first resolver (FIX2D65): Canonical Identity Spine V1 is the only authority.
+
+    Returns:
+      - SCHEMA_BOUND -> status='CANONICAL_SCHEMA', bound=True, canonical_key is a schema key
+      - otherwise -> status='PROVISIONAL', bound=False, canonical_key is empty (no silent mint)
+
+    Note: PROVISIONAL rows must not enter primary_metrics_canonical; downstream gates enforce this.
+    """
     identity = identity if isinstance(identity, dict) else {}
     metric_schema = metric_schema if isinstance(metric_schema, dict) else {}
 
     mt = str(identity.get('metric_token') or '').strip().lower()
     ts = str(identity.get('time_scope') or '').strip().lower()
-    mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
     dim = str(identity.get('dimension') or '').strip().lower()
     uf = str(identity.get('unit_family') or '').strip().lower()
     ut = str(identity.get('unit_tag') or '').strip()
 
-    # Under-specified identities are never allowed to be treated as canonical.
+    # Under-specified identities are never treated as canonical.
     if (not mt) or (not dim) or dim == 'unknown' or (not uf and bool(ut)):
-        provisional_key = f"{mt_eff}__{dim or 'unknown'}" if mt else f"__provisional__{dim or 'unknown'}"
         return {
-            'canonical_key': provisional_key,
+            'canonical_key': '',
             'bound': False,
             'status': 'PROVISIONAL',
             'matched_schema_key': '',
+            'authority': 'spine_v1' if _SPINE_V1_AVAILABLE else 'legacy',
+            'reason': 'underspecified_identity',
         }
 
-    # Direct schema key hit (fastpath)
-    direct = f"{mt_eff}__{dim}"
-    if direct in metric_schema:
-        return {
-            'canonical_key': direct,
-            'bound': True,
-            'status': 'SCHEMA_BOUND',
-            'matched_schema_key': direct,
-        }
+    # Build schema index (prefix__dim -> canonical_key). Cache on schema dict for determinism.
+    schema_index = {}
+    try:
+        cached = metric_schema.get('__spine_schema_index_v1') if isinstance(metric_schema, dict) else None
+        if isinstance(cached, dict) and cached:
+            schema_index = cached
+        else:
+            # compute unique bare-token mapping only when unambiguous
+            counts = {}
+            tmp = {}
+            for skey in list(metric_schema.keys()):
+                if not isinstance(skey, str) or '__' not in skey:
+                    continue
+                prefix, sdim = skey.split('__', 1)
+                prefix = str(prefix).strip().lower()
+                sdim = str(sdim).strip().lower()
+                if not prefix or not sdim:
+                    continue
+                tmp[f"{prefix}__{sdim}"] = skey
+                # bare token (strip _<time_scope> patterns) for optional fallback
+                bare = re.sub(r'(?:^|_)(?:ytd|fy)?_?20\d{2}(?:$|_)', '_', prefix)
+                bare = re.sub(r'_+', '_', bare).strip('_')
+                if bare and bare != prefix:
+                    k = f"{bare}__{sdim}"
+                    counts[k] = int(counts.get(k, 0)) + 1
+            # add unambiguous bare mappings
+            for k, n in counts.items():
+                if n == 1:
+                    # find corresponding schema key
+                    # (slow but bounded; schema small)
+                    for skey in list(metric_schema.keys()):
+                        if not isinstance(skey, str) or '__' not in skey:
+                            continue
+                        prefix, sdim = skey.split('__', 1)
+                        prefix = str(prefix).strip().lower()
+                        sdim = str(sdim).strip().lower()
+                        bare = re.sub(r'(?:^|_)(?:ytd|fy)?_?20\d{2}(?:$|_)', '_', prefix)
+                        bare = re.sub(r'_+', '_', bare).strip('_')
+                        if f"{bare}__{sdim}" == k:
+                            tmp[k] = skey
+                            break
+            schema_index = tmp
+            try:
+                metric_schema['__spine_schema_index_v1'] = dict(schema_index)
+            except Exception:
+                pass
+    except Exception:
+        schema_index = {}
 
-    # Schema-first match by spec fields (deterministic)
-    best_key = ''
-    best_rank = None
-    for skey, spec in metric_schema.items():
-        if not isinstance(spec, dict):
-            continue
-        s_mt = str(spec.get('canonical_id') or spec.get('metric_token') or '').strip().lower()
-        if not s_mt:
-            # allow fallback: infer metric_token from schema key prefix
-            s_mt = str(skey).split('__')[0].strip().lower()
-        s_dim = str(spec.get('dimension') or '').strip().lower() or str(skey).split('__')[-1].strip().lower()
-        if s_mt != mt_eff or s_dim != dim:
-            continue
-        s_uf = str(spec.get('unit_family') or '').strip().lower()
-        s_ut = str(spec.get('unit_tag') or '').strip()
+    if _SPINE_V1_AVAILABLE and _canonical_identity_spine is not None:
+        try:
+            raw_metric = {
+                'metric_token': f"{mt}_{ts}" if (mt and ts) else mt,
+                'dimension': dim,
+                'unit_family': uf,
+            }
+            tup = _canonical_identity_spine.normalize_identity_v1(
+                _canonical_identity_spine.build_identity_tuple_v1(raw_metric, context={'time_scope': ts})
+            )
+            res = _canonical_identity_spine.resolve_key_v1(tup, schema_index)
+            if res.bound and res.canonical_key:
+                return {
+                    'canonical_key': str(res.canonical_key),
+                    'bound': True,
+                    'status': 'CANONICAL_SCHEMA',
+                    'matched_schema_key': str(res.canonical_key),
+                    'authority': 'spine_v1',
+                    'reason': res.reason,
+                    'considered': list(res.considered),
+                    'debug': res.debug,
+                }
+            return {
+                'canonical_key': '',
+                'bound': False,
+                'status': 'PROVISIONAL',
+                'matched_schema_key': '',
+                'authority': 'spine_v1',
+                'reason': res.reason,
+                'considered': list(res.considered),
+                'debug': res.debug,
+            }
+        except Exception as e:
+            return {
+                'canonical_key': '',
+                'bound': False,
+                'status': 'PROVISIONAL',
+                'matched_schema_key': '',
+                'authority': 'spine_v1',
+                'reason': f'spine_exception:{e}',
+            }
 
-        # rank: prefer exact unit_family match, then exact unit_tag match
-        rank = (
-            0 if (uf and s_uf and uf == s_uf) else 1,
-            0 if (ut and s_ut and ut == s_ut) else 1,
-            str(skey),
-        )
-        if best_rank is None or rank < best_rank:
-            best_rank = rank
-            best_key = str(skey)
-
-    if best_key:
-        return {
-            'canonical_key': best_key,
-            'bound': True,
-            'status': 'SCHEMA_BOUND',
-            'matched_schema_key': best_key,
-        }
-
-    # No schema match: return provisional (still deterministic)
+    # Spine unavailable: do NOT mint canonicals here.
     return {
-        'canonical_key': direct,
+        'canonical_key': '',
         'bound': False,
         'status': 'PROVISIONAL',
         'matched_schema_key': '',
+        'authority': 'legacy',
+        'reason': 'spine_unavailable',
     }
+
 
 
 def rekey_metrics_via_identity_resolver_v1(pmc: dict, metric_schema: dict) -> dict:
@@ -10046,7 +10125,7 @@ def rekey_metrics_via_identity_resolver_v1(pmc: dict, metric_schema: dict) -> di
             aggregation=str(v.get('aggregation') or ''),
         )
         res = resolve_canonical_identity_v1(ident, metric_schema)
-        new_k = res.get('canonical_key') or k
+        new_k = (res.get('canonical_key') or '') if bool(res.get('bound')) else k
         vv = dict(v)
         vv.setdefault('debug', {})
         if isinstance(vv.get('debug'), dict):
@@ -10666,7 +10745,8 @@ def _fix2d60_split_schema_bound_only(pmc: dict):
             dbg = v.get('debug') if isinstance(v.get('debug'), dict) else {}
             res = dbg.get('identity_resolve_v1') if isinstance(dbg.get('identity_resolve_v1'), dict) else {}
             status = str(res.get('status') or '').strip().upper()
-            if status == 'CANONICAL_SCHEMA':
+            auth = str(res.get('authority') or '').strip().lower()
+            if status == 'CANONICAL_SCHEMA' and auth == 'spine_v1':
                 bound[k] = v
             else:
                 vv = dict(v)
@@ -38615,6 +38695,77 @@ def _fix2d2x_select_current_for_key(
             if cu and cu in injected_norm:
                 cands_inj.append(c)
 
+    # PATCH FIX2D65: prune yearlike candidates for unit/count metrics (immune to window backfill)
+    try:
+        _p_all, _rej_all = _fix2d65_spine_prune_candidates_for_ck(canonical_key, spec, candidates_all)
+        candidates_all = _p_all
+    except Exception:
+        _rej_all = 0
+    try:
+        if cands_inj:
+            _p_inj, _rej_inj = _fix2d65_spine_prune_candidates_for_ck(canonical_key, spec, cands_inj)
+            cands_inj = _p_inj
+        else:
+            _rej_inj = 0
+    except Exception:
+        _rej_inj = 0
+
+    fn_sel = globals().get("_analysis_canonical_final_selector_v1")
+    if not callable(fn_sel):
+        return None, {"blocked_reason": "missing_analysis_selector"}
+
+    if cands_inj:
+        best, meta = fn_sel(canonical_key, spec, cands_inj, anchors=None, prev_metric=None, web_context=None)
+        if isinstance(best, dict):
+            try:
+                meta = dict(meta or {})
+                meta[\"fix2d2x_pass\"] = \"injected_only\"
+                meta[\"fix2d65_yearlike_pruned_injected\"] = int(_rej_inj or 0)
+                meta[\"fix2d65_yearlike_pruned_global\"] = int(_rej_all or 0)
+            except Exception:
+                pass
+            return best, meta
+
+    # pass 2: global
+    best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
+    try:
+        meta = dict(meta or {})
+        meta[\"fix2d2x_pass\"] = \"global\"
+        meta[\"fix2d65_yearlike_pruned_global\"] = int(_rej_all or 0)
+    except Exception:
+        pass
+    return best, meta
+
+
+ spec_in: dict,
+    candidates_all: list,
+    injected_urls: list,
+) -> tuple:
+    """Injected-first two-pass selection using Analysis authoritative selector."""
+    spec = dict(spec_in or {})
+
+    # Disable preferred source locking for Evolution (parity gates but different policy)
+    for k in ("preferred_url", "source_url"):
+        if k in spec:
+            spec.pop(k, None)
+
+    # Ensure keywords exist for selector scoring/eligibility
+    if not spec.get("keywords"):
+        nm = str(spec.get("name") or "")
+        spec["keywords"] = _fix2d2x_keywords_from_key_and_name(canonical_key, nm)
+
+    # local pre-filter (prevents cross-metric pollution when baseline schema lacks rich keywords)
+    candidates_all = _fix2d2x_filter_candidates_for_key(canonical_key, spec, candidates_all)
+
+    # pass 1: injected-only
+    injected_norm = set(_ph2b_norm_url(u) for u in (injected_urls or []) if isinstance(u, str))
+    cands_inj = []
+    if injected_norm:
+        for c in candidates_all:
+            cu = _ph2b_norm_url(c.get("source_url") or "")
+            if cu and cu in injected_norm:
+                cands_inj.append(c)
+
     fn_sel = globals().get("_analysis_canonical_final_selector_v1")
     if not callable(fn_sel):
         return None, {"blocked_reason": "missing_analysis_selector"}
@@ -41204,3 +41355,383 @@ CODE_VERSION = "FIX2D60"
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 CODE_VERSION = "FIX2D60"
+
+
+# =========================
+# FINAL VERSION STAMP: FIX2D65 (last-wins)
+# =========================
+try:
+    globals()["CODE_VERSION"] = "FIX2D65"
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX2D65 (AUTHORITY TAKEOVER): Canonical Identity Spine V1 becomes the only authority
+# - Rewire schema-first identity resolution to use canonical_identity_spine.resolve_key_v1
+# - Enforce "no canonical outside spine" at the Analysis schema-bound commit split
+# - Harden Evolution current selection by pruning yearlike candidates even when unit evidence is WINDOW_BACKFILL
+#   (prevents year headings from ever being selected for unit/count metrics)
+# - Deterministic, auditable: stamp authority + trace blocks on every resolved metric
+# =====================================================================
+
+# Patch tracker entry
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65",
+        "date": "2026-01-19",
+        "summary": "Authority takeover: route schema-first identity resolution through canonical_identity_spine (single authority), enforce no-canonical-outside-spine at Analysis commit split, and prune yearlike candidates (immune to WINDOW_BACKFILL) before Evolution selector selection.",
+        "files": ["canonical_identity_spine.py", "FIX2D65_full_codebase.py"],
+        "supersedes": ["FIX2D64"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# Ensure spine module is importable
+try:
+    import canonical_identity_spine as _cis
+    _FIX2D65_SPINE_OK = True
+except Exception:
+    _cis = None
+    _FIX2D65_SPINE_OK = False
+
+
+def _fix2d65_build_schema_index_v1(metric_schema: dict) -> dict:
+    """Build schema_index for spine resolver: maps <prefix>__<dim> -> canonical_key.
+
+    Also builds a limited bare-token fallback map only when unique per (metric_token, dim).
+    """
+    idx = {}
+    # track bare token collisions
+    bare_counts = {}
+    bare_last = {}
+
+    if not isinstance(metric_schema, dict) or not metric_schema:
+        return idx
+
+    for skey, spec in metric_schema.items():
+        if not isinstance(skey, str) or '__' not in skey:
+            continue
+        prefix, dim = skey.split('__', 1)
+        dim = (dim or '').strip().lower()
+        k = f"{prefix}__{dim}" if dim else skey
+        idx[k] = skey
+
+        # compute bare token (strip trailing time_scope if present)
+        try:
+            # Use spine's metric-token normalizer (removes time tokens) if available
+            if _FIX2D65_SPINE_OK:
+                tmp = _cis.build_identity_tuple_v1({"metric_token": prefix, "dimension": dim, "unit_family": (spec or {}).get("unit_family") or ""}, context={})
+                bare = f"{tmp.metric_token}__{dim}" if dim else tmp.metric_token
+            else:
+                bare = f"{prefix.split('_')[0]}__{dim}" if dim else prefix
+        except Exception:
+            bare = ''
+
+        if bare:
+            bare_counts[bare] = int(bare_counts.get(bare, 0)) + 1
+            bare_last[bare] = skey
+
+    # Add bare fallbacks only if unique (prevents time-scope misbinding)
+    for bare, cnt in bare_counts.items():
+        if cnt == 1:
+            idx.setdefault(bare, bare_last.get(bare))
+
+    return idx
+
+
+def resolve_canonical_identity_v1(identity: dict, metric_schema: dict = None) -> dict:  # noqa: F811
+    """FIX2D65 override: schema-first resolver delegates to canonical_identity_spine (single authority)."""
+    identity = identity if isinstance(identity, dict) else {}
+    metric_schema = metric_schema if isinstance(metric_schema, dict) else {}
+
+    # Under-specified identities remain provisional.
+    mt = str(identity.get('metric_token') or '').strip().lower()
+    dim = str(identity.get('dimension') or '').strip().lower()
+    uf = str(identity.get('unit_family') or '').strip().lower()
+    ut = str(identity.get('unit_tag') or '').strip()
+    ts = str(identity.get('time_scope') or '').strip().lower()
+
+    if (not mt) or (not dim) or dim == 'unknown' or (not uf and bool(ut)):
+        mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
+        provisional_key = f"{mt_eff}__{dim or 'unknown'}" if mt_eff else f"__provisional__{dim or 'unknown'}"
+        return {
+            'canonical_key': provisional_key,
+            'bound': False,
+            'status': 'PROVISIONAL',
+            'matched_schema_key': '',
+            'authority': 'spine_v1' if _FIX2D65_SPINE_OK else 'legacy',
+            'reason': 'underspecified',
+        }
+
+    if not _FIX2D65_SPINE_OK:
+        # fallback to legacy behavior (should be rare; keeps runtime safe)
+        mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
+        direct = f"{mt_eff}__{dim}"
+        if direct in metric_schema:
+            return {
+                'canonical_key': direct,
+                'bound': True,
+                'status': 'CANONICAL_SCHEMA',
+                'matched_schema_key': direct,
+                'authority': 'legacy',
+                'reason': 'direct',
+            }
+        return {
+            'canonical_key': direct,
+            'bound': False,
+            'status': 'PROVISIONAL',
+            'matched_schema_key': '',
+            'authority': 'legacy',
+            'reason': 'not_schema_bound',
+        }
+
+    schema_index = _fix2d65_build_schema_index_v1(metric_schema)
+
+    # Build spine tuple
+    raw = {
+        'metric_token': mt,
+        'time_scope': ts,
+        'dimension': dim,
+        'unit_family': uf,
+        'unit_tag': ut,
+        'geo': identity.get('geo_scope') or '',
+    }
+    try:
+        tup = _cis.normalize_identity_v1(_cis.build_identity_tuple_v1(raw, context={'time_scope': ts}))
+        res = _cis.resolve_key_v1(tup, schema_index)
+    except Exception as e:
+        # Safe fail to provisional
+        mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
+        direct = f"{mt_eff}__{dim}"
+        return {
+            'canonical_key': direct,
+            'bound': False,
+            'status': 'PROVISIONAL',
+            'matched_schema_key': '',
+            'authority': 'spine_v1',
+            'reason': f'spine_error:{e}',
+        }
+
+    if res.bound and res.canonical_key:
+        return {
+            'canonical_key': res.canonical_key,
+            'bound': True,
+            'status': 'CANONICAL_SCHEMA',
+            'matched_schema_key': res.canonical_key,
+            'authority': 'spine_v1',
+            'reason': res.reason,
+            'considered': list(res.considered),
+        }
+
+    # Not schema-bound => provisional (but deterministic)
+    mt_eff = f"{mt}_{ts}" if (mt and ts) else mt
+    direct = f"{mt_eff}__{dim}"
+    return {
+        'canonical_key': direct,
+        'bound': False,
+        'status': 'PROVISIONAL',
+        'matched_schema_key': '',
+        'authority': 'spine_v1',
+        'reason': res.reason,
+        'considered': list(res.considered),
+    }
+
+
+def rekey_metrics_via_identity_resolver_v1(pmc: dict, metric_schema: dict) -> dict:  # noqa: F811
+    """FIX2D65 override: ensure every canonical_key assignment is produced by spine resolver."""
+    if not isinstance(pmc, dict):
+        return pmc
+    metric_schema = metric_schema if isinstance(metric_schema, dict) else {}
+
+    out = {}
+    for k, v in pmc.items():
+        if not isinstance(v, dict):
+            out[k] = v
+            continue
+        mt = str(v.get('canonical_id') or '').strip().lower() or str(k).split('__')[0].strip().lower()
+        _ts = str(v.get('time_scope') or '')
+        try:
+            fn_norm = globals().get('normalize_metric_token_time_scope_v1')
+            if callable(fn_norm):
+                mt, _ts = fn_norm(mt, _ts)
+        except Exception:
+            pass
+
+        dim = str(v.get('dimension') or '').strip().lower() or str(k).split('__')[-1].strip().lower()
+        ident = {
+            'metric_token': mt,
+            'time_scope': str(_ts or ''),
+            'geo_scope': str(v.get('geo_scope') or ''),
+            'dims': tuple(v.get('dims') or ()),
+            'dimension': dim,
+            'unit_family': str(v.get('unit_family') or ''),
+            'unit_tag': str(v.get('unit_tag') or ''),
+            'statistic': str(v.get('statistic') or ''),
+            'aggregation': str(v.get('aggregation') or ''),
+        }
+        res = resolve_canonical_identity_v1(ident, metric_schema)
+        new_k = res.get('canonical_key') or k
+
+        vv = dict(v)
+        vv.setdefault('debug', {})
+        if isinstance(vv.get('debug'), dict):
+            vv['debug']['identity_tuple_v1'] = ident
+            vv['debug']['identity_resolve_v1'] = res
+        vv['canonical_key'] = new_k
+        out[new_k] = vv
+
+    return out
+
+
+def _fix2d60_split_schema_bound_only(pmc: dict):  # noqa: F811
+    """FIX2D65 override: enforce 'no canonical outside spine'.
+
+    Only rows with status==CANONICAL_SCHEMA AND authority==spine_v1 may enter primary_metrics_canonical.
+    Everything else is quarantined to provisional.
+    """
+    try:
+        if not isinstance(pmc, dict):
+            return {}, {}
+        bound = {}
+        prov = {}
+        for k, v in pmc.items():
+            if not isinstance(v, dict):
+                prov[k] = v
+                continue
+            dbg = v.get('debug') if isinstance(v.get('debug'), dict) else {}
+            res = dbg.get('identity_resolve_v1') if isinstance(dbg.get('identity_resolve_v1'), dict) else {}
+            status = str(res.get('status') or '').strip().upper()
+            auth = str(res.get('authority') or '').strip().lower()
+
+            if status == 'CANONICAL_SCHEMA' and auth == 'spine_v1':
+                bound[k] = v
+            else:
+                vv = dict(v)
+                vv.setdefault('debug', {})
+                if isinstance(vv.get('debug'), dict):
+                    vv['debug']['quarantined_v1'] = True
+                    vv['debug']['quarantine_reason_v1'] = vv['debug'].get('quarantine_reason_v1') or 'not_schema_bound_or_not_spine_authority'
+                    vv['debug']['quarantine_status_v1'] = status
+                    vv['debug']['quarantine_authority_v1'] = auth
+                prov[k] = vv
+        return bound, prov
+    except Exception:
+        return pmc if isinstance(pmc, dict) else {}, {}
+
+
+def _fix2d65_prune_yearlike_candidates_for_unit_metrics(candidates: list, canonical_key: str) -> tuple:
+    """Remove yearlike candidates for unit/count metrics when unit evidence is NONE/WINDOW_BACKFILL.
+
+    Returns (pruned_candidates, debug_info).
+    """
+    cands = [c for c in (candidates or []) if isinstance(c, dict)]
+    dim = ''
+    try:
+        if isinstance(canonical_key, str) and '__' in canonical_key:
+            dim = canonical_key.split('__', 1)[1].strip().lower()
+    except Exception:
+        dim = ''
+
+    is_unit = dim in ('unit_sales', 'unit_count', 'count', 'units', 'units_sold')
+    if not (_FIX2D65_SPINE_OK and is_unit):
+        return cands, {"applied": False, "rejected": 0, "kept": len(cands), "dimension": dim}
+
+    rejected = 0
+    pruned = []
+    for c in cands:
+        v = c.get('value_norm')
+        if v is None:
+            v = c.get('value')
+        if _cis.is_yearlike_value(v):
+            strength = _cis.classify_unit_evidence_strength(c)
+            if strength in ('NONE', 'WINDOW_BACKFILL'):
+                rejected += 1
+                continue
+        pruned.append(c)
+
+    return pruned, {"applied": True, "rejected": int(rejected), "kept": int(len(pruned)), "dimension": dim}
+
+
+def _fix2d2x_select_current_for_key(  # noqa: F811
+    canonical_key: str,
+    spec_in: dict,
+    candidates_all: list,
+    injected_urls: list,
+) -> tuple:
+    """FIX2D65 override: keep FIX2D2X structure but prune yearlike candidates (immune to WINDOW_BACKFILL) before selection."""
+    spec = dict(spec_in or {})
+
+    # Disable preferred source locking for Evolution
+    for k in ("preferred_url", "source_url"):
+        if k in spec:
+            spec.pop(k, None)
+
+    if not spec.get("keywords"):
+        nm = str(spec.get("name") or "")
+        spec["keywords"] = globals().get('_fix2d2x_keywords_from_key_and_name', lambda ck, nm: [])(canonical_key, nm)
+
+    # prefilter
+    fn_filter = globals().get('_fix2d2x_filter_candidates_for_key')
+    if callable(fn_filter):
+        candidates_all = fn_filter(canonical_key, spec, candidates_all)
+
+    # FIX2D65 prune step
+    candidates_all, prune_dbg = _fix2d65_prune_yearlike_candidates_for_unit_metrics(candidates_all, canonical_key)
+
+    injected_norm = set()
+    try:
+        injected_norm = set(globals().get('_ph2b_norm_url', lambda u: u)(u) for u in (injected_urls or []) if isinstance(u, str))
+    except Exception:
+        injected_norm = set()
+
+    cands_inj = []
+    if injected_norm:
+        for c in candidates_all:
+            cu = globals().get('_ph2b_norm_url', lambda u: u)(c.get('source_url') or '')
+            if cu and cu in injected_norm:
+                cands_inj.append(c)
+
+    fn_sel = globals().get('_analysis_canonical_final_selector_v1')
+    if not callable(fn_sel):
+        return None, {"blocked_reason": "missing_analysis_selector", "fix2d65_prune": prune_dbg}
+
+    if cands_inj:
+        best, meta = fn_sel(canonical_key, spec, cands_inj, anchors=None, prev_metric=None, web_context=None)
+        if isinstance(best, dict):
+            try:
+                meta = dict(meta or {})
+                meta["fix2d2x_pass"] = "injected_only"
+                meta["fix2d65_prune"] = prune_dbg
+            except Exception:
+                pass
+            return best, meta
+
+    best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
+    try:
+        meta = dict(meta or {})
+        meta["fix2d2x_pass"] = "global"
+        meta["fix2d65_prune"] = prune_dbg
+    except Exception:
+        pass
+    return best, meta
+
+
+# Bind overrides into globals (last-wins)
+try:
+    globals()['resolve_canonical_identity_v1'] = resolve_canonical_identity_v1
+    globals()['rekey_metrics_via_identity_resolver_v1'] = rekey_metrics_via_identity_resolver_v1
+    globals()['_fix2d60_split_schema_bound_only'] = _fix2d60_split_schema_bound_only
+    globals()['_fix2d2x_select_current_for_key'] = _fix2d2x_select_current_for_key
+except Exception:
+    pass
+
+# Final, authoritative version stamp (last-wins)
+CODE_VERSION = "FIX2D65"
+
+# =====================================================================
+# END PATCH FIX2D65
+# =====================================================================
