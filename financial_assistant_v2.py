@@ -38734,7 +38734,7 @@ def _fix2d2x_select_current_for_key(
         meta["fix2d65_yearlike_pruned_global"] = int(_rej_all or 0)
     except Exception:
         pass
-return best, meta
+    return best, meta
 # ---------------------------------------------------------------------
 # OVERRIDE: schema-only rebuild FIX17
 # ---------------------------------------------------------------------
