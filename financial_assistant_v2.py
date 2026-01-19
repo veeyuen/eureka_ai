@@ -24388,7 +24388,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 _nums = []
                     if _fx69_errors:
                         _row['fix2d68_extract_errors'] = _fx69_errors
-                    _row.update({
+                        _row.update({
                             "status": "fetched",
                             "status_detail": (_detail or "success"),
                             "snapshot_text": _txt[:7000],
