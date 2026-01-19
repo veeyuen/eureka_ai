@@ -16429,6 +16429,69 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         pass
     # =====================================================================
 
+
+    # =====================================================================
+    # PATCH FIX2D65B (ADD): Force canonical pipeline when injected URLs exist
+    #
+    # Problem:
+    # - Some narrative / market-size queries return no primary_metrics in primary_response.
+    # - When injected URLs are present, we still want schema+baseline canonicals to materialise
+    #   so Evolution schema-only rebuild and Diff Panel V2 can activate.
+    #
+    # Policy:
+    # - If injected URLs exist and metric_schema_frozen is empty/missing, seed an empty schema and
+    #   apply deterministic schema extension patches. This enables FIX2D31 schema-authority rebuild
+    #   to run over the baseline candidate universe without changing UI/diff logic.
+    #
+    # Safety:
+    # - No refetch, no heuristic matching. Additive only.
+    # =====================================================================
+    try:
+        _inj_urls = []
+        if isinstance(web_context, dict):
+            _inj_urls = (
+                web_context.get("diag_extra_urls_final")
+                or web_context.get("diag_extra_urls")
+                or web_context.get("extra_urls")
+                or []
+            )
+        if isinstance(_inj_urls, list):
+            _inj_urls = [u for u in _inj_urls if isinstance(u, str) and u.strip()]
+        else:
+            _inj_urls = []
+
+        if _inj_urls:
+            try:
+                analysis.setdefault("debug", {})
+                if isinstance(analysis.get("debug"), dict):
+                    analysis["debug"]["fix2d65b_forced_canonical_pipeline"] = True
+                    analysis["debug"]["fix2d65b_injected_urls"] = _inj_urls[:10]
+            except Exception:
+                pass
+
+            # Ensure metric_schema_frozen exists so FIX2D31 can run even when LLM emitted no primary_metrics
+            _schema0 = analysis.get("metric_schema_frozen")
+            if not isinstance(_schema0, dict) or not _schema0:
+                _schema_seed = {}
+
+                # Apply known deterministic schema extensions (additive)
+                for _fn_name in (
+                    "_fix2u_extend_metric_schema_ev_chargers",
+                    "_fix2v_extend_metric_schema_ev_chargers_cagr",
+                    "_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025",
+                ):
+                    try:
+                        _fn = globals().get(_fn_name)
+                        if callable(_fn):
+                            _schema_seed = _fn(_schema_seed) or _schema_seed
+                    except Exception:
+                        pass
+
+                analysis["metric_schema_frozen"] = _schema_seed
+    except Exception:
+        pass
+    # =====================================================================
+
     # PATCH FIX2D31 (ADD): Option A — schema-align Analysis primary_metrics_canonical
     # - When metric_schema_frozen exists in Analysis, rebuild primary_metrics_canonical
     #   by running the authoritative Analysis selector (_analysis_canonical_final_selector_v1)
@@ -41737,4 +41800,29 @@ CODE_VERSION = "FIX2D65A"
 
 # =====================================================================
 # END PATCH FIX2D65
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D65B"
+except Exception:
+    pass
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65B",
+        "date": "2026-01-19",
+        "summary": "Force canonical pipeline materialisation when injected URLs exist (seed schema via deterministic extensions so FIX2D31 schema-authority rebuild can run even for narrative queries).",
+        "files": ["FIX2D65B_full_codebase.py"],
+        "supersedes": ["FIX2D65A"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 # =====================================================================
