@@ -65,6 +65,7 @@ import streamlit as st
 try:
     import canonical_identity_spine as _canonical_identity_spine_fix2d64
 except Exception:
+    pass
     _canonical_identity_spine_fix2d64 = None
 import base64
 import hashlib
@@ -87,7 +88,30 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D65D"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D66"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D66
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D66",
+        "date": "2026-01-19",
+        "summary": "Deterministic injected-URL admission: promote UI raw/diag injection fields into web_context.extra_urls and synthesize diag_injected_urls when missing, so inj_diag/inj_trace_v1 reliably reflect injected URLs in snapshot pool and hash inputs (auditable). No UI/diff changes.",
+        "files": ["FIX2D66_full_codebase.py"],
+        "supersedes": ["FIX2D65D"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+
 
 
 
@@ -879,15 +903,14 @@ def _fix2d10_materialize_output_debug_canonical_for_render_v1(output_obj):
         try:
             diag["keys_sample"] = list(pmc.keys())[:10]
         except Exception:
+            pass
             diag["keys_sample"] = []
 
         try:
             results.setdefault("debug", {})
             results["debug"]["fix2d10_materialize_output_debug_canonical_for_render_v1"] = diag
         except Exception:
-            pass
-
-        return diag
+            return diag
     except Exception:
         return diag
 # ============================================================
@@ -965,6 +988,7 @@ def _fix2d9_schema_anchored_rebuild_current_metrics_v1(prev_response, pool, web_
             try:
                 diag["keys_sample"] = list(rebuilt.keys())[:10]
             except Exception:
+                pass
                 diag["keys_sample"] = []
             return dict(rebuilt), diag
 
@@ -1055,6 +1079,7 @@ def _fix2d8_promote_nested_results_v1(output_obj):
             try:
                 _nested_bsm = nested.get("baseline_schema_metrics_v1")
             except Exception:
+                pass
                 _nested_bsm = None
             if isinstance(_nested_bsm, dict) and _nested_bsm and (not isinstance(results.get("baseline_schema_metrics_v1"), dict) or not results.get("baseline_schema_metrics_v1")):
                 results["baseline_schema_metrics_v1"] = dict(_nested_bsm)
@@ -1079,6 +1104,7 @@ def _fix2d8_promote_nested_results_v1(output_obj):
             try:
                 _nested_bsm = nested.get("baseline_schema_metrics_v1")
             except Exception:
+                pass
                 _nested_bsm = None
             if isinstance(_nested_bsm, dict) and _nested_bsm and (not isinstance(results.get("baseline_schema_metrics_v1"), dict) or not results.get("baseline_schema_metrics_v1")):
                 results["baseline_schema_metrics_v1"] = dict(_nested_bsm)
@@ -1098,16 +1124,12 @@ def _fix2d8_promote_nested_results_v1(output_obj):
             results.setdefault("debug", {})
             results["debug"]["fix2d8_promote_nested_results_v1"] = diag
         except Exception:
-            pass
-
-
-        return diag
+            return diag
     except Exception as _e:
         try:
             diag["notes"].append("exception:" + str(type(_e).__name__))
         except Exception:
-            pass
-        return diag
+            return diag
 # ============================================================
 # PATCH END: FIX2D8_PROMOTE_NESTED_RESULTS_V1
 
@@ -1170,6 +1192,7 @@ def _build_diff_key_universe(prev_keys, cur_keys):
     try:
         join_mode = _fix2d6_get_diff_join_mode_v1()
     except Exception:
+        pass
         join_mode = "strict"
     if join_mode == "union":
         return sorted(set(prev_keys) | set(cur_keys)), join_mode
@@ -1494,8 +1517,7 @@ def _fix2af_classify_fetch_failure(status, txt):
             if ("sales" in n or "sold" in n) and any(tok in u for tok in ("million", "billion", "thousand", "units", "unit", "vehicles", "pcs", "pieces")):
                 return "unit_sales"
         except Exception:
-            pass
-        return "unknown"
+            return "unknown"
     except Exception:
         return "unknown"
 
@@ -1599,6 +1621,7 @@ def _es_stable_sort_key(v):
             try:
                 lst.sort(key=_es_stable_sort_key)
             except Exception:
+                pass
                 lst = sorted(lst, key=lambda x: str(x))
             return (5, str([_es_stable_sort_key(x) for x in lst]))
         return (9, str(v))
@@ -1685,6 +1708,7 @@ def _es_build_candidate_index_deterministic(baseline_sources_cache):
                     conf = c.get("anchor_confidence")
                     conf_key = -(float(conf) if conf is not None else 0.0)
                 except Exception:
+                    pass
                     conf_key = 0.0
                 ctx = (c.get("context_snippet") or c.get("context") or "")
                 ctx_len = -len(str(ctx))
@@ -1747,6 +1771,7 @@ def end_state_validation_harness(baseline_analysis: dict, evolution_output: dict
         try:
             st = float(evo.get("stability_score") or 0.0)
         except Exception:
+            pass
             st = 0.0
         report["checks"]["stability_meets_threshold"] = bool(st + 1e-9 >= float(min_stability))
 
@@ -1764,6 +1789,7 @@ def end_state_validation_harness(baseline_analysis: dict, evolution_output: dict
         if not report["passed"]:
             report["notes"].append("If hashes match but stability is low, inspect candidate tie-breaks and ordering.")
     except Exception:
+        pass
         report["notes"].append("Validation harness encountered an exception (non-fatal).")
     return report
 # =====================================================================
@@ -1807,6 +1833,7 @@ def get_google_sheet():
         try:
             sheet = ss.worksheet(worksheet_title)
         except Exception:
+            pass
             sheet = ss.sheet1
         # =================== END PATCH GS1 (ADDITIVE) ===================
 
@@ -1893,6 +1920,7 @@ def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
             if isinstance(r, dict) and isinstance(r.get("baseline_sources_cache"), list):
                 bsc = r.get("baseline_sources_cache")
         except Exception:
+            pass
             bsc = None
         if bsc is None and isinstance(analysis_obj.get("baseline_sources_cache"), list):
             bsc = analysis_obj.get("baseline_sources_cache")
@@ -1984,11 +2012,13 @@ def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
                 else:
                     ctx = None
             except Exception:
+                pass
                 ctx = None
 
             try:
                 aconf = float(aconf) if aconf is not None else None
             except Exception:
+                pass
                 aconf = None
 
             metric_anchors[ckey] = {
@@ -2127,6 +2157,7 @@ def add_to_history(analysis: dict) -> bool:
                         if callable(fn):
                             n = fn(dict(n))
                     except Exception:
+                        pass
                         n = dict(n)
 
                     raw = (n.get("raw") or "").strip()
@@ -2193,9 +2224,7 @@ def add_to_history(analysis: dict) -> bool:
             else:
                 records = sorted(records, key=lambda r: str(r.get("url") or ""))
         except Exception:
-            pass
-
-        return records
+            return records
 
     # -----------------------
     # PATCH A3 (ADDITIVE): build metric_anchors deterministically (schema-first if present)
@@ -2315,12 +2344,14 @@ def add_to_history(analysis: dict) -> bool:
                     if isinstance(ev, list) and ev:
                         preferred_url = str((ev[0] or {}).get("source_url") or (ev[0] or {}).get("url") or "")
                 except Exception:
+                    pass
                     preferred_url = ""
 
                 target = m.get("value_norm")
                 try:
                     target = float(target) if target is not None else None
                 except Exception:
+                    pass
                     target = None
 
                 pool = []
@@ -2343,6 +2374,7 @@ def add_to_history(analysis: dict) -> bool:
                             v = cc.get("value_norm")
                             v = float(v) if v is not None else None
                         except Exception:
+                            pass
                             v = None
                         dv = abs(v - target) if (v is not None and target is not None) else 1e30
                         return (dv, -len(str(ctx)), str(cc.get("anchor_hash") or ""), str(url))
@@ -2383,9 +2415,7 @@ def add_to_history(analysis: dict) -> bool:
         try:
             anchors = dict(sorted(anchors.items(), key=lambda kv: str(kv[0])))
         except Exception:
-            pass
-
-        return anchors
+            return anchors
         def _tokenize(s: str):
             return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
 
@@ -2670,6 +2700,7 @@ def add_to_history(analysis: dict) -> bool:
                 cv = globals().get("CODE_VERSION")
                 analysis.setdefault("evidence_layer_version", cv or 1)
             except Exception:
+                pass
                 analysis.setdefault("evidence_layer_version", 1)
             analysis.setdefault("evidence_layer_schema_version", 1)
             # =========================
@@ -2816,8 +2847,7 @@ def add_to_history(analysis: dict) -> bool:
                 if callable(fn):
                     return str(fn(url, ctx) or "")
             except Exception:
-                pass
-            return _compute_anchor_hash_fallback(url, ctx)
+                return _compute_anchor_hash_fallback(url, ctx)
 
         # Locate canonical metrics dict (prefer primary_response)
         _pmc = None
@@ -2884,8 +2914,7 @@ def add_to_history(analysis: dict) -> bool:
             if callable(fn):
                 return fn(obj)
         except Exception:
-            pass
-        return json.dumps(obj, ensure_ascii=False, default=str)
+            return json.dumps(obj, ensure_ascii=False, default=str)
 
     def _shrink_for_sheets(original: dict) -> dict:
         base_copy = dict(original)
@@ -2937,6 +2966,7 @@ def add_to_history(analysis: dict) -> bool:
     try:
         sheet = get_google_sheet()
     except Exception:
+        pass
         sheet = None
 
     if not sheet:
@@ -2946,8 +2976,7 @@ def add_to_history(analysis: dict) -> bool:
         try:
             st.session_state["last_analysis"] = analysis
         except Exception:
-            pass
-        return False
+            return False
 
     try:
         analysis_id = generate_analysis_id()
@@ -2997,6 +3026,7 @@ def add_to_history(analysis: dict) -> bool:
                 try:
                     _ssh_v2 = compute_source_snapshot_hash_v2(_bsc)
                 except Exception:
+                    pass
                     _ssh_v2 = None
                 if _ssh:
                     # =============================================================
@@ -3017,6 +3047,7 @@ def add_to_history(analysis: dict) -> bool:
                             except Exception:
                                 pass
                     except Exception:
+                        pass
                         _gs_ref = ""
 
                     _ref = store_full_snapshots_local(_bsc, _ssh)
@@ -3096,6 +3127,7 @@ def add_to_history(analysis: dict) -> bool:
                     default=str,
                 )
             except Exception:
+                pass
                 # ultra-safe fallback: still valid JSON
                 payload_json = '{"_sheet_write":{"truncated":true,"mode":"hard_truncation_wrapper","note":"json.dumps failed"}}'
         # =====================================================================
@@ -3121,6 +3153,7 @@ def add_to_history(analysis: dict) -> bool:
                         if _pj.get("_sheets_safe") is True:
                             is_truncated = True
                     except Exception:
+                        pass
                         # if we can't parse and it's huge, treat as truncated risk
                         if len(payload_json) > 45000:
                             is_truncated = True
@@ -3134,6 +3167,7 @@ def add_to_history(analysis: dict) -> bool:
                 try:
                     full_payload_json = json.dumps(analysis, ensure_ascii=False, default=str)
                 except Exception:
+                    pass
                     full_payload_json = ""
 
                 if full_payload_json:
@@ -3173,9 +3207,7 @@ def add_to_history(analysis: dict) -> bool:
         try:
             st.session_state["last_analysis"] = analysis
         except Exception:
-            pass
-
-        return True
+            return True
 
     except Exception as e:
         st.warning(f"⚠️ Failed to save to Google Sheets: {e}")
@@ -3185,8 +3217,7 @@ def add_to_history(analysis: dict) -> bool:
         try:
             st.session_state["last_analysis"] = analysis
         except Exception:
-            pass
-        return False
+            return False
 
 
 def normalize_unit_tag(unit_str: str) -> str:
@@ -3327,6 +3358,7 @@ def normalize_unit_family(unit_tag: str, ctx: str = "", raw: str = "") -> str:
         try:
             _itag, ifam, _phr, _ex = infer_unit_tag_from_context(ctx or "", raw or "")
         except Exception:
+            pass
             _itag, ifam, _phr, _ex = "", "", "", ""
         if ifam:
             return ifam
@@ -3451,6 +3483,7 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
         except Exception:
+            pass
 
 
             v = None
@@ -3475,8 +3508,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
         except Exception:
-
-
             return candidate
 
 
@@ -3491,6 +3522,7 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
     except Exception:
+        pass
 
 
         ut = str(candidate.get("unit_tag") or candidate.get("unit") or "").strip()
@@ -3509,6 +3541,7 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
         try:
             itag, ifam, phr, ex = infer_unit_tag_from_context(ctx_s, raw_s)
         except Exception:
+            pass
             itag, ifam, phr, ex = ("", "", "", "")
         if itag or ifam:
             if itag:
@@ -3539,6 +3572,7 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
     try:
         fam = normalize_unit_family(ut, ctx=ctx_s, raw=raw_s)
     except Exception:
+        pass
         fam = ""
 
     unit_family_backfilled = False
@@ -3616,6 +3650,7 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
     except Exception:
+        pass
 
 
         mult = None
@@ -3785,8 +3820,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
         except Exception:
-
-
             return ""
 
 
@@ -3934,6 +3967,7 @@ def rebuild_metrics_from_snapshots(
         metric_key_universe.update(list(prev_can.keys()))
         metric_key_universe.update(list(prev_anchors.keys()))
     except Exception:
+        pass
         metric_key_universe = set(prev_can.keys()) if isinstance(prev_can, dict) else set()
     # =========================
 
@@ -3950,6 +3984,7 @@ def rebuild_metrics_from_snapshots(
                 try:
                     vn_s = f"{float(vn):.12g}"
                 except Exception:
+                    pass
                     vn_s = str(vn)
             s = f"{url}|{ah}|{vn_s}|{bu}|{mk}"
             return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
@@ -4026,6 +4061,7 @@ def rebuild_metrics_from_snapshots(
             try:
                 c = canonicalize_numeric_candidate(dict(c))
             except Exception:
+                pass
                 c = dict(c)
 
             # ensure stable url carried through
@@ -4141,14 +4177,14 @@ def rebuild_metrics_from_snapshots(
             if isinstance(prev_can.get(metric_key), dict):
                 base = dict(prev_can.get(metric_key) or {})
         except Exception:
+            pass
             base = {}
         out = dict(base)
         try:
             if isinstance(patch, dict):
                 out.update(patch)
         except Exception:
-            pass
-        return out
+            return out
     # =========================
 
     # ---------- 1) primary rebuild by anchor ----------
@@ -4223,12 +4259,14 @@ def rebuild_metrics_from_snapshots(
             try:
                 schema_name = str(_schema_for_key(metric_key).get("name") or "")
             except Exception:
+                pass
                 schema_name = ""
             fn_bmk = globals().get("build_metric_keywords")
             if callable(fn_bmk):
                 try:
                     tokens = fn_bmk(schema_name or metric_key) or []
                 except Exception:
+                    pass
                     tokens = []
             else:
                 tokens = []
@@ -4316,6 +4354,7 @@ def rebuild_metrics_from_snapshots(
             try:
                 c2 = canonicalize_numeric_candidate(dict(c))
             except Exception:
+                pass
                 c2 = c
 
             val_norm = c2.get("value_norm")
@@ -4323,6 +4362,7 @@ def rebuild_metrics_from_snapshots(
                 try:
                     val_norm = float(c2.get("value"))
                 except Exception:
+                    pass
                     continue
 
             ctx_score = _ctx_match_score(tokens, ctx)
@@ -4405,12 +4445,14 @@ def rebuild_metrics_from_snapshots(
             try:
                 schema_name = str(_schema_for_key(metric_key).get("name") or "")
             except Exception:
+                pass
                 schema_name = ""
             fn_bmk = globals().get("build_metric_keywords")
             if callable(fn_bmk):
                 try:
                     tokens = fn_bmk(schema_name or metric_key) or []
                 except Exception:
+                    pass
                     tokens = []
             else:
                 tokens = []
@@ -4457,6 +4499,7 @@ def rebuild_metrics_from_snapshots(
             try:
                 c2 = canonicalize_numeric_candidate(dict(c))
             except Exception:
+                pass
                 c2 = c
 
             val_norm = c2.get("value_norm")
@@ -4464,6 +4507,7 @@ def rebuild_metrics_from_snapshots(
                 try:
                     val_norm = float(c2.get("value"))
                 except Exception:
+                    pass
                     continue
 
             ctx_score = _ctx_match_score(tokens, ctx)
@@ -4595,21 +4639,25 @@ def rebuild_metrics_from_snapshots(
                 try:
                     _fx2ad_raw_extra = list((web_context or {}).get("extra_urls") or [])
                 except Exception:
+                    pass
                     _fx2ad_raw_extra = []
                 _fx2ad_norm_extra = []
                 try:
                     _fx2ad_norm_extra = _inj_diag_norm_url_list(_fx2ad_raw_extra)
                 except Exception:
+                    pass
                     _fx2ad_norm_extra = []
                 _fx2ad_urls_list = []
                 try:
                     _fx2ad_urls_list = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
                 except Exception:
+                    pass
                     _fx2ad_urls_list = []
                 _fx2ad_norm_urls_list = []
                 try:
                     _fx2ad_norm_urls_list = _inj_diag_norm_url_list(_fx2ad_urls_list)
                 except Exception:
+                    pass
                     _fx2ad_norm_urls_list = []
 
                 # If "admitted" exists (from earlier trace), compare it to extra_urls.
@@ -4617,6 +4665,7 @@ def rebuild_metrics_from_snapshots(
                 try:
                     _fx2ad_admitted_norm = _inj_diag_norm_url_list(_fx2ad_diag.get("admitted") or _fx2ad_diag.get("extra_urls_admitted") or [])
                 except Exception:
+                    pass
                     _fx2ad_admitted_norm = []
 
                 _fx2ad_rows = []
@@ -4636,6 +4685,7 @@ def rebuild_metrics_from_snapshots(
                             _row["gate_reason"] = "present_in_urls_list"
                         _fx2ad_rows.append(_row)
                 except Exception:
+                    pass
                     _fx2ad_rows = _fx2ad_rows
 
                 _fx2ad_diag["fix2ad_inj_attempt_gating_v1"] = {
@@ -4742,9 +4792,7 @@ def _candidate_disallowed_for_metric(_cand: dict, _spec: dict = None) -> bool:
                     # Default: unitless year-like token is not a valid metric value.
                     return True
     except Exception:
-        pass
-
-    return False
+        return False
 
 def rebuild_metrics_from_snapshots_schema_only(
     prev_response: dict,
@@ -4822,6 +4870,7 @@ def rebuild_metrics_from_snapshots_schema_only(
     try:
         _fix33_dbg = bool((web_context or {}).get("debug_evolution") or ((prev_response or {}).get("debug") or {}).get("debug_evolution"))
     except Exception:
+        pass
         _fix33_dbg = False
 
 
@@ -4838,6 +4887,7 @@ def rebuild_metrics_from_snapshots_schema_only(
             elif isinstance(prev_response.get("results"), dict) and isinstance(prev_response["results"].get("metric_schema_frozen"), dict):
                 schema = prev_response["results"].get("metric_schema_frozen")
     except Exception:
+        pass
         schema = None
 
     if not isinstance(schema, dict) or not schema:
@@ -4992,9 +5042,7 @@ def rebuild_metrics_from_snapshots_schema_only(
                             if re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b", raw.lower()):
                                 return True
                         except Exception:
-                            pass
-
-                        return True
+                            return True
                     except Exception:
                         return False
                 def _ai2_schema_currencyish(sd: dict) -> bool:
@@ -5191,6 +5239,7 @@ def rebuild_metrics_from_snapshots_schema_only(
                         key=lambda d: (-(int(d.get("hits") or 0)), str(d.get("value_norm") or ""), str(d.get("raw") or "")),
                     )
                 except Exception:
+                    pass
                     _fix33_top_sorted = _fix33_top
                 metric.setdefault("provenance", {})
                 metric["provenance"]["fix33_top_candidates"] = list(_fix33_top_sorted[:10])
@@ -5389,6 +5438,7 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
         try:
             values = sheets_get_all_values_cached(sheet, cache_key=_cache_key)
         except Exception:
+            pass
             values = []
 
         # ============================================================
@@ -5559,6 +5609,7 @@ def load_api_keys():
         SERPAPI_KEY = st.secrets.get("SERPAPI_KEY") or os.getenv("SERPAPI_KEY", "")
         SCRAPINGDOG_KEY = st.secrets.get("SCRAPINGDOG_KEY") or os.getenv("SCRAPINGDOG_KEY", "")
     except Exception:
+        pass
         PERPLEXITY_KEY = os.getenv("PERPLEXITY_API_KEY", "")
         GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
         SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
@@ -6099,6 +6150,7 @@ def repair_llm_response(data: dict) -> dict:
                             cleaned = re.sub(r'[^\d.-]', '', val)
                             row[key] = float(cleaned) if '.' in cleaned else int(cleaned) if cleaned else 0
                         except Exception:
+                            pass
                             row[key] = 0
                 elif isinstance(val, (int, float)):
                     pass
@@ -6156,6 +6208,7 @@ def validate_numeric_fields(data: dict, context: str = "LLM Response") -> None:
                             cleaned = re.sub(r"[^\d\.\-]", "", val)
                             row[key] = float(cleaned) if cleaned else 0
                         except Exception:
+                            pass
                             row[key] = 0
 
     # Check visualization_data chart_values
@@ -6173,6 +6226,7 @@ def validate_numeric_fields(data: dict, context: str = "LLM Response") -> None:
                         new_vals.append(float(cleaned) if cleaned else 0.0)
                         st.warning(f"⚠️ {context}: visualization_data.chart_values[{j}] is string: '{v}' (coerced)")
                     except Exception:
+                        pass
                         new_vals.append(0.0)
                 else:
                     new_vals.append(0.0)
@@ -6628,6 +6682,7 @@ def _inj_diag_make_run_id(prefix: str = "run") -> str:
         seed = f"{prefix}|{time.time()}|{os.getpid()}|{os.urandom(8).hex()}"
         return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
     except Exception:
+        pass
         try:
             import random
             return f"{prefix}_{random.randint(100000,999999)}"
@@ -6689,6 +6744,7 @@ def _canonicalize_injected_url(url: str) -> str:
         query = urlencode(qs_sorted, doseq=True) if qs_sorted else ""
         return urlunsplit((scheme, netloc, path, query, fragment))
     except Exception:
+        pass
         try:
             return str(url or "").strip()
         except Exception:
@@ -6781,8 +6837,7 @@ def _inj_hash_should_include() -> bool:
         if v in ("0", "false", "no", "n", "off"):
             return False
     except Exception:
-        pass
-    return bool(globals().get("INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH", False))
+        return bool(globals().get("INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH", False))
 
 # =====================================================================
 # PATCH INJ_HASH_POLICY_ALIGN_V1 (Additive, policy-aligned)
@@ -6829,8 +6884,7 @@ def _inj_hash_policy_should_include(persisted_injected_urls) -> bool:
         if bool(globals().get("INJECTED_URL_HASH_POLICY_ALIGN_WITH_BASELINE", True)) and (persisted_injected_urls or []):
             return True
     except Exception:
-        pass
-    return _inj_hash_should_include()
+        return _inj_hash_should_include()
 
 def _inj_hash_add_synthetic_sources(
     baseline_sources_cache: Any,
@@ -6873,10 +6927,157 @@ def _inj_hash_add_synthetic_sources(
         bsc = sorted(bsc, key=lambda x: str((x or {}).get("url") or ""))
         return (bsc, added, reasons)
     except Exception:
+        pass
         try:
             return (list(baseline_sources_cache) if isinstance(baseline_sources_cache, list) else [], [], {})
         except Exception:
             return ([], [], {})
+
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D66_INJECTION_ADMISSION (ADDITIVE)
+# Purpose:
+# - Make injected URL admission deterministic & auditable across Analysis/Evolution.
+# - Promote UI raw/diag fields into web_context['extra_urls'] (the admission input).
+# - Synthesize a minimal web_context['diag_injected_urls'] when fetch_web_context was bypassed.
+# - Pure wiring/diagnostics only: no scraping, no selection changes.
+# =====================================================================
+_URL_RE_FIX2D66 = None
+
+def _fix2d66_extract_urls_from_text(text: str) -> list:
+    """Extract http(s) URLs from arbitrary text (stable, conservative)."""
+    global _URL_RE_FIX2D66
+    try:
+        if _URL_RE_FIX2D66 is None:
+            import re as _re
+            _URL_RE_FIX2D66 = _re.compile(r"https?://[^\s\]\)\"\'<>]+", _re.I)
+        if not isinstance(text, str):
+            return []
+        return [u.strip() for u in _URL_RE_FIX2D66.findall(text) if isinstance(u, str) and u.strip()]
+    except Exception:
+        return []
+
+
+def _fix2d66_collect_injected_urls(web_context: dict, question_text: str = "") -> list:
+    """Collect injected URLs from all known UI/diag fields + (optional) question text."""
+    try:
+        wc = web_context if isinstance(web_context, dict) else {}
+        found = []
+        # direct list fields
+        for k in (
+            'extra_urls',
+            'diag_extra_urls_final', 'diag_extra_urls',
+            'diag_extra_urls_ui', 'extra_urls_ui',
+            'extra_urls_normalized', 'extra_urls_ui_norm',
+        ):
+            v = wc.get(k)
+            if isinstance(v, (list, tuple)):
+                found.extend([str(x).strip() for x in v if isinstance(x, str) and x.strip()])
+
+        # raw string fields
+        for k in (
+            'diag_extra_urls_ui_raw', 'extra_urls_ui_raw',
+            'diag_extra_urls_ui_text', 'extra_urls_ui_text',
+        ):
+            v = wc.get(k)
+            if isinstance(v, str) and v.strip():
+                # splitlines + commas + url regex
+                for line in v.splitlines():
+                    line = (line or '').strip()
+                    if not line:
+                        continue
+                    for p in line.split(','):
+                        p = (p or '').strip()
+                        if p.startswith('http://') or p.startswith('https://'):
+                            found.append(p)
+                found.extend(_fix2d66_extract_urls_from_text(v))
+
+        # diag payloads
+        d = wc.get('diag_injected_urls') if isinstance(wc.get('diag_injected_urls'), dict) else {}
+        if isinstance(d, dict):
+            for k in ('ui_norm', 'intake_norm', 'admitted', 'persisted', 'persisted_norm', 'extra_urls', 'extra_urls_normalized'):
+                v = d.get(k)
+                if isinstance(v, (list, tuple)):
+                    found.extend([str(x).strip() for x in v if isinstance(x, str) and x.strip()])
+            vraw = d.get('ui_raw')
+            if isinstance(vraw, str) and vraw.strip():
+                found.extend(_fix2d66_extract_urls_from_text(vraw))
+
+        # last resort: parse question text (helps when user pastes URL into prompt)
+        if isinstance(question_text, str) and question_text.strip():
+            found.extend(_fix2d66_extract_urls_from_text(question_text))
+
+        # normalize
+        try:
+            norm = _inj_diag_norm_url_list(found)
+        except Exception:
+            pass
+            norm = [u for u in found if isinstance(u, str) and u.startswith(('http://','https://'))]
+        # stable de-dupe order
+        seen = set(); out = []
+        for u in norm:
+            if not u or u in seen:
+                continue
+            seen.add(u); out.append(u)
+        return out
+    except Exception:
+        return []
+
+
+
+def _fix2d66_promote_injected_urls(web_context: dict, question_text: str = "", stage: str = "") -> dict:
+    """Promote injected URLs into web_context.extra_urls and ensure diag_injected_urls exists."""
+    try:
+        if not isinstance(web_context, dict):
+            return web_context
+        inj = _fix2d66_collect_injected_urls(web_context, question_text=question_text)
+        if not inj:
+            return web_context
+
+        # promote into extra_urls if empty/missing
+        cur = web_context.get('extra_urls')
+        if not isinstance(cur, (list, tuple)) or not cur:
+            web_context['extra_urls'] = list(inj)
+        else:
+            # merge
+            merged = []
+            seen = set()
+            for u in _inj_diag_norm_url_list(list(cur) + list(inj)):
+                if not u or u in seen:
+                    continue
+                seen.add(u); merged.append(u)
+            web_context['extra_urls'] = merged
+
+        # ensure ui_raw presence (for inj_trace_v1)
+        if not (isinstance(web_context.get('diag_extra_urls_ui_raw'), str) and web_context.get('diag_extra_urls_ui_raw').strip()):
+            web_context['diag_extra_urls_ui_raw'] = "\n".join(inj)
+
+        # ensure diag_injected_urls exists if upstream bypassed fetch_web_context
+        if not isinstance(web_context.get('diag_injected_urls'), dict):
+            web_context['diag_injected_urls'] = {}
+        d = web_context['diag_injected_urls']
+        if isinstance(d, dict):
+            d.setdefault('run_id', web_context.get('diag_run_id') or _inj_diag_make_run_id(stage or 'run'))
+            d.setdefault('ui_raw', web_context.get('diag_extra_urls_ui_raw') or "\n".join(inj))
+            d.setdefault('ui_norm', list(inj))
+            d.setdefault('intake_norm', list(inj))
+            d.setdefault('admitted', list(inj))
+
+        web_context.setdefault('debug', {})
+        if isinstance(web_context.get('debug'), dict):
+            web_context['debug'].setdefault('fix2d66', {})
+            if isinstance(web_context['debug'].get('fix2d66'), dict):
+                web_context['debug']['fix2d66'].update({
+                    'promoted': True,
+                    'count': int(len(inj)),
+                    'set_hash': _inj_diag_set_hash(inj),
+                    'stage': str(stage or ''),
+                })
+        return web_context
+    except Exception:
+        return web_context
 
 # =====================================================================
 # PATCH INJ_TRACE_V1_HELPERS (ADDITIVE): canonical injected-URL lifecycle trace builder
@@ -6977,6 +7178,7 @@ def _inj_trace_v1_build(
                 else:
                     _rsn = "unknown_rejected_pre_admission"
             except Exception:
+                pass
                 _rsn = "unknown_rejected_pre_admission"
             admission_rejection_reasons[str(_u)] = _rsn
 
@@ -7000,6 +7202,7 @@ def _inj_trace_v1_build(
                 "evolution_fastpath_allows_injection": False,
             }
         except Exception:
+            pass
             policy = {}
         # === PATCH EVO_INJ_ADMISSION_REASON_CODES_V1 END ===
         return {
@@ -7043,6 +7246,138 @@ def _inj_trace_v1_build(
         }
     except Exception:
         return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
+
+# =====================================================================
+# PATCH FIX2D66_INJECTION_ADMISSION_HELPERS (ADDITIVE)
+# Purpose:
+# - Make injected URL admission deterministic and auditable across modes.
+# - Promote UI/raw diagnostic fields into web_context.extra_urls when missing.
+# - Build a minimal diag_injected_urls payload when fetch_web_context wasn't called
+#   (common on evolution replay/fastpath).
+# - Pure wiring + diagnostics: does NOT refetch, does NOT change selector logic.
+# =====================================================================
+
+def _fix2d66_extract_urls_from_text(text: str) -> list:
+    try:
+        if not isinstance(text, str):
+            return []
+        t = text.strip()
+        if not t:
+            return []
+        # conservative URL matcher
+        urls = re.findall(r"https?://[^\s\]\)\}\>\"']+", t)
+        return [u.strip() for u in urls if isinstance(u, str) and u.strip()]
+    except Exception:
+        return []
+
+
+def _fix2d66_collect_injected_urls_from_wc(web_context: dict, question: str = "") -> dict:
+    """Return dict with ui_raw, ui_norm, intake_norm (normalized list) from many possible inputs."""
+    wc = web_context if isinstance(web_context, dict) else {}
+
+    # candidates from list-like fields
+    candidates = []
+    for k in (
+        "extra_urls",
+        "diag_extra_urls_final",
+        "diag_extra_urls",
+        "extra_urls_final",
+        "diag_extra_urls_ui",
+        "extra_urls_ui",
+        "diag_extra_urls_ui_norm",
+        "extra_urls_ui_norm",
+    ):
+        v = wc.get(k)
+        if isinstance(v, (list, tuple)):
+            candidates.extend([x for x in v if isinstance(x, str) and x.strip()])
+        elif isinstance(v, str) and v.strip() and k.endswith("_final"):
+            candidates.extend(_fix2d66_extract_urls_from_text(v))
+
+    # raw text fields
+    ui_raw = ""
+    for k in (
+        "diag_extra_urls_ui_raw",
+        "extra_urls_ui_raw",
+        "extra_sources_text",
+        "extra_sources_text_tab1",
+    ):
+        v = wc.get(k)
+        if isinstance(v, str) and v.strip():
+            if not ui_raw:
+                ui_raw = v
+            candidates.extend(_fix2d66_extract_urls_from_text(v))
+            # also split on newlines/commas
+            for line in v.splitlines():
+                for part in line.split(','):
+                    part = (part or '').strip()
+                    if part.startswith('http://') or part.startswith('https://'):
+                        candidates.append(part)
+
+    # also allow URLs embedded in the question text
+    if isinstance(question, str) and question.strip():
+        candidates.extend(_fix2d66_extract_urls_from_text(question))
+
+    norm = []
+    try:
+        norm = _inj_diag_norm_url_list(candidates)
+    except Exception:
+        pass
+        norm = [x for x in candidates if isinstance(x, str) and x]
+
+    return {
+        "ui_raw": ui_raw,
+        "ui_norm": list(norm),
+        "intake_norm": list(norm),
+    }
+
+
+def _fix2d66_promote_injection_in_web_context(web_context: dict, question: str = "") -> dict:
+    """Mutate web_context in-place: ensure extra_urls + diag_injected_urls reflect UI/raw injection."""
+    wc = web_context if isinstance(web_context, dict) else {}
+    info = _fix2d66_collect_injected_urls_from_wc(wc, question=question)
+    intake = info.get('intake_norm') or []
+
+    # Promote into extra_urls when missing/empty
+    try:
+        cur = wc.get('extra_urls')
+        needs = (not isinstance(cur, (list, tuple)) or not cur)
+        if needs and intake:
+            wc['extra_urls'] = list(intake)
+    except Exception:
+        pass
+
+    # Ensure diag_injected_urls exists even if fetch_web_context wasn't called
+    try:
+        wc.setdefault('diag_injected_urls', {})
+        if isinstance(wc.get('diag_injected_urls'), dict):
+            d = wc['diag_injected_urls']
+            # Fill minimally if absent
+            d.setdefault('run_id', wc.get('diag_run_id') or _inj_diag_make_run_id('inj'))
+            if info.get('ui_raw') and not d.get('ui_raw'):
+                d['ui_raw'] = info.get('ui_raw')
+            d.setdefault('ui_norm', info.get('ui_norm') or [])
+            d.setdefault('intake_norm', intake)
+            # If no admitted present, treat intake as admitted universe (diagnostic only)
+            if not isinstance(d.get('admitted'), list) or not d.get('admitted'):
+                d['admitted'] = list(intake)
+    except Exception:
+        pass
+
+    # breadcrumb
+    try:
+        wc.setdefault('debug', {})
+        if isinstance(wc.get('debug'), dict):
+            wc['debug'].setdefault('fix2d66_injection', {})
+            if isinstance(wc['debug'].get('fix2d66_injection'), dict):
+                wc['debug']['fix2d66_injection'].update({
+                    'promoted': bool(intake),
+                    'intake_count': int(len(intake)),
+                    'intake_set_hash': _inj_diag_set_hash(intake) if intake else '',
+                })
+    except Exception:
+        return wc
+# =====================================================================
+
 # =====================================================================
 # PATCH INJ_TRACE_V1_ENRICH_FROM_ARTIFACTS (ADDITIVE)
 # Purpose:
@@ -7076,6 +7411,7 @@ def _inj_trace_v1_enrich_diag_from_bsc(diag: dict, baseline_sources_cache: list)
                 try:
                     clen_i = int(clen)
                 except Exception:
+                    pass
                     clen_i = 0
                 attempted.append({"url": u, "status": st, "reason": rs, "content_len": clen_i})
             if attempted:
@@ -7120,6 +7456,7 @@ def _inj_trace_v1_enrich_diag_from_scraped_meta(diag: dict, scraped_meta: dict, 
                 try:
                     clen_i = int(clen)
                 except Exception:
+                    pass
                     clen_i = 0
                 attempted.append({"url": u, "status": st, "reason": rs, "content_len": clen_i})
             d["attempted"] = attempted
@@ -7174,6 +7511,7 @@ def scrape_url(url: str) -> Optional[str]:
                     pass
             txt = soup.get_text(separator="\n")
         except Exception:
+            pass
             # fallback: strip tags
             txt = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", html or "")
             txt = re.sub(r"(?is)<[^>]+>", " ", txt)
@@ -7274,6 +7612,13 @@ def fetch_web_context(
     """
     import re
     from datetime import datetime, timezone
+
+    # FIX2D66_PROMOTE_INJECTED_URLS_IN_ATTACH (ADDITIVE)
+    try:
+        _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
+        web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
+    except Exception:
+        pass
 
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -7387,6 +7732,7 @@ def fetch_web_context(
                 if "✅" in str(label):
                     hq_count += 1
     except Exception:
+        pass
         hq_count = 0
 
     # -----------------------------
@@ -7407,6 +7753,7 @@ def fetch_web_context(
     try:
         n = int(num_sources or 3)
     except Exception:
+        pass
         n = 3
     n = max(1, min(12, n))
     admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
@@ -7638,6 +7985,7 @@ def fetch_web_context(
     try:
         progress = st.progress(0)
     except Exception:
+        pass
         progress = None
 
     for i, url in enumerate(admitted):
@@ -7681,6 +8029,7 @@ def fetch_web_context(
                     else:
                         meta["fingerprint"] = fingerprint_text(cleaned) if callable(globals().get("fingerprint_text")) else None
                 except Exception:
+                    pass
                     meta["fingerprint"] = None
 
                 # ---- ADDITIVE: reuse extracted_numbers when unchanged (Change #3) ----
@@ -7717,6 +8066,7 @@ def fetch_web_context(
                     if callable(fn_extract):
                         nums = fn_extract(cleaned, url=url) if "url" in fn_extract.__code__.co_varnames else fn_extract(cleaned)
                 except Exception:
+                    pass
                     nums = []
 
                 if isinstance(nums, list):
@@ -7942,6 +8292,7 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
     try:
         structure_txt, ordering_contract = build_query_structure_prompt(query_structure)
     except Exception:
+        pass
         structure_txt = ""
         ordering_contract = ""
 
@@ -9112,6 +9463,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
         if years:
             signals.append(f"years:{','.join(map(str, years[:8]))}")
     except Exception:
+        pass
         years = []
 
     # -------------------------
@@ -9221,6 +9573,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
     try:
         expected_metric_ids = get_expected_metric_ids_for_category(category) or []
     except Exception:
+        pass
         expected_metric_ids = []
 
     # Add a few intent-driven metric IDs (only if your registry supports them)
@@ -10060,6 +10413,7 @@ def resolve_canonical_identity_v1(identity: dict, metric_schema: dict = None) ->
             except Exception:
                 pass
     except Exception:
+        pass
         schema_index = {}
 
     if _SPINE_V1_AVAILABLE and _canonical_identity_spine is not None:
@@ -10360,6 +10714,7 @@ def canonicalize_metrics(
                     if base_id and isinstance(reg.get(base_id), dict):
                         registry_unit_type = (reg[base_id].get("unit_type") or "").strip().lower()
             except Exception:
+                pass
                 # keep safe defaults
                 pass
             # =========================
@@ -10378,6 +10733,7 @@ def canonicalize_metrics(
             # -------------------------------------------------------------------
 
         except Exception:
+            pass
             registry_unit_type = ""
 
         # Map registry unit_type -> canonicalize_metrics dimension vocabulary
@@ -10742,6 +11098,7 @@ def _fix2d58b_split_primary_metrics_canonical(pmc: dict):
                 canonical_ok[k] = v
         return canonical_ok, provisional
     except Exception:
+        pass
         # Fail-safe: never drop metrics silently if the splitter errors
         return pmc if isinstance(pmc, dict) else {}, {}
 
@@ -10804,8 +11161,7 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
             if callable(fn):
                 return fn(u or "")
         except Exception:
-            pass
-        return (u or "").strip()
+            return (u or "").strip()
 
     def _unit_family_safe(unit_raw: str, dim_hint: str = "") -> str:
         # 1) dimension-first (strongest signal)
@@ -10915,6 +11271,7 @@ def _fix2u_extend_metric_schema_ev_chargers(metric_schema_frozen: dict) -> dict:
         if not isinstance(metric_schema_frozen, dict):
             metric_schema_frozen = {}
     except Exception:
+        pass
         metric_schema_frozen = {}
 
     def _add_if_missing(ckey: str, entry: dict):
@@ -11069,6 +11426,7 @@ def stable_json_hash(obj: Any) -> str:
     try:
         s = json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     except Exception:
+        pass
         s = str(obj)
     return hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -11116,8 +11474,7 @@ def sort_snapshot_numbers(numbers: List[Dict]) -> List[Dict]:
                 # normalize_unit_tag expects tags / unit-ish strings; still better than raw
                 return str(_norm_tag_fn(u) or "")
         except Exception:
-            pass
-        return u
+            return u
     # =========================
 
     def k(n: Dict[str, Any]):
@@ -11515,6 +11872,7 @@ def attribute_span_to_sources(
                 try:
                     vn_s = f"{float(vn):.12g}"
                 except Exception:
+                    pass
                     vn_s = str(vn)
             s = f"{url}|{ah}|{vn_s}|{bu}|{mk}"
             return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
@@ -11583,6 +11941,7 @@ def attribute_span_to_sources(
             try:
                 val_norm = float(c.get("value"))
             except Exception:
+                pass
                 continue
 
         row = {
@@ -12352,10 +12711,12 @@ def get_metric_value_span(metric: Dict) -> Dict[str, Any]:
         try:
             vmin = float(vmin) if vmin is not None else None
         except Exception:
+            pass
             vmin = None
         try:
             vmax = float(vmax) if vmax is not None else None
         except Exception:
+            pass
             vmax = None
 
         # Representative = median of candidates if provided, else midpoint of min/max
@@ -12748,6 +13109,7 @@ def _try_spacy_nlp():
         try:
             nlp = spacy.load("en_core_web_sm")  # common if installed
         except Exception:
+            pass
             nlp = spacy.blank("en")
             if "sentencizer" not in nlp.pipe_names:
                 nlp.add_pipe("sentencizer")
@@ -14322,8 +14684,7 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
                 if txt and txt.strip():
                     return txt, "success_scrapingdog"
         except Exception:
-            pass
-        return None, f"exception:{type(e).__name__}"
+            return None, f"exception:{type(e).__name__}"
 
 
 def _fetch_via_scrapingdog(url: str, timeout: int = 25) -> str:
@@ -14499,6 +14860,7 @@ _fix41_force_rebuild_seen = False
 try:
     _fix41_force_rebuild_seen = bool(web_context.get("force_rebuild"))
 except Exception:
+    pass
     _fix41_force_rebuild_seen = False
 # =====================================================================
 
@@ -14657,6 +15019,7 @@ def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
     try:
         s = json.dumps(compact, ensure_ascii=False, default=str)
     except Exception:
+        pass
         # ultra-safe fallback (still return valid JSON)
         try:
             s = json.dumps({"_sheets_safe": True, "_sheet_write": {"error": "json.dumps failed"}}, ensure_ascii=False)
@@ -14705,9 +15068,7 @@ def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
                 if _ref:
                     wrapper["snapshot_store_ref"] = _ref
             except Exception:
-                pass
-
-        return json.dumps(wrapper, ensure_ascii=False, default=str)
+                return json.dumps(wrapper, ensure_ascii=False, default=str)
     except Exception:
         return '{"_sheets_safe":true,"_sheet_write":{"truncated":true,"mode":"sheets_safe_wrapper","note":"wrapper failed"}}'
 
@@ -14725,8 +15086,7 @@ def _snapshot_store_dir() -> str:
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
-        pass
-    return d
+        return d
 
 def store_full_snapshots_local(baseline_sources_cache: list, source_snapshot_hash: str) -> str:
     """
@@ -14850,6 +15210,7 @@ def compute_source_snapshot_hash_v2(baseline_sources_cache: list, max_items_per_
         payload = json.dumps(parts, ensure_ascii=False, default=str, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
     except Exception:
+        pass
         # Ultra-safe fallback (still deterministic-ish)
         try:
             return hashlib.sha256(str(baseline_sources_cache).encode("utf-8")).hexdigest()
@@ -14888,7 +15249,6 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
             return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
         except Exception:
-
             return ""
 
 
@@ -15070,6 +15430,7 @@ def _is_sheets_rate_limit_error(err: Exception) -> bool:
     try:
         s = str(err) or ""
     except Exception:
+        pass
         s = ""
     # Common markers seen via gspread/googleapiclient:
     markers = ["RESOURCE_EXHAUSTED", "Quota exceeded", "RATE_LIMIT_EXCEEDED", "429"]
@@ -15144,6 +15505,7 @@ def _ensure_snapshot_worksheet(spreadsheet, title: str = "Snapshots"):
             ws = spreadsheet.worksheet(title)
             return ws
         except Exception:
+            pass
             # Create with a reasonable default size; Sheets can expand.
             ws = spreadsheet.add_worksheet(title=title, rows=2000, cols=8)
             try:
@@ -15152,8 +15514,7 @@ def _ensure_snapshot_worksheet(spreadsheet, title: str = "Snapshots"):
                     value_input_option="RAW",
                 )
             except Exception:
-                pass
-            return ws
+                return ws
     except Exception:
         return None
 
@@ -15181,6 +15542,7 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
             if existing:
                 return f"gsheet:{worksheet_title}:{source_snapshot_hash}"
         except Exception:
+            pass
             # best effort; continue to attempt write
             pass
 
@@ -15212,6 +15574,7 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
             # best effort: use global if exists
             code_version = globals().get("CODE_VERSION") or ""
         except Exception:
+            pass
             code_version = ""
 
         # Use append_rows if available, else append_row in loop
@@ -15222,10 +15585,12 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
         try:
             ws.append_rows(rows, value_input_option="RAW")
         except Exception:
+            pass
             for r in rows:
                 try:
                     ws.append_row(r, value_input_option="RAW")
                 except Exception:
+                    pass
                     # partial failure: still return empty to avoid false pointer
                     return ""
 
@@ -15257,6 +15622,7 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
         try:
             values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
         except Exception:
+            pass
             values = []
 
         if not values or len(values) < 2:
@@ -15283,6 +15649,7 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
             col_p = header.index("payload_part")
             col_sha = header.index("sha256") if "sha256" in header else None
         except Exception:
+            pass
             # If headers are missing/misaligned, bail safely
             return []
 
@@ -15293,6 +15660,7 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
                 if len(r) > col_h and r[col_h] == source_snapshot_hash:
                     rows.append(r)
             except Exception:
+                pass
                 continue
 
         if not rows:
@@ -15363,10 +15731,12 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
         try:
             ws = ss.worksheet(worksheet_title)
         except Exception:
+            pass
             # Create sheet if missing (best-effort)
             try:
                 ws = ss.add_worksheet(title=worksheet_title, rows=2000, cols=10)
             except Exception:
+                pass
                 ws = ss.worksheet(worksheet_title)
 
         # Ensure headers exist
@@ -15375,6 +15745,7 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
             if (not headers) or (len(headers) < 5) or headers[0] != "analysis_id":
                 _ = ws.update('A1:E1', [["analysis_id", "part_index", "total_parts", "payload_part", "sha256"]])
         except Exception:
+            pass
             try:
                 _ = ws.update('A1:E1', [["analysis_id", "part_index", "total_parts", "payload_part", "sha256"]])
             except Exception:
@@ -15397,6 +15768,7 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
         try:
             ws.append_rows(rows, value_input_option="RAW")
         except Exception:
+            pass
             # Fallback to per-row append
             for r in rows:
                 try:
@@ -15441,6 +15813,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
             fn = globals().get("sheets_get_all_values_cached")
             rows = fn(ws, cache_key=worksheet_title) if callable(fn) else (ws.get_all_values() or [])
         except Exception:
+            pass
             try:
                 rows = ws.get_all_values() or []
             except Exception:
@@ -15510,6 +15883,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     try:
                         pidx = int(str(r[c_part]).strip())
                     except Exception:
+                        pass
                         pidx = None
 
                 # total_parts (optional)
@@ -15518,6 +15892,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     try:
                         tparts = int(str(r[c_total]).strip())
                     except Exception:
+                        pass
                         tparts = None
 
                 sha = ""
@@ -15530,6 +15905,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
 
                 parts_with_sha.append((pidx, tparts, chunk, sha))
             except Exception:
+                pass
                 continue
 
         if not parts_with_sha:
@@ -15564,6 +15940,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     totals = [tp for _, tp, _ in best_items if isinstance(tp, int) and tp > 0]
                     chosen_total = max(totals) if totals else None
                 except Exception:
+                    pass
                     chosen_total = None
 
                 parts = [(pidx, chunk) for (pidx, _tparts, chunk) in best_items]
@@ -15574,13 +15951,16 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     totals = [tp for _, tp, _, _ in parts_with_sha if isinstance(tp, int) and tp > 0]
                     chosen_total = max(totals) if totals else None
                 except Exception:
+                    pass
                     chosen_total = None
         except Exception:
+            pass
             parts = [(pidx, chunk) for pidx, _tparts, chunk, _sha in parts_with_sha]
             try:
                 totals = [tp for _, tp, _, _ in parts_with_sha if isinstance(tp, int) and tp > 0]
                 chosen_total = max(totals) if totals else None
             except Exception:
+                pass
                 chosen_total = None
         # -----------------------------------------------------------------
 
@@ -15650,6 +16030,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                 return obj
             return {}
         except Exception:
+            pass
             # PATCH HF_LOAD_V2_SALVAGE (ADDITIVE): common salvage for leading/trailing junk
             try:
                 # Try to isolate first "{" and last "}" if accidental prefix/suffix exists
@@ -15669,11 +16050,9 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                                 "salvaged": True,
                             }
                         except Exception:
-                            pass
-                        return obj2
+                            return obj2
             except Exception:
-                pass
-            return {}
+                return {}
 
     except Exception:
         return {}
@@ -15686,6 +16065,13 @@ def fingerprint_text(text: str) -> str:
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
 
 def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> dict:
+    # PATCH FIX2D66: promote injected URLs from UI/raw fields into web_context for deterministic admission
+    try:
+        _q = str((analysis or {}).get('question') or '')
+        _fix2d66_promote_injection_in_web_context(web_context, question=_q)
+    except Exception:
+        pass
+
     """
     Attach stable source snapshots (from web_context.scraped_meta) into analysis.
 
@@ -15697,6 +16083,13 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     """
     import re
     from datetime import datetime, timezone
+
+    # FIX2D66_PROMOTE_INJECTED_URLS_IN_ATTACH (ADDITIVE)
+    try:
+        _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
+        web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
+    except Exception:
+        pass
 
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -15738,8 +16131,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             if callable(_canon_fn):
                 return _canon_fn(dict(n))
         except Exception:
-            pass
-        return dict(n)
+            return dict(n)
     # =========================================================================
 
     def _parse_num(value, unit_hint=""):
@@ -15807,8 +16199,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             if callable(fn):
                 return fn(x or "")
         except Exception:
-            pass
-        return (x or "").strip()
+            return (x or "").strip()
 
 
     # -----------------------------
@@ -15939,6 +16330,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 )
                 baseline_sources_cache = _bsc_aug
         except Exception:
+            pass
             _inj_hash_added = []
             _inj_hash_reasons = {}
         # =====================================================================
@@ -15958,13 +16350,11 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     _diag = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
 
                 _inj_urls = []
-                if isinstance(_diag, dict):
-                    _inj_urls = _inj_diag_norm_url_list(
-                        _diag.get("intake_norm")
-                        or _diag.get("extra_urls_normalized")
-                        or _diag.get("extra_urls")
-                        or []
-                    )
+                try:
+                    _inj_urls = _fix2d66_collect_injected_urls(web_context or {}, question_text=str((analysis or {}).get('question') or ''))
+                except Exception:
+                    pass
+                    _inj_urls = []
 
                 _snap_urls = _inj_diag_hash_inputs_from_bsc(baseline_sources_cache)
                 _hash_inputs = _snap_urls
@@ -15974,10 +16364,12 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 try:
                     _h_v1 = compute_source_snapshot_hash(baseline_sources_cache)
                 except Exception:
+                    pass
                     _h_v1 = ""
                 try:
                     _h_v2 = compute_source_snapshot_hash_v2(baseline_sources_cache)
                 except Exception:
+                    pass
                     _h_v2 = ""
 
                 analysis.setdefault("results", {})
@@ -16238,8 +16630,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     if "trillion" in sut:
                         return ("trillion" in blob) or re.search(r"\bt\b", blob) is not None
                 except Exception:
-                    pass
-                return True
+                    return True
 
             for _ck, _m in list(_pmc.items()):
                 if not isinstance(_m, dict):
@@ -16282,6 +16673,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     "context_snippet": (str(_c.get("context_snippet") or "")[:180])
                                 })
                     except Exception:
+                        pass
                         continue
                 if len(_vals) < 2:
                     continue
@@ -16636,6 +17028,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                         try:
                                             out_m["value_norm"] = float(v_try)
                                         except Exception:
+                                            pass
                                             out_m["value_norm"] = v_try
                             except Exception:
                                 pass
@@ -16715,6 +17108,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                 str(_m.get('source_url') or ""),
                             ]).lower()
                         except Exception:
+                            pass
                             txt = str(_ck or "").lower()
                         s = 0
                         # Basic topic cues
@@ -16844,6 +17238,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                 if best is None:
                                     best = cand
                             except Exception:
+                                pass
                                 continue
                         if best is None:
                             continue
@@ -16860,6 +17255,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     try:
                                         _parsed = _fix2d33_parse_value_norm_v1(_vraw, out_m) if ' _fix2d33_parse_value_norm_v1'.strip() else None
                                     except Exception:
+                                        pass
                                         _parsed = None
                                     if _parsed is not None:
                                         out_m['value_norm'] = _parsed
@@ -16910,6 +17306,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 try:
                     _core['baseline_schema_metrics_v1'] = dict(baseline_schema)
                 except Exception:
+                    pass
                     _core['baseline_schema_metrics_v1'] = baseline_schema
                 try:
                     if not isinstance(analysis.get('results'), dict):
@@ -17666,8 +18063,7 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 ah = m.get("anchor_hash") or m.get("anchor") or m.get("anchorHash")
                 return str(ah) if ah else None
         except Exception:
-            pass
-        return None
+            return None
 
     def _get_prev_anchor_hash(prev_resp: dict, ckey: str, pm: dict):
         # 1) direct on metric row
@@ -17685,9 +18081,7 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                     if ah2:
                         return str(ah2)
         except Exception:
-            pass
-
-        return None
+            return None
 
     def _get_cur_anchor_hash(cur_resp: dict, ckey: str, cm: dict):
         # 1) direct on metric row (evolution rebuild puts anchor_hash here)
@@ -17705,9 +18099,7 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                     if ah2:
                         return str(ah2)
         except Exception:
-            pass
-
-        return None
+            return None
     # =========================================================================
 
     # =========================================================================
@@ -17722,8 +18114,7 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 a = ma.get(ckey)
                 return a if isinstance(a, dict) else {}
         except Exception:
-            pass
-        return {}
+            return {}
 
     def _anchor_meta(prev_resp: dict, cur_resp: dict, ckey: str, pm: dict, cm: dict):
         """
@@ -17743,22 +18134,26 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
             try:
                 src = (cm or {}).get("source_url") or (cm or {}).get("url")
             except Exception:
+                pass
                 src = None
         if not ctx:
             try:
                 ctx = (cm or {}).get("context_snippet") or (cm or {}).get("context")
             except Exception:
+                pass
                 ctx = None
 
         if not src:
             try:
                 src = (pm or {}).get("source_url") or (pm or {}).get("url")
             except Exception:
+                pass
                 src = None
         if not ctx:
             try:
                 ctx = (pm or {}).get("context_snippet") or (pm or {}).get("context")
             except Exception:
+                pass
                 ctx = None
 
         try:
@@ -17767,11 +18162,13 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
             else:
                 ctx = None
         except Exception:
+            pass
             ctx = None
 
         try:
             conf = float(conf) if conf is not None else None
         except Exception:
+            pass
             conf = None
 
         return src, ctx, conf
@@ -17873,8 +18270,7 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                         except Exception:
                             pass
         except Exception:
-            pass
-        return ae, re_
+            return ae, re_
     # =========================================================================
 
     prev_response = prev_response if isinstance(prev_response, dict) else {}
@@ -18098,6 +18494,7 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 if prev_unit_cmp and cur_unit_cmp and str(prev_unit_cmp) != str(cur_unit_cmp):
                     unit_mismatch = True
             except Exception:
+                pass
                 unit_mismatch = False
 
             # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
@@ -18109,6 +18506,7 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 if anchor_same:
                     match_conf = 98.0
             except Exception:
+                pass
                 match_conf = 92.0
 
             metric_changes.append({
@@ -18353,8 +18751,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 ah = m.get("anchor_hash") or m.get("anchor") or m.get("anchorHash")
                 return str(ah) if ah else None
         except Exception:
-            pass
-        return None
+            return None
 
     def _get_prev_anchor_hash(prev_resp: dict, ckey: str, pm: dict):
         # 1) direct on metric row
@@ -18372,9 +18769,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     if ah2:
                         return str(ah2)
         except Exception:
-            pass
-
-        return None
+            return None
 
     def _get_cur_anchor_hash(cur_resp: dict, ckey: str, cm: dict):
         # 1) direct on metric row (evolution rebuild puts anchor_hash here)
@@ -18392,9 +18787,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     if ah2:
                         return str(ah2)
         except Exception:
-            pass
-
-        return None
+            return None
     # =========================================================================
 
     # =========================================================================
@@ -18409,8 +18802,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 a = ma.get(ckey)
                 return a if isinstance(a, dict) else {}
         except Exception:
-            pass
-        return {}
+            return {}
 
     def _anchor_meta(prev_resp: dict, cur_resp: dict, ckey: str, pm: dict, cm: dict):
         """
@@ -18430,22 +18822,26 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             try:
                 src = (cm or {}).get("source_url") or (cm or {}).get("url")
             except Exception:
+                pass
                 src = None
         if not ctx:
             try:
                 ctx = (cm or {}).get("context_snippet") or (cm or {}).get("context")
             except Exception:
+                pass
                 ctx = None
 
         if not src:
             try:
                 src = (pm or {}).get("source_url") or (pm or {}).get("url")
             except Exception:
+                pass
                 src = None
         if not ctx:
             try:
                 ctx = (pm or {}).get("context_snippet") or (pm or {}).get("context")
             except Exception:
+                pass
                 ctx = None
 
         try:
@@ -18454,11 +18850,13 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             else:
                 ctx = None
         except Exception:
+            pass
             ctx = None
 
         try:
             conf = float(conf) if conf is not None else None
         except Exception:
+            pass
             conf = None
 
         return src, ctx, conf
@@ -18552,8 +18950,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                         except Exception:
                             pass
         except Exception:
-            pass
-        return ae, re_
+            return ae, re_
     # =========================================================================
 
     prev_response = prev_response if isinstance(prev_response, dict) else {}
@@ -18692,6 +19089,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 if prev_unit_cmp and cur_unit_cmp and str(prev_unit_cmp) != str(cur_unit_cmp):
                     unit_mismatch = True
             except Exception:
+                pass
                 unit_mismatch = False
 
             # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
@@ -18703,6 +19101,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 if anchor_same:
                     match_conf = 98.0
             except Exception:
+                pass
                 match_conf = 92.0
 
             metric_changes.append({
@@ -18846,6 +19245,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
 try:
     diff_metrics_by_name_LEGACY = diff_metrics_by_name  # type: ignore
 except Exception:
+    pass
     diff_metrics_by_name_LEGACY = None
 
 def diff_metrics_by_name(prev_response: dict, cur_response: dict):
@@ -18940,8 +19340,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 ah = m.get("anchor_hash") or m.get("anchor") or m.get("anchorHash")
                 return str(ah) if ah else None
         except Exception:
-            pass
-        return None
+            return None
 
     def _get_prev_anchor_hash(prev_resp: dict, ckey: str, pm: dict):
         # 1) direct on metric row
@@ -18959,9 +19358,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     if ah2:
                         return str(ah2)
         except Exception:
-            pass
-
-        return None
+            return None
 
     def _get_cur_anchor_hash(cur_resp: dict, ckey: str, cm: dict):
         # 1) direct on metric row (evolution rebuild puts anchor_hash here)
@@ -18979,9 +19376,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                     if ah2:
                         return str(ah2)
         except Exception:
-            pass
-
-        return None
+            return None
     # =========================================================================
 
     # =========================================================================
@@ -18996,8 +19391,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 a = ma.get(ckey)
                 return a if isinstance(a, dict) else {}
         except Exception:
-            pass
-        return {}
+            return {}
 
     def _anchor_meta(prev_resp: dict, cur_resp: dict, ckey: str, pm: dict, cm: dict):
         """
@@ -19017,22 +19411,26 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             try:
                 src = (cm or {}).get("source_url") or (cm or {}).get("url")
             except Exception:
+                pass
                 src = None
         if not ctx:
             try:
                 ctx = (cm or {}).get("context_snippet") or (cm or {}).get("context")
             except Exception:
+                pass
                 ctx = None
 
         if not src:
             try:
                 src = (pm or {}).get("source_url") or (pm or {}).get("url")
             except Exception:
+                pass
                 src = None
         if not ctx:
             try:
                 ctx = (pm or {}).get("context_snippet") or (pm or {}).get("context")
             except Exception:
+                pass
                 ctx = None
 
         try:
@@ -19041,11 +19439,13 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
             else:
                 ctx = None
         except Exception:
+            pass
             ctx = None
 
         try:
             conf = float(conf) if conf is not None else None
         except Exception:
+            pass
             conf = None
 
         return src, ctx, conf
@@ -19139,8 +19539,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                         except Exception:
                             pass
         except Exception:
-            pass
-        return ae, re_
+            return ae, re_
     # =========================================================================
 
     prev_response = prev_response if isinstance(prev_response, dict) else {}
@@ -19279,6 +19678,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 if prev_unit_cmp and cur_unit_cmp and str(prev_unit_cmp) != str(cur_unit_cmp):
                     unit_mismatch = True
             except Exception:
+                pass
                 unit_mismatch = False
 
             # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
@@ -19290,6 +19690,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 if anchor_same:
                     match_conf = 98.0
             except Exception:
+                pass
                 match_conf = 92.0
 
             metric_changes.append({
@@ -19450,8 +19851,7 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
             try:
                 return fn(u)
             except Exception:
-                pass
-        return (u or "").strip()
+                return (u or "").strip()
 
     def parse_num(v, unit=""):
         fn = globals().get("parse_human_number")
@@ -19531,6 +19931,7 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
         try:
             qs = float(qs)
         except Exception:
+            pass
             qs = 1.0
 
         for n in (sr.get("extracted_numbers") or []):
@@ -19729,6 +20130,13 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     import re
     from datetime import datetime, timezone
 
+    # FIX2D66_PROMOTE_INJECTED_URLS_IN_ATTACH (ADDITIVE)
+    try:
+        _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
+        web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
+    except Exception:
+        pass
+
     def _now():
         return datetime.now(timezone.utc).isoformat()
 
@@ -19848,6 +20256,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                 if baseline_sources_cache:
                     snapshot_origin = "analysis_top_level_cache"
     except Exception:
+        pass
         baseline_sources_cache = []
 
     # =====================================================================
@@ -20021,6 +20430,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             if isinstance(r, dict) and isinstance(r.get("baseline_sources_cache_invalid"), list):
                 invalid_count = len(r.get("baseline_sources_cache_invalid") or [])
     except Exception:
+        pass
         invalid_count = 0
 
     # ---------- Prepare stable default output ----------
@@ -20171,6 +20581,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                 or []
             )
         except Exception:
+            pass
             _fix41afc10_injected_norm = []
 
         # If UI raw textarea is present, merge its parsed URLs (newline/comma separated)
@@ -20206,6 +20617,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                         try:
                             _txt = fetch_url_content(_u)
                         except Exception:
+                            pass
                             _txt = None
 
                         _status = "failed"
@@ -20217,6 +20629,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                             try:
                                 _nums = extract_numbers_with_context(_txt, source_url=_u) or []
                             except Exception:
+                                pass
                                 _nums = []
                         # fingerprint (best-effort; used only for determinism / debugging)
                         _fp = ""
@@ -20224,6 +20637,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                             if isinstance(_txt, str) and _txt:
                                 _fp = hashlib.sha256(_txt.encode("utf-8", errors="ignore")).hexdigest()
                         except Exception:
+                            pass
                             _fp = ""
 
                         _snap = {
@@ -20244,6 +20658,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                         except Exception:
                             pass
                     except Exception:
+                        pass
                         # never break evolution on injected fetch attempts
                         pass
 
@@ -20357,8 +20772,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             if callable(fn):
                 return fn(dict(n))
         except Exception:
-            pass
-        return dict(n)
+            return dict(n)
 
     def _build_anchor_to_candidate_map(snapshots: list) -> dict:
         m = {}
@@ -20505,6 +20919,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                         if callable(_fn_bsc) and isinstance(_fx14_sm, dict):
                             _fx14_bsc_new = _fn_bsc(_fx14_sm)
                     except Exception:
+                        pass
                         _fx14_bsc_new = None
 
                     if isinstance(_fx14_bsc_new, list) and _fx14_bsc_new:
@@ -20572,6 +20987,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                             if isinstance(_d15, dict):
                                 _fix41afc18_inj_delta = list(_d15.get("inj_delta") or [])
                     except Exception:
+                        pass
                         _fix41afc18_inj_delta = []
                     _fix41afc18_inj_set = set()
                     try:
@@ -20581,6 +20997,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                         else:
                             _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
                     except Exception:
+                        pass
                         _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
 
                     def _fix41afc18_has_evidence(m: dict) -> bool:
@@ -20716,6 +21133,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                     pass
                 # =====================================================================
         except Exception:
+            pass
             current_metrics = {}
     if not isinstance(current_metrics, dict) or not current_metrics:
         # FIX2D65A: do not fail hard here; emit a warning and continue so Evolution can still output JSON.
@@ -21050,6 +21468,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
+        pass
         metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
 
     # ============================================================
@@ -21133,6 +21552,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         except Exception:
             pass
     except Exception:
+        pass
         _mc_v2, _mc_v2_summary = ([], None)
 
     # Write V2 rows to output for UI/debug visibility
@@ -21452,8 +21872,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 if ah:
                     return str(ah)
         except Exception:
-            pass
-        return None
+            return None
 
     def _raw_display_value(m: dict):
         if not isinstance(m, dict):
@@ -21518,6 +21937,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 if ah:
                     cur_by_anchor.setdefault(str(ah), []).append(ck)
     except Exception:
+        pass
         cur_by_anchor = {}
 
     # Deterministic resolution: lexicographic min on canonical_key
@@ -21587,6 +22007,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 elif isinstance(cur_response.get("inj_trace_v1"), dict):
                     _inj = cur_response.get("inj_trace_v1")
         except Exception:
+            pass
             _inj = None
 
         # (2) sometimes: locals/output.debug.inj_trace_v1 (cur_response passed as a partial dict)
@@ -21613,6 +22034,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         if isinstance(_ad, list):
             inj_set = set([u for u in _ad if isinstance(u, str) and u])
     except Exception:
+        pass
         inj_set = set()
     # END PATCH FIX2D3
 
@@ -21683,6 +22105,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 _samp = list(sorted(list(inj_set)))[:50] if isinstance(inj_set, set) else []
                 summary["diag"]["fix2w_injected_url_set_v2"]["inj_set_sample"] = _samp
             except Exception:
+                pass
                 summary["diag"]["fix2w_injected_url_set_v2"]["inj_set_sample"] = []
     except Exception:
         pass
@@ -21715,6 +22138,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         if _fix2d46_mode_raw in ("schema", "cross", "schema_union", "schema_cross", "schema_cross_source", "schema+union", "x"):
             _fix2d46_enabled = True
     except Exception:
+        pass
         _fix2d46_enabled = False
 
     if _fix2d46_enabled and isinstance(cur_metrics, dict):
@@ -21731,8 +22155,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                         if v is not None:
                             return float(v)
                     except Exception:
-                        pass
-                return 0.0
+                        return 0.0
 
             for _ck, _m in cur_metrics.items():
                 if not isinstance(_m, dict):
@@ -21775,6 +22198,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 for ah in list(cur_by_anchor.keys()):
                     cur_by_anchor[ah] = sorted([c for c in cur_by_anchor[ah] if isinstance(c, str)])
             except Exception:
+                pass
                 cur_by_anchor = {}
 
             try:
@@ -21862,6 +22286,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 _urls = _metric_source_urls(cm)
                 cur_source_url = _urls[0] if _urls else None
             except Exception:
+                pass
                 cur_source_url = None
 
             try:
@@ -21869,6 +22294,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 if _urls:
                     cur_source_url = _urls[0]
             except Exception:
+                pass
                 cur_source_url = None
         else:
             not_found += 1
@@ -21939,6 +22365,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 else:
                     baseline_change_type = "decreased"
             except Exception:
+                pass
                 baseline_is_comparable = False
                 baseline_change_type = "unknown"
         else:
@@ -21981,6 +22408,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     except Exception:
                         pass
         except Exception:
+            pass
             _fix2d41_baseline_remap_used = False
             _fix2d41_baseline_remap_score = None
             _fix2d41_baseline_comparability_mode = None
@@ -22017,6 +22445,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 except Exception:
                     pass
         except Exception:
+            pass
             _fix2d32_anchor_mismatch = False
         # =====================================================================
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
@@ -22036,6 +22465,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 except Exception:
                     pass
         except Exception:
+            pass
             _fix2d32_anchor_mismatch = False
         # =====================================================================
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
@@ -22060,6 +22490,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 except Exception:
                     pass
         except Exception:
+            pass
             _fix2d35_baseline_proxy_used = False
             _fix2d35_baseline_proxy_type = None
         # =====================================================================
@@ -22154,8 +22585,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             if isinstance(it, dict) and isinstance(it.get("admitted_norm"), list):
                 return [x for x in it.get("admitted_norm") if isinstance(x, str)]
         except Exception:
-            pass
-        return []
+            return []
 
     def _unwrap_baseline_sources_cache_current(resp: dict):
         if not isinstance(resp, dict):
@@ -22590,6 +23020,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                         str(rr.get("source_url") or ""),
                     ))
         except Exception:
+            pass
             existing_row_keys = set()
 
         candidates = []
@@ -22809,6 +23240,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 })
                 _fix2p_canary_injected = True
     except Exception:
+        pass
         _fix2p_canary_injected = False
     summary = {
         "rows_total": len(rows),
@@ -22888,9 +23320,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, snapsh
             except TypeError:
                 return fn(prev_response, snapshot_pool)
     except Exception:
-        pass
-
-    return {}
+        return {}
 
 def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
     """Early alias: prefer the analysis-canonical rebuild if later-defined; else schema-only."""
@@ -22908,9 +23338,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, sn
         if callable(fn):
             return fn(prev_response, snapshot_pool, web_context=web_context)
     except Exception:
-        pass
-
-    return {}
+        return {}
 
 
 def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
@@ -22924,6 +23352,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     """
     import re
     from datetime import datetime, timezone
+
+    # FIX2D66_PROMOTE_INJECTED_URLS_IN_ATTACH (ADDITIVE)
+    try:
+        _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
+        web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
+    except Exception:
+        pass
 
     def _now():
         return datetime.now(timezone.utc).isoformat()
@@ -22999,8 +23434,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 if isinstance(v, dict) and v:
                     return v
         except Exception:
-            pass
-        return {}
+            return {}
 
     try:
         if web_context is None or not isinstance(web_context, dict):
@@ -23011,12 +23445,14 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         try:
             _fix41u_ui_raw = str(web_context.get("diag_extra_urls_ui_raw") or web_context.get("extra_urls_ui_raw") or "")
         except Exception:
+            pass
             _fix41u_ui_raw = ""
 
         _fix41u_extra_urls = []
         try:
             _fix41u_extra_urls = _inj_diag_norm_url_list(web_context.get("extra_urls") or [])
         except Exception:
+            pass
             _fix41u_extra_urls = []
 
         # If Evolution UI did not supply extras, capture what baseline analysis had (diagnostic only)
@@ -23026,6 +23462,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if not _fix41u_extra_urls and isinstance(_fix41u_prev_trace, dict):
                 _fix41u_replayed = _inj_diag_norm_url_list(_fix41u_prev_trace.get("ui_norm") or [])
         except Exception:
+            pass
             _fix41u_replayed = []
 
         # Ensure diag container exists
@@ -23124,6 +23561,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 if baseline_sources_cache:
                     snapshot_origin = "analysis_top_level_cache"
     except Exception:
+        pass
         baseline_sources_cache = []
 
     # =====================================================================
@@ -23297,6 +23735,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if isinstance(r, dict) and isinstance(r.get("baseline_sources_cache_invalid"), list):
                 invalid_count = len(r.get("baseline_sources_cache_invalid") or [])
     except Exception:
+        pass
         invalid_count = 0
 
     # ---------- Prepare stable default output ----------
@@ -23515,6 +23954,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             try:
                 return _fix31_json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
             except Exception:
+                pass
                 # last resort
                 return str(obj)
 
@@ -23566,8 +24006,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     except Exception:
                         pass
             except Exception:
-                pass
-            return _fix31_snapshot_fingerprint(bsc)
+                return _fix31_snapshot_fingerprint(bsc)
 
         _prev_hash = None
         _prev_hash_stable = None
@@ -23807,6 +24246,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         try:
                             _nums = extract_numbers_with_context(_txt, source_url=_u_norm) or []
                         except Exception:
+                            pass
                             _nums = []
                         _row.update({
                             "status": "fetched",
@@ -24043,6 +24483,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     except Exception:
                         pass
             except Exception:
+                pass
                 # Never break evolution on diagnostics / bypass checks
                 pass
             if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
@@ -24077,6 +24518,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             try:
                 _cur_hash = _fix37_snapshot_hash_stable(baseline_sources_cache)
             except Exception:
+                pass
                 _cur_hash = _cur_hash_v1
 
             # Prefer stable/v2 previous hash if present
@@ -24122,6 +24564,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         try:
                             _fix42_cur_pool_hash = _fix37_snapshot_hash_stable(_cur_pool)
                         except Exception:
+                            pass
                             _fix42_cur_pool_hash = None
 
                         _prev_hash_for_compare = _prev_hash_pref if (isinstance(_prev_hash_pref, str) and _prev_hash_pref) else _prev_hash
@@ -24202,6 +24645,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 except Exception:
                     pass
     except Exception:
+        pass
         _fix31_authoritative_reuse = False
         try:
             if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
@@ -24276,8 +24720,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if callable(fn):
                 return fn(dict(n))
         except Exception:
-            pass
-        return dict(n)
+            return dict(n)
 
     def _build_anchor_to_candidate_map(snapshots: list) -> dict:
         m = {}
@@ -24336,6 +24779,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if callable(fn_rebuild):
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
         except Exception:
+            pass
             current_metrics = {}
     if not isinstance(current_metrics, dict) or not current_metrics:
         # FIX2D65A: do not fail hard here; emit a warning and continue so Evolution can still output JSON.
@@ -24541,6 +24985,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 if _best is not None:
                     _pool_key_used, _pool = _best[0], _best[1]
             except Exception:
+                pass
                 _pool = None
                 _pool_key_used = None
 
@@ -24557,6 +25002,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _cand_pools.sort(key=lambda kv: len(kv[1] or []), reverse=True)
                         _pool = _cand_pools[0][1]
                 except Exception:
+                    pass
                     _pool = None
 
             if isinstance(_pool, list):
@@ -24584,8 +25030,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     if callable(fn):
                         return fn
                 except Exception:
-                    pass
-                return None
+                    return None
 
             # END PATCH FIX2D3
 
@@ -24631,6 +25076,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     try:
                         _fix41afc19_keys_sample_v19 = list(current_metrics_for_display.keys())[:10]
                     except Exception:
+                        pass
                         _fix41afc19_keys_sample_v19 = []
                 else:
                     _fix41afc19_skip_reason_v19 = _fix41afc19_skip_reason_v19 or "rebuilt_empty_or_non_dict"
@@ -24755,6 +25201,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             if isinstance(c, dict):
                                 flat.append(c)
             except Exception:
+                pass
                 flat = []
 
             def _cand_has_unit_evidence(c: dict) -> bool:
@@ -24782,6 +25229,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     pr = previous_data.get("primary_response") if isinstance(previous_data.get("primary_response"), dict) else previous_data
                     schema = (pr.get("metric_schema_frozen") or {}) if isinstance(pr, dict) else {}
             except Exception:
+                pass
                 schema = {}
 
             def _score_candidate_for_key(c: dict, ckey: str) -> int:
@@ -24804,8 +25252,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             if str(c.get("anchor_hash")) == str(md.get("anchor_hash")):
                                 s += 10
                     except Exception:
-                        pass
-                    return int(s)
+                        return int(s)
                 except Exception:
                     return 0
 
@@ -24845,6 +25292,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             "anchor_hash": t.get("anchor_hash"),
                         })
                 except Exception:
+                    pass
                     top3 = []
 
                 _fix41afc19_winner_trace_v19[k] = {
@@ -24976,6 +25424,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 if _tot > 0:
                     _suspicious_existing = (_sus / float(_tot)) >= 0.30
         except Exception:
+            pass
             _suspicious_existing = False
 
         # Best-effort: rebuild canonical-for-render from frozen snapshots using analysis-aligned builder.
@@ -24992,6 +25441,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _anchors = prev_response.get("metric_anchors") or {}
                     _prev_canon = prev_response.get("primary_metrics_canonical") or {}
             except Exception:
+                pass
                 _schema, _anchors, _prev_canon = {}, {}, {}
 
             # Choose the best available analysis-aligned rebuild function
@@ -25001,6 +25451,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     canonical_for_render = _fn(baseline_sources_cache, _schema, _anchors, _prev_canon)
                     _canonical_for_render_fn = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
                 except Exception:
+                    pass
                     canonical_for_render = {}
             if (not canonical_for_render) and callable(globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")):
                 try:
@@ -25008,6 +25459,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     canonical_for_render = _fn2(baseline_sources_cache, _schema, _anchors, _prev_canon)
                     _canonical_for_render_fn = "rebuild_metrics_from_snapshots_with_anchors_fix16"
                 except Exception:
+                    pass
                     canonical_for_render = {}
             if (not canonical_for_render) and callable(globals().get("rebuild_metrics_from_snapshots_schema_only")):
                 try:
@@ -25015,6 +25467,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     canonical_for_render = _fn3(baseline_sources_cache, _schema)
                     _canonical_for_render_fn = "rebuild_metrics_from_snapshots_schema_only"
                 except Exception:
+                    pass
                     canonical_for_render = {}
 
             if isinstance(canonical_for_render, dict) and canonical_for_render:
@@ -25036,6 +25489,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _canonical_for_render_count = int(len(canonical_for_render)) if isinstance(canonical_for_render, dict) else 0
             _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12] if isinstance(canonical_for_render, dict) else []
     except Exception:
+        pass
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
         _canonical_for_render_reason = "exception_fallback_existing"
 
@@ -25098,6 +25552,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             out["source_url"] = _url
                         return out
                 except Exception:
+                    pass
                     continue
             return None
         except Exception:
@@ -25128,6 +25583,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _schema = prev_response.get("metric_schema_frozen") or {}
                     _anchors = prev_response.get("metric_anchors") or {}
             except Exception:
+                pass
                 _schema, _anchors = {}, {}
             _v28_anchor_enforce["schema_keys"] = int(len(_schema)) if isinstance(_schema, dict) else 0
             _v28_anchor_enforce["anchors_keys"] = int(len(_anchors)) if isinstance(_anchors, dict) else 0
@@ -25164,6 +25620,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 elif vnorm is not None:
                                     raw = str(vnorm)
                             except Exception:
+                                pass
                                 raw = ""
 
                         cm = canonical_for_render.get(_ckey) if isinstance(canonical_for_render, dict) else None
@@ -25191,6 +25648,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         if len(_v28_anchor_enforce["hit_keys_sample"]) < 12:
                             _v28_anchor_enforce["hit_keys_sample"].append(str(_ckey))
                     except Exception:
+                        pass
                         continue
 # ============================================================
 # ============================================================
@@ -25594,6 +26052,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     else:
                         _v29_schema_gate["kept"] += 1
                 except Exception:
+                    pass
                     continue
     except Exception:
         pass
@@ -25671,6 +26130,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     elif cm.get("value_norm") is not None:
                         raw = str(cm.get("value_norm"))
                 except Exception:
+                    pass
                     raw = ""
             if raw:
                 cm["raw"] = raw
@@ -25709,6 +26169,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if isinstance(prev_response, dict):
                 _schema = prev_response.get("metric_schema_frozen") or {}
         except Exception:
+            pass
             _schema = {}
 
         _fix16_exp = globals().get("_fix16_expected_dimension")
@@ -25723,6 +26184,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 try:
                     _expected = _fix16_exp(_defn)
                 except Exception:
+                    pass
                     _expected = None
 
                 # pull unit evidence in the same style analysis expects
@@ -25733,12 +26195,14 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     if callable(_fix16_has_unit):
                         _has_any = bool(_fix16_has_unit(_m))
                 except Exception:
+                    pass
                     _has_any = bool(_unit_tag) or ("% " in (_raw + " ") or "$" in _raw)
 
                 _ok = True
                 try:
                     _ok = bool(_fix16_comp(_expected, _unit_tag, _has_any))
                 except Exception:
+                    pass
                     _ok = True
 
                 if not _ok:
@@ -25827,6 +26291,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         if "debug" not in output or not isinstance(output.get("debug"), dict):
                             output["debug"] = {}
                     except Exception:
+                        pass
                         output["debug"] = {}
                     try:
                         output["debug"]["diff_join_anchor_v34"] = _dj
@@ -25842,6 +26307,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
+        pass
         metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
 
     # Post-process diff rows: ensure "Current" fields are derived from canonical-for-render.
@@ -25902,6 +26368,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         elif vnorm is not None:
                             raw = str(vnorm)
                     except Exception:
+                        pass
                         raw = row.get("current_value") or ""
 
                 # Apply canonical-for-render to diff row
@@ -26064,6 +26531,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     if isinstance(current_metrics, dict):
                         _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
                 except Exception:
+                    pass
                     _cur_for_v2 = None
 
 
@@ -26223,6 +26691,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     pr = previous_data.get("primary_response") if isinstance(previous_data.get("primary_response"), dict) else previous_data
                     schema = (pr.get("metric_schema_frozen") or {}) if isinstance(pr, dict) else {}
             except Exception:
+                pass
                 schema = {}
 
             for row in output.get("metric_changes") or []:
@@ -26278,6 +26747,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         ],
                     }
                 except Exception:
+                    pass
                     continue
 
             if bad_traces:
@@ -26310,6 +26780,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             else:
                 _path = "unknown"
         except Exception:
+            pass
             _path = "unknown"
 
         # Rebuild "selected" URLs: unique source_url from current metrics (if present)
@@ -26324,6 +26795,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             _selected.append(u)
             _selected = sorted(set(_selected))
         except Exception:
+            pass
             _selected = []
 
         # For evolution, rebuild_pool is effectively the hash input URL universe available via snapshots
@@ -26352,6 +26824,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 else:
                     _evo_hash_reasons[u] = ("excluded_by_policy_disable" if _inj_hash_policy_explicit_disable() else ("excluded_by_legacy_switch_default_off" if not _incl else "missing_from_hash_inputs"))
         except Exception:
+            pass
             _evo_hash_reasons = {}
         # =====================================================================
 
@@ -26376,6 +26849,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     try:
                         _pref = _inj_diag_norm_url_list(_wc_diag.get("urls_after_merge_norm") or [])
                     except Exception:
+                        pass
                         _pref = []
                     if not _pref:
                         _pref = _inj_diag_norm_url_list(_hash_inputs or [])
@@ -26429,11 +26903,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             try:
                 _fx12_inj_raw = list(_fx12_wc.get("extra_urls") or [])
             except Exception:
+                pass
                 _fx12_inj_raw = []
             if not _fx12_inj_raw and isinstance(_fx12_diag, dict):
                 try:
                     _fx12_inj_raw = list(_fx12_diag.get("ui_norm") or _fx12_diag.get("intake_norm") or [])
                 except Exception:
+                    pass
                     _fx12_inj_raw = []
             _fx12_inj = _inj_diag_norm_url_list(_fx12_inj_raw or [])
             if _fx12_inj and isinstance(_wc_diag, dict):
@@ -26709,6 +27185,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 elif any(x in _hint_name for x in ['sales','units','deliver','ship','vehicle']):
                                     _desired_uf = 'magnitude'
                             except Exception:
+                                pass
                                 _desired_uf = ''
                             # keyword set for context scoring
                             _kw = set()
@@ -26717,6 +27194,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                     if len(tok) >= 4 and tok not in {'global','total','market','share','sales','units','value','year'}:
                                         _kw.add(tok)
                             except Exception:
+                                pass
                                 _kw = set()
                             # injected-first preference (FIX2D2M)
                             _inj_urls = set()
@@ -26734,6 +27212,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                                 if su:
                                                     _inj_urls.add(su)
                                         except Exception:
+                                            pass
                                             continue
                                 _fix2d2m_scan_injected(output.get('baseline_sources_cache_current'))
                                 _fix2d2m_scan_injected(output.get('baseline_sources_cache'))
@@ -26741,6 +27220,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                     _fix2d2m_scan_injected(output['results'].get('baseline_sources_cache_current'))
                                     _fix2d2m_scan_injected(output['results'].get('baseline_sources_cache'))
                             except Exception:
+                                pass
                                 _inj_urls = set()
 
                             def _fix2d2m_score_pool(_pool_in):
@@ -26773,6 +27253,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                             _score += min(6.0, 1.5 * _hits)
                                         _sc.append((_score, _cand))
                                     except Exception:
+                                        pass
                                         continue
                                 _sc.sort(key=lambda t: (t[0] if t and len(t)>0 else 0), reverse=True)
                                 return _sc
@@ -26931,6 +27412,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 try:
                     _rows = output.get("metric_changes") if isinstance(output, dict) else None
                 except Exception:
+                    pass
                     _rows = None
 
                 _row_diag_present = 0
@@ -27040,6 +27522,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 try:
                     _paths = cur_response.get("_diff_panel_canonical_paths_v33") if isinstance(cur_response, dict) else None
                 except Exception:
+                    pass
                     _paths = None
                 if isinstance(_paths, dict) and _paths:
                     _dbg["diff_panel_canonical_paths_v33"] = _paths
@@ -27075,6 +27558,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _cfr = _d.get("canonical_for_render_v1") if isinstance(_d.get("canonical_for_render_v1"), dict) else {}
                     _lc = _cfr.get("locked_current_v26") if isinstance(_cfr, dict) else None
             except Exception:
+                pass
                 _lc = None
             if not isinstance(_lc, dict):
                 _lock_dbg["rows_missing_lock"] += 1
@@ -27144,6 +27628,7 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
             if canon and callable(fn_freeze):
                 metric_schema = fn_freeze(canon)
         except Exception:
+            pass
             metric_schema = None
 
     if not isinstance(metric_schema, dict) or not metric_schema:
@@ -27264,8 +27749,7 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
                 if abs(float(value_norm) - float(y)) < 1e-9:
                     return 1900 <= y <= 2100
         except Exception:
-            pass
-        return False
+            return False
 
     def _fix27_expected_kind(canonical_key: str, sch: dict) -> str:
         ck = (canonical_key or "").lower()
@@ -27647,6 +28131,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             txt = re.sub(r"\s+", " ", txt).strip()
             return txt
         except Exception:
+            pass
             # fallback: cheap strip
             s2 = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", s)
             s2 = re.sub(r"(?is)<[^>]+>", " ", s2)
@@ -27781,9 +28266,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                     if any(x in (raw_disp or "") for x in ["202", "203", "204", "205", "206", "207", "208", "209"]):
                         return True, "year_fragment_3digit"
             except Exception:
-                pass
-
-        return False, ""
+                return False, ""
 
     # -------------------------------------------------------------------------
     # PATCH M1 (ADDITIVE): semantic classifier for associations like "share" vs "units"
@@ -27860,6 +28343,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         try:
             val = float(num_s.replace(",", ""))
         except Exception:
+            pass
             continue
 
         # normalize unit
@@ -27891,6 +28375,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                     if m.start() > 0 and raw[m.start() - 1].isdigit():
                         neg_year_from_range = True
         except Exception:
+            pass
             neg_year_from_range = False
         # =========================
 
@@ -27922,6 +28407,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                     try:
                         _v_int = int(float(val)) if val is not None else None
                     except Exception:
+                        pass
                         _v_int = None
 
                     if _v_int is not None and 1900 <= _v_int <= 2100:
@@ -27942,6 +28428,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                             elif re.search(r"\b(revenue|sales|market\s*size|valuation|profit|earnings)\b", _ctx_l):
                                 _keep_cue = True
                         except Exception:
+                            pass
                             _keep_cue = False
 
                         if not _keep_cue:
@@ -27989,6 +28476,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                 try:
                     _c2 = fn_can(dict(_c)) or dict(_c)
                 except Exception:
+                    pass
                     _c2 = dict(_c)
                 out2.append(_c2)
             else:
@@ -28228,6 +28716,7 @@ def render_source_anchored_results(results, query: str):
             try:
                 flags.append(f"q={float(src.get('quality_score')):.2f}")
             except Exception:
+                pass
                 flags.append(f"q={src.get('quality_score')}")
 
         flag_txt = f" • {' • '.join(flags)}" if flags else ""
@@ -28320,6 +28809,7 @@ def render_source_anchored_results(results, query: str):
                 try:
                     meta_bits.append(f"score={float(score):.2f}")
                 except Exception:
+                    pass
                     meta_bits.append(f"score={score}")
 
             if meta_bits:
@@ -28342,6 +28832,7 @@ def render_source_anchored_results(results, query: str):
                     try:
                         rej_sorted = dict(sorted(((k, int(v or 0)) for k, v in rej.items()), key=lambda x: x[1], reverse=True))
                     except Exception:
+                        pass
                         rej_sorted = rej
                     st.write("Rejected reason counts:", rej_sorted)
 
@@ -28547,6 +29038,7 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     try:
         expected_metric_ids = get_expected_metric_ids_for_category(category) or []
     except Exception:
+        pass
         expected_metric_ids = []
 
     # Optional: enrich with intent-based suggestions (won't remove anything)
@@ -28612,6 +29104,7 @@ def render_dashboard(
             else:
                 s = str(x)
         except Exception:
+            pass
             s = repr(x)
         return s[:limit]
     # =========================
@@ -28668,6 +29161,7 @@ def render_dashboard(
             try:
                 num = float(raw_val.replace(",", ""))
             except Exception:
+                pass
                 # If we can't parse as float, just glue value+unit neatly
                 return f"{raw_val}{unit}".strip() if unit else raw_val
 
@@ -28818,6 +29312,7 @@ def render_dashboard(
             df_metrics = pd.DataFrame(metric_rows)
             st.dataframe(df_metrics, use_container_width=True, hide_index=True)
         except Exception:
+            pass
             for r in metric_rows:
                 st.write(f"**{r.get('Metric','')}**: {r.get('Value','')}")
 
@@ -29145,8 +29640,7 @@ def _fix39_schema_unit_required(metric_def: dict, canonical_key: str = "") -> bo
             # if schema explicitly wants a unit token, treat as required
             return True
     except Exception:
-        pass
-    return False
+        return False
 
 def _fix39_has_unit_evidence(metric_like: dict) -> bool:
     """Token-level unit evidence check (tolerant across shapes)."""
@@ -29164,8 +29658,7 @@ def _fix39_has_unit_evidence(metric_like: dict) -> bool:
         if raw and any(sym in raw for sym in ("$", "€", "£", "¥", "%")):
             return True
     except Exception:
-        pass
-    return False
+        return False
 
 def _fix39_sanitize_metric_change_rows(results_dict: dict) -> None:
     """Sanitize dict-based evolution results before publishing/rendering."""
@@ -29193,6 +29686,7 @@ def _fix39_sanitize_metric_change_rows(results_dict: dict) -> None:
                 if isinstance(schema, dict) and ck in schema:
                     md = schema.get(ck) or {}
             except Exception:
+                pass
                 md = {}
             if _fix39_schema_unit_required(md, ck):
                 # current fields may be in different keys
@@ -29261,14 +29755,14 @@ def _fix39_sanitize_evolutiondiff_object(diff_obj, metric_schema_frozen: dict = 
                         except Exception: pass
                         bad.append(str(ck))
             except Exception:
+                pass
                 continue
         try:
             dbg = getattr(diff_obj, "debug", None)
             if isinstance(dbg, dict):
                 dbg.setdefault("fix39", {})["invalidated_count"] = len(bad)
         except Exception:
-            pass
-        return diff_obj
+            return diff_obj
     except Exception:
         return diff_obj
 
@@ -29368,6 +29862,7 @@ def main():
                                 or (analysis.get("results", {}) or {}).get("source_results")
                             )
                     except Exception:
+                        pass
                         existing_snapshots = None
 
                     # Optional: if you keep a prior analysis in session_state, reuse it
@@ -29394,6 +29889,7 @@ def main():
                             if _u.startswith("http://") or _u.startswith("https://"):
                                 extra_urls.append(_u)
                     except Exception:
+                        pass
                         extra_urls = []
 
 
@@ -29812,6 +30308,7 @@ def main():
                                     _extra_urls_evo.append(_u)
 
                         except Exception:
+                            pass
 
                             _extra_urls_evo = []
 
@@ -29849,6 +30346,7 @@ def main():
                     if results and isinstance(results, dict):
                         interpretation = results.get("interpretation", "") or ""
                 except Exception:
+                    pass
                     interpretation = ""
 
                 evolution_output = {
@@ -29902,6 +30400,7 @@ def main():
                                 or (prev.get("results", {}) or {}).get("source_results")
                             )
                     except Exception:
+                        pass
                         existing_snapshots = None
 
                     web_context = fetch_web_context(
@@ -30037,6 +30536,7 @@ def _synthesize_evidence_from_examples(metric: dict, max_items: int = 5) -> list
             try:
                 ah = anchor_fn(url, ctx)
             except Exception:
+                pass
                 ah = ""
         out.append({
             "source_url": url,
@@ -30157,6 +30657,7 @@ def _normalize_prev_response_for_rebuild(previous_data):
             try:
                 pd = json.loads(pd)
             except Exception:
+                pass
                 pd = previous_data
         if isinstance(pd, dict):
             pr = pd.get("primary_response")
@@ -30171,8 +30672,7 @@ def _normalize_prev_response_for_rebuild(previous_data):
                 try:
                     pd["data"] = json.loads(d)
                 except Exception:
-                    pass
-        return pd
+                    return pd
     except Exception:
         return previous_data
 # =================== END PATCH RMS_UNWRAP1 (ADDITIVE) ===================
@@ -30488,8 +30988,7 @@ def _fix2s_extract_year_from_candidate(c: dict) -> int:
             if 1900 <= iv <= 2100:
                 return iv
     except Exception:
-        pass
-    return 0
+        return 0
 
 
 def _fix2s_apply_observed_to_canonical_rules_v1(candidates: list, metric_schema: dict, web_context=None) -> dict:
@@ -30650,9 +31149,7 @@ def _fix2s_apply_observed_to_canonical_rules_v1(candidates: list, metric_schema:
         if isinstance(web_context, dict):
             web_context["_fix2s_mapping_diag"] = diag
     except Exception:
-        pass
-
-    return diag
+        return diag
 
 # =====================================================================
 # END PATCH FIX2S_OBSERVED_TO_CANONICAL_RULES_V1
@@ -30736,6 +31233,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                     _u0 = _s.get("source_url") or _s.get("url") or ""
                     _present.add((_canonicalize_injected_url(_u0) if callable(globals().get("_canonicalize_injected_url")) else str(_u0 or "")).strip())
             except Exception:
+                pass
                 _present = set()
 
             _sr_list = baseline_sources_cache.get("source_results")
@@ -30769,6 +31267,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                     if len(_fix2aa_diag["admitted_urls"]) < 50:
                         _fix2aa_diag["admitted_urls"].append(_u)
     except Exception:
+        pass
         # diagnostics only; never block rebuild
         pass
     try:
@@ -30807,6 +31306,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 _ui = _inj_diag_norm_url_list(_d.get("ui_norm") or _d.get("extra_urls_ui_norm") or _d.get("extra_urls_normalized") or [])
                 _fix2v_injected_norm_set = set(_ad or _ui or [])
     except Exception:
+        pass
         _fix2v_injected_norm_set = set()
 
     def _fix2v_norm_url(u: str) -> str:
@@ -30823,8 +31323,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 try:
                     ys.add(int(mm))
                 except Exception:
-                    pass
-            return ys
+                    return ys
         except Exception:
             return set()
 
@@ -30866,6 +31365,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                         _fix2v_bind_hits.append(dict(kind="cagr_2026_2040", anchor_hash=_c.get("anchor_hash"), value=_c.get("value_norm") or _c.get("value"), source_url=_c.get("source_url")))
                         continue
         except Exception:
+            pass
             continue
 
     try:
@@ -30917,11 +31417,13 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             try:
                 _expected_dim = _fix16_expected_dimension(_spec)
             except Exception:
+                pass
                 _expected_dim = ""
             try:
                 if not _fix16_unit_compatible(_c, _expected_dim):
                     return "unit_incompatible"
             except Exception:
+                pass
                 # if unit compatibility check fails, treat as incompatible for diagnosis only
                 return "unit_incompatible_err"
             # year-token guard (unitless year-like numerics)
@@ -30934,8 +31436,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                         if 1900 <= _iv <= 2100:
                             return "unitless_year_guard"
             except Exception:
-                pass
-            return "ok"
+                return "ok"
         except Exception:
             return "gate_reason_err"
 
@@ -30970,6 +31471,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 try:
                     _is_inj = bool(_ph2b_norm_url(_c.get("source_url") or "") in _fix2v_injected_norm_set)
                 except Exception:
+                    pass
                     _is_inj = False
                 if not _is_inj:
                     continue
@@ -31447,8 +31949,7 @@ def _ph2b_norm_url(url: str) -> str:
         if callable(fn):
             return str(fn(url or ""))
     except Exception:
-        pass
-    return str((url or "").strip())
+        return str((url or "").strip())
 
 
 
@@ -31641,6 +32142,7 @@ def _fix2d63_is_yearlike_value(cand: dict) -> bool:
             try:
                 v = float(cand.get('value') or 0.0)
             except Exception:
+                pass
                 v = None
         if v is None:
             return False
@@ -31758,6 +32260,7 @@ def _analysis_canonical_final_selector_v1(
         if callable(fn_year):
             metric_is_year_like = bool(fn_year(spec, canonical_key=canonical_key))
     except Exception:
+        pass
         metric_is_year_like = False
 
     keywords = spec.get("keywords") or spec.get("keyword_hints") or []
@@ -31768,6 +32271,7 @@ def _analysis_canonical_final_selector_v1(
         if callable(fn_prune):
             keywords = fn_prune(list(keywords), metric_is_year_like)
     except Exception:
+        pass
         keywords = list(keywords) if isinstance(keywords, list) else []
 
     kw_norm = [_norm(k) for k in (keywords or []) if k]
@@ -31965,6 +32469,7 @@ def _analysis_canonical_final_selector_v1(
                         try:
                             _s = str(_s or "").lower()
                         except Exception:
+                            pass
                             _s = ""
                         if not _s:
                             return False
@@ -32037,6 +32542,7 @@ def _analysis_canonical_final_selector_v1(
                     try:
                         _scaled2 = any(t in _spec_ut for t in ("million", "billion", "trillion", "thousand")) or (_spec_ut in ("m", "b", "t", "k"))
                     except Exception:
+                        pass
                         _scaled2 = False
                     if _spec_family == "magnitude" and _scaled2:
                         _blob = (" ".join([
@@ -32086,6 +32592,7 @@ def _analysis_canonical_final_selector_v1(
                 pass
             # =====================================================================
         except Exception:
+            pass
             continue
         # =====================================================================
         # PATCH FIX2D17 (ADDITIVE): Reject bare-year tokens and enforce domain keyword overlap
@@ -32109,6 +32616,7 @@ def _analysis_canonical_final_selector_v1(
             try:
                 _vf = float(c.get("value_norm") or 0.0)
             except Exception:
+                pass
                 _vf = 0.0
             _raw_digits = re.sub(r"[^0-9]", "", _raw or "")
             _looks_year = (1900.0 <= _vf <= 2100.0) and (len(_raw_digits) == 4 and _raw_digits == str(int(_vf)))
@@ -32207,6 +32715,7 @@ def _analysis_canonical_final_selector_v1(
         try:
             _vf = float(best.get("value_norm") or 0.0)
         except Exception:
+            pass
             _vf = 0.0
         _raw_digits = re.sub(r"[^0-9]", "", _raw or "")
         _looks_year = (1900.0 <= _vf <= 2100.0) and (len(_raw_digits) == 4 and _raw_digits == str(int(_vf)))
@@ -32238,6 +32747,7 @@ def _analysis_canonical_final_selector_v1(
                     if callable(fn_parse):
                         v = fn_parse(c.get("value"), c.get("unit") or "") or fn_parse(c.get("raw"), c.get("unit") or "")
                 except Exception:
+                    pass
                     v = None
             if v is None:
                 continue
@@ -32330,8 +32840,7 @@ def _analysis_canonical_final_selector_v1(
             "winner_candidate_debug": dict(meta.get("winner_candidate_debug") or {}) if isinstance(meta.get("winner_candidate_debug"), dict) else {},
         }
     except Exception:
-        pass
-    return out, meta
+        return out, meta
 
 
 def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
@@ -32445,6 +32954,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             try:
                 vf = float(v)
             except Exception:
+                pass
                 try:
                     vf = float(re.sub(r"[^0-9\.\-]+", "", raw or ""))
                 except Exception:
@@ -32461,6 +32971,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 elif re.fullmatch(r"\d{4}\.0+", raw or ""):
                     looks_year = True
             except Exception:
+                pass
                 looks_year = False
 
             if not looks_year:
@@ -32468,6 +32979,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                     iv = int(vf)
                     looks_year = (abs(vf - iv) < 1e-6) and (1900 <= iv <= 2100)
                 except Exception:
+                    pass
                     looks_year = False
 
             if not looks_year:
@@ -32737,6 +33249,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         try:
             _fix2d2s_expect_year = bool(_fix2d15_expects_year_value(spec, str(canonical_key)))
         except Exception:
+            pass
             _fix2d2s_expect_year = False
 
         _fix2d2s_eligible = []
@@ -33110,6 +33623,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
             if isinstance(a, dict) and (a.get("anchor_hash") or a.get("anchor")):
                 anchored_keys.add(k)
     except Exception:
+        pass
         anchored_keys = set()
 
     # Build a shallow prev_response copy where schema-only sees ONLY unanchored metrics
@@ -33170,6 +33684,7 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
 try:
     run_source_anchored_evolution_BASE = run_source_anchored_evolution  # type: ignore
 except Exception:
+    pass
     run_source_anchored_evolution_BASE = None  # type: ignore
 
 
@@ -33203,9 +33718,7 @@ def _fix24_get_prev_full_payload(previous_data: dict) -> dict:
                     if isinstance(full, dict) and full:
                         return full
     except Exception:
-        pass
-
-    return previous_data if isinstance(previous_data, dict) else {}
+        return previous_data if isinstance(previous_data, dict) else {}
 
 
 def _fix24_extract_source_urls(prev_full: dict) -> list:
@@ -33318,6 +33831,7 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
                     if nums is None:
                         nums = []
                 except Exception:
+                    pass
                     nums = []
 
             # PATCH FIX2AF_SCRAPE_LEDGER_EXTRACTED_V1 (ADDITIVE)
@@ -33387,8 +33901,7 @@ def _fix24_get_prev_hashes(prev_full: dict) -> dict:
             out["v2"] = out["v2"] or str(r.get("source_snapshot_hash_v2") or "")
             out["v1"] = out["v1"] or str(r.get("source_snapshot_hash") or "")
     except Exception:
-        pass
-    return out
+        return out
 
 
 def _fix24_compute_current_hashes(baseline_sources_cache: list) -> dict:
@@ -33404,8 +33917,7 @@ def _fix24_compute_current_hashes(baseline_sources_cache: list) -> dict:
         if callable(fn1):
             out["v1"] = str(fn1(baseline_sources_cache) or "")
     except Exception:
-        pass
-    return out
+        return out
 
 
 def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
@@ -33436,6 +33948,7 @@ def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
                 "confidence": 1.0,
             })
     except Exception:
+        pass
         metric_changes = []
 
     return {
@@ -33513,11 +34026,19 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             _needs = (not isinstance(_wc_extra0, (list, tuple)) or not _wc_extra0)
             if _needs:
                 _recovered = []
+                # FIX2D66: also recover from extra_urls_ui_raw and question text
+                try:
+                    _qtxt = str((prev_full or {}).get('question') or (previous_data or {}).get('question') or '')
+                    _more = _fix2d66_collect_injected_urls(web_context or {}, question_text=_qtxt)
+                    if _more:
+                        _recovered.extend(_more)
+                except Exception:
+                    pass
                 _v_list = web_context.get('diag_extra_urls_ui')
                 if isinstance(_v_list, (list, tuple)) and _v_list:
                     _recovered = list(_v_list)
                 if not _recovered:
-                    _raw = web_context.get('diag_extra_urls_ui_raw')
+                    _raw = web_context.get('diag_extra_urls_ui_raw') or web_context.get('extra_urls_ui_raw')
                     if isinstance(_raw, str) and _raw.strip():
                         _parts = []
                         for _line in _raw.splitlines():
@@ -33534,6 +34055,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     _recovered_norm = _inj_diag_norm_url_list(_recovered)
                     if _recovered_norm:
                         web_context['extra_urls'] = list(_recovered_norm)
+                        # Also consider URLs embedded in the question text (last resort)
+
                         web_context.setdefault('debug', {})
                         if isinstance(web_context.get('debug'), dict):
                             web_context['debug'].setdefault('fix41afc3', {})
@@ -33848,6 +34371,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         _inj_diag_run_id = str((web_context or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo")
         _inj_extra_urls = _inj_diag_norm_url_list((web_context or {}).get("extra_urls") or [])
     except Exception:
+        pass
         _inj_diag_run_id = _inj_diag_make_run_id("evo")
         _inj_extra_urls = []
 
@@ -34301,6 +34825,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     try:
         _force_rebuild = bool((web_context or {}).get("force_rebuild"))
     except Exception:
+        pass
         _force_rebuild = False
     if _force_rebuild:
         unchanged = False
@@ -34462,9 +34987,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
             return out_changed
         except Exception:
-            pass
-
-    return {
+            return {
         "status": "failed",
         "message": "FIX24: Evolution recompute failed (no callable base evolution runner).",
         "sources_checked": len(urls),
@@ -34500,6 +35023,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 try:
     diff_metrics_by_name_FIX31_BASE = diff_metrics_by_name  # type: ignore
 except Exception:
+    pass
     diff_metrics_by_name_FIX31_BASE = None  # type: ignore
 
 def _fix32_metric_requires_unit(metric_def: dict) -> bool:
@@ -34519,8 +35043,7 @@ def _fix32_metric_requires_unit(metric_def: dict) -> bool:
                 return False
             return True
     except Exception:
-        pass
-    return False
+        return False
 
 def _fix32_has_token_unit_evidence(metric_row: dict) -> bool:
     """
@@ -34608,9 +35131,7 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
                 row["change_pct"] = None
 
     except Exception:
-        pass
-
-    return metric_changes, unchanged, increased, decreased, found
+        return metric_changes, unchanged, increased, decreased, found
 
 # ==============================================================================
 # END FIX32
@@ -34635,11 +35156,13 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
 try:
     diff_metrics_by_name_FIX32_V22_BASE
 except Exception:
+    pass
     diff_metrics_by_name_FIX32_V22_BASE = None
 
 try:
     diff_metrics_by_name_FIX31_BASE
 except Exception:
+    pass
     diff_metrics_by_name_FIX31_BASE = None
 
 
@@ -34726,6 +35249,7 @@ def diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR(prev_response, cur_response, 
                 # Force empty so v21/v22 rebuild ladder actually runs
                 _cur['primary_metrics_canonical'] = {}
     except Exception:
+        pass
         _cur = cur_response
         _forced_clear = False
 
@@ -34741,9 +35265,7 @@ def diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR(prev_response, cur_response, 
                         r['diag'].setdefault('ph2b_v23_force_clear_applied', True)
                         r['diag'].setdefault('ph2b_v23_force_clear_suspicious', bool(_sus))
     except Exception:
-        pass
-
-    return rows
+        return rows
 
 
 # PATCH V23_WIRE (ADDITIVE): Replace the public diff entrypoint used by evolution with the v23 wrapper.
@@ -34773,6 +35295,7 @@ except Exception:
 try:
     diff_metrics_by_name_V24_BASE = diff_metrics_by_name  # type: ignore
 except Exception:
+    pass
     diff_metrics_by_name_V24_BASE = None  # type: ignore
 
 def _v24_num(x):
@@ -34799,6 +35322,7 @@ def diff_metrics_by_name_FIX34_V24_STRICT(prev_response: dict, cur_response: dic
                 return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
             return ([], 0, 0, 0, 0)
     except Exception:
+        pass
         if callable(diff_metrics_by_name_V24_BASE):
             return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
         return ([], 0, 0, 0, 0)
@@ -34847,6 +35371,7 @@ def diff_metrics_by_name_FIX34_V24_STRICT(prev_response: dict, cur_response: dic
                         elif cvn is not None:
                             craw = str(cvn)
                     except Exception:
+                        pass
                         craw = ""
                 row["current_value"] = craw
                 row["cur_value_norm"] = cvn
@@ -34890,6 +35415,7 @@ def diff_metrics_by_name_FIX34_V24_STRICT(prev_response: dict, cur_response: dic
             metric_changes.append(row)
 
     except Exception:
+        pass
         # On failure, revert to existing diff
         if callable(diff_metrics_by_name_V24_BASE):
             return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
@@ -34982,6 +35508,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 try:
     diff_metrics_by_name_V32_BASE = diff_metrics_by_name  # type: ignore
 except Exception:
+    pass
     diff_metrics_by_name_V32_BASE = None  # type: ignore
 
 def _v32_safe_str(x):
@@ -35028,6 +35555,7 @@ def _v32_extract_value_unit_raw(cm: dict):
                 elif cvn is not None:
                     raw = str(cvn)
             except Exception:
+                pass
                 raw = ""
         return (cvn, unit, raw)
     except Exception:
@@ -35113,6 +35641,7 @@ def diff_metrics_by_name_FIX40_V32_PREFER_PMC(prev_response: dict, cur_response:
                         row["diag"]["v32_current_source_v1"]["used_current_source"] = "cur_primary_metrics_canonical"
                     used_count += 1
                 except Exception:
+                    pass
                     continue
 
         # attach a tiny debug counter into cur_response for audit (harmless)
@@ -35123,9 +35652,7 @@ def diff_metrics_by_name_FIX40_V32_PREFER_PMC(prev_response: dict, cur_response:
             pass
 
     except Exception:
-        pass
-
-    return metric_changes, unchanged, increased, decreased, found
+        return metric_changes, unchanged, increased, decreased, found
 
 # PATCH V32_WIRE (ADDITIVE): override diff_metrics_by_name entrypoint with v32 wrapper.
 try:
@@ -35165,6 +35692,7 @@ except Exception:
 try:
     diff_metrics_by_name_V34_BASE = diff_metrics_by_name  # type: ignore
 except Exception:
+    pass
     diff_metrics_by_name_V34_BASE = None  # type: ignore
 
 
@@ -35214,8 +35742,7 @@ def _v34_build_cur_anchor_index(cur_metric_anchors: dict):
             if prev is None or ckey_s < prev:
                 idx[ah] = ckey_s
     except Exception:
-        pass
-    return idx
+        return idx
 
 
 def diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN(prev_response: dict, cur_response: dict):
@@ -35382,9 +35909,7 @@ def diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN(prev_response: dict, cur_response
                     "sample_anchor_joins": sample_anchor_joins,
                 }
     except Exception:
-        pass
-
-    return metric_changes, unchanged, increased, decreased, found
+        return metric_changes, unchanged, increased, decreased, found
 
 
 # PATCH V34_WIRE (ADDITIVE): override diff_metrics_by_name entrypoint with v34 anchor join wrapper.
@@ -35418,6 +35943,7 @@ except Exception:
 try:
     _v34_base_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only")
 except Exception:
+    pass
     _v34_base_rebuild = None
 
 def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
@@ -35430,8 +35956,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, snapsh
             except TypeError:
                 return fn(prev_response, snapshot_pool)
     except Exception:
-        pass
-    return {}
+        return {}
 
 def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
     """Alias wrapper; prefer schema-only rebuild to preserve deterministic behavior."""
@@ -35440,8 +35965,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, sn
         if callable(fn):
             return fn(prev_response, snapshot_pool, web_context=web_context)
     except Exception:
-        pass
-    return {}
+        return {}
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
@@ -35512,9 +36036,7 @@ def _v34c_unwrap_for_diff(resp):
                 if isinstance(v, dict) and (isinstance(v.get("primary_metrics_canonical"), dict) or isinstance(v.get("metric_anchors"), dict)):
                     return (v, f"scan.{k}")
         except Exception:
-            pass
-
-        return (resp, "self_no_payload_keys")
+            return (resp, "self_no_payload_keys")
     except Exception:
         return ({}, "error")
 
@@ -35569,9 +36091,7 @@ def diff_metrics_by_name_FIX41_V34C_UNWRAP(prev_response: dict, cur_response: di
                     "cur_payload_has_metric_anchors": bool(isinstance(cur_payload, dict) and isinstance(cur_payload.get("metric_anchors"), dict)),
                 }
     except Exception:
-        pass
-
-    return out
+        return out
 
 
 # PATCH V34C_WIRE (ADDITIVE): override diff_metrics_by_name entrypoint with v34c unwrap wrapper.
@@ -35665,8 +36185,7 @@ def _diffpanel_v2__extract_anchor_hash(_m: dict):
             if isinstance(v, str) and v.strip():
                 return v.strip()
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _diffpanel_v2__extract_value_norm_and_unit(_m: dict):
@@ -35707,6 +36226,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             if isinstance(_an, list):
                 _fix2d2q_inj_set = set([u for u in _an if isinstance(u, str) and u])
     except Exception:
+        pass
         _fix2d2q_inj_set = set()
 
 
@@ -35769,6 +36289,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 try:
                                     fvn = float(vn)
                                 except Exception:
+                                    pass
                                     continue
                                 ut = str(n.get('unit_tag') or n.get('unit') or n.get('base_unit') or '').strip()
                                 raw = str(n.get('raw') or n.get('display') or n.get('value') or '').strip()
@@ -35828,6 +36349,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     if isinstance(_dbg0, dict):
                         _inj_strict = bool(_dbg0.get('injection_strict_for_baseline_diff') or False)
                 except Exception:
+                    pass
                     _inj_strict = False
 
                 def _expected_family(ckey: str, prev_unit: str):
@@ -35897,8 +36419,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                             try:
                                 sc -= min(5.0, abs(float(vn) - float(prev_val_norm)) / max(1e-9, abs(float(prev_val_norm))))
                             except Exception:
-                                pass
-                        return sc
+                                return sc
                     except Exception:
                         return -1e9
 
@@ -36098,6 +36619,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         for ah in list(cur_by_anchor.keys()):
             cur_by_anchor[ah] = sorted([c for c in cur_by_anchor[ah] if isinstance(c, str)])
     except Exception:
+        pass
         cur_by_anchor = {}
 
     # ------------------------------
@@ -36108,6 +36630,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         if "_fix2d6_get_diff_join_mode_v1" in globals() and callable(globals().get("_fix2d6_get_diff_join_mode_v1")):
             _fix2d25_join_mode = globals().get("_fix2d6_get_diff_join_mode_v1")()
     except Exception:
+        pass
         _fix2d25_join_mode = None
 
     _fix2d25_inference_enabled = True
@@ -36116,6 +36639,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         if str(_fix2d25_join_mode or "").lower() not in ("union", ""):
             _fix2d25_inference_enabled = False
     except Exception:
+        pass
         _fix2d25_inference_enabled = True
 
     def _fix2d25_is_yearlike(_v, _unit_tag=None):
@@ -36130,8 +36654,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 iv = int(fv)
                 return 1900 <= iv <= 2100
         except Exception:
-            pass
-        return False
+            return False
 
     def _fix2d25_expected_family(_ckey: str, _unit: str):
         c = str(_ckey or "").lower()
@@ -36190,6 +36713,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             if "_fix2d6_get_diff_join_mode_v1" in globals():
                 jm = globals().get("_fix2d6_get_diff_join_mode_v1")()
         except Exception:
+            pass
             jm = None
         return str(jm or "").strip().lower()
 
@@ -36288,6 +36812,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             if m:
                 year_hint = m.group(1)
         except Exception:
+            pass
             year_hint = None
 
         # Gather candidates
@@ -36327,6 +36852,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         "raw": c.get("raw"),
                     })
         except Exception:
+            pass
             candidates = []
 
         if not candidates:
@@ -36339,6 +36865,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         try:
             prevv = float(prev_v) if prev_v is not None else None
         except Exception:
+            pass
             prevv = None
         kw = str(prev_name or prev_ckey or "").lower()
         for cand in candidates:
@@ -36410,8 +36937,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 best["diag"]["fix2d26_reject_counts"] = dict(_rej_counts or {})
                 best["diag"]["fix2d26_policy"] = "unit_first_v1"
         except Exception:
-            pass
-        return best.get("value_norm"), best.get("unit_tag"), best.get("source_url"), best
+            return best.get("value_norm"), best.get("unit_tag"), best.get("source_url"), best
 
     # =====================================================
     # PATCH FIX2D2A START: inference gate is now always-on (guarded)
@@ -36510,6 +37036,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     else:
                         change_type = "unchanged"
         except Exception:
+            pass
             change_type = "unknown" if resolved_cur_ckey is not None else "not_found"
 
 
@@ -36525,6 +37052,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             if inference_used and isinstance(inference_evidence, dict):
                 cur_display = inference_evidence.get("display_value") or inference_evidence.get("raw")
         except Exception:
+            pass
             cur_display = None
         if cur_display is None:
             cur_display = cur_v
@@ -36550,6 +37078,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 and isinstance(cur_v, (int, float))
             )
         except Exception:
+            pass
             baseline_is_comparable = False
         # PATCH FIX2D29 END
         rows.append({
@@ -36675,6 +37204,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 if _urls:
                     cur_source_url = _urls[0]
             except Exception:
+                pass
                 cur_source_url = None
 
         # ----------------------------------------------------------
@@ -36794,6 +37324,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         try:
                             fvn = float(vn)
                         except Exception:
+                            pass
                             continue
                         unit_tag = str(n.get('unit_tag') or n.get('unit') or n.get('base_unit') or '').strip()
                         raw = str(n.get('raw') or n.get('display') or n.get('value') or '').strip()
@@ -36813,6 +37344,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 elif ut_l in ('m','mn') or 'million' in raw_l or 'million' in ctx_l or ' units' in ctx_l or 'units' in raw_l:
                                     unit_family = 'magnitude'
                         except Exception:
+                            pass
                             unit_family = unit_family
 
                         pool.append({
@@ -36867,6 +37399,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 try:
                                     fvn = float(vn)
                                 except Exception:
+                                    pass
                                     continue
                                 unit_tag = str(n.get('unit_tag') or n.get('base_unit') or n.get('unit') or '').strip()
                                 if _fix2d2g_is_yearlike_candidate({'value_norm': fvn, 'unit_tag': unit_tag}):
@@ -36892,9 +37425,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                     'source_url': str(su).strip() if su else None,
                                 })
             except Exception:
-                pass
-
-            return pool
+                return pool
 
             def _add_from_sources(_sources):
                 if not isinstance(_sources, list):
@@ -36915,6 +37446,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         try:
                             fvn = float(vn)
                         except Exception:
+                            pass
                             continue
                         unit_tag = str(n.get('unit_tag') or n.get('unit') or n.get('base_unit') or '').strip()
                         raw = str(n.get('raw') or n.get('display') or n.get('value') or '').strip()
@@ -36934,6 +37466,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 elif ut_l in ('m','mn') or 'million' in raw_l or 'million' in ctx_l or ' units' in ctx_l or 'units' in raw_l:
                                     unit_family = 'magnitude'
                         except Exception:
+                            pass
                             unit_family = unit_family
                         pool.append({
                             'value_norm': fvn,
@@ -37023,6 +37556,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         if isinstance(_sch, dict):
                             expected_family = str(_sch.get('unit_family') or '').strip().lower()
                 except Exception:
+                    pass
                     expected_family = expected_family
                 if not expected_family:
                     try:
@@ -37030,6 +37564,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         if callable(nf):
                             expected_family = str(nf(str(prev_unit or ''), ctx=str(pm.get('name') or ''), raw=str(prev_raw or '')) or '').strip().lower()
                     except Exception:
+                        pass
                         expected_family = ''
 
                 def _has_currency_evidence_local(raw: str, ctx: str) -> bool:
@@ -37068,6 +37603,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 if isinstance(_sch, dict):
                                     expected_family = str(_sch.get('unit_family') or '').lower().strip()
                         except Exception:
+                            pass
                             expected_family = expected_family
                         if not expected_family:
                             try:
@@ -37075,6 +37611,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 if callable(_nf):
                                     expected_family = str(_nf(prev_unit or '', ctx=str(pm.get('name') or ''), raw=str(prev_raw or '')) or '').lower().strip()
                             except Exception:
+                                pass
                                 expected_family = ''
 
                         cand_family = str(n.get('unit_family') or '').lower().strip()
@@ -37084,6 +37621,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 if callable(_nf):
                                     cand_family = str(_nf(unit or '', ctx=ctx, raw=raw) or '').lower().strip()
                             except Exception:
+                                pass
                                 cand_family = ''
 
                         def _has_currency_evidence_local(r: str, c: str) -> bool:
@@ -37112,6 +37650,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         try:
                             vn = float(vn) if vn is not None else None
                         except Exception:
+                            pass
                             vn = None
                         if vn is None:
                             return -1e9
@@ -37125,6 +37664,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 if callable(nf):
                                     c_fam = str(nf(unit, ctx=ctx, raw=raw) or '').strip().lower()
                         except Exception:
+                            pass
                             c_fam = ''
                         if expected_family:
                             if expected_family == 'currency':
@@ -37165,8 +37705,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                         try:
                             sc -= min(5.0, abs(float(vn) - float(prev_val_norm)) / max(1e-9, abs(float(prev_val_norm))))
                         except Exception:
-                            pass
-                        return sc
+                            return sc
                     except Exception:
                         return -1e9
 
@@ -37201,12 +37740,14 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                                 "ctx_snip": (str(_n.get("context_snippet") or "")[:120] if isinstance(_n.get("context_snippet"), str) else None),
                             })
                 except Exception:
+                    pass
                     _fix2d2i_top_candidates = None
 
                 if isinstance(bestn, dict) and bests > -1e8:
                     _fix2d19_soft = bestn
                     _fix2d19_soft_reason = 'soft_match_extracted_numbers'
         except Exception:
+            pass
             _fix2d19_soft = None
 
         if _fix2d19_soft is not None:
@@ -37290,6 +37831,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                 except Exception:
                     pass
         except Exception:
+            pass
             _fix2d32_anchor_mismatch = False
         # =====================================================================
         # END PATCH FIX2D32_ANCHOR_MISMATCH_DIFFABLE
@@ -37384,6 +37926,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             else:
                 row['current_source_type_fix2d2q'] = None
         except Exception:
+            pass
             row['current_source_type_fix2d2q'] = None
         try:
             _cm_dbg = None
@@ -37394,6 +37937,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             else:
                 row['current_selection_mode_fix2d2q'] = ('injected_first' if row.get('current_source_type_fix2d2q') == 'injected' else 'base')
         except Exception:
+            pass
             row['current_selection_mode_fix2d2q'] = None
 
         if unit_mismatch:
@@ -37521,6 +38065,7 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
                     if n.get("value_norm") is not None:
                         vn = float(n.get("value_norm"))
                 except Exception:
+                    pass
                     vn = None
 
                 src = n.get("source_url")
@@ -37821,6 +38366,7 @@ def build_diff_metrics_panel_v2_fix2k(prev_response: dict, cur_response: dict):
                 try:
                     fv = float(vn)
                 except Exception:
+                    pass
                     continue
                 unit_tag = str(n.get("unit_tag") or n.get("unit") or n.get("base_unit") or "").strip()
                 raw = str(n.get("raw") or n.get("display") or n.get("value") or "")
@@ -37852,6 +38398,7 @@ def build_diff_metrics_panel_v2_fix2k(prev_response: dict, cur_response: dict):
         try:
             pvf = float(pv)
         except Exception:
+            pass
             continue
 
         name = str(r.get("name") or r.get("canonical_key") or "")
@@ -38037,6 +38584,7 @@ def build_diff_metrics_panel_v2_fix2k(prev_response: dict, cur_response: dict):
                 try:
                     fv = float(v)
                 except Exception:
+                    pass
                     continue
                 # skip year-ish
                 if 1900 <= fv <= 2100:
@@ -38098,9 +38646,7 @@ def build_diff_metrics_panel_v2_fix2k(prev_response: dict, cur_response: dict):
         summary['current_only_raw_injected_rows'] = int(appended_from_injected_raw)
         summary['rows_total'] = int(len(rows or []))
     except Exception:
-        pass
-
-    return rows, summary
+        return rows, summary
 
 
 # --- Wiring: prefer Fix2K ---
@@ -38226,8 +38772,7 @@ try:
                     if 'top_candidates' not in ic:
                         ic['top_candidates'] = diag.get('diff_join_trace_v1', {}).get('top_candidates') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
             except Exception:
-                pass
-            return rows, summary
+                return rows, summary
 
         globals()['build_diff_metrics_panel_v2__rows'] = build_diff_metrics_panel_v2__rows_fix2d2i
 except Exception:
@@ -38399,6 +38944,7 @@ except Exception:
 try:
     diff_metrics_by_name_FIX2D2T_BASE = diff_metrics_by_name  # type: ignore
 except Exception:
+    pass
     diff_metrics_by_name_FIX2D2T_BASE = None  # type: ignore
 
 
@@ -38440,8 +38986,7 @@ def _fix2d2t_get_cur_maps(cur_response: dict):
             if isinstance(pmc, dict):
                 cur_primary = pmc
     except Exception:
-        pass
-    return cur_for_diff, cur_primary
+        return cur_for_diff, cur_primary
 
 
 def diff_metrics_by_name_FIX2D2T_PROJECT_BASELINE_CURRENT(prev_response: dict, cur_response: dict):
@@ -38603,9 +39148,7 @@ def diff_metrics_by_name_FIX2D2T_PROJECT_BASELINE_CURRENT(prev_response: dict, c
                     "samples": samples,
                 }
     except Exception:
-        pass
-
-    return metric_changes, unchanged, increased, decreased, found
+        return metric_changes, unchanged, increased, decreased, found
 
 
 # Wire wrapper
@@ -38753,6 +39296,7 @@ def _fix2d2x_keywords_from_key_and_name(canonical_key: str, name: str) -> list:
                 continue
             toks.append(t)
     except Exception:
+        pass
         toks = []
 
     # small normalization + de-dupe
@@ -38775,6 +39319,7 @@ def _fix2d2x_required_years_from_key(canonical_key: str) -> list:
         for m in re.findall(r"\b(19\d{2}|20\d{2})\b", str(canonical_key or "")):
             ys.append(m)
     except Exception:
+        pass
         ys = []
     # de-dupe preserve
     out = []
@@ -38881,6 +39426,7 @@ def _fix2d2x_select_current_for_key(
         else:
             candidates_all = _p_all
     except Exception:
+        pass
         _rej_all = 0
 
     try:
@@ -38895,6 +39441,7 @@ def _fix2d2x_select_current_for_key(
         else:
             _rej_inj = 0
     except Exception:
+        pass
         _rej_inj = 0
 
     fn_sel = globals().get("_analysis_canonical_final_selector_v1")
@@ -38910,8 +39457,7 @@ def _fix2d2x_select_current_for_key(
                 meta["fix2d65_yearlike_pruned_injected"] = int(_rej_inj or 0)
                 meta["fix2d65_yearlike_pruned_global"] = int(_rej_all or 0)
             except Exception:
-                pass
-            return best, meta
+                return best, meta
 
     # pass 2: global
     best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
@@ -38920,8 +39466,7 @@ def _fix2d2x_select_current_for_key(
         meta["fix2d2x_pass"] = "global"
         meta["fix2d65_yearlike_pruned_global"] = int(_rej_all or 0)
     except Exception:
-        pass
-    return best, meta
+        return best, meta
 
 
 # ---------------------------------------------------------------------
@@ -39012,6 +39557,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
             rebuilt[ck] = m
             filled += 1
         except Exception:
+            pass
             continue
 
     # Attach debug to web_context if present
@@ -39028,9 +39574,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
             if isinstance(web_context.get("debug"), dict):
                 web_context["debug"].update(debug)
     except Exception:
-        pass
-
-    return rebuilt
+        return rebuilt
 
 # =====================================================================
 # END PATCH FIX2D2X
@@ -39102,6 +39646,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response, snapshot
                     "display_name": mv.get("display_name") or mv.get("metric_name") or ck,
                 }
     except Exception:
+        pass
         schema_keys = []
         schema_specs = {}
 
@@ -39141,6 +39686,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response, snapshot
             if isinstance(inj, list):
                 injected_urls = [u for u in inj if isinstance(u, str) and u.strip()]
     except Exception:
+        pass
         injected_urls = []
 
     # Select best candidate per baseline key using the shared selector helper
@@ -39202,6 +39748,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response, snapshot
             rebuilt[ck] = m
             filled += 1
         except Exception:
+            pass
             continue
 
     debug["fix2d2y_analysis_selector_rebuild_v1"]["filled"] = int(filled)
@@ -39214,9 +39761,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response, snapshot
             if isinstance(web_context.get("debug"), dict):
                 web_context["debug"].update(debug)
     except Exception:
-        pass
-
-    return rebuilt
+        return rebuilt
 
 # Ensure global override binding
 try:
@@ -39322,6 +39867,7 @@ def diff_metrics_by_name_FIX2D34(prev_response: dict, cur_response: dict):
             if isinstance(pr, dict):
                 prev_can = pr.get("primary_metrics_canonical")
     except Exception:
+        pass
         prev_can = None
     prev_can = prev_can if isinstance(prev_can, dict) else {}
 
@@ -39333,6 +39879,7 @@ def diff_metrics_by_name_FIX2D34(prev_response: dict, cur_response: dict):
             if isinstance(pr, dict):
                 cur_pmc = pr.get("primary_metrics_canonical")
     except Exception:
+        pass
         cur_pmc = None
     cur_pmc = cur_pmc if isinstance(cur_pmc, dict) else {}
 
@@ -39436,9 +39983,7 @@ def diff_metrics_by_name_FIX2D34(prev_response: dict, cur_response: dict):
                     "note": "Universe iterates prev canonical keys only; current sourced from primary_metrics_canonical.",
                 }
     except Exception:
-        pass
-
-    return metric_changes, unchanged, increased, decreased, found
+        return metric_changes, unchanged, increased, decreased, found
 
 # Wire FIX2D34 as the active diff function (last-wins override)
 try:
@@ -39598,8 +40143,7 @@ def _fix2d47_metric_confidence(m: dict) -> float:
             if v is not None:
                 return float(v)
         except Exception:
-            pass
-    return 0.0
+            return 0.0
 
 def _fix2d47_pick_cur_winner(existing: dict, challenger: dict) -> dict:
     # Deterministic winner selection:
@@ -39671,8 +40215,7 @@ def _fix2d47_value_norm(m: dict):
         try:
             return float(m.get(k))
         except Exception:
-            pass
-    return None
+            return None
 
 def _fix2d47_unit_tag(m: dict) -> str:
     if not isinstance(m, dict):
@@ -40335,6 +40878,7 @@ def _fix2d49_apply_postprocess_if_enabled(output_obj, web_context):
         if _fix2d48_should_validate_ckeys(web_context):
             _fix2d48_try_validate_outputs(output_obj)
     except Exception:
+        pass
         # keep behaviour consistent: validation failures are surfaced only when flag enabled;
         # if enabled, allow exception to propagate.
         raise
@@ -40343,6 +40887,7 @@ def _fix2d49_apply_postprocess_if_enabled(output_obj, web_context):
     try:
         _fix2d49_try_audit_and_rekey_outputs(output_obj, web_context)
     except Exception:
+        pass
         raise
 
     return output_obj
@@ -40451,8 +40996,7 @@ def _fix2d50_get_schema_dimension(metric_schema_frozen: dict, ckey: str) -> str:
             if isinstance(d, str) and d.strip():
                 return _fix2d48_norm_token(d)
     except Exception:
-        pass
-    return ""
+        return ""
 
 def _fix2d50_gate_primary_metrics_canonical(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
     report = {
@@ -40819,6 +41363,7 @@ def _fix2d52_bind_pmc_to_schema(pmc: dict, metric_schema_frozen: dict, web_conte
             try:
                 validate_canonical_key_v1(skey, allowed_dimensions=allowed_dims)
             except Exception:
+                pass
                 # If somehow invalid, treat as unbound
                 best_score = -1e9
                 best = None
@@ -40941,8 +41486,7 @@ def _fix2d53_schema_dim(metric_schema_frozen: dict, skey: str) -> str:
             if isinstance(d, str) and d.strip():
                 return _fix2d48_norm_token(d)
     except Exception:
-        pass
-    return ""
+        return ""
 
 def _fix2d53_apply_legacy_schema_remaps(pmc: dict, metric_schema_frozen: dict, web_context: dict | None) -> tuple[dict, dict]:
     rep = {"enabled": True, "total": 0, "mapped": 0, "examples": []}
@@ -41282,6 +41826,7 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
         try:
             _fix2d53_try_remap_output_obj(prev_full, web_context)
         except Exception:
+            pass
             # keep going; remap is best-effort
             if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
                 web_context["debug"]["fix2d55_prev_lift"]["remap_error"] = True
@@ -41290,6 +41835,7 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
         try:
             _fix2d52_try_bind_output_obj(prev_full, web_context)
         except Exception:
+            pass
             if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
                 web_context["debug"]["fix2d55_prev_lift"]["bind_error"] = True
 
@@ -41297,6 +41843,7 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
         try:
             _fix2d54_try_materialize_output_obj(prev_full, web_context)
         except Exception:
+            pass
             if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
                 web_context["debug"]["fix2d55_prev_lift"]["materialize_error"] = True
 
@@ -41304,6 +41851,7 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
         try:
             _fix2d50_try_gate_output_obj(prev_full, web_context)
         except Exception:
+            pass
             if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
                 web_context["debug"]["fix2d55_prev_lift"]["gate_error"] = True
 
@@ -41321,6 +41869,7 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict | None) -> None:
                 web_context["debug"]["fix2d55_prev_lift"] = _rep
 
     except Exception:
+        pass
         # never break evolution; this is a best-effort lift
         if isinstance(web_context, dict) and isinstance(web_context.get("debug"), dict):
             web_context["debug"].setdefault("fix2d55_prev_lift", {})
@@ -41529,6 +42078,7 @@ try:
     import canonical_identity_spine as _cis
     _FIX2D65_SPINE_OK = True
 except Exception:
+    pass
     _cis = None
     _FIX2D65_SPINE_OK = False
 
@@ -41563,6 +42113,7 @@ def _fix2d65_build_schema_index_v1(metric_schema: dict) -> dict:
             else:
                 bare = f"{prefix.split('_')[0]}__{dim}" if dim else prefix
         except Exception:
+            pass
             bare = ''
 
         if bare:
@@ -41768,6 +42319,7 @@ def _fix2d65_prune_yearlike_candidates_for_unit_metrics(candidates: list, canoni
         if isinstance(canonical_key, str) and '__' in canonical_key:
             dim = canonical_key.split('__', 1)[1].strip().lower()
     except Exception:
+        pass
         dim = ''
 
     is_unit = dim in ('unit_sales', 'unit_count', 'count', 'units', 'units_sold')
@@ -41820,6 +42372,7 @@ def _fix2d2x_select_current_for_key(  # noqa: F811
     try:
         injected_norm = set(globals().get('_ph2b_norm_url', lambda u: u)(u) for u in (injected_urls or []) if isinstance(u, str))
     except Exception:
+        pass
         injected_norm = set()
 
     cands_inj = []
@@ -41841,8 +42394,7 @@ def _fix2d2x_select_current_for_key(  # noqa: F811
                 meta["fix2d2x_pass"] = "injected_only"
                 meta["fix2d65_prune"] = prune_dbg
             except Exception:
-                pass
-            return best, meta
+                return best, meta
 
     best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
     try:
@@ -41850,8 +42402,7 @@ def _fix2d2x_select_current_for_key(  # noqa: F811
         meta["fix2d2x_pass"] = "global"
         meta["fix2d65_prune"] = prune_dbg
     except Exception:
-        pass
-    return best, meta
+        return best, meta
 
 
 # Bind overrides into globals (last-wins)
@@ -41939,6 +42490,31 @@ try:
         "summary": "Restore analysis->evolution diff contract by always serializing/seeding metric_schema_frozen (deterministic schema extensions), so Evolution schema-only rebuild has a stable keyspace even when LLM emits no primary_metrics; bump version.",
         "files": ["FIX2D65D_full_codebase.py"],
         "supersedes": ["FIX2D65C"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D66"
+except Exception:
+    pass
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D66",
+        "date": "2026-01-19",
+        "summary": "Deterministic injected-URL admission: promote UI raw/diag injection fields into web_context.extra_urls; synthesize diag_injected_urls when missing; ensure inj_trace_v1 and inj_diag reflect injected URLs in snapshot pool and hash inputs (auditable).",
+        "files": ["FIX2D66_full_codebase.py"],
+        "supersedes": ["FIX2D65D"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
