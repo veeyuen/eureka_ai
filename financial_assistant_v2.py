@@ -38737,11 +38737,11 @@ def _fix2d2x_select_current_for_key(
     return best, meta
 
 
- spec_in: dict,
-    candidates_all: list,
-    injected_urls: list,
-) -> tuple:
-    """Injected-first two-pass selection using Analysis authoritative selector."""
+    spec_in: dict,
+        candidates_all: list,
+        injected_urls: list,
+    ) -> tuple:
+        """Injected-first two-pass selection using Analysis authoritative selector."""
     spec = dict(spec_in or {})
 
     # Disable preferred source locking for Evolution (parity gates but different policy)
