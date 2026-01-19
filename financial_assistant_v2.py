@@ -88,7 +88,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = "FIX2D70"
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D70
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D70",
+        "date": "2026-01-19",
+        "summary": "Controlled schema-candidate reconciliation during schema-anchored rebuild: relax key-year matching (±1 for single-year keys, overlap for ranges) and keyword gating only when strict prefilter yields zero candidates, while emitting FIX2D70 rejection counts and relax flags for audit. This closes the last-mile binding gap without reintroducing heuristic matching.",
+        "files": ["FIX2D70_full_codebase.py"],
+        "supersedes": ["FIX2D69B"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D69
 # ============================================================
@@ -39567,36 +39586,138 @@ def _fix2d2x_local_text_for_candidate(c: dict) -> str:
         return ""
 
 
+
+# PATCH FIX2D70: relaxed year/keyword gating helpers (deterministic)
+_fix2d70_year_re = re.compile(r"\b(19|20)\d{2}\b")
+
+def _fix2d70_year_tokens(s: str):
+    if not isinstance(s, str) or not s:
+        return []
+    return [m.group(0) for m in _fix2d70_year_re.finditer(s)]
+
+def _fix2d70_ok_year_relaxed(local_text: str, req_years: list) -> bool:
+    """Return True if local_text is compatible with req_years under FIX2D70 tolerance.
+
+    Policy:
+    - If key encodes a single year Y: accept Y, Y-1, Y+1
+    - If key encodes multiple years (range): accept if ANY encoded year appears
+    - If local_text has no year tokens at all: accept (avoid over-pruning)
+    """
+    if not req_years:
+        return True
+    lt = local_text or ""
+    years_in_lt = set(_fix2d70_year_tokens(lt))
+    if not years_in_lt:
+        return True
+    try:
+        req = [int(y) for y in req_years if isinstance(y, str) and y.isdigit()]
+    except Exception:
+        req = []
+    if not req:
+        return True
+    if len(req) == 1:
+        y=req[0]
+        return any(str(v) in years_in_lt for v in (y-1,y,y+1))
+    # multi-year: accept any overlap
+    return any(str(y) in years_in_lt for y in req)
+
+def _fix2d70_keyword_hit(local_text: str, kws: list) -> bool:
+    if not kws:
+        return True
+    lt = local_text or ""
+    for k in kws:
+        if k and k in lt:
+            return True
+    return False
+
 def _fix2d2x_filter_candidates_for_key(canonical_key: str, spec: dict, candidates: list) -> list:
-    """Pre-filter: enforce key-year presence and at least one key-specific keyword hit in local context."""
+    """Pre-filter candidates for a schema key.
+
+    FIX2D70: if strict year/keyword gating would eliminate all candidates, apply a controlled relaxation:
+    - year tolerance (Y±1 for single-year keys; any overlap for ranges)
+    - keyword requirement is relaxed only if strict pass yields zero
+
+    Diagnostics are recorded into spec["debug_meta"]["fix2d70_prefilter"].
+    """
     out = []
     req_years = _fix2d2x_required_years_from_key(canonical_key)
     kws = spec.get("keywords") or []
     kws = [str(k).lower() for k in kws if isinstance(k, str) and k.strip()]
 
+    rej_year = 0
+    rej_kw = 0
+    rej_empty = 0
+
+    # strict pass (legacy semantics)
     for c in candidates or []:
         if not isinstance(c, dict):
             continue
         lt = _fix2d2x_local_text_for_candidate(c)
         if not lt:
+            rej_empty += 1
             continue
-        # required years: must appear in local text when key encodes them
         ok_year = True
         if req_years:
             ok_year = all((y in lt) for y in req_years)
         if not ok_year:
+            rej_year += 1
             continue
-        # at least one keyword hit if keywords exist
         if kws:
-            hit = False
-            for k in kws:
-                if k and k in lt:
-                    hit = True
-                    break
-            if not hit:
+            if not _fix2d70_keyword_hit(lt, kws):
+                rej_kw += 1
                 continue
         out.append(c)
-    return out
+
+    if out:
+        try:
+            spec.setdefault("debug_meta", {})["fix2d70_prefilter"] = {
+                "mode": "strict",
+                "req_years": req_years,
+                "kws_n": len(kws),
+                "in_n": int(len(candidates or [])),
+                "out_n": int(len(out)),
+                "rej_year": int(rej_year),
+                "rej_kw": int(rej_kw),
+                "rej_empty": int(rej_empty),
+            }
+        except Exception:
+            pass
+        return out
+
+    # relaxed pass (only if strict eliminated everything)
+    out2 = []
+    rej_year2 = 0
+    rej_empty2 = 0
+    for c in candidates or []:
+        if not isinstance(c, dict):
+            continue
+        lt = _fix2d2x_local_text_for_candidate(c)
+        if not lt:
+            rej_empty2 += 1
+            continue
+        if not _fix2d70_ok_year_relaxed(lt, req_years):
+            rej_year2 += 1
+            continue
+        # keyword gate intentionally removed in relaxed mode
+        out2.append(c)
+
+    try:
+        spec.setdefault("debug_meta", {})["fix2d70_prefilter"] = {
+            "mode": "relaxed" if out2 else "relaxed_empty",
+            "req_years": req_years,
+            "kws_n": len(kws),
+            "in_n": int(len(candidates or [])),
+            "out_n": int(len(out2)),
+            "rej_year": int(rej_year),
+            "rej_kw": int(rej_kw),
+            "rej_empty": int(rej_empty),
+            "rej_year_relaxed": int(rej_year2),
+            "rej_empty_relaxed": int(rej_empty2),
+        }
+    except Exception:
+        pass
+
+    return out2
 
 
 def _fix2d2x_select_current_for_key(
@@ -43443,35 +43564,93 @@ def _fix2d2x_local_text_for_candidate(c: dict) -> str:
 
 
 def _fix2d2x_filter_candidates_for_key(canonical_key: str, spec: dict, candidates: list) -> list:
-    """Pre-filter: enforce key-year presence and at least one key-specific keyword hit in local context."""
+    """Pre-filter candidates for a schema key.
+
+    FIX2D70: if strict year/keyword gating would eliminate all candidates, apply a controlled relaxation:
+    - year tolerance (Y±1 for single-year keys; any overlap for ranges)
+    - keyword requirement is relaxed only if strict pass yields zero
+
+    Diagnostics are recorded into spec["debug_meta"]["fix2d70_prefilter"].
+    """
     out = []
     req_years = _fix2d2x_required_years_from_key(canonical_key)
     kws = spec.get("keywords") or []
     kws = [str(k).lower() for k in kws if isinstance(k, str) and k.strip()]
 
+    rej_year = 0
+    rej_kw = 0
+    rej_empty = 0
+
+    # strict pass (legacy semantics)
     for c in candidates or []:
         if not isinstance(c, dict):
             continue
         lt = _fix2d2x_local_text_for_candidate(c)
         if not lt:
+            rej_empty += 1
             continue
-        # required years: must appear in local text when key encodes them
         ok_year = True
         if req_years:
             ok_year = all((y in lt) for y in req_years)
         if not ok_year:
+            rej_year += 1
             continue
-        # at least one keyword hit if keywords exist
         if kws:
-            hit = False
-            for k in kws:
-                if k and k in lt:
-                    hit = True
-                    break
-            if not hit:
+            if not _fix2d70_keyword_hit(lt, kws):
+                rej_kw += 1
                 continue
         out.append(c)
-    return out
+
+    if out:
+        try:
+            spec.setdefault("debug_meta", {})["fix2d70_prefilter"] = {
+                "mode": "strict",
+                "req_years": req_years,
+                "kws_n": len(kws),
+                "in_n": int(len(candidates or [])),
+                "out_n": int(len(out)),
+                "rej_year": int(rej_year),
+                "rej_kw": int(rej_kw),
+                "rej_empty": int(rej_empty),
+            }
+        except Exception:
+            pass
+        return out
+
+    # relaxed pass (only if strict eliminated everything)
+    out2 = []
+    rej_year2 = 0
+    rej_empty2 = 0
+    for c in candidates or []:
+        if not isinstance(c, dict):
+            continue
+        lt = _fix2d2x_local_text_for_candidate(c)
+        if not lt:
+            rej_empty2 += 1
+            continue
+        if not _fix2d70_ok_year_relaxed(lt, req_years):
+            rej_year2 += 1
+            continue
+        # keyword gate intentionally removed in relaxed mode
+        out2.append(c)
+
+    try:
+        spec.setdefault("debug_meta", {})["fix2d70_prefilter"] = {
+            "mode": "relaxed" if out2 else "relaxed_empty",
+            "req_years": req_years,
+            "kws_n": len(kws),
+            "in_n": int(len(candidates or [])),
+            "out_n": int(len(out2)),
+            "rej_year": int(rej_year),
+            "rej_kw": int(rej_kw),
+            "rej_empty": int(rej_empty),
+            "rej_year_relaxed": int(rej_year2),
+            "rej_empty_relaxed": int(rej_empty2),
+        }
+    except Exception:
+        pass
+
+    return out2
 
 
 def _fix2d2x_select_current_for_key(
@@ -46743,3 +46922,11 @@ try:
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
+
+
+# PATCH FIX2D70: FINAL_OVERRIDE
+CODE_VERSION = "FIX2D70"  # FINAL_OVERRIDE
+
+
+# PATCH FIX2D70: final end-of-file version override (last-wins)
+globals()["CODE_VERSION"] = "FIX2D70"
