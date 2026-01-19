@@ -88,7 +88,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D71"
+CODE_VERSION = "FIX2D72"
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
@@ -30441,6 +30441,41 @@ def main():
             except Exception:
                 pass
 
+            # =====================================================================
+            # PATCH FIX2D72 (REQUIRED): Materialize & persist schema-keyed baseline canonical metrics
+            # Why:
+            # - Evolution diffing requires previous_data.primary_metrics_canonical to exist and be schema-keyed.
+            # - Some analysis paths seed metric_schema_frozen but do not emit primary_metrics_canonical into the
+            #   persisted payload. This causes Evolution to report no_prev_metrics even when keys are stable.
+            # What:
+            # - If primary_metrics_canonical is missing/empty, rebuild it deterministically from the frozen schema
+            #   using the same authoritative rebuild helper used by Evolution.
+            # - Write into BOTH top-level and results for maximum persistence compatibility.
+            # =====================================================================
+            try:
+                _pmc0 = output.get('primary_metrics_canonical')
+                _pmc0_empty = (not isinstance(_pmc0, dict)) or (not _pmc0)
+                if _pmc0_empty:
+                    fn_rebuild = globals().get('rebuild_metrics_from_snapshots_analysis_canonical_v1')
+                    if callable(fn_rebuild):
+                        _rebuilt = fn_rebuild(output.get('primary_response') or {}, output.get('baseline_sources_cache') or [], web_context=web_context)
+                        if isinstance(_rebuilt, dict) and _rebuilt:
+                            output['primary_metrics_canonical'] = _rebuilt
+                            output.setdefault('results', {})
+                            if isinstance(output.get('results'), dict):
+                                output['results']['primary_metrics_canonical'] = _rebuilt
+                            # lightweight debug stamp
+                            try:
+                                output.setdefault('debug', {})
+                                if isinstance(output.get('debug'), dict):
+                                    output['debug']['fix2d72_analysis_pmc_written'] = True
+                                    output['debug']['fix2d72_pmc_key_count'] = len(_rebuilt)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            # =====================================================================
+
             with st.spinner("💾 Saving to history..."):
                 if add_to_history(output):
                     st.success("✅ Analysis saved to Google Sheets")
@@ -46982,8 +47017,17 @@ except Exception:
 
 
 # PATCH FIX2D71: FINAL_OVERRIDE
-CODE_VERSION = "FIX2D71"  # FINAL_OVERRIDE
+CODE_VERSION = "FIX2D72"  # FINAL_OVERRIDE
 
 
 # PATCH FIX2D71: final end-of-file version override (last-wins)
 globals()["CODE_VERSION"] = "FIX2D71"
+
+
+# =====================
+# FINAL LAST-WINS CODE_VERSION OVERRIDE
+# =====================
+try:
+    CODE_VERSION = 'FIX2D72'
+except Exception:
+    pass
