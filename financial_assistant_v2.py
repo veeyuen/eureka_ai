@@ -58,6 +58,14 @@ import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+
+# PATCH FIX2D64 (SHADOW MODE): Canonical Identity Spine module import (no behavior change).
+# Enabled only if caller sets web_context["enable_spine_shadow_fix2d64"]=True or env ENABLE_SPINE_SHADOW_FIX2D64=1.
+try:
+    import canonical_identity_spine as _canonical_identity_spine_fix2d64
+except Exception:
+    _canonical_identity_spine_fix2d64 = None
 import base64
 import hashlib
 import numpy as np
@@ -79,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D63"  # PATCH FIX2D63: harden schema_only_rebuild_fix17 against injected-year pollution
+CODE_VERSION = "FIX2D64"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 
 # ============================================================
@@ -193,6 +201,26 @@ try:
     PATCH_TRACKER_V1.append({
         "patch_id": "FIX2D63",
         "summary": "Harden schema_only_rebuild_fix17 against injected-year pollution for unit/count metrics: fix _c variable typo in FIX2D2U gate and reject yearlike candidates without unit evidence upstream.",
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# =========================
+# PATCH FIX2D64 (ADDITIVE): Canonical Identity Spine V1 (shadow mode)
+# - Introduces canonical_identity_spine.py as the single future authority for identity normalization,
+#   schema-first key resolution, and value selection (incl. yearlike hard rejection immune to window backfill).
+# - Adds minimal regression tests as callable self-checks (no runtime behavior change unless explicitly enabled).
+# =========================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D64",
+        "summary": "Add Canonical Identity Spine V1 module (shadow mode only) + minimal regressions: centralizes identity tuple, schema-first resolver contract, and value selection with yearlike rejection immune to context unit backfill.",
+        "files": ["canonical_identity_spine.py", "FIX2D64_full_codebase.py"],
+        "supersedes": ["FIX2D63"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
