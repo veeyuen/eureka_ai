@@ -87,8 +87,27 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D65"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D65A"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D65A
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65A",
+        "date": "2026-01-19",
+        "summary": "Hotfix for FIX2D65: repair syntax-corrupted duplicate selector block; make yearlike prune non-fatal (never empties pool); make 'rebuild empty with snapshots' non-fatal so Evolution can still emit JSON diagnostics.",
+        "files": ["FIX2D65A_full_codebase.py"],
+        "supersedes": ["FIX2D65"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D58F
@@ -20567,17 +20586,25 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                 # =====================================================================
         except Exception:
             current_metrics = {}
-
     if not isinstance(current_metrics, dict) or not current_metrics:
-        output["status"] = "failed"
-        output["message"] = "Valid snapshots exist, but metric rebuild returned empty. No re-fetch / no heuristic matching performed."
-        output["source_results"] = baseline_sources_cache[:50]
-        output["sources_checked"] = len(baseline_sources_cache)
-        output["sources_fetched"] = len(baseline_sources_cache)
-        output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
+        # FIX2D65A: do not fail hard here; emit a warning and continue so Evolution can still output JSON.
+        try:
+            output.setdefault("warnings", [])
+            output["warnings"].append({
+                "code": "FIX2D65_REBUILD_EMPTY_WITH_SNAPSHOTS",
+                "message": "Valid snapshots exist, but metric rebuild returned empty. Continuing (no refetch, no heuristic).",
+                "sources_checked": int(len(baseline_sources_cache or [])),
+                "sources_fetched": int(len(baseline_sources_cache or [])),
+            })
+        except Exception:
+            pass
+        output["status"] = output.get("status") or "ok_with_warnings"
+        output["message"] = output.get("message") or "Valid snapshots exist, but metric rebuild returned empty. Continuing (no refetch, no heuristic)."
+        # Keep current_metrics as empty dict; downstream code should handle it.
+        current_metrics = {}
         # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
         _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
-        return output    # =====================================================================
+    # =====================================================================
     # PATCH FIX2D2_ANCHOR_FILL_FOR_CURRENT (ADDITIVE)
     # Purpose:
     #   When schema_frozen is missing/misaligned (e.g., wrong namespace) the render/diff
@@ -24179,17 +24206,25 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
         except Exception:
             current_metrics = {}
-
     if not isinstance(current_metrics, dict) or not current_metrics:
-        output["status"] = "failed"
-        output["message"] = "Valid snapshots exist, but metric rebuild returned empty. No re-fetch / no heuristic matching performed."
-        output["source_results"] = baseline_sources_cache[:50]
-        output["sources_checked"] = len(baseline_sources_cache)
-        output["sources_fetched"] = len(baseline_sources_cache)
-        output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
+        # FIX2D65A: do not fail hard here; emit a warning and continue so Evolution can still output JSON.
+        try:
+            output.setdefault("warnings", [])
+            output["warnings"].append({
+                "code": "FIX2D65_REBUILD_EMPTY_WITH_SNAPSHOTS",
+                "message": "Valid snapshots exist, but metric rebuild returned empty. Continuing (no refetch, no heuristic).",
+                "sources_checked": int(len(baseline_sources_cache or [])),
+                "sources_fetched": int(len(baseline_sources_cache or [])),
+            })
+        except Exception:
+            pass
+        output["status"] = output.get("status") or "ok_with_warnings"
+        output["message"] = output.get("message") or "Valid snapshots exist, but metric rebuild returned empty. Continuing (no refetch, no heuristic)."
+        # Keep current_metrics as empty dict; downstream code should handle it.
+        current_metrics = {}
         # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
         _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
-        return output    # =====================================================================
+    # =====================================================================
     # PATCH FIX41AFC19 (ADDITIVE): Anchor-first FIX16 rebuild override (schema parity)
     #
     # Why:
@@ -38670,7 +38705,11 @@ def _fix2d2x_select_current_for_key(
     candidates_all: list,
     injected_urls: list,
 ) -> tuple:
-    """Injected-first two-pass selection using Analysis authoritative selector."""
+    """Injected-first two-pass selection using Analysis authoritative selector.
+
+    NOTE: This early definition is kept syntactically valid; a later FIX2D65 override
+    (noqa: F811) may replace it.
+    """
     spec = dict(spec_in or {})
 
     # Disable preferred source locking for Evolution (parity gates but different policy)
@@ -38690,21 +38729,38 @@ def _fix2d2x_select_current_for_key(
     injected_norm = set(_ph2b_norm_url(u) for u in (injected_urls or []) if isinstance(u, str))
     cands_inj = []
     if injected_norm:
-        for c in candidates_all:
+        for c in (candidates_all or []):
+            if not isinstance(c, dict):
+                continue
             cu = _ph2b_norm_url(c.get("source_url") or "")
             if cu and cu in injected_norm:
                 cands_inj.append(c)
 
     # PATCH FIX2D65: prune yearlike candidates for unit/count metrics (immune to window backfill)
+    _orig_all = list(candidates_all or [])
+    _orig_inj = list(cands_inj or [])
+
     try:
         _p_all, _rej_all = _fix2d65_spine_prune_candidates_for_ck(canonical_key, spec, candidates_all)
-        candidates_all = _p_all
+        if _orig_all and not _p_all:
+            # non-fatal: do not allow prune to zero-out the pool
+            candidates_all = _orig_all
+            _rej_all = 0
+            spec.setdefault("debug_meta", {})["fix2d65_prune_reverted_all"] = True
+        else:
+            candidates_all = _p_all
     except Exception:
         _rej_all = 0
+
     try:
         if cands_inj:
             _p_inj, _rej_inj = _fix2d65_spine_prune_candidates_for_ck(canonical_key, spec, cands_inj)
-            cands_inj = _p_inj
+            if _orig_inj and not _p_inj:
+                cands_inj = _orig_inj
+                _rej_inj = 0
+                spec.setdefault("debug_meta", {})["fix2d65_prune_reverted_inj"] = True
+            else:
+                cands_inj = _p_inj
         else:
             _rej_inj = 0
     except Exception:
@@ -38735,6 +38791,8 @@ def _fix2d2x_select_current_for_key(
     except Exception:
         pass
     return best, meta
+
+
 # ---------------------------------------------------------------------
 # OVERRIDE: schema-only rebuild FIX17
 # ---------------------------------------------------------------------
@@ -41675,7 +41733,7 @@ except Exception:
     pass
 
 # Final, authoritative version stamp (last-wins)
-CODE_VERSION = "FIX2D65"
+CODE_VERSION = "FIX2D65A"
 
 # =====================================================================
 # END PATCH FIX2D65
