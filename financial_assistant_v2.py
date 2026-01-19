@@ -88,7 +88,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D66"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D66H"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D66G
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D66G",
+        "date": "2026-01-19",
+        "summary": "Google Sheets write resiliency: always mirror saved analyses into session_state history; if Sheets write fails, set a flag and record _SHEETS_LAST_WRITE_ERROR so get_history() falls back to session_state when Sheet reads are empty. Prevents Evolution from being blocked by transient Sheets save failures. No changes to extraction/diffing.",
+        "files": ["FIX2D66G_full_codebase.py"],
+        "supersedes": ["FIX2D66"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 
 # ============================================================
@@ -3204,20 +3223,44 @@ def add_to_history(analysis: dict) -> bool:
         ]
         sheet.append_row(row, value_input_option="RAW")
 
+        # PATCH FIX2D66G (ADD): also persist into session history even when Sheets is primary
+        # - This prevents Evolution from being blocked when a Sheets write succeeds/fails intermittently.
+        try:
+            if "analysis_history" not in st.session_state:
+                st.session_state.analysis_history = []
+            st.session_state.analysis_history.append(analysis)
+            # If Sheets succeeded, clear any prior write-failure forcing.
+            st.session_state.pop("fix2d66_force_session_history", None)
+        except Exception:
+            pass
+
         try:
             st.session_state["last_analysis"] = analysis
         except Exception:
-            return True
+            pass
+
+        return True
 
     except Exception as e:
         st.warning(f"⚠️ Failed to save to Google Sheets: {e}")
+        # PATCH FIX2D66G (ADDITIVE): mark Sheets write failure so history can fall back to session state
+        try:
+            globals()["_SHEETS_LAST_WRITE_ERROR"] = str(e)
+        except Exception:
+            pass
+        try:
+            st.session_state["fix2d66_force_session_history"] = True
+        except Exception:
+            pass
         if "analysis_history" not in st.session_state:
             st.session_state.analysis_history = []
         st.session_state.analysis_history.append(analysis)
         try:
             st.session_state["last_analysis"] = analysis
         except Exception:
-            return False
+            pass
+
+        return False
 
 
 def normalize_unit_tag(unit_str: str) -> str:
@@ -5417,6 +5460,13 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
 def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
     """Load analysis history from Google Sheet"""
     sheet = get_google_sheet()
+    # PATCH FIX2D66G (ADDITIVE): if Sheets writes recently failed, allow History to fall back to session_state
+    # This prevents Evolution from being blocked by transient Sheets failures.
+    try:
+        if st.session_state.get("fix2d66_force_session_history"):
+            return st.session_state.get('analysis_history', [])
+    except Exception:
+        pass
     if not sheet:
         # Fallback to session state
         return st.session_state.get('analysis_history', [])
@@ -5457,6 +5507,14 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
         # ============================================================
 
         all_rows = values[1:] if values and len(values) >= 2 else []
+
+        # PATCH FIX2D66G (ADDITIVE): if Sheets read is empty but we have session history (e.g., write failed), use it
+        try:
+            if (not all_rows) and st.session_state.get('analysis_history'):
+                return st.session_state.get('analysis_history', [])
+        except Exception:
+            pass
+
 
         # ============================================================
         # PATCH GH_RL1 (ADDITIVE): Rate-limit fallback for History reads
@@ -42501,7 +42559,7 @@ except Exception:
 # PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D66"
+    CODE_VERSION = "FIX2D66H"
 except Exception:
     pass
 
@@ -42520,3 +42578,20 @@ try:
 except Exception:
     pass
 # =====================================================================
+
+# =====================================================================
+# PATCH TRACKER ENTRY (ADDITIVE): FIX2D66H
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D66H",
+        "date": "2026-01-19",
+        "summary": "Fix Google Sheets history save return semantics: add_to_history() now returns True on successful Sheets append and False on failure (previously fell through as None, triggering spurious 'Saved to session only' warning). Keeps session fallback and captures last Sheets error for diagnostics.",
+        "files": ["FIX2D66H_full_codebase.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
