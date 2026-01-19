@@ -88,8 +88,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D69"
-
+CODE_VERSION = "FIX2D69A"
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D69
 # ============================================================
@@ -8138,6 +8137,31 @@ def fetch_web_context(
                 # ---------------------------------------------------------------
 
                 # numeric extraction (analysis-aligned if fn exists)
+
+                def _fix2d69a_norm_extraction_result_REMOVED(_res):
+                    """Return a list of number dicts from extractor result.
+
+                    Accepts:
+                      - list
+                      - tuple/list of (numbers, meta) where numbers is list
+                      - None / other -> []
+                    """
+                    try:
+                        if _res is None:
+                            return []
+                        if isinstance(_res, list):
+                            return _res
+                        if isinstance(_res, tuple) or isinstance(_res, list):
+                            # e.g. (nums, meta)
+                            if len(_res) >= 1 and isinstance(_res[0], list):
+                                return _res[0]
+                        # sometimes a dict wrapper
+                        if isinstance(_res, dict) and isinstance(_res.get('numbers'), list):
+                            return _res.get('numbers') or []
+                    except Exception:
+                        pass
+                    return []
+
                 nums = []
                 meta["fix2d68_extract_attempted"] = bool(callable(fn_extract))
                 meta["fix2d68_extract_input_len"] = int(len(cleaned) if isinstance(cleaned, str) else 0)
@@ -8151,12 +8175,24 @@ def fetch_web_context(
                     # Robust dispatcher: try source_url, then url, then plain. Do not fail silently.
                     for _mode in ("source_url", "url", "plain"):
                         try:
+                            _tmp = None
                             if _mode == "source_url":
-                                nums = fn_extract(cleaned, source_url=url)
+                                _tmp = fn_extract(cleaned, source_url=url)
                             elif _mode == "url":
-                                nums = fn_extract(cleaned, url=url)
+                                _tmp = fn_extract(cleaned, url=url)
                             else:
-                                nums = fn_extract(cleaned)
+                                _tmp = fn_extract(cleaned)
+                            # FIX2D69A: normalize extractor return (list | (list, meta) | dict | None)
+                            if _tmp is None:
+                                nums = []
+                            elif isinstance(_tmp, list):
+                                nums = _tmp
+                            elif isinstance(_tmp, tuple) and len(_tmp) >= 1 and isinstance(_tmp[0], list):
+                                nums = _tmp[0]
+                            elif isinstance(_tmp, dict) and isinstance(_tmp.get("extracted_numbers"), list):
+                                nums = _tmp.get("extracted_numbers") or []
+                            else:
+                                nums = []
                             meta["fix2d68_extract_call_mode"] = _mode
                             break
                         except Exception as _e:
@@ -8165,6 +8201,23 @@ def fetch_web_context(
 
                 if _fix2d68_errors:
                     meta["fix2d68_extract_errors"] = _fix2d68_errors
+
+                # FIX2D69A: normalize extractor return (list | (list, meta) | None)
+                _nums_norm = []
+                try:
+                    if nums is None:
+                        _nums_norm = []
+                    elif isinstance(nums, list):
+                        _nums_norm = nums
+                    elif isinstance(nums, tuple) and len(nums) >= 1 and isinstance(nums[0], list):
+                        _nums_norm = nums[0]
+                    elif isinstance(nums, dict) and isinstance(nums.get("extracted_numbers"), list):
+                        _nums_norm = nums.get("extracted_numbers") or []
+                    else:
+                        _nums_norm = []
+                except Exception:
+                    _nums_norm = []
+                nums = _nums_norm
 
 
                 if isinstance(nums, list):
@@ -24342,73 +24395,88 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _txt, _detail = None, f"exception:{type(_e).__name__}"
 
                     if _txt and isinstance(_txt, str) and len(_txt.strip()) >= 200:
-                    # FIX2D69: ensure numeric extraction runs on snapshot_text, with HTML->text fallback and auditable debug
+                        # FIX2D69A: ensure numeric extraction runs on snapshot_text, with HTML->text fallback and auditable debug
                         _extract_text = _txt
-                    try:
-                        _t0 = str(_txt or "")
-                        _looks_html = ('<' in _t0 and '>' in _t0 and ('</' in _t0 or '<html' in _t0.lower() or '<body' in _t0.lower()))
-                        if _looks_html:
-                            try:
-                                from bs4 import BeautifulSoup  # type: ignore
-                                _extract_text = BeautifulSoup(_t0, 'html.parser').get_text(' ')
-                            except Exception:
-                                # regex fallback
-                                _extract_text = re.sub(r'<[^>]+>', ' ', _t0)
-                        if not isinstance(_extract_text, str):
-                            _extract_text = str(_extract_text or "")
-                        _extract_text = re.sub(r'\s+', ' ', _extract_text).strip()
-                        if not _extract_text:
-                            _extract_text = _t0
-                    except Exception:
-                        _extract_text = _txt
+                        try:
+                            _t0 = str(_txt or '')
+                            _looks_html = ('<' in _t0 and '>' in _t0 and ('</' in _t0 or '<html' in _t0.lower() or '<body' in _t0.lower()))
+                            if _looks_html:
+                                try:
+                                    from bs4 import BeautifulSoup  # type: ignore
+                                    _extract_text = BeautifulSoup(_t0, 'html.parser').get_text(' ')
+                                except Exception:
+                                    _extract_text = re.sub(r'<[^>]+>', ' ', _t0)
+                            if not isinstance(_extract_text, str):
+                                _extract_text = str(_extract_text or '')
+                            _extract_text = re.sub(r'\s+', ' ', _extract_text).strip()
+                            if not _extract_text:
+                                _extract_text = _t0
+                        except Exception:
+                            _extract_text = _txt
 
-                    # FIX2D69: call extractor with robust signature dispatch, and capture any failure
-                    _nums = []
-                    _fx69_errors = []
-                    _callable = bool(callable(extract_numbers_with_context))
-                    try:
-                        _row['fix2d68_extract_attempted'] = bool(_callable)
-                        _row['fix2d68_extract_input_len'] = int(len(_extract_text) if isinstance(_extract_text, str) else 0)
-                        _row['fix2d68_extract_input_head'] = (_extract_text[:200] if isinstance(_extract_text, str) else '')
-                    except Exception:
-                        pass
-                    if _callable:
-                        for _mode in ('source_url', 'url', 'plain'):
-                            try:
-                                if _mode == 'source_url':
-                                    _nums = extract_numbers_with_context(_extract_text, source_url=_u_norm) or []
-                                elif _mode == 'url':
-                                    _nums = extract_numbers_with_context(_extract_text, url=_u_norm) or []
-                                else:
-                                    _nums = extract_numbers_with_context(_extract_text) or []
-                                _row['fix2d68_extract_call_mode'] = _mode
-                                break
-                            except Exception as _e:
-                                _fx69_errors.append({'mode': _mode, 'error': repr(_e)})
-                                _nums = []
-                    if _fx69_errors:
-                        _row['fix2d68_extract_errors'] = _fx69_errors
+                        _nums = []
+                        _fx69_errors = []
+                        _callable = bool(callable(extract_numbers_with_context))
+                        try:
+                            _row['fix2d68_extract_attempted'] = bool(_callable)
+                            _row['fix2d68_extract_input_len'] = int(len(_extract_text) if isinstance(_extract_text, str) else 0)
+                            _row['fix2d68_extract_input_head'] = (_extract_text[:200] if isinstance(_extract_text, str) else '')
+                        except Exception:
+                            pass
+                        if _callable:
+                            for _mode in ('source_url', 'url', 'plain'):
+                                try:
+                                    _tmp = None
+                                    if _mode == 'source_url':
+                                        _tmp = extract_numbers_with_context(_extract_text, source_url=_u_norm)
+                                    elif _mode == 'url':
+                                        _tmp = extract_numbers_with_context(_extract_text, url=_u_norm)
+                                    else:
+                                        _tmp = extract_numbers_with_context(_extract_text)
+                                    # normalize extractor return
+                                    if _tmp is None:
+                                        _nums = []
+                                    elif isinstance(_tmp, list):
+                                        _nums = _tmp
+                                    elif isinstance(_tmp, tuple) and len(_tmp) >= 1 and isinstance(_tmp[0], list):
+                                        _nums = _tmp[0]
+                                    elif isinstance(_tmp, dict) and isinstance(_tmp.get('extracted_numbers'), list):
+                                        _nums = _tmp.get('extracted_numbers') or []
+                                    else:
+                                        _nums = []
+                                    _row['fix2d68_extract_call_mode'] = _mode
+                                    break
+                                except Exception as _e:
+                                    _fx69_errors.append({'mode': _mode, 'error': repr(_e)})
+                                    _nums = []
+                        if _fx69_errors:
+                            _row['fix2d68_extract_errors'] = _fx69_errors
+
                         _row.update({
-                            "status": "fetched",
-                            "status_detail": (_detail or "success"),
-                            "snapshot_text": _txt[:7000],
-                            "extracted_numbers": _nums,
-                            "numbers_found": int(len(_nums or [])),
-                            "injected": True,
-                            "injected_reason": _row.get("injected_reason") or "fx16_fetch_and_extract",
+                            'status': 'fetched',
+                            'status_detail': (_detail or 'success'),
+                            'snapshot_text': _txt[:7000],
+                            'extracted_numbers': _nums,
+                            'numbers_found': int(len(_nums or [])),
+                            'injected': True,
+                            'injected_reason': _row.get('injected_reason') or 'fx16_fetch_and_extract',
                         })
-                        _fx16_fetched.append({"url": _u_norm, "why": _why, "numbers_found": int(len(_nums or [])), "status_detail": (_detail or "success")})
+                        _fx16_fetched.append({
+                            'url': _u_norm, 'why': _why, 'numbers_found': int(len(_nums or [])), 'status_detail': (_detail or 'success')
+                        })
                     else:
                         _row.update({
-                            "status": "failed",
-                            "status_detail": (_detail or "failed:no_text"),
-                            "snapshot_text": "",
-                            "extracted_numbers": [],
-                            "numbers_found": 0,
-                            "injected": True,
-                            "injected_reason": _row.get("injected_reason") or "fx16_fetch_failed",
+                            'status': 'failed',
+                            'status_detail': (_detail or 'failed:no_text'),
+                            'snapshot_text': '',
+                            'extracted_numbers': [],
+                            'numbers_found': 0,
+                            'injected': True,
+                            'injected_reason': _row.get('injected_reason') or 'fx16_fetch_failed',
                         })
-                        _fx16_failed.append({"url": _u_norm, "why": _why, "status_detail": (_detail or "failed:no_text")})
+                        _fx16_failed.append({
+                            'url': _u_norm, 'why': _why, 'status_detail': (_detail or 'failed:no_text')
+                        })
 
             # Emit debug
             try:
@@ -25342,7 +25410,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                 flat.append(c)
             except Exception:
                 pass
-            flat = []
+                flat = []
 
             def _cand_has_unit_evidence(c: dict) -> bool:
                 try:
@@ -39740,7 +39808,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -40148,7 +40216,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -40212,7 +40280,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -40510,7 +40578,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -40755,7 +40823,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -41283,7 +41351,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -41748,7 +41816,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -42071,7 +42139,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -42172,12 +42240,12 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 
 
 # =========================
@@ -42555,7 +42623,7 @@ except Exception:
     pass
 
 # Final, authoritative version stamp (last-wins)
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 
 # =====================================================================
 # END PATCH FIX2D65
@@ -42566,7 +42634,7 @@ CODE_VERSION = "FIX2D69"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
 except Exception:
     pass
 
@@ -42591,7 +42659,7 @@ except Exception:
 # PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
 except Exception:
     pass
 
@@ -42616,7 +42684,7 @@ except Exception:
 # PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
 except Exception:
     pass
 
@@ -42641,7 +42709,7 @@ except Exception:
 # PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
 except Exception:
     pass
 
@@ -43615,7 +43683,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -44023,7 +44091,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -44087,7 +44155,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -44385,7 +44453,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -44630,7 +44698,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -45158,7 +45226,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -45623,7 +45691,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -45946,7 +46014,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -46047,12 +46115,12 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 
 
 # =========================
@@ -46430,7 +46498,7 @@ except Exception:
     pass
 
 # Final, authoritative version stamp (last-wins)
-CODE_VERSION = "FIX2D69"
+CODE_VERSION = "FIX2D69A"
 
 # =====================================================================
 # END PATCH FIX2D65
@@ -46441,7 +46509,7 @@ CODE_VERSION = "FIX2D69"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
 except Exception:
     pass
 
@@ -46466,7 +46534,7 @@ except Exception:
 # PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
 except Exception:
     pass
 
@@ -46491,7 +46559,7 @@ except Exception:
 # PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
 except Exception:
     pass
 
@@ -46516,7 +46584,7 @@ except Exception:
 # PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
 except Exception:
     pass
 
@@ -46595,10 +46663,48 @@ except Exception:
     pass
 
 # =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D69A PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D69A",
+        "date": "2026-01-19",
+        "summary": "Normalize numeric extractor return contracts (list/tuple/None) to prevent silent empty extracted_numbers and TypeError unpack failures; keep auditable fix2d68/69 diagnostics; bump version.",
+        "files": ["FIX2D69A_full_codebase.py"],
+        "supersedes": ["FIX2D69"],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D69A PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D69A',
+        'date': '2026-01-19',
+        'summary': 'Fix numeric extraction wrapper compatibility: tolerate extractor return styles (list, (list,meta), dict, None) without tuple-unpack errors; keep auditable fix2d68 diagnostics; bump version stamp.',
+        'files': ['FIX2D69A_full_codebase.py'],
+        'supersedes': ['FIX2D69'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
 # PATCH FIX2D69 FINAL VERSION OVERRIDE (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69"
+    CODE_VERSION = "FIX2D69A"
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
