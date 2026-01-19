@@ -38734,62 +38734,7 @@ def _fix2d2x_select_current_for_key(
         meta["fix2d65_yearlike_pruned_global"] = int(_rej_all or 0)
     except Exception:
         pass
-    return best, meta
-
-
-    spec_in: dict,
-        candidates_all: list,
-        injected_urls: list,
-    ) -> tuple:
-        """Injected-first two-pass selection using Analysis authoritative selector."""
-    spec = dict(spec_in or {})
-
-    # Disable preferred source locking for Evolution (parity gates but different policy)
-    for k in ("preferred_url", "source_url"):
-        if k in spec:
-            spec.pop(k, None)
-
-    # Ensure keywords exist for selector scoring/eligibility
-    if not spec.get("keywords"):
-        nm = str(spec.get("name") or "")
-        spec["keywords"] = _fix2d2x_keywords_from_key_and_name(canonical_key, nm)
-
-    # local pre-filter (prevents cross-metric pollution when baseline schema lacks rich keywords)
-    candidates_all = _fix2d2x_filter_candidates_for_key(canonical_key, spec, candidates_all)
-
-    # pass 1: injected-only
-    injected_norm = set(_ph2b_norm_url(u) for u in (injected_urls or []) if isinstance(u, str))
-    cands_inj = []
-    if injected_norm:
-        for c in candidates_all:
-            cu = _ph2b_norm_url(c.get("source_url") or "")
-            if cu and cu in injected_norm:
-                cands_inj.append(c)
-
-    fn_sel = globals().get("_analysis_canonical_final_selector_v1")
-    if not callable(fn_sel):
-        return None, {"blocked_reason": "missing_analysis_selector"}
-
-    if cands_inj:
-        best, meta = fn_sel(canonical_key, spec, cands_inj, anchors=None, prev_metric=None, web_context=None)
-        if isinstance(best, dict):
-            try:
-                meta = dict(meta or {})
-                meta["fix2d2x_pass"] = "injected_only"
-            except Exception:
-                pass
-            return best, meta
-
-    # pass 2: global
-    best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
-    try:
-        meta = dict(meta or {})
-        meta["fix2d2x_pass"] = "global"
-    except Exception:
-        pass
-    return best, meta
-
-
+return best, meta
 # ---------------------------------------------------------------------
 # OVERRIDE: schema-only rebuild FIX17
 # ---------------------------------------------------------------------
