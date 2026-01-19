@@ -87,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D65A"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D65B"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 
 
