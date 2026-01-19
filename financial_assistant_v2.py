@@ -88,7 +88,26 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D68"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D69"
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D69
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D69",
+        "date": "2026-01-19",
+        "summary": "Hard-wire numeric extraction on injected snapshot_text: when injected placeholders are fetched (FIX41AFC16), convert HTML to plain text if needed, always extract numbers from the non-empty text, and store content_len/clean_text_len plus FIX2D68 extraction diagnostics and errors. Also defensively initialize observed_rows_filtered_noninjected to prevent UnboundLocalError in Diff Panel V2 summary.",
+        "files": ["FIX2D69_full_codebase.py"],
+        "supersedes": ["FIX2D68"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D66G
@@ -22802,6 +22821,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
     observed_rows_total = 0
     observed_rows_injected = 0
     observed_rows_filtered_yearlike = 0
+    observed_rows_filtered_noninjected = 0
     observed_yearlike_samples = []
 
     def _fix2d23_is_yearlike_token(value_norm, unit_tag):
@@ -24322,12 +24342,53 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _txt, _detail = None, f"exception:{type(_e).__name__}"
 
                     if _txt and isinstance(_txt, str) and len(_txt.strip()) >= 200:
-                        try:
-                            _nums = extract_numbers_with_context(_txt, source_url=_u_norm) or []
-                        except Exception:
-                            pass
-                            _nums = []
-                        _row.update({
+                    # FIX2D69: ensure numeric extraction runs on snapshot_text, with HTML->text fallback and auditable debug
+                    _extract_text = _txt
+                    try:
+                        _t0 = str(_txt or "")
+                        _looks_html = ('<' in _t0 and '>' in _t0 and ('</' in _t0 or '<html' in _t0.lower() or '<body' in _t0.lower()))
+                        if _looks_html:
+                            try:
+                                from bs4 import BeautifulSoup  # type: ignore
+                                _extract_text = BeautifulSoup(_t0, 'html.parser').get_text(' ')
+                            except Exception:
+                                # regex fallback
+                                _extract_text = re.sub(r'<[^>]+>', ' ', _t0)
+                        if not isinstance(_extract_text, str):
+                            _extract_text = str(_extract_text or "")
+                        _extract_text = re.sub(r'\s+', ' ', _extract_text).strip()
+                        if not _extract_text:
+                            _extract_text = _t0
+                    except Exception:
+                        _extract_text = _txt
+
+                    # FIX2D69: call extractor with robust signature dispatch, and capture any failure
+                    _nums = []
+                    _fx69_errors = []
+                    _callable = bool(callable(extract_numbers_with_context))
+                    try:
+                        _row['fix2d68_extract_attempted'] = bool(_callable)
+                        _row['fix2d68_extract_input_len'] = int(len(_extract_text) if isinstance(_extract_text, str) else 0)
+                        _row['fix2d68_extract_input_head'] = (_extract_text[:200] if isinstance(_extract_text, str) else '')
+                    except Exception:
+                        pass
+                    if _callable:
+                        for _mode in ('source_url', 'url', 'plain'):
+                            try:
+                                if _mode == 'source_url':
+                                    _nums = extract_numbers_with_context(_extract_text, source_url=_u_norm) or []
+                                elif _mode == 'url':
+                                    _nums = extract_numbers_with_context(_extract_text, url=_u_norm) or []
+                                else:
+                                    _nums = extract_numbers_with_context(_extract_text) or []
+                                _row['fix2d68_extract_call_mode'] = _mode
+                                break
+                            except Exception as _e:
+                                _fx69_errors.append({'mode': _mode, 'error': repr(_e)})
+                                _nums = []
+                    if _fx69_errors:
+                        _row['fix2d68_extract_errors'] = _fx69_errors
+                    _row.update({
                             "status": "fetched",
                             "status_detail": (_detail or "success"),
                             "snapshot_text": _txt[:7000],
@@ -39679,7 +39740,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -40087,7 +40148,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -40151,7 +40212,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -40449,7 +40510,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -40694,7 +40755,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -41222,7 +41283,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -41687,7 +41748,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -42010,7 +42071,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -42111,12 +42172,12 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 
 
 # =========================
@@ -42494,7 +42555,7 @@ except Exception:
     pass
 
 # Final, authoritative version stamp (last-wins)
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 
 # =====================================================================
 # END PATCH FIX2D65
@@ -42505,7 +42566,7 @@ CODE_VERSION = "FIX2D68"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
 except Exception:
     pass
 
@@ -42530,7 +42591,7 @@ except Exception:
 # PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
 except Exception:
     pass
 
@@ -42555,7 +42616,7 @@ except Exception:
 # PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
 except Exception:
     pass
 
@@ -42580,7 +42641,7 @@ except Exception:
 # PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
 except Exception:
     pass
 
@@ -43554,7 +43615,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -43962,7 +44023,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -44026,7 +44087,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -44324,7 +44385,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -44569,7 +44630,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -45097,7 +45158,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -45562,7 +45623,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -45885,7 +45946,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -45986,12 +46047,12 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 
 
 # =========================
@@ -46369,7 +46430,7 @@ except Exception:
     pass
 
 # Final, authoritative version stamp (last-wins)
-CODE_VERSION = "FIX2D68"
+CODE_VERSION = "FIX2D69"
 
 # =====================================================================
 # END PATCH FIX2D65
@@ -46380,7 +46441,7 @@ CODE_VERSION = "FIX2D68"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
 except Exception:
     pass
 
@@ -46405,7 +46466,7 @@ except Exception:
 # PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
 except Exception:
     pass
 
@@ -46430,7 +46491,7 @@ except Exception:
 # PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
 except Exception:
     pass
 
@@ -46455,7 +46516,7 @@ except Exception:
 # PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
 except Exception:
     pass
 
@@ -46534,10 +46595,10 @@ except Exception:
     pass
 
 # =====================================================================
-# PATCH FIX2D68 FINAL VERSION OVERRIDE (ADDITIVE)
+# PATCH FIX2D69 FINAL VERSION OVERRIDE (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D68"
+    CODE_VERSION = "FIX2D69"
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
