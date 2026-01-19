@@ -87,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D65C"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D65D"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 
 
@@ -16431,7 +16431,48 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
 
     # =====================================================================
-    # PATCH FIX2D65B (ADD): Force canonical pipeline when injected URLs exist
+    # =====================================================================
+    # PATCH FIX2D65D (ADD): Ensure metric_schema_frozen is always serialized
+    #
+    # Problem observed:
+    # - Some Analysis runs (especially narrative questions) emit no metric_schema_frozen at all.
+    # - Evolution schema-only rebuild depends on prev_response.metric_schema_frozen keyspace;
+    #   when missing, rebuild returns empty and Diff Panel V2 shows an empty metric change table.
+    #
+    # Policy:
+    # - Always ensure metric_schema_frozen exists at top-level analysis output.
+    # - Seed deterministically using known schema extension functions when missing/empty.
+    # - No fetch, no heuristic matching.
+    # =====================================================================
+    try:
+        _schema0 = analysis.get('metric_schema_frozen')
+        if not isinstance(_schema0, dict) or not _schema0:
+            _schema_seed = {}
+            for _fn_name in (
+                '_fix2u_extend_metric_schema_ev_chargers',
+                '_fix2v_extend_metric_schema_ev_chargers_cagr',
+                '_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025',
+            ):
+                try:
+                    _fn = globals().get(_fn_name)
+                    if callable(_fn):
+                        _schema_seed = _fn(_schema_seed) or _schema_seed
+                except Exception:
+                    pass
+            analysis['metric_schema_frozen'] = _schema_seed
+            try:
+                if not isinstance(analysis.get('debug'), dict):
+                    analysis['debug'] = {}
+                analysis['debug']['fix2d65d_seeded_schema'] = True
+                analysis['debug']['fix2d65d_schema_keys'] = int(len(_schema_seed)) if isinstance(_schema_seed, dict) else 0
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # =====================================================================
+
+
+# PATCH FIX2D65B (ADD): Force canonical pipeline when injected URLs exist
     #
     # Problem:
     # - Some narrative / market-size queries return no primary_metrics in primary_response.
@@ -16484,7 +16525,8 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 _uniq.append(u)
         _inj_urls = _uniq
 
-        if _inj_urls:
+        _has_inj = bool(_inj_urls)
+        if _has_inj:
             try:
                 analysis.setdefault("debug", {})
                 if isinstance(analysis.get("debug"), dict):
@@ -16493,25 +16535,27 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             except Exception:
                 pass
 
-            # Ensure metric_schema_frozen exists so FIX2D31 can run even when LLM emitted no primary_metrics
-            _schema0 = analysis.get("metric_schema_frozen")
-            if not isinstance(_schema0, dict) or not _schema0:
-                _schema_seed = {}
+        # Ensure metric_schema_frozen exists even when LLM emitted no primary_metrics.
+        # NOTE: We no longer gate this on injected URLs: Evolution schema-only rebuild
+        # requires a baseline keyspace, and the deterministic schema extensions are safe.
+        _schema0 = analysis.get("metric_schema_frozen")
+        if not isinstance(_schema0, dict) or not _schema0:
+            _schema_seed = {}
 
-                # Apply known deterministic schema extensions (additive)
-                for _fn_name in (
-                    "_fix2u_extend_metric_schema_ev_chargers",
-                    "_fix2v_extend_metric_schema_ev_chargers_cagr",
-                    "_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025",
-                ):
-                    try:
-                        _fn = globals().get(_fn_name)
-                        if callable(_fn):
-                            _schema_seed = _fn(_schema_seed) or _schema_seed
-                    except Exception:
-                        pass
+            # Apply known deterministic schema extensions (additive)
+            for _fn_name in (
+                "_fix2u_extend_metric_schema_ev_chargers",
+                "_fix2v_extend_metric_schema_ev_chargers_cagr",
+                "_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025",
+            ):
+                try:
+                    _fn = globals().get(_fn_name)
+                    if callable(_fn):
+                        _schema_seed = _fn(_schema_seed) or _schema_seed
+                except Exception:
+                    pass
 
-                analysis["metric_schema_frozen"] = _schema_seed
+            analysis["metric_schema_frozen"] = _schema_seed
     except Exception:
         pass
     # =====================================================================
@@ -41831,7 +41875,7 @@ CODE_VERSION = "FIX2D65A"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D65C"
+    CODE_VERSION = "FIX2D65D"
 except Exception:
     pass
 
@@ -41856,7 +41900,7 @@ except Exception:
 # PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D65C"
+    CODE_VERSION = "FIX2D65D"
 except Exception:
     pass
 
@@ -41870,6 +41914,31 @@ try:
         "summary": "Restore analysis->evolution diff contract: broaden injected URL detection (ui_raw + legacy keys) so schema seeding and FIX2D31 schema-authority rebuild reliably run when injection is used; bump version.",
         "files": ["FIX2D65C_full_codebase.py"],
         "supersedes": ["FIX2D65B"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# =====================================================================
+
+
+# =====================================================================
+# PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D65D"
+except Exception:
+    pass
+
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D65D",
+        "date": "2026-01-19",
+        "summary": "Restore analysis->evolution diff contract by always serializing/seeding metric_schema_frozen (deterministic schema extensions), so Evolution schema-only rebuild has a stable keyspace even when LLM emits no primary_metrics; bump version.",
+        "files": ["FIX2D65D_full_codebase.py"],
+        "supersedes": ["FIX2D65C"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
