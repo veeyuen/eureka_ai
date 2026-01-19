@@ -88,7 +88,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D66H"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
+CODE_VERSION = "FIX2D67"  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D66G
@@ -8122,7 +8122,13 @@ def fetch_web_context(
                 nums = []
                 try:
                     if callable(fn_extract):
-                        nums = fn_extract(cleaned, url=url) if "url" in fn_extract.__code__.co_varnames else fn_extract(cleaned)
+                        _vnames = getattr(getattr(fn_extract, "__code__", None), "co_varnames", ()) or ()
+                        if "source_url" in _vnames:
+                            nums = fn_extract(cleaned, source_url=url)
+                        elif "url" in _vnames:
+                            nums = fn_extract(cleaned, url=url)
+                        else:
+                            nums = fn_extract(cleaned)
                 except Exception:
                     pass
                     nums = []
@@ -42593,5 +42599,33 @@ try:
         "files": ["FIX2D66H_full_codebase.py"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH TRACKER ENTRY (ADDITIVE): FIX2D67
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D67",
+        "date": "2026-01-19",
+        "summary": "Fix injected numeric extraction missing-link: fetch_web_context() now calls numeric extractor with correct parameter name (source_url vs url), preventing silent TypeError and empty extracted_numbers; restores injected HTML numbers into snapshot pools feeding schema-only rebuild.",
+        "files": ["FIX2D67_full_codebase.py"],
+        "supersedes": ["FIX2D66H"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX2D67 FINAL VERSION OVERRIDE (ADDITIVE)
+# =====================================================================
+try:
+    CODE_VERSION = "FIX2D67"
+    globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
