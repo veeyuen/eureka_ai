@@ -38719,9 +38719,9 @@ def _fix2d2x_select_current_for_key(
         if isinstance(best, dict):
             try:
                 meta = dict(meta or {})
-                meta[\"fix2d2x_pass\"] = \"injected_only\"
-                meta[\"fix2d65_yearlike_pruned_injected\"] = int(_rej_inj or 0)
-                meta[\"fix2d65_yearlike_pruned_global\"] = int(_rej_all or 0)
+                meta["fix2d2x_pass"] = "injected_only"
+                meta["fix2d65_yearlike_pruned_injected"] = int(_rej_inj or 0)
+                meta["fix2d65_yearlike_pruned_global"] = int(_rej_all or 0)
             except Exception:
                 pass
             return best, meta
@@ -38730,8 +38730,8 @@ def _fix2d2x_select_current_for_key(
     best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
     try:
         meta = dict(meta or {})
-        meta[\"fix2d2x_pass\"] = \"global\"
-        meta[\"fix2d65_yearlike_pruned_global\"] = int(_rej_all or 0)
+        meta["fix2d2x_pass"] = "global"
+        meta["fix2d65_yearlike_pruned_global"] = int(_rej_all or 0)
     except Exception:
         pass
     return best, meta
