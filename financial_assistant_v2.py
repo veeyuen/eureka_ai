@@ -72,6 +72,7 @@ import hashlib
 import numpy as np
 import difflib
 import gspread
+import google.generativeai as genai
 from pypdf import PdfReader
 from pathlib import Path
 from google.oauth2.service_account import Credentials
@@ -87,7 +88,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D85"
+CODE_VERSION = "FIX2D84"
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
 # ============================================================
@@ -5958,11 +5959,13 @@ def load_api_keys():
     # =====================================================================
     try:
         PERPLEXITY_KEY = st.secrets.get("PERPLEXITY_API_KEY") or os.getenv("PERPLEXITY_API_KEY", "")
+        GEMINI_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
         SERPAPI_KEY = st.secrets.get("SERPAPI_KEY") or os.getenv("SERPAPI_KEY", "")
         SCRAPINGDOG_KEY = st.secrets.get("SCRAPINGDOG_KEY") or os.getenv("SCRAPINGDOG_KEY", "")
     except Exception:
         pass
         PERPLEXITY_KEY = os.getenv("PERPLEXITY_API_KEY", "")
+        GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
         SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
         SCRAPINGDOG_KEY = os.getenv("SCRAPINGDOG_KEY", "")
 
@@ -5971,11 +5974,18 @@ def load_api_keys():
         st.error("❌ PERPLEXITY_API_KEY is missing or invalid")
         st.stop()
 
-    return PERPLEXITY_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY
+    if not GEMINI_KEY or len(GEMINI_KEY) < 10:
+        st.error("❌ GEMINI_API_KEY is missing or invalid")
+        st.stop()
 
-PERPLEXITY_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY = load_api_keys()
+    return PERPLEXITY_KEY, GEMINI_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY
+
+PERPLEXITY_KEY, GEMINI_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY = load_api_keys()
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 
+# Configure Gemini
+genai.configure(api_key=GEMINI_KEY)
+gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 # =========================================================
 # 2. PYDANTIC MODELS
@@ -28536,54 +28546,6 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
             if expected_kind == 'unit' and _fix2d2r_is_bare_year_cand(c):
                 continue
 
-            # =====================================================================
-            # PATCH FIX2D84 (ADDITIVE): tighten schema_only_rebuild selection
-            #
-            # Why:
-            #   - Percent metrics can be polluted by nearby year tokens (e.g., 2026/2040)
-            #     that get mis-tagged as percent due to surrounding "%" text.
-            #   - CAGR percent keys must not hijack generic share/penetration percentages.
-            #   - Unit/count keys must not accept currency candidates.
-            #
-            # Rules:
-            #   - expected_kind==percent: hard-reject bare-year tokens
-            #   - expected_kind==percent: require % evidence on token/unit itself (not only context)
-            #   - CAGR percent keys: require CAGR cue in local window
-            #   - expected_kind==unit: reject obvious currency candidates
-            # =====================================================================
-            try:
-                if expected_kind == 'percent':
-                    # Never allow year tokens as percent values
-                    if _fix2d2r_is_bare_year_cand(c):
-                        continue
-
-                    # Require strong percent evidence tied to the token/unit
-                    _rt = str(c.get('raw') or '').lower()
-                    _ut = str(c.get('unit') or c.get('unit_tag') or '').lower()
-                    _tok_has_pct = ('%' in _rt) or ('percent' in _rt) or ('pct' in _rt)
-                    _unit_has_pct = ('%' in _ut) or ('percent' in _ut)
-                    if (not _tok_has_pct) and (not _unit_has_pct):
-                        continue
-
-                    # If the schema key is CAGR, require a CAGR cue near the token
-                    _ck = str(canonical_key or '').lower()
-                    _nm = str(name or '').lower()
-                    if ('cagr' in _ck) or ('cagr' in _nm) or ('compound annual' in _nm):
-                        _win = (str(c.get('context_snippet') or c.get('context') or c.get('context_window') or '') + ' ' + str(c.get('raw') or '')).lower()
-                        if not (('cagr' in _win) or ('compound annual' in _win) or ('annual growth' in _win)):
-                            continue
-
-                elif expected_kind == 'unit':
-                    # For unit/count metrics, forbid currency candidates
-                    try:
-                        fn_cur = globals().get('_fix27_has_currency_evidence')
-                        if callable(fn_cur) and fn_cur(c):
-                            continue
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
             # FIX2D2R: reject bare-year token when a better sibling exists in the same snippet
             if expected_kind != 'year' and _fix2d2r_is_bare_year_cand(c) and not _fix27_has_any_unit_evidence(c):
                 if _fix2d2r_has_better_sibling(c, filtered, expected_kind):
@@ -31393,15 +31355,7 @@ def _normalize_prev_response_for_rebuild(previous_data):
 
 
 if __name__ == "__main__":
-    # NOTE: When this file is loaded via exec() in Streamlit dashboards, __name__ is often "__main__".
-    # Auto-running main() during import breaks late patch application.
-    # Set env YUREEKA_RUN_MAIN=1 to run main() explicitly.
-    try:
-        import os
-        if str(os.environ.get("YUREEKA_RUN_MAIN") or "").strip() == "1":
-            main()
-    except Exception:
-        pass
+    main()
 
 
 # ===================== PATCH RMS_DISPATCH2 (ADDITIVE) =====================
@@ -48082,67 +48036,10 @@ try:
 except Exception:
     pass
 
-# =====================================================================
-# PATCH FIX2D84 (ADDITIVE): close the last "year token" gap definitively
-#
-# What it fixes:
-#   1) schema_only_rebuild selection could still pick a bare year (e.g., 2040)
-#      for __percent keys when extraction mis-tags nearby years as "percent".
-#   2) CAGR percent keys could hijack generic share percentages.
-#   3) unit/count keys could accept currency candidates in edge cases.
-#   4) Streamlit exec() loads this file under __main__; auto-running main() during
-#      import breaks late patch application.
-#
-# See in-file insertion near RMS_CORE1 candidate loop and guarded __main__.
-# =====================================================================
+# --- Streamlit exec display guard: avoid dumping long function docs in UI ---
 try:
-    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D84',
-        'date': '2026-01-20',
-        'summary': 'Definitive last-mile hardening: schema_only_rebuild now rejects bare-year candidates for __percent keys, requires % evidence on token/unit (not just context), enforces CAGR cue for CAGR percent keys, and forbids currency candidates for unit/count keys. Also guards __main__ main() auto-run behind YUREEKA_RUN_MAIN=1 to ensure patches apply when loaded via exec() in Streamlit.',
-        'files': ['FIX2D84_full_codebase.py'],
-        'supersedes': ['FIX2D83'],
-    })
-    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# FIX2D84_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
-try:
-    CODE_VERSION = 'FIX2D84'
-    globals()['CODE_VERSION'] = CODE_VERSION
-except Exception:
-    pass
-
-
-# =====================================================================
-# PATCH FIX2D85 (CLEANUP): remove Google Gemini support + bump version
-#
-# - Removes google.generativeai import and all GEMINI_API_KEY / GEMINI_KEY handling.
-# - Keeps PERPLEXITY / SERPAPI / SCRAPINGDOG key loading intact.
-# - Bumps CODE_VERSION to match patch id.
-# =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D85',
-        'date': '2026-01-20',
-        'summary': 'Cleanup: remove Google Gemini (google.generativeai) imports/config and GEMINI_API_KEY handling; bump CODE_VERSION; no behavior change to diffing logic.',
-        'files': ['FIX2D85_full_codebase.py'],
-        'supersedes': ['FIX2D84'],
-    })
-    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# FIX2D85_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
-try:
-    CODE_VERSION = 'FIX2D85'
-    globals()['CODE_VERSION'] = CODE_VERSION
+    _fn = globals().get("diff_metrics_by_name")
+    if callable(_fn):
+        _fn.__doc__ = ""
 except Exception:
     pass
