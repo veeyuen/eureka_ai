@@ -48347,3 +48347,11 @@ try:
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
+
+# Streamlit display guard: prevent UI from dumping long diff docstrings
+try:
+    _fn = globals().get("diff_metrics_by_name")
+    if callable(_fn):
+        _fn.__doc__ = ""
+except Exception:
+    pass
