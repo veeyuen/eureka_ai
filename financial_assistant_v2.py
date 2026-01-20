@@ -88,8 +88,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D72"
-
+CODE_VERSION = "FIX2D73"
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
 # ============================================================
@@ -989,6 +988,114 @@ def _fix2d10_materialize_output_debug_canonical_for_render_v1(output_obj):
         return diag
 # ============================================================
 # PATCH END: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_V1
+
+
+# ============================================================
+# PATCH START: FIX2D73_HISTORYFULL_PREV_CANON_PROMOTION_V1
+# Purpose:
+#   - HistoryFull rehydrate can return a full prior analysis payload where baseline
+#     canonical metrics live under nested containers (e.g., results.primary_metrics_canonical).
+#   - Evolution diffing (Diff Panel V2) expects previous_data.primary_metrics_canonical
+#     (and/or previous_data.primary_response.primary_metrics_canonical) to exist.
+# What:
+#   - Promote nested baseline canonical metrics + schema into top-level keys on the
+#     rehydrated previous payload, and mirror into primary_response.
+#   - Emit compact diagnostics counts (safe, additive).
+# ============================================================
+
+def _fix2d73_promote_rehydrated_prevdata_v1(prev_full: dict) -> dict:
+    diag = {
+        "applied": False,
+        "pmc_before": 0,
+        "pmc_after": 0,
+        "pmc_source": None,
+        "notes": [],
+    }
+    try:
+        if not isinstance(prev_full, dict):
+            return prev_full
+
+        # Count before
+        try:
+            if isinstance(prev_full.get("primary_metrics_canonical"), dict):
+                diag["pmc_before"] = int(len(prev_full.get("primary_metrics_canonical") or {}))
+        except Exception:
+            pass
+
+        # Find candidate pmc in common nested locations
+        pmc = None
+        src = None
+        if isinstance(prev_full.get("primary_metrics_canonical"), dict) and prev_full.get("primary_metrics_canonical"):
+            pmc = prev_full.get("primary_metrics_canonical")
+            src = "prev_full.primary_metrics_canonical"
+        elif isinstance(prev_full.get("primary_response"), dict) and isinstance(prev_full["primary_response"].get("primary_metrics_canonical"), dict) and prev_full["primary_response"].get("primary_metrics_canonical"):
+            pmc = prev_full["primary_response"].get("primary_metrics_canonical")
+            src = "prev_full.primary_response.primary_metrics_canonical"
+        elif isinstance(prev_full.get("results"), dict) and isinstance(prev_full["results"].get("primary_metrics_canonical"), dict) and prev_full["results"].get("primary_metrics_canonical"):
+            pmc = prev_full["results"].get("primary_metrics_canonical")
+            src = "prev_full.results.primary_metrics_canonical"
+        elif isinstance(prev_full.get("results"), dict) and isinstance(prev_full["results"].get("primary_response"), dict) and isinstance(prev_full["results"]["primary_response"].get("primary_metrics_canonical"), dict) and prev_full["results"]["primary_response"].get("primary_metrics_canonical"):
+            pmc = prev_full["results"]["primary_response"].get("primary_metrics_canonical")
+            src = "prev_full.results.primary_response.primary_metrics_canonical"
+        elif isinstance(prev_full.get("results"), dict) and isinstance(prev_full["results"].get("results"), dict) and isinstance(prev_full["results"]["results"].get("primary_metrics_canonical"), dict) and prev_full["results"]["results"].get("primary_metrics_canonical"):
+            pmc = prev_full["results"]["results"].get("primary_metrics_canonical")
+            src = "prev_full.results.results.primary_metrics_canonical"
+
+        # Promote to top-level + mirror into primary_response
+        if isinstance(pmc, dict) and pmc:
+            if not (isinstance(prev_full.get("primary_metrics_canonical"), dict) and prev_full.get("primary_metrics_canonical")):
+                prev_full["primary_metrics_canonical"] = dict(pmc)
+                diag["notes"].append("promoted_top_level_primary_metrics_canonical")
+                diag["applied"] = True
+            if not isinstance(prev_full.get("primary_response"), dict):
+                prev_full["primary_response"] = {}
+                diag["notes"].append("created_primary_response")
+            if isinstance(prev_full.get("primary_response"), dict):
+                if not (isinstance(prev_full["primary_response"].get("primary_metrics_canonical"), dict) and prev_full["primary_response"].get("primary_metrics_canonical")):
+                    prev_full["primary_response"]["primary_metrics_canonical"] = dict(prev_full.get("primary_metrics_canonical") or {})
+                    diag["notes"].append("filled_primary_response.primary_metrics_canonical")
+                    diag["applied"] = True
+
+            diag["pmc_source"] = src
+
+        # Count after
+        try:
+            if isinstance(prev_full.get("primary_metrics_canonical"), dict):
+                diag["pmc_after"] = int(len(prev_full.get("primary_metrics_canonical") or {}))
+        except Exception:
+            pass
+
+        # Attach diag
+        try:
+            prev_full.setdefault("debug", {})
+            if isinstance(prev_full.get("debug"), dict):
+                prev_full["debug"]["fix2d73_historyfull_load_counts"] = dict(diag)
+        except Exception:
+            pass
+
+        return prev_full
+    except Exception:
+        return prev_full
+
+# ============================================================
+# PATCH END: FIX2D73_HISTORYFULL_PREV_CANON_PROMOTION_V1
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D73
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D73",
+        "date": "2026-01-20",
+        "summary": "HistoryFull persistence gap: promote baseline primary_metrics_canonical into rehydrated previous_data + ensure compute_source_anchored_diff prev_response carries canonical metrics so Diff Panel V2 can compute deltas.",
+        "files": ["FIX2D73_full_codebase.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D10
@@ -3238,6 +3345,28 @@ def add_to_history(analysis: dict) -> bool:
 
             if is_truncated:
                 full_payload_json = ""
+                # FIX2D73: save-side debug counts for baseline canonical metrics persistence
+                try:
+                    _fix2d73_pmc_count = 0
+                    _fix2d73_pmc_src = None
+                    if isinstance(analysis, dict):
+                        if isinstance(analysis.get("primary_metrics_canonical"), dict) and analysis.get("primary_metrics_canonical"):
+                            _fix2d73_pmc_count = len(analysis.get("primary_metrics_canonical") or {})
+                            _fix2d73_pmc_src = "analysis.primary_metrics_canonical"
+                        elif isinstance(analysis.get("primary_response"), dict) and isinstance(analysis["primary_response"].get("primary_metrics_canonical"), dict) and analysis["primary_response"].get("primary_metrics_canonical"):
+                            _fix2d73_pmc_count = len(analysis["primary_response"].get("primary_metrics_canonical") or {})
+                            _fix2d73_pmc_src = "analysis.primary_response.primary_metrics_canonical"
+                        elif isinstance(analysis.get("results"), dict) and isinstance(analysis["results"].get("primary_metrics_canonical"), dict) and analysis["results"].get("primary_metrics_canonical"):
+                            _fix2d73_pmc_count = len(analysis["results"].get("primary_metrics_canonical") or {})
+                            _fix2d73_pmc_src = "analysis.results.primary_metrics_canonical"
+                    analysis.setdefault("debug", {})
+                    if isinstance(analysis.get("debug"), dict):
+                        analysis["debug"]["fix2d73_historyfull_save_counts"] = {
+                            "primary_metrics_canonical_count": int(_fix2d73_pmc_count),
+                            "primary_metrics_canonical_source": str(_fix2d73_pmc_src or ""),
+                        }
+                except Exception:
+                    pass
                 try:
                     full_payload_json = json.dumps(analysis, ensure_ascii=False, default=str)
                 except Exception:
@@ -20957,6 +21086,44 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         pass
     # ============================================================
 
+
+
+    # =====================================================================
+    # PATCH FIX2D73 (ADDITIVE): ensure prev_response carries baseline canonical metrics
+    # Why:
+    # - Diff Panel V2 consumes prev_response.primary_metrics_canonical.
+    # - HistoryFull rehydrate can place canonical metrics under nested containers
+    #   (e.g., previous_data.results.primary_metrics_canonical), leaving prev_response empty.
+    # What:
+    # - If prev_canon exists, copy into prev_response.primary_metrics_canonical when missing.
+    # - Also expose at top-level previous_data.primary_metrics_canonical (debug/compat).
+    # - Record debug counts for closure verification.
+    # =====================================================================
+    try:
+        if isinstance(prev_response, dict):
+            if (not isinstance(prev_response.get("primary_metrics_canonical"), dict)) or (not prev_response.get("primary_metrics_canonical")):
+                if isinstance(prev_canon, dict) and prev_canon:
+                    prev_response["primary_metrics_canonical"] = prev_canon
+        if isinstance(previous_data, dict):
+            if (not isinstance(previous_data.get("primary_metrics_canonical"), dict)) or (not previous_data.get("primary_metrics_canonical")):
+                if isinstance(prev_canon, dict) and prev_canon:
+                    previous_data["primary_metrics_canonical"] = prev_canon
+    except Exception:
+        pass
+
+    try:
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"].setdefault("fix2d73", {})
+            if isinstance(output["debug"].get("fix2d73"), dict):
+                output["debug"]["fix2d73"].update({
+                    "prev_canon_count": int(len(prev_canon)) if isinstance(prev_canon, dict) else 0,
+                    "prev_response_pmc_count": int(len(prev_response.get("primary_metrics_canonical") or {})) if isinstance(prev_response, dict) and isinstance(prev_response.get("primary_metrics_canonical"), dict) else 0,
+                    "previous_data_top_pmc_count": int(len(previous_data.get("primary_metrics_canonical") or {})) if isinstance(previous_data, dict) and isinstance(previous_data.get("primary_metrics_canonical"), dict) else 0,
+                })
+    except Exception:
+        pass
+    # =====================================================================
     # Ensure schema/anchors are available inside prev_response (additive copies)
     try:
         if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_schema_frozen"), dict):
@@ -24142,6 +24309,44 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # ============================================================
 
+
+
+    # =====================================================================
+    # PATCH FIX2D73 (ADDITIVE): ensure prev_response carries baseline canonical metrics
+    # Why:
+    # - Diff Panel V2 consumes prev_response.primary_metrics_canonical.
+    # - HistoryFull rehydrate can place canonical metrics under nested containers
+    #   (e.g., previous_data.results.primary_metrics_canonical), leaving prev_response empty.
+    # What:
+    # - If prev_canon exists, copy into prev_response.primary_metrics_canonical when missing.
+    # - Also expose at top-level previous_data.primary_metrics_canonical (debug/compat).
+    # - Record debug counts for closure verification.
+    # =====================================================================
+    try:
+        if isinstance(prev_response, dict):
+            if (not isinstance(prev_response.get("primary_metrics_canonical"), dict)) or (not prev_response.get("primary_metrics_canonical")):
+                if isinstance(prev_canon, dict) and prev_canon:
+                    prev_response["primary_metrics_canonical"] = prev_canon
+        if isinstance(previous_data, dict):
+            if (not isinstance(previous_data.get("primary_metrics_canonical"), dict)) or (not previous_data.get("primary_metrics_canonical")):
+                if isinstance(prev_canon, dict) and prev_canon:
+                    previous_data["primary_metrics_canonical"] = prev_canon
+    except Exception:
+        pass
+
+    try:
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"].setdefault("fix2d73", {})
+            if isinstance(output["debug"].get("fix2d73"), dict):
+                output["debug"]["fix2d73"].update({
+                    "prev_canon_count": int(len(prev_canon)) if isinstance(prev_canon, dict) else 0,
+                    "prev_response_pmc_count": int(len(prev_response.get("primary_metrics_canonical") or {})) if isinstance(prev_response, dict) and isinstance(prev_response.get("primary_metrics_canonical"), dict) else 0,
+                    "previous_data_top_pmc_count": int(len(previous_data.get("primary_metrics_canonical") or {})) if isinstance(previous_data, dict) and isinstance(previous_data.get("primary_metrics_canonical"), dict) else 0,
+                })
+    except Exception:
+        pass
+    # =====================================================================
     # Ensure schema/anchors are available inside prev_response (additive copies)
     try:
         if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_schema_frozen"), dict):
@@ -34033,6 +34238,10 @@ def _fix24_get_prev_full_payload(previous_data: dict) -> dict:
             return {}
         # If it already looks like a full payload (contains canonical metrics), return as-is
         if isinstance(previous_data.get("primary_metrics_canonical"), dict) and previous_data["primary_metrics_canonical"]:
+            try:
+                previous_data = _fix2d73_promote_rehydrated_prevdata_v1(previous_data)
+            except Exception:
+                pass
             return previous_data
 
         # Preferred: explicit snapshot_store_ref / full_store_ref
@@ -34051,6 +34260,10 @@ def _fix24_get_prev_full_payload(previous_data: dict) -> dict:
                 if callable(fn):
                     full = fn(aid, worksheet_title=ws_title)
                     if isinstance(full, dict) and full:
+                        try:
+                            full = _fix2d73_promote_rehydrated_prevdata_v1(full)
+                        except Exception:
+                            pass
                         return full
     except Exception:
         return previous_data if isinstance(previous_data, dict) else {}
@@ -47029,5 +47242,12 @@ globals()["CODE_VERSION"] = "FIX2D71"
 # =====================
 try:
     CODE_VERSION = 'FIX2D72'
+except Exception:
+    pass
+
+
+# FIX2D73_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
+try:
+    CODE_VERSION = "FIX2D73"
 except Exception:
     pass
