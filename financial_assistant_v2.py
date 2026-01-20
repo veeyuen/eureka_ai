@@ -88,7 +88,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D73"
+CODE_VERSION = "FIX2D83"
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
 # ============================================================
@@ -47712,934 +47712,326 @@ except Exception:
 
 
 # =====================================================================
-# PATCH FIX2D78 (ADDITIVE): percent-schema guardrail in schema_only_rebuild
+# PATCH FIX2D82 (ADDITIVE): definitive percent year-token rejection +
+#                           force-apply at schema_only rebuild + prev_data
+# ---------------------------------------------------------------------
+# Why FIX2D80 can still leak 2040->__percent:
+#   - The schema_only rebuild may select the year token as the "best" match.
+#   - Percent evidence checks can be fooled by unrelated % signs elsewhere.
+#   - In some Streamlit exec() reload patterns, earlier wrappers may not
+#     (re-)install as expected, so sanitation doesn't run.
 #
-# Problem:
-#   schema_only_rebuild can incorrectly bind year-like tokens (e.g., "2040")
-#   to __percent schema keys, because some extracted candidates inherit a '%'
-#   unit_tag via proximity while the raw token itself is a bare year.
-#
-# Fix:
-#   Wrap rebuild_metrics_from_snapshots_schema_only_fix16 (the schema-only
-#   rebuild entrypoint used by FIX2D9 / Option B materialization) and apply:
-#     (1) Hard reject year-like values (1900-2100 integers) for __percent keys
-#         unless the candidate's *raw* explicitly contains %/percent.
-#     (2) Require percent evidence for __percent keys.
-#     (3) If the original winner is rejected, attempt a deterministic fallback
-#         reselection using _fix2d2x_select_current_for_key over the flattened
-#         extracted_numbers pool; else drop the key (so diff shows 'added').
-#
-# Notes:
-#   - Additive only; does not touch extraction or schema.
-#   - Applies to BOTH Analysis Option-B baseline materialization and any other
-#     schema_only_fix16 call sites.
+# FIX2D82 makes the guardrail unconditional:
+#   1) Override percent sanitizer: if value_norm is yearlike AND the token
+#      itself is that year (raw=="YYYY"), drop regardless of context.
+#   2) Wrap rebuild_metrics_from_snapshots_schema_only_fix16 directly so that
+#      any caller (incl. FIX2D75 materialize) gets the sanitized output.
+#   3) Wrap compute_source_anchored_diff directly to sanitize previous_data
+#      before diff join (cleans old HistoryFull snapshots too).
 # =====================================================================
 
 try:
-    _FIX2D78_SCHEMA_ONLY_GUARD_APPLIED = bool(globals().get('_FIX2D78_SCHEMA_ONLY_GUARD_APPLIED'))
-except Exception:
-    _FIX2D78_SCHEMA_ONLY_GUARD_APPLIED = False
 
-
-def _fix2d78__is_percent_key_v1(k: str, spec: dict = None) -> bool:
-    try:
-        ks = str(k or '')
-        if ks.endswith('__percent'):
-            return True
-        if '__percent' in ks:
-            return True
-        sp = spec if isinstance(spec, dict) else {}
-        dim = str(sp.get('dimension') or '').lower()
-        uf = str(sp.get('unit_family') or '').lower()
-        ut = str(sp.get('unit_tag') or '').lower()
-        blob = ' '.join([dim, uf, ut])
-        return ('percent' in blob) or ('%' in blob)
-    except Exception:
-        return False
-
-
-def _fix2d78__raw_has_percent_v1(raw: str) -> bool:
-    try:
-        r = str(raw or '').lower()
-        return ('%' in r) or ('percent' in r) or ('pct' in r)
-    except Exception:
-        return False
-
-
-def _fix2d78__has_percent_evidence_v1(rec: dict) -> bool:
-    try:
-        if not isinstance(rec, dict):
-            return False
-        # strongest: raw contains percent
-        raw = rec.get('raw')
-        if not raw and isinstance(rec.get('evidence'), list) and rec['evidence']:
-            try:
-                raw = rec['evidence'][0].get('raw')
-            except Exception:
-                raw = None
-        if _fix2d78__raw_has_percent_v1(raw):
-            return True
-        # allow explicit unit tags / base_unit
-        for k in ('unit_tag', 'unit_tag_norm', 'unit', 'base_unit', 'unit_cmp', 'unit_norm'):
-            v = rec.get(k)
-            if v is None:
-                continue
-            s = str(v or '').lower()
-            if ('%' in s) or ('percent' in s) or (s == 'pct'):
-                return True
-        uf = str(rec.get('unit_family') or '').lower()
-        if uf in ('percent', 'percentage', 'pct'):
-            return True
-        return False
-    except Exception:
-        return False
-
-
-def _fix2d78__is_yearlike_value_v1(v) -> bool:
-    try:
-        fv = float(v)
-        # integer-ish
-        if abs(fv - round(fv)) > 1e-9:
-            return False
-        iv = int(round(fv))
-        return 1900 <= iv <= 2100
-    except Exception:
-        return False
-
-
-def _fix2d78__flatten_candidates_v1(snapshot_pool) -> list:
-    """Flatten baseline_sources_cache/snapshot_pool into a candidates_all list.
-
-    Expected shapes:
-      - baseline_sources_cache: [{url, extracted_numbers:[{...candidate...}, ...]}, ...]
-      - snapshot_pool: list of candidate dicts
-    """
-    out = []
-    try:
-        if not isinstance(snapshot_pool, list):
-            return out
-        for item in snapshot_pool:
-            if isinstance(item, dict) and isinstance(item.get('extracted_numbers'), list):
-                url = item.get('url') or item.get('source_url') or item.get('source')
-                for c in item.get('extracted_numbers') or []:
-                    if not isinstance(c, dict):
-                        continue
-                    cc = dict(c)
-                    if not isinstance(cc.get('source_url'), str) or not cc.get('source_url'):
-                        if isinstance(url, str) and url:
-                            cc['source_url'] = url
-                    out.append(cc)
-                continue
-            # candidate dict directly
-            if isinstance(item, dict) and ('value_norm' in item or 'value' in item) and ('raw' in item or 'context_snippet' in item):
-                out.append(item)
-        return out
-    except Exception:
-        return out
-
-
-def _fix2d78__spec_for_key_v1(prev_response: dict, canonical_key: str) -> dict:
-    try:
-        if not isinstance(prev_response, dict):
-            return {}
-        # schema is usually metric_schema_frozen
-        schema = prev_response.get('metric_schema_frozen')
-        if not isinstance(schema, dict):
-            res = prev_response.get('results')
-            if isinstance(res, dict) and isinstance(res.get('metric_schema_frozen'), dict):
-                schema = res.get('metric_schema_frozen')
-        if isinstance(schema, dict):
-            sp = schema.get(canonical_key)
-            if isinstance(sp, dict):
-                return dict(sp)
-        return {}
-    except Exception:
-        return {}
-
-
-def _fix2d78__build_metric_record_from_candidate_v1(canonical_key: str, c: dict, method: str = 'schema_only_rebuild_fix2d78_fallback') -> dict:
-    """Build a primary_metrics_canonical entry from an extracted candidate."""
-    try:
-        if not isinstance(c, dict):
-            return {}
-        vnorm = c.get('value_norm')
-        if vnorm is None:
-            vnorm = c.get('value')
-        unit = c.get('base_unit') or c.get('unit_tag') or c.get('unit') or ''
-        rec = {
-            'canonical_key': canonical_key,
-            'name': str(canonical_key),
-            'value': vnorm,
-            'unit': unit,
-            'value_norm': vnorm,
-            'source_url': c.get('source_url') or '',
-            'anchor_hash': c.get('anchor_hash') or '',
-            # carry unit evidence if present
-            'unit_tag': c.get('unit_tag') if c.get('unit_tag') is not None else None,
-            'unit_family': c.get('unit_family') if c.get('unit_family') is not None else None,
-            'base_unit': c.get('base_unit') if c.get('base_unit') is not None else None,
-            'evidence': [
-                {
-                    'source_url': c.get('source_url') or '',
-                    'raw': c.get('raw') or '',
-                    'context_snippet': c.get('context_snippet') or '',
-                    'anchor_hash': c.get('anchor_hash') or '',
-                    'method': method,
-                }
-            ],
-        }
-        # prune None fields to keep payload compact
-        for k in ['unit_tag', 'unit_family', 'base_unit']:
-            if rec.get(k) is None:
-                rec.pop(k, None)
-        return rec
-    except Exception:
-        return {}
-
-
-def _fix2d78__apply_percent_guard_to_rebuilt_map_v1(rebuilt_map: dict, prev_response: dict, snapshot_pool, web_context=None) -> dict:
-    if not isinstance(rebuilt_map, dict) or not rebuilt_map:
-        return rebuilt_map
-
-    dbg = {
-        'applied': False,
-        'percent_keys_seen': 0,
-        'invalid_yearlike_rejected': 0,
-        'invalid_missing_percent_rejected': 0,
-        'fallback_reselected': 0,
-        'fallback_failed_dropped': 0,
-        'samples': [],
-    }
-
-    # Build flattened candidate universe once (best-effort)
-    candidates_all = _fix2d78__flatten_candidates_v1(snapshot_pool)
-    fn_select = globals().get('_fix2d2x_select_current_for_key')
-
-    keys = list(rebuilt_map.keys())
-    for k in keys:
-        rec = rebuilt_map.get(k)
-        if not isinstance(rec, dict):
-            continue
-
-        spec = _fix2d78__spec_for_key_v1(prev_response, k)
-        if not _fix2d78__is_percent_key_v1(k, spec):
-            continue
-
-        dbg['percent_keys_seen'] += 1
-
-        vnorm = rec.get('value_norm')
-        if vnorm is None:
-            vnorm = rec.get('value')
-
-        # Determine raw (prefer evidence raw)
-        raw = rec.get('raw')
-        if not raw and isinstance(rec.get('evidence'), list) and rec['evidence']:
-            try:
-                raw = rec['evidence'][0].get('raw')
-            except Exception:
-                raw = None
-
-        raw_has_pct = _fix2d78__raw_has_percent_v1(raw)
-        yearlike = _fix2d78__is_yearlike_value_v1(vnorm)
-        has_pct = _fix2d78__has_percent_evidence_v1(rec)
-
-        invalid_reason = None
-        if yearlike and not raw_has_pct:
-            invalid_reason = 'yearlike_no_pct_raw'
-        elif not has_pct:
-            invalid_reason = 'missing_percent_evidence'
-
-        if not invalid_reason:
-            continue
-
-        dbg['applied'] = True
-        if invalid_reason == 'yearlike_no_pct_raw':
-            dbg['invalid_yearlike_rejected'] += 1
-        else:
-            dbg['invalid_missing_percent_rejected'] += 1
-
-        # Attempt deterministic fallback reselection
-        replaced = False
-        if callable(fn_select) and isinstance(candidates_all, list) and candidates_all:
-            try:
-                best, meta = fn_select(k, spec, candidates_all, injected_urls=[])
-            except TypeError:
-                try:
-                    best, meta = fn_select(k, spec, candidates_all, [])
-                except Exception:
-                    best, meta = (None, {})
-            except Exception:
-                best, meta = (None, {})
-
-            if isinstance(best, dict) and best:
-                # ensure the fallback itself isn't yearlike-no-pct-raw
-                b_raw = best.get('raw')
-                b_v = best.get('value_norm')
-                if b_v is None:
-                    b_v = best.get('value')
-                if (not _fix2d78__is_yearlike_value_v1(b_v)) or _fix2d78__raw_has_percent_v1(b_raw):
-                    # ensure percent evidence
-                    if _fix2d78__raw_has_percent_v1(b_raw) or (('%' in str(best.get('unit_tag') or '')) or ('percent' in str(best.get('unit_tag') or '').lower()) or (best.get('unit_family') == 'percent')):
-                        rebuilt_map[k] = _fix2d78__build_metric_record_from_candidate_v1(k, best, method='schema_only_rebuild_fix2d78_fallback')
-                        dbg['fallback_reselected'] += 1
-                        replaced = True
-
-        if not replaced:
-            # Drop the bad key; diff will show cur_only/added.
-            try:
-                rebuilt_map.pop(k, None)
-            except Exception:
-                pass
-            dbg['fallback_failed_dropped'] += 1
-
-        # Sample
+    def _fix2d82__extract_raw_token_v1(rec: dict) -> str:
+        """Extract the best *token* string for this record (not context)."""
         try:
-            if len(dbg['samples']) < 6:
-                dbg['samples'].append({'key': k, 'reason': invalid_reason, 'raw': str(raw or '')[:80], 'value_norm': vnorm})
+            if not isinstance(rec, dict):
+                return ''
+            ev = rec.get('evidence')
+            if isinstance(ev, list) and ev:
+                e0 = ev[0]
+                if isinstance(e0, dict):
+                    r = e0.get('raw')
+                    if isinstance(r, str) and r.strip():
+                        return r.strip()
+            r2 = rec.get('raw')
+            if isinstance(r2, str) and r2.strip():
+                return r2.strip()
+            v = rec.get('value')
+            if v is None:
+                v = rec.get('value_norm')
+            return str(v).strip() if v is not None else ''
         except Exception:
-            pass
+            return ''
 
-    # Attach debug breadcrumbs (best-effort)
+
+    def _fix2d82__is_year_token_v1(vnorm, raw_token: str) -> bool:
+        """True when (vnorm is yearlike 1900-2100 int) AND raw_token is that YYYY."""
+        try:
+            if not callable(globals().get('_fix2d80__is_yearlike_number_v1')):
+                # fallback
+                try:
+                    fv = float(vnorm)
+                    if not fv.is_integer():
+                        return False
+                    iv = int(fv)
+                    yearlike = 1900 <= iv <= 2100
+                except Exception:
+                    return False
+            else:
+                yearlike = bool(_fix2d80__is_yearlike_number_v1(vnorm))
+            if not yearlike:
+                return False
+            tok = str(raw_token or '').strip()
+            if len(tok) != 4 or (not tok.isdigit()):
+                return False
+            return int(tok) == int(float(vnorm))
+        except Exception:
+            return False
+
+
+    def _fix2d82__is_percent_key_v1(k: str, rec: dict, schema: dict) -> bool:
+        try:
+            if isinstance(k, str) and k.endswith('__percent'):
+                return True
+            if isinstance(schema, dict) and isinstance(k, str):
+                spec = schema.get(k)
+                if isinstance(spec, dict):
+                    dim = str(spec.get('dimension') or '').strip().lower()
+                    uf = str(spec.get('unit_family') or '').strip().lower()
+                    ut = str(spec.get('unit_tag') or '').strip().lower()
+                    blob = ' '.join([dim, uf, ut])
+                    return ('percent' in blob) or ('%' in blob)
+            if isinstance(rec, dict):
+                dim = str(rec.get('dimension') or '').strip().lower()
+                uf = str(rec.get('unit_family') or '').strip().lower()
+                ut = str(rec.get('unit_tag') or '').strip().lower()
+                blob = ' '.join([dim, uf, ut])
+                return ('percent' in blob) or ('%' in blob)
+        except Exception:
+            return False
+        return False
+
+
+    def _fix2d82__sanitize_pmc_percent_keys_v1(pmc: dict, metric_schema_frozen: dict = None) -> tuple:
+        dbg = {
+            "applied": False,
+            "input_count": int(len(pmc) if isinstance(pmc, dict) else 0),
+            "output_count": 0,
+            "checked_percent_keys": 0,
+            "dropped_count": 0,
+            "dropped_keys_sample": [],
+            "reasons_sample": [],
+            "fix": "FIX2D82",
+        }
+        try:
+            if not isinstance(pmc, dict) or not pmc:
+                dbg["applied"] = True
+                dbg["output_count"] = 0
+                return pmc if isinstance(pmc, dict) else {}, dbg
+
+            schema = metric_schema_frozen if isinstance(metric_schema_frozen, dict) else {}
+            out = dict(pmc)
+
+            for k in list(out.keys()):
+                rec = out.get(k)
+                if not _fix2d82__is_percent_key_v1(k, rec if isinstance(rec, dict) else {}, schema):
+                    continue
+
+                dbg["checked_percent_keys"] += 1
+                if not isinstance(rec, dict):
+                    out.pop(k, None)
+                    dbg["dropped_count"] += 1
+                    if len(dbg["dropped_keys_sample"]) < 8:
+                        dbg["dropped_keys_sample"].append(str(k))
+                        dbg["reasons_sample"].append({"key": str(k), "reason": "non_dict_record"})
+                    continue
+
+                vnorm = rec.get('value_norm')
+                raw_token = _fix2d82__extract_raw_token_v1(rec)
+
+                # FIX2D82: hard drop year-token values for percent keys.
+                if _fix2d82__is_year_token_v1(vnorm, raw_token):
+                    out.pop(k, None)
+                    dbg["dropped_count"] += 1
+                    if len(dbg["dropped_keys_sample"]) < 8:
+                        dbg["dropped_keys_sample"].append(str(k))
+                        dbg["reasons_sample"].append({
+                            "key": str(k),
+                            "reason": "year_token_for_percent",
+                            "raw_token": str(raw_token)[:60],
+                            "value_norm": vnorm,
+                        })
+                    continue
+
+                # Strong percent evidence must be tied to the token/unit, not context.
+                unit = str(rec.get('unit') or rec.get('unit_tag') or '')
+                rt = str(raw_token or '').lower()
+                token_has_pct = ('%' in rt) or ('percent' in rt) or ('pct' in rt)
+                unit_has_pct = ('%' in unit) or ('percent' in unit.lower())
+
+                if (not token_has_pct) and (not unit_has_pct):
+                    out.pop(k, None)
+                    dbg["dropped_count"] += 1
+                    if len(dbg["dropped_keys_sample"]) < 8:
+                        dbg["dropped_keys_sample"].append(str(k))
+                        dbg["reasons_sample"].append({
+                            "key": str(k),
+                            "reason": "no_strong_percent_evidence_token",
+                            "unit": unit,
+                            "raw_token": str(raw_token)[:80],
+                            "value_norm": vnorm,
+                        })
+                    continue
+
+            dbg["output_count"] = int(len(out))
+            dbg["applied"] = True
+            return out, dbg
+        except Exception as e:
+            dbg["applied"] = False
+            dbg["error"] = str(type(e).__name__)
+            return pmc, dbg
+
+
+    def _fix2d82__get_schema_from_prev_response_v1(prev_response: dict) -> dict:
+        try:
+            if not isinstance(prev_response, dict):
+                return None
+            schema = prev_response.get('metric_schema_frozen')
+            if isinstance(schema, dict):
+                return schema
+            pr = prev_response.get('primary_response') if isinstance(prev_response.get('primary_response'), dict) else None
+            if isinstance(pr, dict) and isinstance(pr.get('metric_schema_frozen'), dict):
+                return pr.get('metric_schema_frozen')
+            return None
+        except Exception:
+            return None
+
+
+    # -----------------------------------------------------------------
+    # (1) Force-apply sanitizer to schema_only rebuild (Analysis baseline)
+    # -----------------------------------------------------------------
     try:
-        if isinstance(prev_response, dict):
-            prev_response.setdefault('debug', {})
-            if isinstance(prev_response.get('debug'), dict):
-                prev_response['debug']['fix2d78_percent_guard'] = dbg
-    except Exception:
-        pass
+        _fix2d82__orig_schema_only = globals().get('rebuild_metrics_from_snapshots_schema_only_fix16')
+        if callable(_fix2d82__orig_schema_only) and (not getattr(_fix2d82__orig_schema_only, '_fix2d82_wrapped', False)):
 
-    try:
-        if isinstance(web_context, dict):
-            web_context.setdefault('debug', {})
-            if isinstance(web_context.get('debug'), dict):
-                web_context['debug']['fix2d78_percent_guard'] = dbg
-    except Exception:
-        pass
-
-    return rebuilt_map
-
-
-# Apply the wrapper exactly once
-try:
-    if not _FIX2D78_SCHEMA_ONLY_GUARD_APPLIED:
-        _fix2d78__orig_schema_only_fix16 = globals().get('rebuild_metrics_from_snapshots_schema_only_fix16')
-        if callable(_fix2d78__orig_schema_only_fix16):
-
-            def rebuild_metrics_from_snapshots_schema_only_fix16(*args, **kwargs):  # noqa: F811
-                rebuilt = _fix2d78__orig_schema_only_fix16(*args, **kwargs)
-                try:
-                    prev_response = args[0] if len(args) > 0 else kwargs.get('prev_response')
-                except Exception:
-                    prev_response = None
-                try:
-                    snapshot_pool = args[1] if len(args) > 1 else kwargs.get('snapshot_pool')
-                except Exception:
-                    snapshot_pool = None
-                web_context = kwargs.get('web_context') if isinstance(kwargs, dict) else None
-
-                try:
-                    if isinstance(rebuilt, dict) and rebuilt:
-                        rebuilt = _fix2d78__apply_percent_guard_to_rebuilt_map_v1(rebuilt, prev_response, snapshot_pool, web_context=web_context)
-                except Exception:
-                    pass
+            def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, snapshot_pool, web_context=None):  # noqa: F811
+                rebuilt = _fix2d82__orig_schema_only(prev_response, snapshot_pool, web_context=web_context)
+                schema = _fix2d82__get_schema_from_prev_response_v1(prev_response)
+                if isinstance(rebuilt, dict) and rebuilt:
+                    rebuilt2, sdbg = _fix2d82__sanitize_pmc_percent_keys_v1(rebuilt, metric_schema_frozen=schema)
+                    rebuilt = rebuilt2
+                    try:
+                        if isinstance(prev_response, dict):
+                            prev_response.setdefault('debug', {})
+                            if isinstance(prev_response.get('debug'), dict):
+                                prev_response['debug']['fix2d82_percent_sanitize_schema_only'] = sdbg
+                    except Exception:
+                        pass
                 return rebuilt
 
-            globals()['rebuild_metrics_from_snapshots_schema_only_fix16'] = rebuild_metrics_from_snapshots_schema_only_fix16
-            globals()['_FIX2D78_SCHEMA_ONLY_GUARD_APPLIED'] = True
-except Exception:
-    pass
-
-# =====================================================================
-# PATCH FIX2D78 PATCH TRACKER ENTRY (ADDITIVE)
-# =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D78',
-        'date': '2026-01-20',
-        'summary': 'Percent-schema guardrail (schema_only_rebuild entrypoint): reject year-like 1900-2100 tokens for __percent keys unless raw explicitly has %/percent; require percent evidence; if rejected, attempt deterministic fallback reselection using _fix2d2x_select_current_for_key over flattened extracted_numbers pool; else drop key so diff shows added.',
-        'files': ['FIX2D78_full_codebase.py'],
-        'supersedes': ['FIX2D77'],
-    })
-    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# FIX2D78_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
-try:
-    CODE_VERSION = 'FIX2D78'
-    globals()['CODE_VERSION'] = CODE_VERSION
-except Exception:
-    pass
-
-
-# =====================================================================
-# PATCH FIX2D79 (ADDITIVE): enforce percent-key candidate hygiene in the
-# shared selector (_fix2d2x_select_current_for_key)
-#
-# Why this patch exists:
-#   In the FIX2D77 run, Analysis baseline binds the year token "2040" to
-#   global_ev_chargers_cagr_2026_2040__percent (unit is blank) and that
-#   value persists into HistoryFull, so Evolution shows prev=2040.
-#   Evidence:
-#     - Analysis primary_metrics_canonical has value_norm 2040.0 with raw "2040".
-#     - The extraction layer sometimes assigns unit_tag '%'/unit_family 'percent'
-#       to year tokens via proximity (e.g., raw "2026" with unit_tag '%').
-#
-# Root cause:
-#   The schema-only rebuild and other schema-first selection paths rely on
-#   _fix2d2x_select_current_for_key. If year-like candidates are not filtered
-#   there, they can win for percent keys.
-#
-# Fix (FIX2D79):
-#   Wrap _fix2d2x_select_current_for_key and, *only for percent schema keys*,
-#   pre-filter candidate pool with these deterministic rules:
-#     1) Drop year-like integer values (1900-2100) unless the candidate raw
-#        itself contains %/percent.
-#     2) Require strong percent evidence:
-#        - raw contains '%'/percent/pct OR
-#        - measure_kind is a percent kind (starts with 'percent')
-#        (NOTE: unit_tag alone is not trusted, because it can be inherited.)
-#
-#   If filtering removes everything, fall back to the original selector over
-#   the unfiltered pool (never worse than current behavior).
-#
-# Side benefit:
-#   This fixes BOTH Analysis baseline materialization and any Evolution-side
-#   schema-only selection that uses the shared selector.
-# =====================================================================
-
-try:
-    _FIX2D79_SELECT_GUARD_APPLIED = bool(globals().get('_FIX2D79_SELECT_GUARD_APPLIED'))
-except Exception:
-    _FIX2D79_SELECT_GUARD_APPLIED = False
-
-
-def _fix2d79__is_percent_key_v1(canonical_key: str, spec: dict = None) -> bool:
-    try:
-        k = str(canonical_key or '')
-        if k.endswith('__percent') or ('__percent' in k):
-            return True
-        sp = spec if isinstance(spec, dict) else {}
-        dim = str(sp.get('dimension') or '').lower()
-        uf = str(sp.get('unit_family') or '').lower()
-        ut = str(sp.get('unit_tag') or '').lower()
-        return ('percent' in dim) or ('percent' in uf) or ('percent' in ut) or ('%' in ut)
-    except Exception:
-        return False
-
-
-def _fix2d79__raw_has_percent_v1(raw: str) -> bool:
-    try:
-        r = str(raw or '').lower()
-        return ('%' in r) or ('percent' in r) or ('pct' in r)
-    except Exception:
-        return False
-
-
-def _fix2d79__is_yearlike_value_v1(v) -> bool:
-    try:
-        fv = float(v)
-        if abs(fv - round(fv)) > 1e-9:
-            return False
-        iv = int(round(fv))
-        return 1900 <= iv <= 2100
-    except Exception:
-        return False
-
-
-def _fix2d79__strong_percent_evidence_v1(c: dict) -> bool:
-    """Return True only when evidence is strong enough to trust for percent keys."""
-    try:
-        if not isinstance(c, dict):
-            return False
-        raw = c.get('raw')
-        if _fix2d79__raw_has_percent_v1(raw):
-            return True
-        mk = str(c.get('measure_kind') or '').lower()
-        if mk.startswith('percent'):
-            return True
-        # unit_tag alone is NOT trusted (can be inherited), but if raw contains
-        # an explicit percent word without a % sign, allow it.
-        ctx = str(c.get('context_snippet') or '').lower()
-        if (' percent' in ctx) and (str(raw or '').strip().isdigit() is False):
-            # still weak; keep conservative
-            return False
-        return False
-    except Exception:
-        return False
-
-
-try:
-    if not _FIX2D79_SELECT_GUARD_APPLIED:
-        _fix2d79__orig_select = globals().get('_fix2d2x_select_current_for_key')
-        if callable(_fix2d79__orig_select):
-
-            def _fix2d2x_select_current_for_key(canonical_key, spec, candidates_all, injected_urls=None):  # noqa: F811
-                dbg = {
-                    'applied': False,
-                    'percent_key': False,
-                    'candidates_in': 0,
-                    'candidates_out': 0,
-                    'rejected_yearlike': 0,
-                    'rejected_no_pct_evidence': 0,
-                }
-
-                try:
-                    dbg['candidates_in'] = len(candidates_all) if isinstance(candidates_all, list) else 0
-                except Exception:
-                    dbg['candidates_in'] = 0
-
-                is_percent = _fix2d79__is_percent_key_v1(canonical_key, spec)
-                dbg['percent_key'] = bool(is_percent)
-
-                filtered = candidates_all
-
-                if is_percent and isinstance(candidates_all, list) and candidates_all:
-                    try:
-                        out = []
-                        for c in candidates_all:
-                            if not isinstance(c, dict):
-                                continue
-                            v = c.get('value_norm')
-                            if v is None:
-                                v = c.get('value')
-                            raw = c.get('raw')
-
-                            # Rule 1: reject yearlike unless raw has percent
-                            if _fix2d79__is_yearlike_value_v1(v) and not _fix2d79__raw_has_percent_v1(raw):
-                                dbg['rejected_yearlike'] += 1
-                                continue
-
-                            # Rule 2: require strong percent evidence
-                            if not _fix2d79__strong_percent_evidence_v1(c):
-                                dbg['rejected_no_pct_evidence'] += 1
-                                continue
-
-                            out.append(c)
-
-                        filtered = out
-                        dbg['candidates_out'] = len(filtered)
-                        dbg['applied'] = True
-                    except Exception:
-                        # If anything goes wrong, fall back to original behavior.
-                        filtered = candidates_all
-
-                # Call original selector (prefer filtered if non-empty)
-                try:
-                    if is_percent and isinstance(filtered, list) and filtered:
-                        best, meta = _fix2d79__orig_select(canonical_key, spec, filtered, injected_urls)
-                    else:
-                        best, meta = _fix2d79__orig_select(canonical_key, spec, candidates_all, injected_urls)
-                except TypeError:
-                    # old signature fallback
-                    try:
-                        if is_percent and isinstance(filtered, list) and filtered:
-                            best, meta = _fix2d79__orig_select(canonical_key, spec, filtered)
-                        else:
-                            best, meta = _fix2d79__orig_select(canonical_key, spec, candidates_all)
-                    except Exception:
-                        best, meta = (None, {})
-                except Exception:
-                    best, meta = (None, {})
-
-                # Attach dbg into meta for traceability (best-effort)
-                try:
-                    if not isinstance(meta, dict):
-                        meta = {}
-                    meta['fix2d79_percent_select_guard'] = dbg
-                except Exception:
-                    pass
-
-                return best, meta
-
-            globals()['_fix2d2x_select_current_for_key'] = _fix2d2x_select_current_for_key
-            globals()['_FIX2D79_SELECT_GUARD_APPLIED'] = True
-except Exception:
-    pass
-
-
-# =====================================================================
-# PATCH FIX2D79 PATCH TRACKER ENTRY (ADDITIVE)
-# =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D79',
-        'date': '2026-01-20',
-        'summary': 'Percent-key hygiene in shared selector: wrap _fix2d2x_select_current_for_key to reject yearlike 1900-2100 candidates for __percent keys unless raw has %/percent, and require strong percent evidence (raw %/percent or measure_kind percent*). Prevents baseline binding of year tokens like 2040 to percent schema keys.',
-        'files': ['FIX2D79_full_codebase.py'],
-        'supersedes': ['FIX2D78'],
-    })
-    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# FIX2D79_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
-try:
-    CODE_VERSION = 'FIX2D79'
-    globals()['CODE_VERSION'] = CODE_VERSION
-except Exception:
-    pass
-
-# =====================================================================
-# PATCH FIX2D80 (ADDITIVE): definitive guardrail against year-token
-# leakage into __percent metrics (baseline + rehydrate + schema-only rebuild)
-#
-# Problem (seen in FIX2D79 JSONs):
-# - Analysis baseline primary_metrics_canonical binds value_norm=2040.0 (raw "2040")
-#   to global_ev_chargers_cagr_2026_2040__percent.
-# - Evolution rehydrates that baseline and renders prev=2040 (a year), while
-#   current is a real percent (e.g., 3.1%).
-#
-# Root cause:
-# - The baseline snapshot text contains many year tokens (2026/2040) adjacent
-#   to percent phrases, and some extraction heuristics can tag those years with
-#   unit_family=percent via proximity.
-# - Downstream selection then allows a bare year token to win for a percent key
-#   when no strong percent candidate is available.
-#
-# Fix strategy:
-# 1) Sanitize any primary_metrics_canonical map for percent keys:
-#    - Drop percent-key records that are year-like (1900..2100) unless the raw
-#      evidence explicitly contains %/percent/pct.
-#    - Also require strong percent evidence (same raw test) to prevent unit_tag
-#      proximity from letting years through.
-# 2) Apply this sanitization in three places (idempotent):
-#    - Analysis Option-B baseline materialization (_fix2d9 schema-anchored rebuild)
-#    - schema_only rebuild entrypoint (rebuild_metrics_from_snapshots_schema_only_fix16)
-#    - Evolution previous_data passed into compute_source_anchored_diff (rehydrate/runtime)
-#
-# Net effect:
-# - You will never see a year token as prev_value_norm for any __percent key.
-# - If baseline truly lacks a percent for that key, the key is dropped from baseline
-#   and Evolution will show it as added (prev missing) rather than incorrect.
-# =====================================================================
-
-import math as _fix2d80_math
-
-
-def _fix2d80__is_yearlike_number_v1(v) -> bool:
-    try:
-        if v is None:
-            return False
-        fv = float(v)
-        if not _fix2d80_math.isfinite(fv):
-            return False
-        iv = int(round(fv))
-        if abs(fv - iv) > 1e-9:
-            return False
-        return 1900 <= iv <= 2100
-    except Exception:
-        return False
-
-
-def _fix2d80__raw_has_percent_evidence_v1(s: str) -> bool:
-    try:
-        t = (s or "").lower()
-        if not t.strip():
-            return False
-        if "%" in t:
-            return True
-        # Keep conservative: accept explicit words only
-        if "percent" in t or "pct" in t:
-            return True
-        return False
-    except Exception:
-        return False
-
-
-def _fix2d80__is_percent_key_v1(canonical_key: str, schema_spec: dict = None) -> bool:
-    try:
-        ck = str(canonical_key or "")
-        if ck.endswith("__percent"):
-            return True
-        if isinstance(schema_spec, dict):
-            dim = str(schema_spec.get("dimension") or schema_spec.get("unit_family") or "").lower()
-            if dim == "percent" or "percent" in dim:
-                return True
-        return False
-    except Exception:
-        return False
-
-
-def _fix2d80__extract_best_raw_evidence_v1(rec: dict) -> str:
-    """Best-effort extraction of the raw token / evidence raw for a metric record."""
-    try:
-        if not isinstance(rec, dict):
-            return ""
-        # Preferred: first evidence raw
-        ev = rec.get("evidence")
-        if isinstance(ev, list) and ev:
-            e0 = ev[0]
-            if isinstance(e0, dict):
-                raw = e0.get("raw") or ""
-                ctx = e0.get("context_snippet") or e0.get("context") or ""
-                return (str(raw) + " " + str(ctx)).strip()
-        # Fallback: record-level raw/context
-        raw2 = rec.get("raw") or ""
-        ctx2 = rec.get("context_snippet") or rec.get("context") or ""
-        return (str(raw2) + " " + str(ctx2)).strip()
-    except Exception:
-        return ""
-
-
-def _fix2d80__sanitize_pmc_percent_keys_v1(pmc: dict, metric_schema_frozen: dict = None):
-    """Return (sanitized_map, debug_dict). Does not mutate input."""
-    dbg = {
-        "applied": False,
-        "input_count": 0,
-        "output_count": 0,
-        "dropped_count": 0,
-        "dropped_keys_sample": [],
-        "reasons_sample": [],
-    }
-    try:
-        if not isinstance(pmc, dict) or not pmc:
-            return pmc, dbg
-        out = dict(pmc)
-        dbg["input_count"] = int(len(out))
-
-        for k, rec in list(out.items()):
-            spec = None
             try:
-                if isinstance(metric_schema_frozen, dict):
-                    spec = metric_schema_frozen.get(k)
-            except Exception:
-                spec = None
-
-            if not _fix2d80__is_percent_key_v1(k, spec if isinstance(spec, dict) else None):
-                continue
-
-            if not isinstance(rec, dict):
-                # percent key with non-dict record is invalid
-                out.pop(k, None)
-                dbg["dropped_count"] += 1
-                if len(dbg["dropped_keys_sample"]) < 8:
-                    dbg["dropped_keys_sample"].append(str(k))
-                    dbg["reasons_sample"].append({"key": str(k), "reason": "non_dict_record"})
-                continue
-
-            vnorm = rec.get("value_norm")
-            unit = str(rec.get("unit") or rec.get("unit_tag") or "")
-            raw_blob = _fix2d80__extract_best_raw_evidence_v1(rec)
-            raw_has_pct = _fix2d80__raw_has_percent_evidence_v1(raw_blob)
-
-            # Hard rules:
-            # - If it's yearlike and the raw evidence doesn't explicitly say percent -> drop
-            if _fix2d80__is_yearlike_number_v1(vnorm) and (not raw_has_pct):
-                out.pop(k, None)
-                dbg["dropped_count"] += 1
-                if len(dbg["dropped_keys_sample"]) < 8:
-                    dbg["dropped_keys_sample"].append(str(k))
-                    dbg["reasons_sample"].append({"key": str(k), "reason": "yearlike_no_percent_raw", "raw": str(raw_blob)[:120], "value_norm": vnorm})
-                continue
-
-            # - Require strong percent evidence. unit_tag proximity alone is not enough.
-            if (not raw_has_pct) and ("%" not in unit):
-                out.pop(k, None)
-                dbg["dropped_count"] += 1
-                if len(dbg["dropped_keys_sample"]) < 8:
-                    dbg["dropped_keys_sample"].append(str(k))
-                    dbg["reasons_sample"].append({"key": str(k), "reason": "no_strong_percent_evidence", "unit": unit, "raw": str(raw_blob)[:120], "value_norm": vnorm})
-                continue
-
-        dbg["output_count"] = int(len(out))
-        dbg["applied"] = True
-        return out, dbg
-    except Exception as e:
-        dbg["applied"] = False
-        dbg["error"] = str(type(e).__name__)
-        return pmc, dbg
-
-
-# ---------------------------------------------------------------------
-# (A) Wrap schema-anchored rebuild used by Analysis Option B materialization
-# ---------------------------------------------------------------------
-try:
-    _fix2d80__orig_fix2d9 = globals().get('_fix2d9_schema_anchored_rebuild_current_metrics_v1')
-    if callable(_fix2d80__orig_fix2d9) and (not getattr(_fix2d80__orig_fix2d9, '_fix2d80_wrapped', False)):
-
-        def _fix2d9_schema_anchored_rebuild_current_metrics_v1(prev_response, pool, web_context=None):  # noqa: F811
-            rebuilt, diag = _fix2d80__orig_fix2d9(prev_response, pool, web_context=web_context)
-            try:
-                schema = None
-                if isinstance(prev_response, dict):
-                    schema = prev_response.get('metric_schema_frozen')
-                    if not isinstance(schema, dict):
-                        pr = prev_response.get('primary_response') if isinstance(prev_response.get('primary_response'), dict) else None
-                        if isinstance(pr, dict):
-                            schema = pr.get('metric_schema_frozen')
-                if not isinstance(schema, dict):
-                    schema = None
-            except Exception:
-                schema = None
-
-            if isinstance(rebuilt, dict) and rebuilt:
-                rebuilt2, sdbg = _fix2d80__sanitize_pmc_percent_keys_v1(rebuilt, metric_schema_frozen=schema)
-                rebuilt = rebuilt2
-                try:
-                    if isinstance(diag, dict):
-                        diag['fix2d80_percent_sanitize'] = sdbg
-                except Exception:
-                    pass
-            return rebuilt, diag
-
-        try:
-            _fix2d9_schema_anchored_rebuild_current_metrics_v1._fix2d80_wrapped = True
-        except Exception:
-            pass
-        globals()['_fix2d9_schema_anchored_rebuild_current_metrics_v1'] = _fix2d9_schema_anchored_rebuild_current_metrics_v1
-except Exception:
-    pass
-
-
-# ---------------------------------------------------------------------
-# (B) Wrap schema-only rebuild entrypoint (used by analysis/evolution render rebuild)
-# ---------------------------------------------------------------------
-try:
-    _fix2d80__orig_schema_only = globals().get('rebuild_metrics_from_snapshots_schema_only_fix16')
-    if callable(_fix2d80__orig_schema_only) and (not getattr(_fix2d80__orig_schema_only, '_fix2d80_wrapped', False)):
-
-        def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, snapshot_pool, web_context=None):  # noqa: F811
-            rebuilt = _fix2d80__orig_schema_only(prev_response, snapshot_pool, web_context=web_context)
-            try:
-                schema = None
-                if isinstance(prev_response, dict):
-                    schema = prev_response.get('metric_schema_frozen')
-                    if not isinstance(schema, dict):
-                        pr = prev_response.get('primary_response') if isinstance(prev_response.get('primary_response'), dict) else None
-                        if isinstance(pr, dict):
-                            schema = pr.get('metric_schema_frozen')
-                if not isinstance(schema, dict):
-                    schema = None
-            except Exception:
-                schema = None
-
-            if isinstance(rebuilt, dict) and rebuilt:
-                rebuilt2, sdbg = _fix2d80__sanitize_pmc_percent_keys_v1(rebuilt, metric_schema_frozen=schema)
-                rebuilt = rebuilt2
-                # best-effort debug attachment
-                try:
-                    if isinstance(prev_response, dict):
-                        prev_response.setdefault('debug', {})
-                        if isinstance(prev_response.get('debug'), dict):
-                            prev_response['debug']['fix2d80_percent_sanitize_schema_only'] = sdbg
-                except Exception:
-                    pass
-            return rebuilt
-
-        try:
-            rebuild_metrics_from_snapshots_schema_only_fix16._fix2d80_wrapped = True
-        except Exception:
-            pass
-        globals()['rebuild_metrics_from_snapshots_schema_only_fix16'] = rebuild_metrics_from_snapshots_schema_only_fix16
-except Exception:
-    pass
-
-
-# ---------------------------------------------------------------------
-# (C) Sanitize rehydrated previous_data before Evolution diffing
-# ---------------------------------------------------------------------
-try:
-    _fix2d80__orig_compute = globals().get('compute_source_anchored_diff')
-    if callable(_fix2d80__orig_compute) and (not getattr(_fix2d80__orig_compute, '_fix2d80_wrapped', False)):
-
-        def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:  # noqa: F811
-            try:
-                if isinstance(previous_data, dict):
-                    # Locate schema
-                    schema = previous_data.get('metric_schema_frozen')
-                    if not isinstance(schema, dict):
-                        pr = previous_data.get('primary_response') if isinstance(previous_data.get('primary_response'), dict) else None
-                        if isinstance(pr, dict):
-                            schema = pr.get('metric_schema_frozen')
-                    if not isinstance(schema, dict):
-                        schema = None
-
-                    # Locate pmc
-                    pmc = previous_data.get('primary_metrics_canonical')
-                    pmc_src = 'previous_data.primary_metrics_canonical'
-                    if not isinstance(pmc, dict) or not pmc:
-                        pr = previous_data.get('primary_response') if isinstance(previous_data.get('primary_response'), dict) else None
-                        if isinstance(pr, dict) and isinstance(pr.get('primary_metrics_canonical'), dict) and pr.get('primary_metrics_canonical'):
-                            pmc = pr.get('primary_metrics_canonical')
-                            pmc_src = 'previous_data.primary_response.primary_metrics_canonical'
-                    if not isinstance(pmc, dict) or not pmc:
-                        res = previous_data.get('results') if isinstance(previous_data.get('results'), dict) else None
-                        if isinstance(res, dict) and isinstance(res.get('primary_metrics_canonical'), dict) and res.get('primary_metrics_canonical'):
-                            pmc = res.get('primary_metrics_canonical')
-                            pmc_src = 'previous_data.results.primary_metrics_canonical'
-
-                    if isinstance(pmc, dict) and pmc:
-                        pmc2, sdbg = _fix2d80__sanitize_pmc_percent_keys_v1(pmc, metric_schema_frozen=schema)
-                        # write back into all known containers
-                        try:
-                            previous_data['primary_metrics_canonical'] = pmc2
-                        except Exception:
-                            pass
-                        try:
-                            previous_data.setdefault('primary_response', {})
-                            if isinstance(previous_data.get('primary_response'), dict):
-                                previous_data['primary_response']['primary_metrics_canonical'] = pmc2
-                        except Exception:
-                            pass
-                        try:
-                            previous_data.setdefault('results', {})
-                            if isinstance(previous_data.get('results'), dict):
-                                previous_data['results']['primary_metrics_canonical'] = pmc2
-                        except Exception:
-                            pass
-                        try:
-                            previous_data.setdefault('debug', {})
-                            if isinstance(previous_data.get('debug'), dict):
-                                previous_data['debug']['fix2d80_prev_percent_sanitize'] = {
-                                    **sdbg,
-                                    'pmc_source': str(pmc_src),
-                                }
-                        except Exception:
-                            pass
+                rebuild_metrics_from_snapshots_schema_only_fix16._fix2d82_wrapped = True
             except Exception:
                 pass
+            globals()['rebuild_metrics_from_snapshots_schema_only_fix16'] = rebuild_metrics_from_snapshots_schema_only_fix16
+    except Exception:
+        pass
 
-            return _fix2d80__orig_compute(previous_data, web_context=web_context)
 
-        try:
-            compute_source_anchored_diff._fix2d80_wrapped = True
-        except Exception:
-            pass
-        globals()['compute_source_anchored_diff'] = compute_source_anchored_diff
+    # -----------------------------------------------------------------
+    # (2) Force-apply sanitizer to previous_data before diff join
+    # -----------------------------------------------------------------
+    try:
+        _fix2d82__orig_compute = globals().get('compute_source_anchored_diff')
+        if callable(_fix2d82__orig_compute) and (not getattr(_fix2d82__orig_compute, '_fix2d82_wrapped', False)):
+
+            def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:  # noqa: F811
+                try:
+                    if isinstance(previous_data, dict):
+                        schema = _fix2d82__get_schema_from_prev_response_v1(previous_data)
+                        # locate pmc
+                        pmc = previous_data.get('primary_metrics_canonical')
+                        if not isinstance(pmc, dict) or not pmc:
+                            pr = previous_data.get('primary_response') if isinstance(previous_data.get('primary_response'), dict) else None
+                            if isinstance(pr, dict) and isinstance(pr.get('primary_metrics_canonical'), dict):
+                                pmc = pr.get('primary_metrics_canonical')
+                        if isinstance(pmc, dict) and pmc:
+                            pmc2, sdbg = _fix2d82__sanitize_pmc_percent_keys_v1(pmc, metric_schema_frozen=schema)
+                            try:
+                                previous_data['primary_metrics_canonical'] = pmc2
+                            except Exception:
+                                pass
+                            try:
+                                previous_data.setdefault('primary_response', {})
+                                if isinstance(previous_data.get('primary_response'), dict):
+                                    previous_data['primary_response']['primary_metrics_canonical'] = pmc2
+                            except Exception:
+                                pass
+                            try:
+                                previous_data.setdefault('debug', {})
+                                if isinstance(previous_data.get('debug'), dict):
+                                    previous_data['debug']['fix2d82_prev_percent_sanitize'] = sdbg
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+                return _fix2d82__orig_compute(previous_data, web_context=web_context)
+
+            try:
+                compute_source_anchored_diff._fix2d82_wrapped = True
+            except Exception:
+                pass
+            globals()['compute_source_anchored_diff'] = compute_source_anchored_diff
+    except Exception:
+        pass
+
 except Exception:
     pass
 
 
 # =====================================================================
-# PATCH FIX2D80 PATCH TRACKER ENTRY (ADDITIVE)
+# PATCH FIX2D82 PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
 try:
     PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D80',
+        'patch_id': 'FIX2D82',
         'date': '2026-01-20',
-        'summary': 'Definitive guardrail: prevent year-like tokens (1900-2100) from binding to __percent keys. Sanitizes percent metrics at (A) Analysis schema-anchored rebuild (Option B materialize), (B) schema_only rebuild entrypoint, and (C) Evolution previous_data before diffing. If no strong % evidence exists, drop key so UI shows added rather than incorrect year.',
-        'files': ['FIX2D80_full_codebase.py'],
-        'supersedes': ['FIX2D79'],
+        'summary': 'Definitive fix for year-token leakage into __percent metrics: drop year-token values when raw token is YYYY regardless of context % signs; force-apply at schema_only rebuild (Analysis baseline materialize) and sanitize previous_data before diff join (cleans old HistoryFull snapshots). Adds debug: fix2d82_percent_sanitize_schema_only / fix2d82_prev_percent_sanitize.',
+        'files': ['FIX2D82_full_codebase.py'],
+        'supersedes': ['FIX2D80'],
     })
     globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
 except Exception:
     pass
 
-# FIX2D80_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
+# FIX2D82_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
-    CODE_VERSION = 'FIX2D80'
+    CODE_VERSION = 'FIX2D82'
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
 
+
+# =====================================================================
+# PATCH FIX2D83 (CLEANUP): remove obsolete percent-guard wrappers and stabilize versioning
+#
+# - Removes FIX2D78/FIX2D79 percent-guard wrappers (superseded by definitive FIX2D82 sanitizer)
+# - Ensures a single authoritative CODE_VERSION at end-of-file
+# - Adds patch tracker entry
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D83',
+        'date': '2026-01-20',
+        'summary': 'Cleanup consolidation: remove obsolete percent-key guard wrappers (FIX2D78/FIX2D79) now superseded by definitive FIX2D82 sanitizer; stabilize CODE_VERSION with final override to avoid stale late assignments; reduce patch clutter without changing diff behavior.',
+        'files': ['FIX2D83_full_codebase.py'],
+        'supersedes': ['FIX2D78', 'FIX2D79', 'FIX2D80'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# FIX2D83_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
+try:
+    CODE_VERSION = 'FIX2D83'
+    globals()['CODE_VERSION'] = CODE_VERSION
+except Exception:
+    pass
