@@ -23819,26 +23819,136 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 #     extraction, or Analysis. Only prevents "fn_missing" gating.
 # =====================================================================
 
+# ===================== FIX2D84: Percent-year token sanitizer =====================
+
+def _fix2dXX_hotfix_percent_year_token_sanitize_pmc_v1(
+    pmc: dict,
+    metric_schema_frozen: dict,
+    debug: dict,
+    label: str,
+) -> dict:
+    """
+    Hotfix: for __percent keys, reject bare year tokens (1900-2100) unless the raw token itself
+    contains strong percent evidence (%/percent/pct). Do NOT trust unit_tag alone.
+    """
+    if not isinstance(pmc, dict):
+        return pmc
+
+    def _is_percent_key(k: str) -> bool:
+        if isinstance(k, str) and k.endswith("__percent"):
+            return True
+        sch = metric_schema_frozen.get(k) if isinstance(metric_schema_frozen, dict) else None
+        if isinstance(sch, dict):
+            dim = str(sch.get("dimension") or sch.get("unit_kind") or "").lower()
+            if dim == "percent":
+                return True
+        return False
+
+    def _yearlike_raw_token(raw: str) -> bool:
+        if not raw:
+            return False
+        t = raw.strip()
+        if len(t) == 4 and t.isdigit():
+            y = int(t)
+            return 1900 <= y <= 2100
+        return False
+
+    def _strong_percent_evidence_in_token(raw: str) -> bool:
+        if not raw:
+            return False
+        s = raw.lower()
+        return ("%" in s) or ("percent" in s) or ("pct" in s)
+
+    rejected = []
+    out = {}
+
+    for k, v in pmc.items():
+        if not _is_percent_key(k):
+            out[k] = v
+            continue
+
+        raw = ""
+        if isinstance(v, dict):
+            ev = v.get("evidence")
+            if isinstance(ev, dict):
+                raw = str(ev.get("raw") or ev.get("raw_text") or ev.get("token") or "")
+            if not raw:
+                raw = str(v.get("raw") or "")
+
+        if _yearlike_raw_token(raw) and not _strong_percent_evidence_in_token(raw):
+            rej = {"canonical_key": k, "raw": raw}
+            if isinstance(v, dict):
+                rej["value_norm"] = v.get("value_norm")
+                rej["anchor_hash"] = v.get("anchor_hash")
+                rej["source_url"] = v.get("source_url")
+                rej["method"] = v.get("method")
+            rejected.append(rej)
+            # DROP the key (so Evolution shows it as 'added' instead of prev=2040)
+            continue
+
+        out[k] = v
+
+    dbg = debug.setdefault("fix2dXX_percent_year_token_sanitize_v1", {})
+    dbg["label"] = label
+    dbg["pmc_in_count"] = len(pmc)
+    dbg["pmc_out_count"] = len(out)
+    dbg["rejected_count"] = len(rejected)
+    dbg["rejected_samples"] = rejected[:5]
+
+    return out
+
+
 def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
-    """Early alias: resolves to the most specific schema-only rebuild available."""
+    """
+    FIX2Dxx hotfix:
+    - Always run schema-only rebuild (late-binding alias) and then sanitize the output so that
+      __percent keys can NEVER bind bare year tokens like "2040" unless the token itself contains
+      strong percent evidence (%/percent/pct).
+    - Emits debug counters under: prev_response['debug']['fix2dXX_percent_year_token_sanitize_v1']
+    """
+    pmc = {}
+
     # Prefer a later concrete implementation if it already exists (late-binding)
     try:
         fn = globals().get("_rebuild_metrics_from_snapshots_schema_only_fix16_impl")
         if callable(fn):
-            return fn(prev_response, snapshot_pool, web_context=web_context)
+            pmc = fn(prev_response, snapshot_pool, web_context=web_context)
+        else:
+            fn = globals().get("rebuild_metrics_from_snapshots_schema_only")
+            if callable(fn):
+                try:
+                    pmc = fn(prev_response, snapshot_pool, web_context=web_context)
+                except TypeError:
+                    pmc = fn(prev_response, snapshot_pool)
+    except Exception:
+        pmc = {}
+
+    # ---- HOTFIX: percent keys must not bind bare year tokens (e.g., 2040) ----
+    try:
+        # Locate schema (prev_response can be full results dict or nested under results)
+        metric_schema_frozen = {}
+        if isinstance(prev_response, dict):
+            metric_schema_frozen = (
+                prev_response.get("metric_schema_frozen")
+                or (prev_response.get("results", {}) if isinstance(prev_response.get("results"), dict) else {}).get("metric_schema_frozen")
+                or {}
+            )
+
+        # Attach debug to prev_response (safe place that will be persisted in Analysis JSON)
+        debug = prev_response.setdefault("debug", {}) if isinstance(prev_response, dict) else {}
+
+        # Sanitize schema-only rebuild output
+        pmc = _fix2dXX_hotfix_percent_year_token_sanitize_pmc_v1(
+            pmc=pmc,
+            metric_schema_frozen=metric_schema_frozen,
+            debug=debug,
+            label="schema_only_rebuild_fix16_alias",
+        )
     except Exception:
         pass
 
-    # Next: base schema-only (often defined earlier than FIX16 helpers)
-    try:
-        fn = globals().get("rebuild_metrics_from_snapshots_schema_only")
-        if callable(fn):
-            try:
-                return fn(prev_response, snapshot_pool, web_context=web_context)
-            except TypeError:
-                return fn(prev_response, snapshot_pool)
-    except Exception:
-        return {}
+    return pmc
+
 
 def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
     """Early alias: prefer the analysis-canonical rebuild if later-defined; else schema-only."""
