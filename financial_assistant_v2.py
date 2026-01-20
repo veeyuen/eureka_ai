@@ -87,7 +87,42 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D86"
+CODE_VERSION = "REFACTOR01"
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR01
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "REFACTOR01",
+        "date": "2026-01-21",
+        "summary": "Add refactor regression harness (Analysis→Evolution) gated by explicit flag; emits JSON report + asserts diff invariants (both_count > 0, no prev-metrics sentinel, percent-year token rule).",
+        "files": ["REFACTOR01_full_codebase_streamlit_safe.py"],
+        "supersedes": ["FIX2D86"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# REFACTOR01: HARNESS FLAG (ADDITIVE)
+# - Streamlit-safe: does nothing unless explicitly invoked.
+# Invocation:
+#   - python REFACTOR01_full_codebase_streamlit_safe.py --run_refactor_harness
+#   - or set RUN_REFACTOR_HARNESS=1
+# ============================================================
+try:
+    import os as _rf01_os
+    import sys as _rf01_sys
+    _REFACTOR01_HARNESS_REQUESTED = (
+        ("--run_refactor_harness" in (_rf01_sys.argv or []))
+        or (str(_rf01_os.getenv("RUN_REFACTOR_HARNESS", "")).strip().lower() in ("1", "true", "yes", "y"))
+    )
+except Exception:
+    _REFACTOR01_HARNESS_REQUESTED = False
+
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
 # ============================================================
@@ -31756,7 +31791,9 @@ def _normalize_prev_response_for_rebuild(previous_data):
 
 
 if __name__ == "__main__":
-    main()
+    # REFACTOR01: if harness is requested, defer execution until end-of-file
+    if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
+        main()
 
 
 # ===================== PATCH RMS_DISPATCH2 (ADDITIVE) =====================
@@ -48482,3 +48519,417 @@ try:
         globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = rebuild_metrics_from_snapshots_schema_only_fix16
 except Exception:
     pass
+
+# ============================================================
+# REFACTOR01: REGRESSION HARNESS V1 (ADDITIVE, STREAMLIT-SAFE)
+# Goal:
+#   - Provide a stable gate for refactor/consolidation work.
+#   - Executes: Analysis (headless) -> Evolution (source-anchored) and asserts invariants.
+#
+# Invocation:
+#   python REFACTOR01_full_codebase_streamlit_safe.py --run_refactor_harness
+#   or RUN_REFACTOR_HARNESS=1
+#
+# Optional env overrides:
+#   REFACTOR_HARNESS_QUERY                      - analysis question text
+#   REFACTOR_HARNESS_NUM_SOURCES               - int (default: 3)
+#   REFACTOR_HARNESS_EXTRA_URLS                - newline-separated URLs (applied to both analysis+evolution)
+#   REFACTOR_HARNESS_EXTRA_URLS_ANALYSIS       - newline-separated URLs (analysis only)
+#   REFACTOR_HARNESS_EXTRA_URLS_EVOLUTION      - newline-separated URLs (evolution only)
+#   REFACTOR_HARNESS_FORCE_REBUILD             - 1/0 (default: 1)
+#   REFACTOR_HARNESS_REPORT_PATH               - directory path for JSON report (default: cwd)
+# ============================================================
+
+def _refactor01__bool(v, default=False):
+    try:
+        s = str(v).strip().lower()
+        if s in ("1", "true", "yes", "y", "on"):
+            return True
+        if s in ("0", "false", "no", "n", "off"):
+            return False
+    except Exception:
+        pass
+    return bool(default)
+
+def _refactor01__parse_urls(raw):
+    urls = []
+    try:
+        for line in str(raw or "").splitlines():
+            u = line.strip()
+            if not u:
+                continue
+            if u.startswith("http://") or u.startswith("https://"):
+                urls.append(u)
+    except Exception:
+        pass
+    # de-dupe while preserving order
+    out = []
+    seen = set()
+    for u in urls:
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+def _refactor01__safe_now_iso():
+    try:
+        if callable(globals().get("now_utc")):
+            return now_utc().isoformat()
+    except Exception:
+        pass
+    try:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
+    except Exception:
+        return ""
+
+def _refactor01__safe_get_schema_and_pmc(primary_data: dict):
+    """Mirror the minimal canonicalization steps used by the Analysis UI."""
+    if not isinstance(primary_data, dict):
+        return {}, {}, {}
+
+    # Ensure primary_metrics_canonical is split into ok/provisional deterministically
+    try:
+        _pmc_raw = primary_data.get("primary_metrics_canonical") or {}
+        _split = globals().get("_fix2d58b_split_primary_metrics_canonical")
+        if callable(_split):
+            _pmc_ok, _pmc_prov = _split(_pmc_raw)
+            if isinstance(_pmc_ok, dict):
+                primary_data["primary_metrics_canonical"] = _pmc_ok
+            if isinstance(_pmc_prov, dict) and _pmc_prov:
+                primary_data["primary_metrics_provisional"] = _pmc_prov
+    except Exception:
+        pass
+
+    # Freeze schema if missing
+    try:
+        if (not isinstance(primary_data.get("metric_schema_frozen"), dict)) and isinstance(primary_data.get("primary_metrics_canonical"), dict) and primary_data.get("primary_metrics_canonical"):
+            _freeze = globals().get("freeze_metric_schema")
+            if callable(_freeze):
+                primary_data["metric_schema_frozen"] = _freeze(primary_data.get("primary_metrics_canonical") or {})
+    except Exception:
+        pass
+
+    schema = primary_data.get("metric_schema_frozen") if isinstance(primary_data.get("metric_schema_frozen"), dict) else {}
+    pmc = primary_data.get("primary_metrics_canonical") if isinstance(primary_data.get("primary_metrics_canonical"), dict) else {}
+    prov = primary_data.get("primary_metrics_provisional") if isinstance(primary_data.get("primary_metrics_provisional"), dict) else {}
+    return schema, pmc, prov
+
+def _refactor01_run_harness_v1():
+    import os, sys, json, traceback
+
+    # ---- config
+    query = str(os.getenv("REFACTOR_HARNESS_QUERY") or "").strip()
+    if not query:
+        # Safe default (user can override via env)
+        query = "Global EV sales 2024 and global EV market share 2025"
+
+    try:
+        num_sources = int(str(os.getenv("REFACTOR_HARNESS_NUM_SOURCES") or "3").strip())
+    except Exception:
+        num_sources = 3
+
+    force_rebuild = _refactor01__bool(os.getenv("REFACTOR_HARNESS_FORCE_REBUILD", "1"), default=True)
+
+    extra_urls_common = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS"))
+    extra_urls_analysis = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS_ANALYSIS"))
+    extra_urls_evolution = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS_EVOLUTION"))
+
+    # common applies to both (unless already present)
+    for u in extra_urls_common:
+        if u not in extra_urls_analysis:
+            extra_urls_analysis.append(u)
+        if u not in extra_urls_evolution:
+            extra_urls_evolution.append(u)
+
+    analysis_run_id = ""
+    evo_run_id = ""
+    try:
+        mk = globals().get("_inj_diag_make_run_id")
+        if callable(mk):
+            analysis_run_id = mk("analysis_harness")
+            evo_run_id = mk("evolution_harness")
+    except Exception:
+        pass
+
+    report = {
+        "patch_id": "REFACTOR01",
+        "code_version": str(globals().get("CODE_VERSION", "")),
+        "run_ts_utc": _refactor01__safe_now_iso(),
+        "config": {
+            "query": query,
+            "num_sources": int(num_sources),
+            "force_rebuild": bool(force_rebuild),
+            "extra_urls_analysis": list(extra_urls_analysis),
+            "extra_urls_evolution": list(extra_urls_evolution),
+        },
+        "analysis": {},
+        "evolution": {},
+        "assertions": [],
+        "status": "unknown",
+    }
+
+    def _assert(name, ok, detail=""):
+        report["assertions"].append({
+            "name": str(name),
+            "pass": bool(ok),
+            "detail": (str(detail)[:2000] if detail is not None else ""),
+        })
+        return bool(ok)
+
+    ok_all = True
+
+    # ---- run analysis (headless)
+    try:
+        fwc = globals().get("fetch_web_context")
+        qp = globals().get("query_perplexity")
+        if not callable(fwc):
+            ok_all = _assert("analysis.fetch_web_context_defined", False, "fetch_web_context is not callable") and ok_all
+            raise RuntimeError("fetch_web_context missing")
+        if not callable(qp):
+            ok_all = _assert("analysis.query_perplexity_defined", False, "query_perplexity is not callable") and ok_all
+            raise RuntimeError("query_perplexity missing")
+
+        web_context = fwc(
+            query,
+            num_sources=num_sources,
+            extra_urls=extra_urls_analysis,
+            diag_run_id=str(analysis_run_id or ""),
+            diag_extra_urls_ui_raw="\n".join(extra_urls_analysis),
+        )
+
+        if not isinstance(web_context, dict) or not web_context.get("search_results"):
+            # mirror UI fallback
+            web_context = {
+                "search_results": [],
+                "scraped_content": {},
+                "summary": "",
+                "sources": [],
+                "source_reliability": [],
+            }
+
+        primary_response = qp(query, web_context, query_structure=None)
+        ok_all = _assert("analysis.primary_response_nonempty", bool(primary_response), "Primary model returned empty response") and ok_all
+        if not primary_response:
+            raise RuntimeError("primary_response empty")
+
+        try:
+            primary_data = json.loads(primary_response)
+        except Exception as e:
+            ok_all = _assert("analysis.primary_response_json_parse", False, f"JSON parse failed: {e}") and ok_all
+            raise
+
+        schema, pmc, prov = _refactor01__safe_get_schema_and_pmc(primary_data)
+
+        # optional veracity scoring (non-fatal)
+        veracity_scores = {}
+        try:
+            ev = globals().get("evidence_based_veracity")
+            if callable(ev):
+                veracity_scores = ev(primary_data, web_context) or {}
+        except Exception:
+            veracity_scores = {}
+
+        analysis_out = {
+            "question": query,
+            "timestamp": _refactor01__safe_now_iso(),
+            "primary_response": primary_data,
+            "veracity_scores": veracity_scores,
+            "web_sources": (web_context.get("sources", []) if isinstance(web_context, dict) else []),
+            "code_version": str(globals().get("CODE_VERSION", "")),
+            # ensure evolution can find these top-level as well
+            "metric_schema_frozen": schema,
+            "primary_metrics_canonical": pmc,
+        }
+        try:
+            if isinstance(analysis_out.get("primary_response"), dict):
+                analysis_out["primary_response"]["code_version"] = str(globals().get("CODE_VERSION", ""))
+        except Exception:
+            pass
+
+        # attach analysis-aligned snapshots (stable cache evolution should reuse)
+        try:
+            attach = globals().get("attach_source_snapshots_to_analysis")
+            if callable(attach):
+                analysis_out = attach(analysis_out, web_context)
+        except Exception:
+            pass
+
+        report["analysis"] = {
+            "diag_run_id": analysis_run_id,
+            "schema_key_count": int(len(schema or {})),
+            "pmc_key_count": int(len(pmc or {})),
+            "baseline_sources_cache_count": int(len((analysis_out or {}).get("baseline_sources_cache") or [])),
+        }
+
+        ok_all = _assert("analysis.schema_nonempty", int(len(schema or {})) > 0, f"schema_key_count={len(schema or {})}") and ok_all
+        ok_all = _assert("analysis.pmc_nonempty", int(len(pmc or {})) > 0, f"pmc_key_count={len(pmc or {})}") and ok_all
+
+    except Exception as e:
+        report["analysis"]["error"] = f"{type(e).__name__}: {e}"
+        report["analysis"]["traceback"] = traceback.format_exc()[:8000]
+        report["status"] = "fail"
+        # write report
+        _dir = str(os.getenv("REFACTOR_HARNESS_REPORT_PATH") or os.getcwd())
+        try:
+            os.makedirs(_dir, exist_ok=True)
+        except Exception:
+            _dir = os.getcwd()
+        fname = f"refactor_harness_report_REFACTOR01_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fpath = os.path.join(_dir, fname)
+        try:
+            with open(fpath, "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        print("[REFACTOR01] Harness FAILED during analysis stage. Report:", fpath)
+        return False
+
+    # ---- run evolution
+    evo_out = None
+    try:
+        evo_fn = globals().get("run_source_anchored_evolution")
+        if not callable(evo_fn):
+            ok_all = _assert("evolution.run_source_anchored_evolution_defined", False, "run_source_anchored_evolution is not callable") and ok_all
+            raise RuntimeError("run_source_anchored_evolution missing")
+
+        evo_out = evo_fn(
+            analysis_out,
+            web_context={
+                "force_rebuild": bool(force_rebuild),
+                "extra_urls": list(extra_urls_evolution),
+                "diag_run_id": str(evo_run_id or ""),
+                "diag_extra_urls_ui_raw": "\n".join(extra_urls_evolution),
+            },
+        )
+        ok_all = _assert("evolution.output_dict", isinstance(evo_out, dict), f"type={type(evo_out)}") and ok_all
+        if not isinstance(evo_out, dict):
+            raise RuntimeError("evolution output not a dict")
+
+        rows = evo_out.get("metric_changes_v2")
+        if not isinstance(rows, list):
+            rows = []
+
+        dbg = evo_out.get("debug") if isinstance(evo_out.get("debug"), dict) else {}
+        summary = dbg.get("diff_panel_v2_summary") if isinstance(dbg.get("diff_panel_v2_summary"), dict) else {}
+
+        both_count = summary.get("both_count")
+        prev_only = summary.get("prev_only_count")
+        cur_only = summary.get("cur_only_count")
+        rows_total = summary.get("rows_total")
+        join_mode = summary.get("join_mode")
+
+        report["evolution"] = {
+            "diag_run_id": evo_run_id,
+            "metric_changes_v2_rows": int(len(rows)),
+            "diff_panel_v2_summary": summary,
+        }
+
+        # ---- invariants
+        # 1) diff rows exist and include both prev+cur
+        any_both = False
+        for r in rows:
+            try:
+                if (r.get("previous_value_norm") is not None) and (r.get("current_value_norm") is not None):
+                    any_both = True
+                    break
+            except Exception:
+                continue
+
+        ok_all = _assert("diff.any_both_row_exists", bool(any_both), f"rows={len(rows)}") and ok_all
+
+        # 2) summary both_count > 0 (if present)
+        if both_count is not None:
+            ok_all = _assert("diff.summary_both_count_gt_0", int(both_count) > 0, f"both_count={both_count}") and ok_all
+
+        # 3) no global 'no_prev_metrics' failure mode (heuristic: not all rows are no_prev_metrics)
+        if rows:
+            no_prev_all = True
+            for r in rows:
+                ct = str(r.get("change_type") or "").strip().lower()
+                if ct != "no_prev_metrics":
+                    no_prev_all = False
+                    break
+            ok_all = _assert("diff.not_all_no_prev_metrics", (not no_prev_all), f"rows_total={len(rows)}") and ok_all
+
+        # 4) percent-year token rule: percent-key prev_value_norm must not look like a bare year
+        bad_percent_year = []
+        for r in rows:
+            try:
+                ckey = str(r.get("canonical_key") or "")
+                unit_tag = str(r.get("current_unit_tag") or r.get("previous_unit_tag") or "")
+                if ("__percent" in ckey) or (unit_tag == "percent") or ("percent" in ckey.lower()):
+                    pv = r.get("previous_value_norm")
+                    if pv is None:
+                        continue
+                    try:
+                        fv = float(pv)
+                    except Exception:
+                        continue
+                    if 1900.0 <= fv <= 2100.0 and abs(fv - round(fv)) < 1e-9:
+                        bad_percent_year.append({"canonical_key": ckey, "previous_value_norm": pv})
+                        if len(bad_percent_year) >= 5:
+                            break
+            except Exception:
+                continue
+
+        ok_all = _assert("percent.prev_not_yearlike_1900_2100", (len(bad_percent_year) == 0), f"samples={bad_percent_year}") and ok_all
+
+        # 5) internal count sanity (summary counts should align where possible)
+        if isinstance(summary, dict) and both_count is not None and prev_only is not None and rows_total is not None:
+            try:
+                prev_key_count_summary = int(both_count) + int(prev_only)
+                pmc_keys = list((analysis_out.get("primary_metrics_canonical") or {}).keys()) if isinstance(analysis_out.get("primary_metrics_canonical"), dict) else []
+                ok_all = _assert("counts.prev_key_count_matches_baseline_pmc", prev_key_count_summary == len(pmc_keys), f"summary_prev={prev_key_count_summary} baseline_pmc={len(pmc_keys)}") and ok_all
+                if str(join_mode or "") != "union":
+                    ok_all = _assert("counts.rows_total_matches_prev_key_count_nonunion", int(rows_total) == prev_key_count_summary, f"rows_total={rows_total} prev_key_count={prev_key_count_summary} join_mode={join_mode}") and ok_all
+            except Exception:
+                pass
+
+    except Exception as e:
+        report["evolution"]["error"] = f"{type(e).__name__}: {e}"
+        report["evolution"]["traceback"] = traceback.format_exc()[:8000]
+        report["status"] = "fail"
+        ok_all = False
+
+    # ---- write report
+    try:
+        report["status"] = "pass" if ok_all else "fail"
+        _dir = str(os.getenv("REFACTOR_HARNESS_REPORT_PATH") or os.getcwd())
+        try:
+            os.makedirs(_dir, exist_ok=True)
+        except Exception:
+            _dir = os.getcwd()
+        fname = f"refactor_harness_report_REFACTOR01_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fpath = os.path.join(_dir, fname)
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        print(f"[REFACTOR01] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
+    except Exception:
+        pass
+
+    return bool(ok_all)
+
+# ============================================================
+# REFACTOR01: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
+# ============================================================
+try:
+    if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
+        import sys as _rf01_sys
+        _ok = _refactor01_run_harness_v1()
+        _rf01_sys.exit(0 if _ok else 1)
+except SystemExit:
+    raise
+except Exception:
+    try:
+        import traceback as _rf01_tb
+        _rf01_tb.print_exc()
+    except Exception:
+        pass
+    try:
+        import sys as _rf01_sys
+        _rf01_sys.exit(1)
+    except Exception:
+        pass
+
