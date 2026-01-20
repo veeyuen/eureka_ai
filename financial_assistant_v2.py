@@ -72,7 +72,7 @@ import hashlib
 import numpy as np
 import difflib
 import gspread
-import google.generativeai as genai
+#import google.generativeai as genai
 from pypdf import PdfReader
 from pathlib import Path
 from google.oauth2.service_account import Credentials
