@@ -72,7 +72,6 @@ import hashlib
 import numpy as np
 import difflib
 import gspread
-import google.generativeai as genai
 from pypdf import PdfReader
 from pathlib import Path
 from google.oauth2.service_account import Credentials
@@ -5984,8 +5983,8 @@ PERPLEXITY_KEY, GEMINI_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY = load_api_keys()
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 
 # Configure Gemini
-genai.configure(api_key=GEMINI_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+#genai.configure(api_key=GEMINI_KEY)
+#gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 # =========================================================
 # 2. PYDANTIC MODELS
