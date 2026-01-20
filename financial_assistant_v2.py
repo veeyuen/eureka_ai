@@ -3096,6 +3096,26 @@ def add_to_history(analysis: dict) -> bool:
                         except Exception:
                             pass
 
+
+                        # FIX2D86: sanitize rebuilt baseline PMC so __percent keys cannot bind bare year tokens (e.g., 2040)
+                        try:
+                            if isinstance(_rebuilt, dict) and _rebuilt:
+                                _schema_fix2d86 = analysis.get("metric_schema_frozen") if isinstance(analysis.get("metric_schema_frozen"), dict) else {}
+                                _rebuilt2, _dbg_fix2d86 = _fix2d86_sanitize_pmc_percent_year_tokens_v1(
+                                    pmc=_rebuilt,
+                                    metric_schema_frozen=_schema_fix2d86,
+                                    label="fix2d75_materialize_pmc",
+                                )
+                                _rebuilt = _rebuilt2
+                                try:
+                                    analysis.setdefault("debug", {})
+                                    if isinstance(analysis.get("debug"), dict):
+                                        analysis["debug"]["fix2d86_percent_year_token_sanitize_materialize"] = _dbg_fix2d86
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
                     except Exception:
                         _rebuilt, _diag = (None, None)
 
