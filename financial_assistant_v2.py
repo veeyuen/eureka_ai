@@ -1098,6 +1098,25 @@ except Exception:
     pass
 
 # ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D75
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D75",
+        "date": "2026-01-20",
+        "summary": "Option B fork: materialize Analysis baseline primary_metrics_canonical (schema-anchored rebuild) and persist it (incl. primary_response) so HistoryFull replay exposes previous canonical values for diffing.",
+        "files": ["FIX2D75_full_codebase.py"],
+        "supersedes": ["FIX2D73"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D10
 # ============================================================
 try:
@@ -2993,6 +3012,99 @@ def add_to_history(analysis: dict) -> bool:
     # -----------------------
     except Exception:
         pass
+
+    # =====================================================================
+    # PATCH FIX2D75 (OPTION B): Materialize baseline primary_metrics_canonical for persistence
+    # Why:
+    # - HistoryFull replay/diff requires Analysis baseline canonical values (not just schema).
+    # - Prior runs persisted metric_schema_frozen but had no primary_metrics_canonical map.
+    # - Option B: compute once during Analysis and persist the decided map.
+    # Behavior:
+    # - If primary_metrics_canonical is missing/empty, rebuild deterministically from
+    #   metric_schema_frozen + baseline_sources_cache using the schema-anchored rebuild.
+    # - Mirror into analysis.primary_response.primary_metrics_canonical so Sheets minimal
+    #   fallback still carries it.
+    # - Emit debug counts for verification.
+    # =====================================================================
+    try:
+        if isinstance(analysis, dict):
+            _already = None
+            if isinstance(analysis.get('primary_metrics_canonical'), dict) and analysis.get('primary_metrics_canonical'):
+                _already = 'analysis.primary_metrics_canonical'
+            elif isinstance(analysis.get('primary_response'), dict) and isinstance(analysis['primary_response'].get('primary_metrics_canonical'), dict) and analysis['primary_response'].get('primary_metrics_canonical'):
+                _already = 'analysis.primary_response.primary_metrics_canonical'
+            elif isinstance(analysis.get('results'), dict) and isinstance(analysis['results'].get('primary_metrics_canonical'), dict) and analysis['results'].get('primary_metrics_canonical'):
+                _already = 'analysis.results.primary_metrics_canonical'
+
+            if not _already:
+                _pool = None
+                try:
+                    if isinstance(analysis.get('baseline_sources_cache'), list):
+                        _pool = analysis.get('baseline_sources_cache')
+                    elif isinstance(analysis.get('results'), dict) and isinstance(analysis['results'].get('baseline_sources_cache'), list):
+                        _pool = analysis['results'].get('baseline_sources_cache')
+                except Exception:
+                    _pool = None
+
+                _schema_ok = isinstance(analysis.get('metric_schema_frozen'), dict) and bool(analysis.get('metric_schema_frozen'))
+
+                _rebuilt = None
+                _diag = None
+                if _schema_ok and isinstance(_pool, list) and _pool:
+                    try:
+                        _rebuilt, _diag = _fix2d9_schema_anchored_rebuild_current_metrics_v1(
+                            analysis,
+                            _pool,
+                            web_context=analysis.get('web_context') if isinstance(analysis.get('web_context'), dict) else None,
+                        )
+                    except Exception:
+                        _rebuilt, _diag = (None, None)
+
+                if isinstance(_rebuilt, dict) and _rebuilt:
+                    try:
+                        analysis['primary_metrics_canonical'] = dict(_rebuilt)
+                    except Exception:
+                        pass
+                    try:
+                        analysis.setdefault('primary_response', {})
+                        if isinstance(analysis.get('primary_response'), dict):
+                            analysis['primary_response']['primary_metrics_canonical'] = dict(_rebuilt)
+                    except Exception:
+                        pass
+                    try:
+                        analysis.setdefault('results', {})
+                        if isinstance(analysis.get('results'), dict):
+                            analysis['results']['primary_metrics_canonical'] = dict(_rebuilt)
+                    except Exception:
+                        pass
+
+                # Debug
+                try:
+                    analysis.setdefault('debug', {})
+                    if isinstance(analysis.get('debug'), dict):
+                        analysis['debug']['fix2d75_materialize_pmc'] = {
+                            'had_existing': bool(_already),
+                            'existing_source': str(_already or ''),
+                            'schema_present': bool(_schema_ok),
+                            'pool_count': int(len(_pool)) if isinstance(_pool, list) else 0,
+                            'rebuilt_count': int(len(_rebuilt)) if isinstance(_rebuilt, dict) else 0,
+                            'rebuilt_diag': _diag if isinstance(_diag, dict) else {},
+                        }
+                except Exception:
+                    pass
+            else:
+                try:
+                    analysis.setdefault('debug', {})
+                    if isinstance(analysis.get('debug'), dict):
+                        analysis['debug']['fix2d75_materialize_pmc'] = {
+                            'had_existing': True,
+                            'existing_source': str(_already),
+                        }
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # =====================================================================
 
     # =====================================================================
     # PATCH D (ADDITIVE): propagate metric_anchors onto metric rows + evidence
@@ -47249,5 +47361,13 @@ except Exception:
 # FIX2D73_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
     CODE_VERSION = "FIX2D73"
+except Exception:
+    pass
+
+
+# FIX2D75_VERSION_FINAL_OVERRIDE (REQUIRED): option B fork
+try:
+    CODE_VERSION = "FIX2D75"
+    globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
