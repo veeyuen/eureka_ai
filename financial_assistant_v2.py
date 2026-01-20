@@ -24071,6 +24071,103 @@ def _fix2d86_sanitize_pmc_percent_year_tokens_v1(pmc: dict, metric_schema_frozen
     dbg["pmc_out_count"] = len(out)
     return out, dbg
 
+def _fix2d86_sanitize_pmc_percent_year_tokens_v1(pmc: dict, metric_schema_frozen: dict, label: str):
+    """
+    FIX2D86 HOTFIX:
+    For __percent keys, drop bindings where the chosen evidence is a bare year token (1900-2100),
+    e.g. raw="2040" and value_norm=2040.0. This prevents prev=2040 for CAGR percent keys.
+    """
+    dbg = {
+        "label": label,
+        "pmc_in_count": len(pmc) if isinstance(pmc, dict) else 0,
+        "pmc_out_count": 0,
+        "dropped_count": 0,
+        "dropped_samples": [],
+    }
+    if not isinstance(pmc, dict):
+        return pmc, dbg
+
+    def _is_percent_key(k: str) -> bool:
+        if isinstance(k, str) and k.endswith("__percent"):
+            return True
+        sch = metric_schema_frozen.get(k) if isinstance(metric_schema_frozen, dict) else None
+        if isinstance(sch, dict):
+            dim = str(sch.get("dimension") or sch.get("unit_kind") or "").lower()
+            return dim == "percent"
+        return False
+
+    def _yearlike_num(v) -> bool:
+        try:
+            x = float(v)
+        except Exception:
+            return False
+        if abs(x - round(x)) > 1e-9:
+            return False
+        y = int(round(x))
+        return 1900 <= y <= 2100
+
+    def _extract_raw_token(vdict: dict) -> str:
+        if not isinstance(vdict, dict):
+            return ""
+        ev = vdict.get("evidence")
+
+        # evidence can be dict or list of dicts in your codebase
+        if isinstance(ev, dict):
+            return str(ev.get("raw") or ev.get("raw_text") or ev.get("token") or "")
+        if isinstance(ev, list) and ev:
+            for item in ev:
+                if isinstance(item, dict):
+                    raw = str(item.get("raw") or item.get("raw_text") or item.get("token") or "")
+                    if raw:
+                        return raw
+        return str(vdict.get("raw") or "")
+
+    def _raw_is_bare_year(raw: str) -> bool:
+        if not raw:
+            return False
+        t = raw.strip().lower()
+        # Must be "2040" or "2040.0" style, and MUST NOT contain percent markers
+        if ("%" in t) or ("percent" in t) or ("pct" in t):
+            return False
+        # accept 4-digit integer, or integer with .0
+        if t.isdigit() and len(t) == 4:
+            y = int(t)
+            return 1900 <= y <= 2100
+        if t.endswith(".0"):
+            base = t[:-2]
+            if base.isdigit() and len(base) == 4:
+                y = int(base)
+                return 1900 <= y <= 2100
+        return False
+
+    out = {}
+    for k, v in pmc.items():
+        if not _is_percent_key(k):
+            out[k] = v
+            continue
+
+        if isinstance(v, dict):
+            val_norm = v.get("value_norm")
+            raw = _extract_raw_token(v)
+            if _yearlike_num(val_norm) and _raw_is_bare_year(raw):
+                dbg["dropped_count"] += 1
+                if len(dbg["dropped_samples"]) < 5:
+                    dbg["dropped_samples"].append({
+                        "canonical_key": k,
+                        "value_norm": val_norm,
+                        "raw": raw,
+                        "source_url": v.get("source_url"),
+                        "method": v.get("method"),
+                        "anchor_hash": v.get("anchor_hash"),
+                    })
+                continue
+
+        out[k] = v
+
+    dbg["pmc_out_count"] = len(out)
+    return out, dbg
+
+
 
 
 def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, snapshot_pool: list, web_context: dict = None):  # noqa: F811
