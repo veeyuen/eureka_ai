@@ -47709,3 +47709,367 @@ try:
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
+
+
+# =====================================================================
+# PATCH FIX2D78 (ADDITIVE): percent-schema guardrail in schema_only_rebuild
+#
+# Problem:
+#   schema_only_rebuild can incorrectly bind year-like tokens (e.g., "2040")
+#   to __percent schema keys, because some extracted candidates inherit a '%'
+#   unit_tag via proximity while the raw token itself is a bare year.
+#
+# Fix:
+#   Wrap rebuild_metrics_from_snapshots_schema_only_fix16 (the schema-only
+#   rebuild entrypoint used by FIX2D9 / Option B materialization) and apply:
+#     (1) Hard reject year-like values (1900-2100 integers) for __percent keys
+#         unless the candidate's *raw* explicitly contains %/percent.
+#     (2) Require percent evidence for __percent keys.
+#     (3) If the original winner is rejected, attempt a deterministic fallback
+#         reselection using _fix2d2x_select_current_for_key over the flattened
+#         extracted_numbers pool; else drop the key (so diff shows 'added').
+#
+# Notes:
+#   - Additive only; does not touch extraction or schema.
+#   - Applies to BOTH Analysis Option-B baseline materialization and any other
+#     schema_only_fix16 call sites.
+# =====================================================================
+
+try:
+    _FIX2D78_SCHEMA_ONLY_GUARD_APPLIED = bool(globals().get('_FIX2D78_SCHEMA_ONLY_GUARD_APPLIED'))
+except Exception:
+    _FIX2D78_SCHEMA_ONLY_GUARD_APPLIED = False
+
+
+def _fix2d78__is_percent_key_v1(k: str, spec: dict = None) -> bool:
+    try:
+        ks = str(k or '')
+        if ks.endswith('__percent'):
+            return True
+        if '__percent' in ks:
+            return True
+        sp = spec if isinstance(spec, dict) else {}
+        dim = str(sp.get('dimension') or '').lower()
+        uf = str(sp.get('unit_family') or '').lower()
+        ut = str(sp.get('unit_tag') or '').lower()
+        blob = ' '.join([dim, uf, ut])
+        return ('percent' in blob) or ('%' in blob)
+    except Exception:
+        return False
+
+
+def _fix2d78__raw_has_percent_v1(raw: str) -> bool:
+    try:
+        r = str(raw or '').lower()
+        return ('%' in r) or ('percent' in r) or ('pct' in r)
+    except Exception:
+        return False
+
+
+def _fix2d78__has_percent_evidence_v1(rec: dict) -> bool:
+    try:
+        if not isinstance(rec, dict):
+            return False
+        # strongest: raw contains percent
+        raw = rec.get('raw')
+        if not raw and isinstance(rec.get('evidence'), list) and rec['evidence']:
+            try:
+                raw = rec['evidence'][0].get('raw')
+            except Exception:
+                raw = None
+        if _fix2d78__raw_has_percent_v1(raw):
+            return True
+        # allow explicit unit tags / base_unit
+        for k in ('unit_tag', 'unit_tag_norm', 'unit', 'base_unit', 'unit_cmp', 'unit_norm'):
+            v = rec.get(k)
+            if v is None:
+                continue
+            s = str(v or '').lower()
+            if ('%' in s) or ('percent' in s) or (s == 'pct'):
+                return True
+        uf = str(rec.get('unit_family') or '').lower()
+        if uf in ('percent', 'percentage', 'pct'):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _fix2d78__is_yearlike_value_v1(v) -> bool:
+    try:
+        fv = float(v)
+        # integer-ish
+        if abs(fv - round(fv)) > 1e-9:
+            return False
+        iv = int(round(fv))
+        return 1900 <= iv <= 2100
+    except Exception:
+        return False
+
+
+def _fix2d78__flatten_candidates_v1(snapshot_pool) -> list:
+    """Flatten baseline_sources_cache/snapshot_pool into a candidates_all list.
+
+    Expected shapes:
+      - baseline_sources_cache: [{url, extracted_numbers:[{...candidate...}, ...]}, ...]
+      - snapshot_pool: list of candidate dicts
+    """
+    out = []
+    try:
+        if not isinstance(snapshot_pool, list):
+            return out
+        for item in snapshot_pool:
+            if isinstance(item, dict) and isinstance(item.get('extracted_numbers'), list):
+                url = item.get('url') or item.get('source_url') or item.get('source')
+                for c in item.get('extracted_numbers') or []:
+                    if not isinstance(c, dict):
+                        continue
+                    cc = dict(c)
+                    if not isinstance(cc.get('source_url'), str) or not cc.get('source_url'):
+                        if isinstance(url, str) and url:
+                            cc['source_url'] = url
+                    out.append(cc)
+                continue
+            # candidate dict directly
+            if isinstance(item, dict) and ('value_norm' in item or 'value' in item) and ('raw' in item or 'context_snippet' in item):
+                out.append(item)
+        return out
+    except Exception:
+        return out
+
+
+def _fix2d78__spec_for_key_v1(prev_response: dict, canonical_key: str) -> dict:
+    try:
+        if not isinstance(prev_response, dict):
+            return {}
+        # schema is usually metric_schema_frozen
+        schema = prev_response.get('metric_schema_frozen')
+        if not isinstance(schema, dict):
+            res = prev_response.get('results')
+            if isinstance(res, dict) and isinstance(res.get('metric_schema_frozen'), dict):
+                schema = res.get('metric_schema_frozen')
+        if isinstance(schema, dict):
+            sp = schema.get(canonical_key)
+            if isinstance(sp, dict):
+                return dict(sp)
+        return {}
+    except Exception:
+        return {}
+
+
+def _fix2d78__build_metric_record_from_candidate_v1(canonical_key: str, c: dict, method: str = 'schema_only_rebuild_fix2d78_fallback') -> dict:
+    """Build a primary_metrics_canonical entry from an extracted candidate."""
+    try:
+        if not isinstance(c, dict):
+            return {}
+        vnorm = c.get('value_norm')
+        if vnorm is None:
+            vnorm = c.get('value')
+        unit = c.get('base_unit') or c.get('unit_tag') or c.get('unit') or ''
+        rec = {
+            'canonical_key': canonical_key,
+            'name': str(canonical_key),
+            'value': vnorm,
+            'unit': unit,
+            'value_norm': vnorm,
+            'source_url': c.get('source_url') or '',
+            'anchor_hash': c.get('anchor_hash') or '',
+            # carry unit evidence if present
+            'unit_tag': c.get('unit_tag') if c.get('unit_tag') is not None else None,
+            'unit_family': c.get('unit_family') if c.get('unit_family') is not None else None,
+            'base_unit': c.get('base_unit') if c.get('base_unit') is not None else None,
+            'evidence': [
+                {
+                    'source_url': c.get('source_url') or '',
+                    'raw': c.get('raw') or '',
+                    'context_snippet': c.get('context_snippet') or '',
+                    'anchor_hash': c.get('anchor_hash') or '',
+                    'method': method,
+                }
+            ],
+        }
+        # prune None fields to keep payload compact
+        for k in ['unit_tag', 'unit_family', 'base_unit']:
+            if rec.get(k) is None:
+                rec.pop(k, None)
+        return rec
+    except Exception:
+        return {}
+
+
+def _fix2d78__apply_percent_guard_to_rebuilt_map_v1(rebuilt_map: dict, prev_response: dict, snapshot_pool, web_context=None) -> dict:
+    if not isinstance(rebuilt_map, dict) or not rebuilt_map:
+        return rebuilt_map
+
+    dbg = {
+        'applied': False,
+        'percent_keys_seen': 0,
+        'invalid_yearlike_rejected': 0,
+        'invalid_missing_percent_rejected': 0,
+        'fallback_reselected': 0,
+        'fallback_failed_dropped': 0,
+        'samples': [],
+    }
+
+    # Build flattened candidate universe once (best-effort)
+    candidates_all = _fix2d78__flatten_candidates_v1(snapshot_pool)
+    fn_select = globals().get('_fix2d2x_select_current_for_key')
+
+    keys = list(rebuilt_map.keys())
+    for k in keys:
+        rec = rebuilt_map.get(k)
+        if not isinstance(rec, dict):
+            continue
+
+        spec = _fix2d78__spec_for_key_v1(prev_response, k)
+        if not _fix2d78__is_percent_key_v1(k, spec):
+            continue
+
+        dbg['percent_keys_seen'] += 1
+
+        vnorm = rec.get('value_norm')
+        if vnorm is None:
+            vnorm = rec.get('value')
+
+        # Determine raw (prefer evidence raw)
+        raw = rec.get('raw')
+        if not raw and isinstance(rec.get('evidence'), list) and rec['evidence']:
+            try:
+                raw = rec['evidence'][0].get('raw')
+            except Exception:
+                raw = None
+
+        raw_has_pct = _fix2d78__raw_has_percent_v1(raw)
+        yearlike = _fix2d78__is_yearlike_value_v1(vnorm)
+        has_pct = _fix2d78__has_percent_evidence_v1(rec)
+
+        invalid_reason = None
+        if yearlike and not raw_has_pct:
+            invalid_reason = 'yearlike_no_pct_raw'
+        elif not has_pct:
+            invalid_reason = 'missing_percent_evidence'
+
+        if not invalid_reason:
+            continue
+
+        dbg['applied'] = True
+        if invalid_reason == 'yearlike_no_pct_raw':
+            dbg['invalid_yearlike_rejected'] += 1
+        else:
+            dbg['invalid_missing_percent_rejected'] += 1
+
+        # Attempt deterministic fallback reselection
+        replaced = False
+        if callable(fn_select) and isinstance(candidates_all, list) and candidates_all:
+            try:
+                best, meta = fn_select(k, spec, candidates_all, injected_urls=[])
+            except TypeError:
+                try:
+                    best, meta = fn_select(k, spec, candidates_all, [])
+                except Exception:
+                    best, meta = (None, {})
+            except Exception:
+                best, meta = (None, {})
+
+            if isinstance(best, dict) and best:
+                # ensure the fallback itself isn't yearlike-no-pct-raw
+                b_raw = best.get('raw')
+                b_v = best.get('value_norm')
+                if b_v is None:
+                    b_v = best.get('value')
+                if (not _fix2d78__is_yearlike_value_v1(b_v)) or _fix2d78__raw_has_percent_v1(b_raw):
+                    # ensure percent evidence
+                    if _fix2d78__raw_has_percent_v1(b_raw) or (('%' in str(best.get('unit_tag') or '')) or ('percent' in str(best.get('unit_tag') or '').lower()) or (best.get('unit_family') == 'percent')):
+                        rebuilt_map[k] = _fix2d78__build_metric_record_from_candidate_v1(k, best, method='schema_only_rebuild_fix2d78_fallback')
+                        dbg['fallback_reselected'] += 1
+                        replaced = True
+
+        if not replaced:
+            # Drop the bad key; diff will show cur_only/added.
+            try:
+                rebuilt_map.pop(k, None)
+            except Exception:
+                pass
+            dbg['fallback_failed_dropped'] += 1
+
+        # Sample
+        try:
+            if len(dbg['samples']) < 6:
+                dbg['samples'].append({'key': k, 'reason': invalid_reason, 'raw': str(raw or '')[:80], 'value_norm': vnorm})
+        except Exception:
+            pass
+
+    # Attach debug breadcrumbs (best-effort)
+    try:
+        if isinstance(prev_response, dict):
+            prev_response.setdefault('debug', {})
+            if isinstance(prev_response.get('debug'), dict):
+                prev_response['debug']['fix2d78_percent_guard'] = dbg
+    except Exception:
+        pass
+
+    try:
+        if isinstance(web_context, dict):
+            web_context.setdefault('debug', {})
+            if isinstance(web_context.get('debug'), dict):
+                web_context['debug']['fix2d78_percent_guard'] = dbg
+    except Exception:
+        pass
+
+    return rebuilt_map
+
+
+# Apply the wrapper exactly once
+try:
+    if not _FIX2D78_SCHEMA_ONLY_GUARD_APPLIED:
+        _fix2d78__orig_schema_only_fix16 = globals().get('rebuild_metrics_from_snapshots_schema_only_fix16')
+        if callable(_fix2d78__orig_schema_only_fix16):
+
+            def rebuild_metrics_from_snapshots_schema_only_fix16(*args, **kwargs):  # noqa: F811
+                rebuilt = _fix2d78__orig_schema_only_fix16(*args, **kwargs)
+                try:
+                    prev_response = args[0] if len(args) > 0 else kwargs.get('prev_response')
+                except Exception:
+                    prev_response = None
+                try:
+                    snapshot_pool = args[1] if len(args) > 1 else kwargs.get('snapshot_pool')
+                except Exception:
+                    snapshot_pool = None
+                web_context = kwargs.get('web_context') if isinstance(kwargs, dict) else None
+
+                try:
+                    if isinstance(rebuilt, dict) and rebuilt:
+                        rebuilt = _fix2d78__apply_percent_guard_to_rebuilt_map_v1(rebuilt, prev_response, snapshot_pool, web_context=web_context)
+                except Exception:
+                    pass
+                return rebuilt
+
+            globals()['rebuild_metrics_from_snapshots_schema_only_fix16'] = rebuild_metrics_from_snapshots_schema_only_fix16
+            globals()['_FIX2D78_SCHEMA_ONLY_GUARD_APPLIED'] = True
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX2D78 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D78',
+        'date': '2026-01-20',
+        'summary': 'Percent-schema guardrail (schema_only_rebuild entrypoint): reject year-like 1900-2100 tokens for __percent keys unless raw explicitly has %/percent; require percent evidence; if rejected, attempt deterministic fallback reselection using _fix2d2x_select_current_for_key over flattened extracted_numbers pool; else drop key so diff shows added.',
+        'files': ['FIX2D78_full_codebase.py'],
+        'supersedes': ['FIX2D77'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# FIX2D78_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
+try:
+    CODE_VERSION = 'FIX2D78'
+    globals()['CODE_VERSION'] = CODE_VERSION
+except Exception:
+    pass
