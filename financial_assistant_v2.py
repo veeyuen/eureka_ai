@@ -18440,17 +18440,17 @@ def _safe_parse_current_analysis(query: str, web_context: dict) -> dict:
 
 
 def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
-    """
-    Canonical-first diff with:
-      - HARD STOP when prev canonical_key is missing in current (no name fallback)
-      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
-          prev_response['metric_schema_frozen'][canonical_key] (preferred)
-          else prev_response['primary_metrics_canonical'][canonical_key]
-      - Backward compatible: still returns 'name' (non-empty) and existing fields.
+   # """
+   # Canonical-first diff with:
+   #   - HARD STOP when prev canonical_key is missing in current (no name fallback)
+   #   - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
+   #       prev_response['metric_schema_frozen'][canonical_key] (preferred)
+   #       else prev_response['primary_metrics_canonical'][canonical_key]
+   #   - Backward compatible: still returns 'name' (non-empty) and existing fields.
 
-    Returns:
-            metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
-    """
+   # Returns:
+   #         metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+   # """
     import re
 
     # Defaults (used unless schema provides overrides)
@@ -19128,17 +19128,17 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 # =====================================================================
 
 def diff_metrics_by_name(prev_response: dict, cur_response: dict):
-    """
-    Canonical-first diff with:
-      - HARD STOP when prev canonical_key is missing in current (no name fallback)
-      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
-          prev_response['metric_schema_frozen'][canonical_key] (preferred)
-          else prev_response['primary_metrics_canonical'][canonical_key]
-      - Backward compatible: still returns 'name' (non-empty) and existing fields.
+   # """
+   # Canonical-first diff with:
+   #   - HARD STOP when prev canonical_key is missing in current (no name fallback)
+   #   - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
+   #       prev_response['metric_schema_frozen'][canonical_key] (preferred)
+   #       else prev_response['primary_metrics_canonical'][canonical_key]
+   #   - Backward compatible: still returns 'name' (non-empty) and existing fields.
 
-    Returns:
-      metric_changes, unchanged, increased, decreased, found
-    """
+    #Returns:
+   #   metric_changes, unchanged, increased, decreased, found
+   # """
     import re
 
     # Defaults (used unless schema provides overrides)
@@ -19717,17 +19717,17 @@ except Exception:
     diff_metrics_by_name_LEGACY = None
 
 def diff_metrics_by_name(prev_response: dict, cur_response: dict):
-    """
-    Canonical-first diff with:
-      - HARD STOP when prev canonical_key is missing in current (no name fallback)
-      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
-          prev_response['metric_schema_frozen'][canonical_key] (preferred)
-          else prev_response['primary_metrics_canonical'][canonical_key]
-      - Backward compatible: still returns 'name' (non-empty) and existing fields.
+   # """
+   # Canonical-first diff with:
+   #   - HARD STOP when prev canonical_key is missing in current (no name fallback)
+   #   - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
+   #       prev_response['metric_schema_frozen'][canonical_key] (preferred)
+   #       else prev_response['primary_metrics_canonical'][canonical_key]
+   #   - Backward compatible: still returns 'name' (non-empty) and existing fields.
 
-    Returns:
-      metric_changes, unchanged, increased, decreased, found
-    """
+   # Returns:
+   #   metric_changes, unchanged, increased, decreased, found
+   # """
     import re
 
     # Defaults (used unless schema provides overrides)
