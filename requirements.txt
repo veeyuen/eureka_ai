@@ -10,3 +10,4 @@ numpy
 gspread==5.12.4
 google-auth==2.23.4
 pypdf
+pydantic
