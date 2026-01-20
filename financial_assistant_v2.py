@@ -72,8 +72,6 @@ import hashlib
 import numpy as np
 import difflib
 import gspread
-#from google import genai
-#from google.genai import types
 from pypdf import PdfReader
 from pathlib import Path
 from google.oauth2.service_account import Credentials
@@ -89,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D84"
+CODE_VERSION = "FIX2D85"
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
 # ============================================================
@@ -5960,13 +5958,11 @@ def load_api_keys():
     # =====================================================================
     try:
         PERPLEXITY_KEY = st.secrets.get("PERPLEXITY_API_KEY") or os.getenv("PERPLEXITY_API_KEY", "")
-        GEMINI_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
         SERPAPI_KEY = st.secrets.get("SERPAPI_KEY") or os.getenv("SERPAPI_KEY", "")
         SCRAPINGDOG_KEY = st.secrets.get("SCRAPINGDOG_KEY") or os.getenv("SCRAPINGDOG_KEY", "")
     except Exception:
         pass
         PERPLEXITY_KEY = os.getenv("PERPLEXITY_API_KEY", "")
-        GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
         SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
         SCRAPINGDOG_KEY = os.getenv("SCRAPINGDOG_KEY", "")
 
@@ -5975,18 +5971,11 @@ def load_api_keys():
         st.error("❌ PERPLEXITY_API_KEY is missing or invalid")
         st.stop()
 
-    if not GEMINI_KEY or len(GEMINI_KEY) < 10:
-        st.error("❌ GEMINI_API_KEY is missing or invalid")
-        st.stop()
+    return PERPLEXITY_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY
 
-    return PERPLEXITY_KEY, GEMINI_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY
-
-PERPLEXITY_KEY, GEMINI_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY = load_api_keys()
+PERPLEXITY_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY = load_api_keys()
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 
-# Configure Gemini
-#genai.configure(api_key=GEMINI_KEY)
-#gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 # =========================================================
 # 2. PYDANTIC MODELS
@@ -48124,6 +48113,36 @@ except Exception:
 # FIX2D84_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
 try:
     CODE_VERSION = 'FIX2D84'
+    globals()['CODE_VERSION'] = CODE_VERSION
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D85 (CLEANUP): remove Google Gemini support + bump version
+#
+# - Removes google.generativeai import and all GEMINI_API_KEY / GEMINI_KEY handling.
+# - Keeps PERPLEXITY / SERPAPI / SCRAPINGDOG key loading intact.
+# - Bumps CODE_VERSION to match patch id.
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D85',
+        'date': '2026-01-20',
+        'summary': 'Cleanup: remove Google Gemini (google.generativeai) imports/config and GEMINI_API_KEY handling; bump CODE_VERSION; no behavior change to diffing logic.',
+        'files': ['FIX2D85_full_codebase.py'],
+        'supersedes': ['FIX2D84'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# FIX2D85_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
+try:
+    CODE_VERSION = 'FIX2D85'
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
