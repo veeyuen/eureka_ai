@@ -40174,6 +40174,66 @@ def _fix2d2x_select_current_for_key(
     """
     spec = dict(spec_in or {})
 
+    # FIX2D77: percent-schema guardrail (reject year-like tokens for __percent keys)
+    def _fix2d77__norm(_s):
+        try:
+            return str(_s or '').lower()
+        except Exception:
+            return ''
+
+    def _fix2d77__has_percent_evidence(_c):
+        try:
+            if not isinstance(_c, dict):
+                return False
+            _raw = _fix2d77__norm(_c.get('raw'))
+            if ('%' in _raw) or ('percent' in _raw):
+                return True
+            for _k in ('unit_tag','unit','base_unit','unit_cmp','unit_norm'):
+                _v = _fix2d77__norm(_c.get(_k))
+                if ('%' in _v) or ('percent' in _v):
+                    return True
+            _uf = _fix2d77__norm(_c.get('unit_family'))
+            if _uf == 'percent':
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _fix2d77__is_yearlike_value(_c):
+        try:
+            if not isinstance(_c, dict):
+                return False
+            _v = _c.get('value_norm')
+            if _v is None:
+                _v = _c.get('value')
+            _fv = float(_v)
+            if not _fv.is_integer():
+                return False
+            _iv = int(_fv)
+            return 1900 <= _iv <= 2100
+        except Exception:
+            return False
+
+    _fix2d77_requires_percent = False
+    try:
+        if isinstance(canonical_key, str) and canonical_key.endswith('__percent'):
+            _fix2d77_requires_percent = True
+        else:
+            _dim = _fix2d77__norm(spec.get('dimension') or spec.get('unit_family') or spec.get('unit_tag') or '')
+            if ('percent' in _dim) or ('%' in _dim):
+                _fix2d77_requires_percent = True
+    except Exception:
+        _fix2d77_requires_percent = False
+
+    _fix2d77_dbg = {
+        'applied': False,
+        'requires_percent': bool(_fix2d77_requires_percent),
+        'before': 0,
+        'kept': 0,
+        'rejected_missing_percent_evidence': 0,
+        'rejected_yearlike_no_pct_raw': 0,
+    }
+
     # Disable preferred source locking for Evolution (parity gates but different policy)
     for k in ("preferred_url", "source_url"):
         if k in spec:
@@ -43134,7 +43194,17 @@ def _fix2d2x_select_current_for_key(  # noqa: F811
     candidates_all: list,
     injected_urls: list,
 ) -> tuple:
-    """FIX2D65 override: keep FIX2D2X structure but prune yearlike candidates (immune to WINDOW_BACKFILL) before selection."""
+    """FIX2D77 override: percent-schema guardrail.
+
+    Keeps FIX2D2X/FIX2D65 structure, but prevents schema-only selection from
+    binding unitless year tokens (e.g., 2040) to __percent keys.
+
+    Rules (only when schema requires percent):
+      - candidate must have percent evidence (unit tag or nearby "%"/"percent")
+      - year-like numeric values 1900-2100 are rejected unless raw explicitly contains "%" or "percent"
+
+    Returns: (best_candidate_dict_or_None, meta_dict)
+    """
     spec = dict(spec_in or {})
 
     # Disable preferred source locking for Evolution
@@ -43146,32 +43216,127 @@ def _fix2d2x_select_current_for_key(  # noqa: F811
         nm = str(spec.get("name") or "")
         spec["keywords"] = globals().get('_fix2d2x_keywords_from_key_and_name', lambda ck, nm: [])(canonical_key, nm)
 
-    # prefilter
+    # Prefilter
     fn_filter = globals().get('_fix2d2x_filter_candidates_for_key')
     if callable(fn_filter):
         candidates_all = fn_filter(canonical_key, spec, candidates_all)
 
-    # FIX2D65 prune step
+    # FIX2D65 prune step (unit/count only)
     candidates_all, prune_dbg = _fix2d65_prune_yearlike_candidates_for_unit_metrics(candidates_all, canonical_key)
 
+    # FIX2D77 percent guardrail
+    def _fx77_norm(x):
+        try:
+            return str(x or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _fx77_requires_percent():
+        try:
+            if isinstance(canonical_key, str) and canonical_key.endswith("__percent"):
+                return True
+            dim = _fx77_norm(spec.get("dimension") or "")
+            uf = _fx77_norm(spec.get("unit_family") or "")
+            ut = _fx77_norm(spec.get("unit_tag") or "")
+            blob = " ".join([dim, uf, ut])
+            return ("percent" in blob) or ("%" in blob)
+        except Exception:
+            return False
+
+    def _fx77_has_percent_evidence(c):
+        try:
+            if not isinstance(c, dict):
+                return False
+            raw = _fx77_norm(c.get("raw"))
+            if ("%" in raw) or ("percent" in raw):
+                return True
+            for k in ("unit_tag", "unit", "base_unit", "unit_cmp", "unit_norm"):
+                v = _fx77_norm(c.get(k))
+                if ("%" in v) or ("percent" in v):
+                    return True
+            # allow explicit unit_family==percent as weak evidence
+            uf2 = _fx77_norm(c.get("unit_family"))
+            if uf2 == "percent":
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _fx77_is_yearlike_value(c):
+        try:
+            if not isinstance(c, dict):
+                return False
+            v = c.get("value_norm")
+            if v is None:
+                v = c.get("value")
+            fv = float(v)
+            if not fv.is_integer():
+                return False
+            iv = int(fv)
+            return 1900 <= iv <= 2100
+        except Exception:
+            return False
+
+    _fix2d77_dbg = {
+        "applied": False,
+        "requires_percent": False,
+        "before": int(len(candidates_all or [])) if isinstance(candidates_all, list) else 0,
+        "kept": int(len(candidates_all or [])) if isinstance(candidates_all, list) else 0,
+        "rejected_missing_percent_evidence": 0,
+        "rejected_yearlike_no_pct_raw": 0,
+    }
+
+    req_pct = _fx77_requires_percent()
+    _fix2d77_dbg["requires_percent"] = bool(req_pct)
+
+    if req_pct and isinstance(candidates_all, list) and candidates_all:
+        kept = []
+        for c in candidates_all:
+            if not isinstance(c, dict):
+                continue
+            raw = _fx77_norm(c.get("raw"))
+            raw_has_pct = ("%" in raw) or ("percent" in raw)
+
+            # Hard reject: year-like values without explicit percent evidence in raw
+            if _fx77_is_yearlike_value(c) and (not raw_has_pct):
+                _fix2d77_dbg["rejected_yearlike_no_pct_raw"] += 1
+                continue
+
+            if not _fx77_has_percent_evidence(c):
+                _fix2d77_dbg["rejected_missing_percent_evidence"] += 1
+                continue
+
+            kept.append(c)
+
+        candidates_all = kept
+        _fix2d77_dbg["applied"] = True
+        _fix2d77_dbg["kept"] = int(len(candidates_all))
+
+    # Injected-only candidate subset
     injected_norm = set()
     try:
         injected_norm = set(globals().get('_ph2b_norm_url', lambda u: u)(u) for u in (injected_urls or []) if isinstance(u, str))
     except Exception:
-        pass
         injected_norm = set()
 
     cands_inj = []
-    if injected_norm:
+    if injected_norm and isinstance(candidates_all, list):
         for c in candidates_all:
+            if not isinstance(c, dict):
+                continue
             cu = globals().get('_ph2b_norm_url', lambda u: u)(c.get('source_url') or '')
             if cu and cu in injected_norm:
                 cands_inj.append(c)
 
     fn_sel = globals().get('_analysis_canonical_final_selector_v1')
     if not callable(fn_sel):
-        return None, {"blocked_reason": "missing_analysis_selector", "fix2d65_prune": prune_dbg}
+        return None, {
+            "blocked_reason": "missing_analysis_selector",
+            "fix2d65_prune": prune_dbg,
+            "fix2d77_percent_filter": _fix2d77_dbg,
+        }
 
+    # Pass 1: injected-only
     if cands_inj:
         best, meta = fn_sel(canonical_key, spec, cands_inj, anchors=None, prev_metric=None, web_context=None)
         if isinstance(best, dict):
@@ -43179,16 +43344,21 @@ def _fix2d2x_select_current_for_key(  # noqa: F811
                 meta = dict(meta or {})
                 meta["fix2d2x_pass"] = "injected_only"
                 meta["fix2d65_prune"] = prune_dbg
+                meta["fix2d77_percent_filter"] = _fix2d77_dbg
             except Exception:
-                return best, meta
+                meta = {"fix2d2x_pass": "injected_only", "fix2d65_prune": prune_dbg, "fix2d77_percent_filter": _fix2d77_dbg}
+            return best, meta
 
+    # Pass 2: global
     best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
     try:
         meta = dict(meta or {})
         meta["fix2d2x_pass"] = "global"
         meta["fix2d65_prune"] = prune_dbg
+        meta["fix2d77_percent_filter"] = _fix2d77_dbg
     except Exception:
-        return best, meta
+        meta = {"fix2d2x_pass": "global", "fix2d65_prune": prune_dbg, "fix2d77_percent_filter": _fix2d77_dbg}
+    return best, meta
 
 
 # Bind overrides into globals (last-wins)
@@ -47067,8 +47237,66 @@ def _fix2d2x_select_current_for_key(  # noqa: F811
     candidates_all: list,
     injected_urls: list,
 ) -> tuple:
-    """FIX2D65 override: keep FIX2D2X structure but prune yearlike candidates (immune to WINDOW_BACKFILL) before selection."""
+    """FIX2D77 override: percent-schema guardrail.
+
+    Extends the FIX2D65 override by adding a strict eligibility filter for __percent
+    schema keys so unitless year-like tokens (e.g., "2040") cannot win selection.
+
+    Rules (for percent schema keys):
+      - Candidate must have percent evidence (unit tag contains %/percent OR raw/context indicates percent)
+      - If candidate value is year-like (1900-2100 integer) and raw does not contain %/percent, reject.
+
+    Returns (best_candidate_dict_or_None, meta_dict).
+    """
     spec = dict(spec_in or {})
+
+    def _n(x):
+        try:
+            return str(x or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _requires_percent() -> bool:
+        try:
+            if isinstance(canonical_key, str) and canonical_key.endswith('__percent'):
+                return True
+            dim = _n(spec.get('dimension') or '')
+            uf = _n(spec.get('unit_family') or '')
+            ut = _n(spec.get('unit_tag') or '')
+            blob = " ".join([dim, uf, ut])
+            return ('percent' in blob) or ('%' in blob)
+        except Exception:
+            return False
+
+    def _is_yearlike_candidate(c: dict) -> bool:
+        try:
+            v = c.get('value_norm')
+            if v is None:
+                v = c.get('value')
+            fv = float(v)
+            if not fv.is_integer():
+                return False
+            iv = int(fv)
+            return 1900 <= iv <= 2100
+        except Exception:
+            return False
+
+    def _has_percent_evidence(c: dict) -> bool:
+        try:
+            raw = _n(c.get('raw'))
+            if '%' in raw or 'percent' in raw:
+                return True
+            for k in ('unit_tag', 'unit', 'base_unit', 'unit_cmp', 'unit_norm'):
+                v = _n(c.get(k))
+                if '%' in v or 'percent' in v:
+                    return True
+            # weaker signal
+            uf = _n(c.get('unit_family'))
+            if uf == 'percent':
+                return True
+        except Exception:
+            return False
+        return False
 
     # Disable preferred source locking for Evolution
     for k in ("preferred_url", "source_url"):
@@ -47087,42 +47315,75 @@ def _fix2d2x_select_current_for_key(  # noqa: F811
     # FIX2D65 prune step
     candidates_all, prune_dbg = _fix2d65_prune_yearlike_candidates_for_unit_metrics(candidates_all, canonical_key)
 
+    # FIX2D77 percent eligibility filter
+    req_pct = _requires_percent()
+    fix2d77_dbg = {
+        'applied': False,
+        'requires_percent': bool(req_pct),
+        'before': int(len(candidates_all or [])) if isinstance(candidates_all, list) else 0,
+        'kept': int(len(candidates_all or [])) if isinstance(candidates_all, list) else 0,
+        'rejected_missing_percent_evidence': 0,
+        'rejected_yearlike_no_pct_raw': 0,
+    }
+    if req_pct and isinstance(candidates_all, list) and candidates_all:
+        kept = []
+        for c in candidates_all:
+            if not isinstance(c, dict):
+                continue
+            raw = _n(c.get('raw'))
+            raw_has_pct = ('%' in raw) or ('percent' in raw)
+            if _is_yearlike_candidate(c) and not raw_has_pct:
+                fix2d77_dbg['rejected_yearlike_no_pct_raw'] += 1
+                continue
+            if not _has_percent_evidence(c):
+                fix2d77_dbg['rejected_missing_percent_evidence'] += 1
+                continue
+            kept.append(c)
+        candidates_all = kept
+        fix2d77_dbg['applied'] = True
+        fix2d77_dbg['kept'] = int(len(candidates_all))
+
+    # Build injected subset after filtering
     injected_norm = set()
     try:
         injected_norm = set(globals().get('_ph2b_norm_url', lambda u: u)(u) for u in (injected_urls or []) if isinstance(u, str))
     except Exception:
-        pass
         injected_norm = set()
 
     cands_inj = []
-    if injected_norm:
+    if injected_norm and isinstance(candidates_all, list):
         for c in candidates_all:
+            if not isinstance(c, dict):
+                continue
             cu = globals().get('_ph2b_norm_url', lambda u: u)(c.get('source_url') or '')
             if cu and cu in injected_norm:
                 cands_inj.append(c)
 
     fn_sel = globals().get('_analysis_canonical_final_selector_v1')
     if not callable(fn_sel):
-        return None, {"blocked_reason": "missing_analysis_selector", "fix2d65_prune": prune_dbg}
+        return None, {
+            'blocked_reason': 'missing_analysis_selector',
+            'fix2d65_prune': prune_dbg,
+            'fix2d77_percent_filter': fix2d77_dbg,
+        }
 
+    # Pass 1: injected-only
     if cands_inj:
         best, meta = fn_sel(canonical_key, spec, cands_inj, anchors=None, prev_metric=None, web_context=None)
         if isinstance(best, dict):
-            try:
-                meta = dict(meta or {})
-                meta["fix2d2x_pass"] = "injected_only"
-                meta["fix2d65_prune"] = prune_dbg
-            except Exception:
-                return best, meta
+            meta = dict(meta or {})
+            meta['fix2d2x_pass'] = 'injected_only'
+            meta['fix2d65_prune'] = prune_dbg
+            meta['fix2d77_percent_filter'] = fix2d77_dbg
+            return best, meta
 
+    # Pass 2: global
     best, meta = fn_sel(canonical_key, spec, candidates_all, anchors=None, prev_metric=None, web_context=None)
-    try:
-        meta = dict(meta or {})
-        meta["fix2d2x_pass"] = "global"
-        meta["fix2d65_prune"] = prune_dbg
-    except Exception:
-        return best, meta
-
+    meta = dict(meta or {})
+    meta['fix2d2x_pass'] = 'global'
+    meta['fix2d65_prune'] = prune_dbg
+    meta['fix2d77_percent_filter'] = fix2d77_dbg
+    return best, meta
 
 # Bind overrides into globals (last-wins)
 try:
@@ -47420,5 +47681,31 @@ except Exception:
 try:
     CODE_VERSION = "FIX2D76"
     globals()["CODE_VERSION"] = CODE_VERSION
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D77 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D77',
+        'date': '2026-01-20',
+        'summary': 'Percent-schema guardrail: prevent schema-only rebuild from binding year-like tokens (e.g., 2040) to __percent keys by requiring percent evidence and rejecting yearlike-without-percent raw; fixes incorrect prev value for CAGR percent metrics.',
+        'files': ['FIX2D77_full_codebase.py'],
+        'supersedes': ['FIX2D76'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# FIX2D77_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
+try:
+    CODE_VERSION = 'FIX2D77'
+    globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
