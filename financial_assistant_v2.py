@@ -23043,6 +23043,13 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             "prev_value_norm": prev_val_norm,
             "cur_value_norm": cur_val_norm,
 
+            # FIX2D76 (ADDITIVE): expose unit evidence for FIX39 sanitizer + UI
+            "prev_unit_tag": prev_unit,
+            "cur_unit_cmp": cur_unit,
+            "current_unit": cur_unit,
+            "current_unit_tag": cur_unit,
+            "unit_mismatch": False,
+
             "diag": {
                 "diff_join_trace_v1": {
                     "prev_ckey": prev_ckey,
@@ -23173,6 +23180,11 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                     "cur_anchor_hash": cur_ah,
                     "prev_value_norm": None,
                     "cur_value_norm": cur_val_norm,
+                    # FIX2D76 (ADDITIVE): unit evidence fields (for FIX39 + UI)
+                    "prev_unit_tag": None,
+                    "cur_unit_cmp": cur_unit,
+                    "current_unit": cur_unit,
+                    "current_unit_tag": cur_unit,
                     "unit_mismatch": False,
                     "from_injected_url": _is_from_injected_url(cm),
                     "diag": {
@@ -30317,6 +30329,18 @@ def _fix39_sanitize_metric_change_rows(results_dict: dict) -> None:
                     "currency_symbol": row.get("currency_symbol") or "",
                     "is_percent": row.get("is_percent") or False,
                 }
+                if not _fix39_has_unit_evidence(cur_like):
+                    # FIX2D76: v2 rows often keep unit evidence under diag.diff_current_source_trace_v1
+                    try:
+                        diag = row.get("diag") if isinstance(row.get("diag"), dict) else {}
+                        dcs = diag.get("diff_current_source_trace_v1") if isinstance(diag.get("diff_current_source_trace_v1"), dict) else {}
+                        ut = str(dcs.get("current_unit_tag") or dcs.get("current_unit_tag_norm") or "").strip()
+                        if ut:
+                            cur_like["unit"] = cur_like.get("unit") or ut
+                            cur_like["unit_tag"] = cur_like.get("unit_tag") or ut
+                            cur_like["cur_unit_cmp"] = cur_like.get("cur_unit_cmp") or ut
+                    except Exception:
+                        pass
                 if not _fix39_has_unit_evidence(cur_like):
                     # invalidate
                     row["unit_mismatch"] = True
@@ -47332,6 +47356,25 @@ try:
     globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+
+# =====================================================================
+# PATCH FIX2D76 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D76',
+        'date': '2026-01-20',
+        'summary': 'Prevent false unit_mismatch blanking on metric_changes_v2: add explicit unit evidence fields (current_unit/current_unit_tag/cur_unit_cmp/prev_unit_tag) to V2 rows and teach FIX39 sanitizer to fall back to diag.diff_current_source_trace_v1 for unit tags before invalidating.',
+        'files': ['FIX2D76_full_codebase.py'],
+        'supersedes': ['FIX2D75'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
 # PATCH FIX2D69B FINAL VERSION OVERRIDE (ADDITIVE)
 # =====================================================================
 try:
@@ -47368,6 +47411,14 @@ except Exception:
 # FIX2D75_VERSION_FINAL_OVERRIDE (REQUIRED): option B fork
 try:
     CODE_VERSION = "FIX2D75"
+    globals()["CODE_VERSION"] = CODE_VERSION
+except Exception:
+    pass
+
+
+# FIX2D76_VERSION_FINAL_OVERRIDE (REQUIRED): fix39 unit evidence for v2 rows; prevent false unit_mismatch blanking
+try:
+    CODE_VERSION = "FIX2D76"
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
