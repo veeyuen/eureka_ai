@@ -87,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D86"
+CODE_VERSION = "FIX2D84"
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
 # ============================================================
@@ -48313,9 +48313,9 @@ try:
 except Exception:
     pass
 
-# FIX2D86_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
+# FIX2D83_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
 try:
-    CODE_VERSION = 'FIX2D86'
+    CODE_VERSION = 'FIX2D83'
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
