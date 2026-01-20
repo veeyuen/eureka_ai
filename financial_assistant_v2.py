@@ -18440,17 +18440,17 @@ def _safe_parse_current_analysis(query: str, web_context: dict) -> dict:
 
 
 def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
-   # """
-   # Canonical-first diff with:
-   #   - HARD STOP when prev canonical_key is missing in current (no name fallback)
-   #   - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
-   #       prev_response['metric_schema_frozen'][canonical_key] (preferred)
-   #       else prev_response['primary_metrics_canonical'][canonical_key]
-   #   - Backward compatible: still returns 'name' (non-empty) and existing fields.
+    """
+    Canonical-first diff with:
+      - HARD STOP when prev canonical_key is missing in current (no name fallback)
+      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
+          prev_response['metric_schema_frozen'][canonical_key] (preferred)
+          else prev_response['primary_metrics_canonical'][canonical_key]
+      - Backward compatible: still returns 'name' (non-empty) and existing fields.
 
-   # Returns:
-   #         metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
-   # """
+    Returns:
+            metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+    """
     import re
 
     # Defaults (used unless schema provides overrides)
@@ -19128,17 +19128,17 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 # =====================================================================
 
 def diff_metrics_by_name(prev_response: dict, cur_response: dict):
-   # """
-   # Canonical-first diff with:
-   #   - HARD STOP when prev canonical_key is missing in current (no name fallback)
-   #   - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
-   #       prev_response['metric_schema_frozen'][canonical_key] (preferred)
-   #       else prev_response['primary_metrics_canonical'][canonical_key]
-   #   - Backward compatible: still returns 'name' (non-empty) and existing fields.
+    """
+    Canonical-first diff with:
+      - HARD STOP when prev canonical_key is missing in current (no name fallback)
+      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
+          prev_response['metric_schema_frozen'][canonical_key] (preferred)
+          else prev_response['primary_metrics_canonical'][canonical_key]
+      - Backward compatible: still returns 'name' (non-empty) and existing fields.
 
-    #Returns:
-   #   metric_changes, unchanged, increased, decreased, found
-   # """
+    Returns:
+      metric_changes, unchanged, increased, decreased, found
+    """
     import re
 
     # Defaults (used unless schema provides overrides)
@@ -19717,17 +19717,17 @@ except Exception:
     diff_metrics_by_name_LEGACY = None
 
 def diff_metrics_by_name(prev_response: dict, cur_response: dict):
-   # """
-   # Canonical-first diff with:
-   #   - HARD STOP when prev canonical_key is missing in current (no name fallback)
-   #   - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
-   #       prev_response['metric_schema_frozen'][canonical_key] (preferred)
-   #       else prev_response['primary_metrics_canonical'][canonical_key]
-   #   - Backward compatible: still returns 'name' (non-empty) and existing fields.
+    """
+    Canonical-first diff with:
+      - HARD STOP when prev canonical_key is missing in current (no name fallback)
+      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
+          prev_response['metric_schema_frozen'][canonical_key] (preferred)
+          else prev_response['primary_metrics_canonical'][canonical_key]
+      - Backward compatible: still returns 'name' (non-empty) and existing fields.
 
-   # Returns:
-   #   metric_changes, unchanged, increased, decreased, found
-   # """
+    Returns:
+      metric_changes, unchanged, increased, decreased, found
+    """
     import re
 
     # Defaults (used unless schema provides overrides)
@@ -48070,6 +48070,219 @@ except Exception:
 # FIX2D78_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
     CODE_VERSION = 'FIX2D78'
+    globals()['CODE_VERSION'] = CODE_VERSION
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D79 (ADDITIVE): enforce percent-key candidate hygiene in the
+# shared selector (_fix2d2x_select_current_for_key)
+#
+# Why this patch exists:
+#   In the FIX2D77 run, Analysis baseline binds the year token "2040" to
+#   global_ev_chargers_cagr_2026_2040__percent (unit is blank) and that
+#   value persists into HistoryFull, so Evolution shows prev=2040.
+#   Evidence:
+#     - Analysis primary_metrics_canonical has value_norm 2040.0 with raw "2040".
+#     - The extraction layer sometimes assigns unit_tag '%'/unit_family 'percent'
+#       to year tokens via proximity (e.g., raw "2026" with unit_tag '%').
+#
+# Root cause:
+#   The schema-only rebuild and other schema-first selection paths rely on
+#   _fix2d2x_select_current_for_key. If year-like candidates are not filtered
+#   there, they can win for percent keys.
+#
+# Fix (FIX2D79):
+#   Wrap _fix2d2x_select_current_for_key and, *only for percent schema keys*,
+#   pre-filter candidate pool with these deterministic rules:
+#     1) Drop year-like integer values (1900-2100) unless the candidate raw
+#        itself contains %/percent.
+#     2) Require strong percent evidence:
+#        - raw contains '%'/percent/pct OR
+#        - measure_kind is a percent kind (starts with 'percent')
+#        (NOTE: unit_tag alone is not trusted, because it can be inherited.)
+#
+#   If filtering removes everything, fall back to the original selector over
+#   the unfiltered pool (never worse than current behavior).
+#
+# Side benefit:
+#   This fixes BOTH Analysis baseline materialization and any Evolution-side
+#   schema-only selection that uses the shared selector.
+# =====================================================================
+
+try:
+    _FIX2D79_SELECT_GUARD_APPLIED = bool(globals().get('_FIX2D79_SELECT_GUARD_APPLIED'))
+except Exception:
+    _FIX2D79_SELECT_GUARD_APPLIED = False
+
+
+def _fix2d79__is_percent_key_v1(canonical_key: str, spec: dict = None) -> bool:
+    try:
+        k = str(canonical_key or '')
+        if k.endswith('__percent') or ('__percent' in k):
+            return True
+        sp = spec if isinstance(spec, dict) else {}
+        dim = str(sp.get('dimension') or '').lower()
+        uf = str(sp.get('unit_family') or '').lower()
+        ut = str(sp.get('unit_tag') or '').lower()
+        return ('percent' in dim) or ('percent' in uf) or ('percent' in ut) or ('%' in ut)
+    except Exception:
+        return False
+
+
+def _fix2d79__raw_has_percent_v1(raw: str) -> bool:
+    try:
+        r = str(raw or '').lower()
+        return ('%' in r) or ('percent' in r) or ('pct' in r)
+    except Exception:
+        return False
+
+
+def _fix2d79__is_yearlike_value_v1(v) -> bool:
+    try:
+        fv = float(v)
+        if abs(fv - round(fv)) > 1e-9:
+            return False
+        iv = int(round(fv))
+        return 1900 <= iv <= 2100
+    except Exception:
+        return False
+
+
+def _fix2d79__strong_percent_evidence_v1(c: dict) -> bool:
+    """Return True only when evidence is strong enough to trust for percent keys."""
+    try:
+        if not isinstance(c, dict):
+            return False
+        raw = c.get('raw')
+        if _fix2d79__raw_has_percent_v1(raw):
+            return True
+        mk = str(c.get('measure_kind') or '').lower()
+        if mk.startswith('percent'):
+            return True
+        # unit_tag alone is NOT trusted (can be inherited), but if raw contains
+        # an explicit percent word without a % sign, allow it.
+        ctx = str(c.get('context_snippet') or '').lower()
+        if (' percent' in ctx) and (str(raw or '').strip().isdigit() is False):
+            # still weak; keep conservative
+            return False
+        return False
+    except Exception:
+        return False
+
+
+try:
+    if not _FIX2D79_SELECT_GUARD_APPLIED:
+        _fix2d79__orig_select = globals().get('_fix2d2x_select_current_for_key')
+        if callable(_fix2d79__orig_select):
+
+            def _fix2d2x_select_current_for_key(canonical_key, spec, candidates_all, injected_urls=None):  # noqa: F811
+                dbg = {
+                    'applied': False,
+                    'percent_key': False,
+                    'candidates_in': 0,
+                    'candidates_out': 0,
+                    'rejected_yearlike': 0,
+                    'rejected_no_pct_evidence': 0,
+                }
+
+                try:
+                    dbg['candidates_in'] = len(candidates_all) if isinstance(candidates_all, list) else 0
+                except Exception:
+                    dbg['candidates_in'] = 0
+
+                is_percent = _fix2d79__is_percent_key_v1(canonical_key, spec)
+                dbg['percent_key'] = bool(is_percent)
+
+                filtered = candidates_all
+
+                if is_percent and isinstance(candidates_all, list) and candidates_all:
+                    try:
+                        out = []
+                        for c in candidates_all:
+                            if not isinstance(c, dict):
+                                continue
+                            v = c.get('value_norm')
+                            if v is None:
+                                v = c.get('value')
+                            raw = c.get('raw')
+
+                            # Rule 1: reject yearlike unless raw has percent
+                            if _fix2d79__is_yearlike_value_v1(v) and not _fix2d79__raw_has_percent_v1(raw):
+                                dbg['rejected_yearlike'] += 1
+                                continue
+
+                            # Rule 2: require strong percent evidence
+                            if not _fix2d79__strong_percent_evidence_v1(c):
+                                dbg['rejected_no_pct_evidence'] += 1
+                                continue
+
+                            out.append(c)
+
+                        filtered = out
+                        dbg['candidates_out'] = len(filtered)
+                        dbg['applied'] = True
+                    except Exception:
+                        # If anything goes wrong, fall back to original behavior.
+                        filtered = candidates_all
+
+                # Call original selector (prefer filtered if non-empty)
+                try:
+                    if is_percent and isinstance(filtered, list) and filtered:
+                        best, meta = _fix2d79__orig_select(canonical_key, spec, filtered, injected_urls)
+                    else:
+                        best, meta = _fix2d79__orig_select(canonical_key, spec, candidates_all, injected_urls)
+                except TypeError:
+                    # old signature fallback
+                    try:
+                        if is_percent and isinstance(filtered, list) and filtered:
+                            best, meta = _fix2d79__orig_select(canonical_key, spec, filtered)
+                        else:
+                            best, meta = _fix2d79__orig_select(canonical_key, spec, candidates_all)
+                    except Exception:
+                        best, meta = (None, {})
+                except Exception:
+                    best, meta = (None, {})
+
+                # Attach dbg into meta for traceability (best-effort)
+                try:
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    meta['fix2d79_percent_select_guard'] = dbg
+                except Exception:
+                    pass
+
+                return best, meta
+
+            globals()['_fix2d2x_select_current_for_key'] = _fix2d2x_select_current_for_key
+            globals()['_FIX2D79_SELECT_GUARD_APPLIED'] = True
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D79 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D79',
+        'date': '2026-01-20',
+        'summary': 'Percent-key hygiene in shared selector: wrap _fix2d2x_select_current_for_key to reject yearlike 1900-2100 candidates for __percent keys unless raw has %/percent, and require strong percent evidence (raw %/percent or measure_kind percent*). Prevents baseline binding of year tokens like 2040 to percent schema keys.',
+        'files': ['FIX2D79_full_codebase.py'],
+        'supersedes': ['FIX2D78'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# FIX2D79_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
+try:
+    CODE_VERSION = 'FIX2D79'
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
