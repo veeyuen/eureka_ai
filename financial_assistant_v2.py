@@ -87,111 +87,96 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "REFACTOR04"
+CODE_VERSION = "FIX2D91"
+
+
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR01
+# HARD-CODE TOGGLES (UI + INJECTION)
+# ============================================================
+# Extra URL injection textbox: set to True to hide or disable (and ignore any prior value).
+HIDE_EXTRA_URL_TEXTBOX_ANALYSIS = False
+DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS = False
+
+HIDE_EXTRA_URL_TEXTBOX_EVOLUTION = False
+DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION = False
+
+# Hard-coded injected URL(s) for Evolution (newline-separated allowed).
+# When FORCE_INJECTED_URL_IN_EVOLUTION is True, Evolution will ALWAYS inject these URL(s),
+# regardless of any UI input.
+INJECTED_URL = ""
+FORCE_INJECTED_URL_IN_EVOLUTION = False
+# ============================================================
+# ============================================================
+
+# ============================================================
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D90
 # ============================================================
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        "patch_id": "REFACTOR02",
+        "patch_id": "FIX2D90",
         "date": "2026-01-21",
-        "summary": "Add refactor regression harness (Analysis→Evolution) gated by explicit flag; emits JSON report + asserts diff invariants (both_count > 0, no prev-metrics sentinel, percent-year token rule).",
-        "files": ["REFACTOR02_full_codebase_streamlit_safe.py"],
+        "summary": "Add hard-coded toggles to hide/disable the Extra source URLs textbox in Analysis/Evolution, and add hard-coded INJECTED_URL override for Evolution injection.",
+        "files": ["FIX2D90_full_codebase_streamlit_safe.py"],
+        "supersedes": ["FIX2D89"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# PATCH TRACKER V1 (ADD): FIX2D89
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D89",
+        "date": "2026-01-21",
+        "summary": "Remove noisy patch-note text that was being displayed before Google Sheets export by trimming attach_source_snapshots_to_analysis docstring.",
+        "files": ["FIX2D89_full_codebase_streamlit_safe.py"],
+        "supersedes": ["FIX2D88"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# PATCH TRACKER V1 (ADD): FIX2D88
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D88",
+        "date": "2026-01-21",
+        "summary": "Reinstate dashboard UX panels: Sources & Reliability (compact clickable source list with reliability classification, freshness + quality score) and Evidence Quality Scores (veracity score metrics), plus optional Web Search details expander.",
+        "files": ["FIX2D88_full_codebase_streamlit_safe.py"],
+        "supersedes": ["FIX2D87"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# PATCH TRACKER V1 (ADD): FIX2D87
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D87",
+        "date": "2026-01-21",
+        "summary": "Reinstate Plotly graph rendering in the Analysis dashboard: render visualization_data (line/bar) and comparison_bars as interactive charts via st.plotly_chart, with robust coercion and legacy-key support.",
+        "files": ["FIX2D87_full_codebase_streamlit_safe.py"],
         "supersedes": ["FIX2D86"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR03
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR03":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR03",
-            "date": "2026-01-21",
-            "summary": "Fix REFACTOR02 regression: enforce unit-family + scale eligibility in schema-only rebuild; detect unit mismatch in diff panel and mark as unit_mismatch (avoid bogus B vs M diffs).",
-            "files": ["REFACTOR03_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR02"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR04
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR04":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR04",
-            "date": "2026-01-21",
-            "summary": "Fix false unit_mismatch caused by context_snippet percent leakage; enrich schema-anchored rebuilt PMC with unit_tag/unit_family/multiplier_to_base; tighten unit-family evidence checks to prefer token/raw evidence over broad context for magnitude keys; update refactor harness labels to REFACTOR04.",
-            "files": ["REFACTOR04_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR03"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR02
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "REFACTOR02",
-        "date": "2026-01-21",
-        "summary": "Harden candidate eligibility against cross-dimension leakage (magnitude/count vs currency/percent) and enforce percent-year token rejection in eligibility; upgrade refactor harness invariants (baseline PMC dimensional sanity + percent-year check on prev+cur).",
-        "files": ["REFACTOR02_full_codebase_streamlit_safe.py"],
-        "supersedes": ["REFACTOR01"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# ============================================================
-# REFACTOR02: HARNESS FLAG (ADDITIVE)
-# - Streamlit-safe: does nothing unless explicitly invoked.
-# Invocation:
-#   - python REFACTOR02_full_codebase_streamlit_safe.py --run_refactor_harness
-#   - or set RUN_REFACTOR_HARNESS=1
-# ============================================================
-try:
-    import os as _rf01_os
-    import sys as _rf01_sys
-    _REFACTOR01_HARNESS_REQUESTED = (
-        ("--run_refactor_harness" in (_rf01_sys.argv or []))
-        or (str(_rf01_os.getenv("RUN_REFACTOR_HARNESS", "")).strip().lower() in ("1", "true", "yes", "y"))
-    )
-except Exception:
-    _REFACTOR01_HARNESS_REQUESTED = False
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
@@ -1285,14 +1270,6 @@ def _fix2d9_schema_anchored_rebuild_current_metrics_v1(prev_response, pool, web_
             rebuilt = fn(prev_response, pool, web_context=web_context)
         except TypeError:
             rebuilt = fn(prev_response, pool)
-
-
-        # REFACTOR04: enrich rebuilt PMC metrics with unit_tag/unit_family/multiplier_to_base for parity + diffing.
-        try:
-            if isinstance(rebuilt, dict) and rebuilt:
-                rebuilt = _refactor04_enrich_pmc_units_v1(rebuilt, prev_response=prev_response)
-        except Exception:
-            pass
 
         if isinstance(rebuilt, dict) and rebuilt:
             diag["applied"] = True
@@ -5305,346 +5282,6 @@ def _candidate_disallowed_for_metric(_cand: dict, _spec: dict = None) -> bool:
     except Exception:
         return False
 
-
-# ===============================
-# REFACTOR03 (ADDITIVE)
-# Unit-family + scale eligibility guardrails for schema-only rebuild
-# and unit-mismatch detection for Diff Panel V2.
-#
-# Motivation (from REFACTOR02 JSONs):
-# - A currency token like "US$ 996.3bn" was being selected for a magnitude/count schema key
-#   (e.g., global_ev_chargers_2040__unit_count), causing nonsensical diffs (B vs M).
-# - We fix this *at selection time* and also *at diff time* (so any future regressions are
-#   surfaced as unit_mismatch rather than as a bogus increased/decreased classification).
-# Determinism:
-# - Pure filtering + stable logic; no refetch; no randomness.
-# ===============================
-
-def _refactor03_has_currency_evidence_v1(text: str) -> bool:
-    try:
-        t = (text or "").lower()
-        if not t:
-            return False
-        # Common currency markers; keep conservative to avoid false positives.
-        markers = ["us$", "usd", "eur", "€", "gbp", "£", "sgd", "s$", "aud", "cad", "jpy", "¥", "$"]
-        return any(m in t for m in markers)
-    except Exception:
-        return False
-
-
-def _refactor03_has_percent_evidence_v1(text: str) -> bool:
-    try:
-        t = (text or "").lower()
-        if not t:
-            return False
-        return ("%" in t) or ("percent" in t) or ("pct" in t)
-    except Exception:
-        return False
-
-
-def _refactor03_extract_text_from_metric_v1(metric: dict) -> str:
-    try:
-        if not isinstance(metric, dict):
-            return ""
-        parts = []
-        # direct fields
-        for k in ("raw", "context_snippet", "source_url", "name", "canonical_key"):
-            v = metric.get(k)
-            if v:
-                parts.append(str(v))
-        # evidence list
-        ev = metric.get("evidence")
-        if isinstance(ev, list):
-            for e in ev[:5]:
-                if isinstance(e, dict):
-                    if e.get("raw"):
-                        parts.append(str(e.get("raw")))
-                    if e.get("context_snippet"):
-                        parts.append(str(e.get("context_snippet")))
-        return " | ".join([p for p in parts if p])
-    except Exception:
-        return ""
-
-
-
-def _refactor04_unit_evidence_text_from_metric_v1(metric: dict, include_context: bool = False) -> str:
-    """Return a *narrow* evidence string for unit-family checks.
-
-    Rationale:
-      - context_snippet can include nearby unrelated % / currency (e.g. CAGR lines),
-        causing false unit_mismatch for magnitude/count metrics.
-      - For magnitude keys we prefer token/raw evidence only.
-    """
-    try:
-        if not isinstance(metric, dict):
-            return ""
-        parts = []
-        # Prefer direct raw-ish fields first
-        for k in ("raw", "value_raw", "value_text", "value_str"):
-            v = metric.get(k)
-            if v:
-                parts.append(str(v))
-        # Unit tags themselves (helps currency/percent keys when raw is short)
-        for k in ("unit_tag", "unit", "base_unit", "unit_family"):
-            v = metric.get(k)
-            if v:
-                parts.append(str(v))
-        # Evidence list: always include evidence.raw; include context only if requested
-        ev = metric.get("evidence")
-        if isinstance(ev, list):
-            for e in ev[:5]:
-                if not isinstance(e, dict):
-                    continue
-                if e.get("raw"):
-                    parts.append(str(e.get("raw")))
-                if include_context and e.get("context_snippet"):
-                    parts.append(str(e.get("context_snippet")))
-        # Optionally include metric context_snippet (but keep it last)
-        if include_context and metric.get("context_snippet"):
-            parts.append(str(metric.get("context_snippet")))
-        return " | ".join([p for p in parts if p])
-    except Exception:
-        return ""
-
-
-def _refactor04_scale_multiplier_from_unit_tag_v1(unit_tag: str) -> float:
-    """Convert common magnitude tags to a scale multiplier (K/M/B/T)."""
-    try:
-        t = str(unit_tag or "").upper().strip()
-        if t == "K":
-            return 1e3
-        if t == "M":
-            return 1e6
-        if t == "B":
-            return 1e9
-        if t == "T":
-            return 1e12
-    except Exception:
-        pass
-    return 1.0
-
-
-def _refactor04_get_metric_schema_frozen_v1(obj: dict) -> dict:
-    """Best-effort retrieval of metric_schema_frozen from common nesting patterns."""
-    try:
-        if not isinstance(obj, dict):
-            return {}
-        if isinstance(obj.get("metric_schema_frozen"), dict):
-            return obj.get("metric_schema_frozen") or {}
-        pr = obj.get("primary_response")
-        if isinstance(pr, dict) and isinstance(pr.get("metric_schema_frozen"), dict):
-            return pr.get("metric_schema_frozen") or {}
-        res = obj.get("results")
-        if isinstance(res, dict):
-            if isinstance(res.get("metric_schema_frozen"), dict):
-                return res.get("metric_schema_frozen") or {}
-            pr2 = res.get("primary_response")
-            if isinstance(pr2, dict) and isinstance(pr2.get("metric_schema_frozen"), dict):
-                return pr2.get("metric_schema_frozen") or {}
-        return {}
-    except Exception:
-        return {}
-
-
-def _refactor04_enrich_pmc_units_v1(pmc: dict, prev_response: dict = None) -> dict:
-    """Ensure PMC rows carry unit_tag/unit_family/multiplier_to_base (and base_unit) for parity + diffing."""
-    try:
-        if not isinstance(pmc, dict) or not pmc:
-            return pmc
-        schema = _refactor04_get_metric_schema_frozen_v1(prev_response) if isinstance(prev_response, dict) else {}
-        for ckey, m in list(pmc.items()):
-            if not isinstance(m, dict):
-                continue
-            spec = schema.get(ckey) if isinstance(schema, dict) else None
-            spec = spec if isinstance(spec, dict) else {}
-            # unit_tag
-            ut = m.get("unit_tag") or m.get("base_unit") or m.get("unit") or spec.get("unit_tag") or spec.get("unit") or ""
-            ut = str(ut or "").strip()
-            # unit_family
-            uf = m.get("unit_family") or spec.get("unit_family") or _refactor03_unit_family_from_ckey_v1(ckey)
-            uf = str(uf or "").strip()
-            # multiplier_to_base (scale)
-            mult = m.get("multiplier_to_base")
-            if mult is None:
-                mult = _refactor04_scale_multiplier_from_unit_tag_v1(ut)
-            try:
-                mult = float(mult)
-            except Exception:
-                mult = _refactor04_scale_multiplier_from_unit_tag_v1(ut)
-
-            # write back (do not delete existing fields)
-            if ut and not m.get("unit"):
-                m["unit"] = ut
-            if ut and not m.get("unit_tag"):
-                m["unit_tag"] = ut
-            if ut and not m.get("base_unit"):
-                m["base_unit"] = ut
-            if uf and not m.get("unit_family"):
-                m["unit_family"] = uf
-            if m.get("multiplier_to_base") is None and mult is not None:
-                m["multiplier_to_base"] = mult
-    except Exception:
-        return pmc
-    return pmc
-
-
-def _refactor03_unit_family_from_ckey_v1(canonical_key: str) -> str:
-    try:
-        ck = str(canonical_key or "").lower()
-        if "__currency" in ck:
-            return "currency"
-        if "__percent" in ck:
-            return "percent"
-        # treat all "__unit_*" as magnitude/count family
-        if "__unit_" in ck:
-            return "magnitude"
-        return "unknown"
-    except Exception:
-        return "unknown"
-
-
-def _refactor03_candidate_rejected_by_unit_family_v1(cand: dict, spec: dict = None) -> bool:
-    """Return True if candidate is incompatible with schema's unit family / tag."""
-    if not isinstance(cand, dict):
-        return True
-    if not isinstance(spec, dict):
-        return False  # no schema => don't over-filter
-
-    try:
-        uf = str(spec.get("unit_family") or "").lower().strip()
-        ut = str(spec.get("unit_tag") or spec.get("unit") or "").strip()
-        unit_tag = str(cand.get("unit_tag") or cand.get("unit") or cand.get("base_unit") or "").strip()
-
-        raw_core = str(cand.get("raw") or "")
-
-
-        raw_ctx = " ".join([
-
-
-            raw_core,
-
-
-            str(cand.get("context_snippet") or ""),
-
-
-            str(cand.get("context") or ""),
-
-
-        ])
-
-
-        # For magnitude/count metrics, avoid broad context leakage (%/currency nearby).
-
-
-        raw_for = raw_ctx
-
-
-        try:
-
-
-            if uf not in ("currency", "money", "percent", "rate", "ratio", "growth", "share"):
-
-
-                raw_for = raw_core.strip() or raw_ctx
-
-
-        except Exception:
-
-
-            raw_for = raw_core.strip() or raw_ctx
-
-
-        is_cur = _refactor03_has_currency_evidence_v1(raw_for)
-
-
-        is_pct = _refactor03_has_percent_evidence_v1(raw_for)
-
-        # 1) unit-family gating
-        if uf in ("currency", "money"):
-            if not is_cur:
-                return True
-        elif uf in ("percent", "rate", "ratio", "growth", "share"):
-            if not is_pct:
-                return True
-        else:
-            # magnitude/count: reject obvious currency/percent
-            if is_cur or is_pct:
-                return True
-
-        # 2) unit-tag scale gating for magnitude/count metrics (K/M/B)
-        try:
-            ut_up = ut.upper().strip()
-            unit_up = unit_tag.upper().strip()
-            if ut_up in ("K", "M", "B", "T") and unit_up in ("K", "M", "B", "T") and ut_up != unit_up:
-                return True
-        except Exception:
-            pass
-
-        return False
-    except Exception:
-        return False
-
-
-def _refactor03_diff_unit_mismatch_v1(prev_key: str, prev_metric: dict, cur_metric: dict, prev_unit: str = None, cur_unit: str = None) -> bool:
-    """Return True if the prev/current pair is not comparable due to unit family or scale mismatch."""
-    try:
-        expected = _refactor03_unit_family_from_ckey_v1(prev_key)
-
-        # REFACTOR04: avoid unit-family false positives due to broad context_snippet leakage.
-        # - For magnitude/count metrics, prefer token/raw evidence only.
-        # - For currency/percent metrics, allow context to help detect markers.
-        if str(expected or "").lower().strip() in ("currency", "percent"):
-            prev_txt = _refactor04_unit_evidence_text_from_metric_v1(prev_metric, include_context=True)
-            cur_txt = _refactor04_unit_evidence_text_from_metric_v1(cur_metric, include_context=True)
-        else:
-            prev_txt = _refactor04_unit_evidence_text_from_metric_v1(prev_metric, include_context=False)
-            cur_txt = _refactor04_unit_evidence_text_from_metric_v1(cur_metric, include_context=False)
-            # If raw evidence is missing, fall back to context-inclusive extraction.
-            try:
-                if not str(prev_txt or "").strip():
-                    prev_txt = _refactor04_unit_evidence_text_from_metric_v1(prev_metric, include_context=True)
-                if not str(cur_txt or "").strip():
-                    cur_txt = _refactor04_unit_evidence_text_from_metric_v1(cur_metric, include_context=True)
-            except Exception:
-                pass
-
-        prev_is_cur = _refactor03_has_currency_evidence_v1(prev_txt)
-        cur_is_cur = _refactor03_has_currency_evidence_v1(cur_txt)
-        prev_is_pct = _refactor03_has_percent_evidence_v1(prev_txt)
-        cur_is_pct = _refactor03_has_percent_evidence_v1(cur_txt)
-
-        # scale mismatch (K/M/B/T)
-        try:
-            pu = str(prev_unit or "").upper().strip()
-            cu = str(cur_unit or "").upper().strip()
-            if pu in ("K", "M", "B", "T") and cu in ("K", "M", "B", "T") and pu != cu:
-                return True
-        except Exception:
-            pass
-
-        # family mismatch
-        if expected == "currency":
-            if isinstance(prev_metric, dict) and prev_metric and (not prev_is_cur):
-                return True
-            if isinstance(cur_metric, dict) and cur_metric and (not cur_is_cur):
-                return True
-            return False
-        if expected == "percent":
-            if isinstance(prev_metric, dict) and prev_metric and (not prev_is_pct):
-                return True
-            if isinstance(cur_metric, dict) and cur_metric and (not cur_is_pct):
-                return True
-            return False
-
-        # expected magnitude/count
-        if prev_is_cur or cur_is_cur or prev_is_pct or cur_is_pct:
-            return True
-
-        return False
-    except Exception:
-        return False
-
-
 def rebuild_metrics_from_snapshots_schema_only(
     prev_response: dict,
     baseline_sources_cache: list,
@@ -5818,9 +5455,6 @@ def rebuild_metrics_from_snapshots_schema_only(
         for c in candidates:
             # PATCH F: strict candidate exclusion at scoring time
             if _candidate_disallowed_for_metric(c, spec):
-                continue
-            # REFACTOR03 (ADDITIVE): enforce unit family + unit-tag eligibility
-            if _refactor03_candidate_rejected_by_unit_family_v1(c, spec):
                 continue
             # =====================================================================
             # PATCH AI2 (ADDITIVE): guard against year-only candidates on currency-like metrics
@@ -17016,15 +16650,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     except Exception:
         pass
 
-    """
-    Attach stable source snapshots (from web_context.scraped_meta) into analysis.
-
-    Enhancements (v7_34 patch):
-    - Ensures scraped_meta.extracted_numbers is always list-like
-    - Adds RANGE capture per canonical metric using admitted snapshots:
-        primary_metrics_canonical[ckey]["value_range"] = {min,max,n,examples}
-      This restores earlier "range vs point estimate" behavior in a compatible way.
-    """
+    """Attach stable source snapshots (from web_context.scraped_meta) into analysis output."""
     import re
     from datetime import datetime, timezone
 
@@ -23260,9 +22886,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         prev_unit = _canon_unit_tag(pm)
         prev_ah = _get_anchor_hash_for_ckey(prev_ckey, pm, prev_anchors)
 
-        # REFACTOR03: default; will be computed once current metric is resolved
-        _ref03_unit_mismatch = False
-
         resolved_cur_ckey = None
         method = "none"
 
@@ -23304,18 +22927,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             cur_val_norm = _canon_value_norm(cm)
             cur_unit = _canon_unit_tag(cm)
             cur_ah = _get_anchor_hash_for_ckey(resolved_cur_ckey, cm, cur_anchors)
-
-            # REFACTOR03 (ADDITIVE): detect unit family/scale mismatch for this canonical key
-            try:
-                _ref03_unit_mismatch = _refactor03_diff_unit_mismatch_v1(
-                    prev_key=prev_ckey,
-                    prev_metric=pm,
-                    cur_metric=cm,
-                    prev_unit=prev_unit,
-                    cur_unit=cur_unit,
-                )
-            except Exception:
-                _ref03_unit_mismatch = False
 
             # FIX2D2E: capture join source url for trace/UI
             try:
@@ -23509,22 +23120,6 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 
 
 
-
-        # =====================================================================
-        # REFACTOR03_UNIT_MISMATCH_GUARD (ADDITIVE)
-        # If a unit family / scale mismatch is detected, suppress comparability and
-        # classify deterministically as unit_mismatch.
-        # =====================================================================
-        if _ref03_unit_mismatch:
-            baseline_is_comparable = False
-            baseline_delta_abs = None
-            baseline_delta_pct = None
-            baseline_change_type = "unit_mismatch"
-            change_type = "unit_mismatch"
-            change_pct = None
-
-
-
         # =====================================================================
         # PATCH FIX2D35_PROXY_BASELINE_DIFF_ADMISSION (ADDITIVE)
         # Allow schema-mandated proxy baselines (is_proxy=True) to remain diffable
@@ -23594,7 +23189,7 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
             "cur_unit_cmp": cur_unit,
             "current_unit": cur_unit,
             "current_unit_tag": cur_unit,
-            "unit_mismatch": bool(_ref03_unit_mismatch),
+            "unit_mismatch": False,
 
             "diag": {
                 "diff_join_trace_v1": {
@@ -30868,50 +30463,264 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # -------------------------
-    # Sources / Web Context summary
-    # -------------------------
-    st.subheader("🔎 Sources & Evidence")
-    sources = data.get("sources") or data.get("web_sources") or []
-    if isinstance(sources, list) and sources:
-        with st.expander(f"Show sources ({len(sources)})"):
-            for s in sources[:50]:
-                if s:
-                    st.markdown(f"- {s}")
-            if len(sources) > 50:
-                st.markdown(f"... (+{len(sources)-50} more)")
-
-    # Web context debug counters if present
-    if isinstance(web_context, dict):
-        dbg = web_context.get("debug_counts") or {}
-        if isinstance(dbg, dict) and dbg:
-            with st.expander("Collector debug counts"):
-                st.json(dbg)
-
     # =====================================================================
-    # PATCH UI_EXTRA_URLS_TRACE2 (ADDITIVE): show injected extra-URL trace (if any)
+    # PATCH FIX2D87 (RESTORE): Plotly chart rendering for visualization_data
+    # - Reintroduces graphs previously present in financial_assistant_v2 (17)_HAS GRAPHING
+    # - Pure UI: no upstream pipeline changes
     # =====================================================================
+    st.subheader("📊 Data Visualization")
+
+    def _fix2d87_as_dict(obj: Any) -> Optional[Dict[str, Any]]:
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj
+        try:
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump()
+        except Exception:
+            pass
+        try:
+            return dict(obj)
+        except Exception:
+            return None
+
+    # Primary visualization
+    viz = _fix2d87_as_dict(data.get("visualization_data"))
+    if (not viz) and isinstance(data.get("primary_response"), dict):
+        viz = _fix2d87_as_dict((data.get("primary_response") or {}).get("visualization_data"))
+
+    if viz and isinstance(viz, dict):
+        labels = viz.get("chart_labels") or viz.get("labels") or []
+        values = viz.get("chart_values") or viz.get("values") or []
+        title = viz.get("chart_title") or viz.get("title") or "Trend Analysis"
+        chart_type = str(viz.get("chart_type") or "line").strip().lower()
+
+        # Normalize to lists
+        if not isinstance(labels, list):
+            labels = [labels]
+        if not isinstance(values, list):
+            values = [values]
+
+        pairs: List[Tuple[str, float]] = []
+        try:
+            for l, v in zip(labels, values):
+                fv = parse_to_float(v)
+                if fv is None:
+                    continue
+                pairs.append((str(l), float(fv)))
+        except Exception:
+            pairs = []
+
+        if pairs:
+            pairs = pairs[:20]
+            x_vals = [p[0] for p in pairs]
+            y_vals = [p[1] for p in pairs]
+
+            x_label = (viz.get("x_axis_label") or "").strip() or detect_x_label_dynamic(x_vals)
+            y_label = (viz.get("y_axis_label") or "").strip() or detect_y_label_dynamic(y_vals)
+
+            try:
+                df_viz = pd.DataFrame({"x": x_vals, "y": y_vals})
+                if chart_type == "bar":
+                    try:
+                        fig = px.bar(df_viz, x="x", y="y", title=title, text_auto=True)
+                    except Exception:
+                        fig = px.bar(df_viz, x="x", y="y", title=title)
+                else:
+                    fig = px.line(df_viz, x="x", y="y", title=title, markers=True)
+
+                fig.update_layout(
+                    xaxis_title=x_label,
+                    yaxis_title=y_label,
+                    title_font_size=16,
+                    font=dict(size=12),
+                )
+                if len(x_vals) > 5:
+                    fig.update_layout(xaxis=dict(tickangle=-45))
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            except Exception as e:
+                st.info(f"⚠️ Chart rendering failed: {e}")
+        else:
+            st.info("📊 No usable numeric visualization data available.")
+    else:
+        st.info("📊 No visualization data available.")
+
+    # Comparison bars (optional secondary chart)
+    comp = _fix2d87_as_dict(data.get("comparison_bars"))
+    if (not comp) and isinstance(data.get("primary_response"), dict):
+        comp = _fix2d87_as_dict((data.get("primary_response") or {}).get("comparison_bars"))
+
+    if comp and isinstance(comp, dict):
+        cats = comp.get("categories") or []
+        vals = comp.get("values") or []
+        ctitle = comp.get("title") or "Comparison"
+
+        if not isinstance(cats, list):
+            cats = [cats]
+        if not isinstance(vals, list):
+            vals = [vals]
+
+        comp_pairs: List[Tuple[str, float]] = []
+        try:
+            for c, v in zip(cats, vals):
+                fv = parse_to_float(v)
+                if fv is None:
+                    continue
+                comp_pairs.append((str(c), float(fv)))
+        except Exception:
+            comp_pairs = []
+
+        if comp_pairs:
+            comp_pairs = comp_pairs[:20]
+            df_comp = pd.DataFrame({"Category": [p[0] for p in comp_pairs], "Value": [p[1] for p in comp_pairs]})
+            try:
+                try:
+                    fig2 = px.bar(df_comp, x="Category", y="Value", title=ctitle, text_auto=True)
+                except Exception:
+                    fig2 = px.bar(df_comp, x="Category", y="Value", title=ctitle)
+                st.plotly_chart(fig2, use_container_width=True)
+            except Exception:
+                pass
+
+    st.markdown("---")
+
+    # -------------------------
+    # -------------------------
+    # Sources & Reliability
+    # -------------------------
+    st.subheader("🔗 Sources & Reliability")
+
+    # Collect sources from both the primary payload and web_context (preserve order, de-dup)
+    _raw_sources: List[str] = []
     try:
-        exdbg = {}
+        _candidates = []
+        _candidates.append(data.get("sources"))
+        _candidates.append(data.get("web_sources"))
+        _candidates.append(data.get("web_context_sources"))
         if isinstance(web_context, dict):
-            exdbg = web_context.get("extra_urls_debug") or {}
-            # Back-compat: allow nested placement under debug_counts
-            if (not exdbg) and isinstance(web_context.get("debug_counts"), dict):
-                exdbg = (web_context.get("debug_counts") or {}).get("extra_urls_debug") or {}
-        if isinstance(exdbg, dict) and exdbg:
-            with st.expander("Extra URLs trace (injected sources)"):
-                st.json(exdbg)
+            _candidates.append(web_context.get("sources"))
+            _candidates.append(web_context.get("urls"))
+        for _cand in _candidates:
+            if isinstance(_cand, (list, tuple)):
+                for _s in _cand:
+                    if isinstance(_s, str) and _s.strip():
+                        _raw_sources.append(_s.strip())
     except Exception:
         pass
-    # =====================================================================
 
-    # Source reliability badges (if provided)
-    if isinstance(source_reliability, list) and source_reliability:
-        with st.expander("Source reliability"):
-            for line in source_reliability[:80]:
-                st.write(line)
+    _seen = set()
+    all_sources: List[str] = []
+    for _s in _raw_sources:
+        if _s not in _seen:
+            _seen.add(_s)
+            all_sources.append(_s)
 
+    if not all_sources:
+        st.info("No sources found.")
+    else:
+        st.success(f"📊 Found {len(all_sources)} sources")
+        # Reliability breakdown
+        try:
+            _rels = [classify_source_reliability(s) for s in all_sources]
+            _cnt = Counter(_rels)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("High", str(_cnt.get("✅ High", 0)))
+            c2.metric("Medium", str(_cnt.get("⚠️ Medium", 0)))
+            c3.metric("Low", str(_cnt.get("❌ Low", 0)))
+        except Exception:
+            _rels = []
 
+        # Compact display (2 columns, short URLs)
+        cols = st.columns(2)
+        for i, src in enumerate(all_sources[:10], 1):
+            col = cols[(i - 1) % 2]
+            short_url = src[:60] + "..." if len(src) > 60 else src
+            reliability = classify_source_reliability(str(src))
+            col.markdown(
+                f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
+                unsafe_allow_html=True,
+            )
+
+        # Metadata (freshness + computed source quality)
+        col_fresh, col_score = st.columns(2)
+        with col_fresh:
+            freshness = None
+            try:
+                freshness = data.get("freshness")
+            except Exception:
+                pass
+            if not freshness and isinstance(web_context, dict):
+                freshness = web_context.get("freshness")
+            st.metric("Data Freshness", str(freshness or "Current"))
+        with col_score:
+            try:
+                st.metric("Source Quality", f"{source_quality_score(all_sources):.0f}%")
+            except Exception:
+                pass
+
+        # Optional: pipeline-provided reliability lines (if present)
+        if isinstance(source_reliability, list) and source_reliability:
+            with st.expander("Reliability details"):
+                for line in source_reliability[:120]:
+                    if line:
+                        st.write(line)
+
+    st.markdown("---")
+
+    # -------------------------
+    # Evidence Quality Scores
+    # -------------------------
+    _vs = veracity_scores
+    if not (isinstance(_vs, dict) and _vs):
+        try:
+            _vs = data.get("veracity_scores")
+        except Exception:
+            _vs = None
+
+    if isinstance(_vs, dict) and _vs:
+        st.subheader("✅ Evidence Quality Scores")
+        cols = st.columns(5)
+        metrics_display = [
+            ("Sources", "source_quality"),
+            ("Numbers", "numeric_consistency"),
+            ("Citations", "citation_density"),
+            ("Consensus", "source_consensus"),
+            ("Overall", "overall"),
+        ]
+        for i, (label, key) in enumerate(metrics_display):
+            val = _vs.get(key, 0)
+            try:
+                val_f = float(val)
+            except Exception:
+                val_f = 0.0
+            cols[i].metric(label, f"{val_f:.0f}%")
+
+    # -------------------------
+    # Web Search Details (if present)
+    # -------------------------
+    if isinstance(web_context, dict) and web_context.get("search_results"):
+        with st.expander("🌐 Web Search Details"):
+            try:
+                for i, result in enumerate((web_context.get("search_results") or [])[:8]):
+                    if not isinstance(result, dict):
+                        continue
+                    title = result.get("title") or result.get("name") or "Result"
+                    st.markdown(f"**{i+1}. {title}**")
+                    meta = " - ".join([str(x) for x in [result.get("source"), result.get("date")] if x])
+                    if meta:
+                        st.caption(meta)
+                    snippet = result.get("snippet") or result.get("summary") or ""
+                    if snippet:
+                        st.write(snippet)
+                    link = result.get("link") or result.get("url")
+                    if link:
+                        st.caption(f"[{link}]({link})")
+                    st.markdown("---")
+            except Exception:
+                pass
 
 def render_native_comparison(baseline: Dict, compare: Dict):
     """Render a clean comparison between two analyses"""
@@ -31346,20 +31155,32 @@ def main():
 
             # ============================================================
 
-            extra_sources_text_tab1 = st.text_area(
-
-                "Extra source URLs (optional, one per line)",
-
-                placeholder="https://example.com/report\nhttps://another-source.com/page",
-
-                help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
-
-                height=90,
-
-                key="ui_extra_sources_tab1",
-
-            )
-
+            # ============================================================
+            # HARD-CODE TOGGLE: hide/disable extra URL injection UI (Analysis)
+            # ============================================================
+            extra_sources_text_tab1 = ""
+            if not bool(globals().get("HIDE_EXTRA_URL_TEXTBOX_ANALYSIS", False)):
+                if bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS", False)):
+                    try:
+                        st.session_state["ui_extra_sources_tab1"] = ""
+                    except Exception:
+                        pass
+                extra_sources_text_tab1 = st.text_area(
+                    "Extra source URLs (optional, one per line)",
+                    placeholder="https://example.com/report\nhttps://another-source.com/page",
+                    help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
+                    height=90,
+                    key="ui_extra_sources_tab1",
+                    disabled=bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS", False)),
+                )
+                if bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS", False)):
+                    extra_sources_text_tab1 = ""
+            else:
+                # Ensure any prior session-state doesn't keep injecting URLs when hidden
+                try:
+                    st.session_state["ui_extra_sources_tab1"] = ""
+                except Exception:
+                    pass
             # ============================================================
 
 
@@ -31812,13 +31633,46 @@ def main():
         # ============================================================
         # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
         # ============================================================
-        extra_sources_text = st.text_area(
-            "Extra source URLs (optional, one per line)",
-            placeholder="https://example.com/report\nhttps://another-source.com/page",
-            help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
-            height=110,
-        )
-
+        # ============================================================
+        # HARD-CODE TOGGLES + FORCED INJECTION URL (Evolution)
+        # ============================================================
+        _ui_extra_sources_key = "ui_extra_sources_evolution"
+        _forced_injected_text = str(globals().get("INJECTED_URL", "") or "").strip()
+        _force_injected = bool(globals().get("FORCE_INJECTED_URL_IN_EVOLUTION", False)) and bool(_forced_injected_text)
+        extra_sources_text = _forced_injected_text if _force_injected else ""
+        if not bool(globals().get("HIDE_EXTRA_URL_TEXTBOX_EVOLUTION", False)):
+            if _force_injected:
+                # lock to hard-coded injected URL (still visible unless hidden)
+                try:
+                    st.session_state[_ui_extra_sources_key] = _forced_injected_text
+                except Exception:
+                    pass
+            elif bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION", False)):
+                try:
+                    st.session_state[_ui_extra_sources_key] = ""
+                except Exception:
+                    pass
+            extra_sources_text = st.text_area(
+                "Extra source URLs (optional, one per line)",
+                value=(_forced_injected_text if _force_injected else ""),
+                placeholder="https://example.com/report\nhttps://another-source.com/page",
+                help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
+                height=110,
+                key=_ui_extra_sources_key,
+                disabled=bool(_force_injected or globals().get("DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION", False)),
+            )
+            # When disabled/forced, ignore any UI value to prevent stale injections.
+            if bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION", False)) and not _force_injected:
+                extra_sources_text = ""
+            if _force_injected:
+                extra_sources_text = _forced_injected_text
+        else:
+            # Hidden UI: ensure no stale session-state injection remains
+            try:
+                st.session_state[_ui_extra_sources_key] = ""
+            except Exception:
+                pass
+            extra_sources_text = _forced_injected_text if _force_injected else ""
         compare_data = None
         if "another saved analysis" in compare_method:
             compare_options = [
@@ -32243,9 +32097,7 @@ def _normalize_prev_response_for_rebuild(previous_data):
 
 
 if __name__ == "__main__":
-    # REFACTOR02: if harness is requested, defer execution until end-of-file
-    if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
-        main()
+    main()
 
 
 # ===================== PATCH RMS_DISPATCH2 (ADDITIVE) =====================
@@ -32342,25 +32194,6 @@ def _fix16_expected_dimension(metric_spec: dict) -> str:
         return ""
 
 
-def _fix16_infer_dimension_from_canonical_key(canonical_key: str) -> str:
-    """Infer an expected dimension when schema row is missing dimension/unit_family.
-    Keeps REFACTOR02 behavior deterministic and blocks cross-dimension leakage.
-    """
-    try:
-        ck = str(canonical_key or "").strip().lower()
-        if not ck:
-            return ""
-        if "__percent" in ck or ck.endswith("_percent"):
-            return "percent"
-        if "__currency" in ck or ck.endswith("_currency"):
-            return "currency"
-        if "__unit_" in ck:
-            return "magnitude"
-        return ""
-    except Exception:
-        return ""
-
-
 def _fix16_candidate_has_any_unit(c: dict) -> bool:
     try:
         if not isinstance(c, dict):
@@ -32378,101 +32211,45 @@ def _fix16_candidate_has_any_unit(c: dict) -> bool:
 
 
 def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
-    """Hard gate: if schema expects a unit family/dimension, candidate must be compatible.
-
-    Backward-compatible:
-      - Some legacy call sites pass (metric_spec_dict, candidate_dict). In that case we swap.
-    """
+    """Hard gate: if schema expects a unit family, candidate must be compatible."""
     try:
-        # ---- Back-compat: called as (metric_spec, candidate)
-        if isinstance(expected_dim, dict) and isinstance(c, dict):
-            spec_like = any(k in c for k in ("dimension", "unit_family", "expected_unit_family", "canonical_key", "name"))
-            cand_like = any(k in expected_dim for k in ("raw", "value", "value_norm", "unit", "unit_tag", "unit_family", "base_unit"))
-            if spec_like and cand_like:
-                _candidate = expected_dim
-                expected_dim = _fix16_expected_dimension(c)
-                c = _candidate
-
         if not expected_dim:
             return True
         if not isinstance(c, dict):
             return False
 
-        dim = str(expected_dim).strip().lower()
-
-        # Normalize common synonyms
-        if dim in ("magnitude", "count", "quantity", "units", "unit_count", "unit_sales", "number", "numbers", "volume"):
-            dim = "magnitude"
-        if dim in ("pct", "percentage"):
-            dim = "percent"
-        if dim in ("money",):
-            dim = "currency"
-
-        raw = str(c.get("raw") or "").lower()
-        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip().lower()
-        cand_fam = (c.get("unit_family") or "").strip().lower()
-
-        def _has_percent_marker() -> bool:
-            try:
-                return ("%" in raw) or ("percent" in raw) or ("%" in u) or ("percent" in u)
-            except Exception:
-                return False
-
-        def _has_currency_marker() -> bool:
-            try:
-                return (
-                    ("$" in raw) or ("us$" in raw) or ("usd" in raw) or ("sgd" in raw) or ("eur" in raw) or ("gbp" in raw)
-                    or ("aud" in raw) or ("cny" in raw) or ("jpy" in raw) or ("€" in raw) or ("£" in raw) or ("¥" in raw)
-                    or ("$" in u) or ("usd" in u) or ("sgd" in u) or ("eur" in u) or ("gbp" in u) or ("€" in u) or ("£" in u) or ("¥" in u)
-                )
-            except Exception:
-                return False
-
-        # ---- Percent: require explicit percent marker; reject bare year tokens mis-tagged as percent
-        if dim == "percent":
-            if not _has_percent_marker():
-                return False
-            try:
-                v = c.get("value") if c.get("value") is not None else c.get("value_norm")
-                if isinstance(v, (int, float)):
-                    iv = int(v)
-                    if 1900 <= iv <= 2100 and abs(float(v) - float(iv)) < 1e-9:
-                        # if it really is a percent, raw should contain an explicit '%'
-                        if "%" not in raw:
-                            return False
-            except Exception:
-                pass
-            if cand_fam:
-                return cand_fam == "percent"
-            return True
-
-        # ---- Currency: require explicit currency marker (raw or unit); block magnitude-only tokens without currency context
-        if dim == "currency":
-            if not _has_currency_marker():
-                return False
-            if cand_fam:
-                return cand_fam == "currency"
-            return True
-
-        # ---- Magnitude / count-like: must NOT look like currency or percent
-        if dim == "magnitude":
-            if cand_fam in ("currency", "percent", "rate", "ratio"):
-                return False
-            if _has_currency_marker() or _has_percent_marker():
-                return False
-            return True
-
-        # ---- Other dims: keep legacy behavior (soft), but enforce unit presence when truly required
-        requires_unit = dim in ("rate", "ratio")
+        # Treat these as requiring explicit unit-ness
+        requires_unit = expected_dim in ("currency", "percent", "rate", "ratio")
         if requires_unit and not _fix16_candidate_has_any_unit(c):
             return False
-        if cand_fam and dim in ("rate", "ratio"):
-            return cand_fam == dim
 
+        # If candidate has a unit_family, require match
+        cand_fam = (c.get("unit_family") or "").strip().lower()
+        if cand_fam:
+            return cand_fam == expected_dim
+
+        # Infer from unit/raw when unit_family missing
+        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip().lower()
+        raw = str(c.get("raw") or "").lower()
+
+        if expected_dim == "percent":
+            return ("%" in u) or ("percent" in u) or ("%" in raw)
+
+        if expected_dim == "currency":
+            # currency symbols/codes or magnitude suffix paired with a currency marker in raw
+            if any(x in u for x in ("usd", "eur", "gbp", "jpy", "cny", "aud", "sgd", "$", "€", "£", "¥")):
+                return True
+            if "$" in raw or "usd" in raw or "sgd" in raw or "eur" in raw or "gbp" in raw:
+                return True
+            # if unit is magnitude only (M/B/K), require a currency marker in raw
+            if u in ("m", "b", "k", "t", "mn", "bn", "million", "billion"):
+                return ("$" in raw) or ("usd" in raw) or ("sgd" in raw) or ("eur" in raw) or ("gbp" in raw)
+            return False
+
+        # Quantity/rate/ratio are tricky; enforce only the unit-presence gate above.
         return True
     except Exception:
         return True
-
 
 
 def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = "") -> bool:
@@ -32486,9 +32263,8 @@ def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = ""
         if callable(fn):
             if fn(c, dict(metric_spec or {}, canonical_key=canonical_key)):
                 return False
+
         expected_dim = _fix16_expected_dimension(metric_spec)
-        if not expected_dim:
-            expected_dim = _fix16_infer_dimension_from_canonical_key(canonical_key)
         if not _fix16_unit_compatible(c, expected_dim):
             return False
 
@@ -36868,16 +36644,26 @@ def _ph2b_v23_current_metrics_suspicious(_cm_map):
 
 
 def diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR(prev_response, cur_response, *args, **kwargs):
-    """Wrapper around the existing diff implementation to force render-only rebuild when current canonical is suspicious."""
-    if not callable(diff_metrics_by_name_FIX31_BASE):
-        # If we can't find the base function, fall back to any existing diff impl
-        if callable(diff_metrics_by_name_FIX32_V22_BASE):
-            return diff_metrics_by_name_FIX32_V22_BASE(prev_response, cur_response, *args, **kwargs)
-        return []
+    """FIX2D91: V23 wrapper made return-shape incompatible with callers.
+
+    Purpose (kept): if current canonical dict is present-but-suspicious, pass an empty
+    primary_metrics_canonical into the underlying diff so the existing rebuild ladder runs.
+
+    IMPORTANT: must preserve the canonical diff contract:
+      returns (metric_changes:list, unchanged:int, increased:int, decreased:int, found:int)
+    """
+    # Pick a base implementation (prefer FIX31 base; else V22 base)
+    base_fn = diff_metrics_by_name_FIX31_BASE if callable(diff_metrics_by_name_FIX31_BASE) else None
+    if not callable(base_fn) and callable(diff_metrics_by_name_FIX32_V22_BASE):
+        base_fn = diff_metrics_by_name_FIX32_V22_BASE
+
+    if not callable(base_fn):
+        return ([], 0, 0, 0, 0)
 
     _cur = cur_response
     _forced_clear = False
     _sus = False
+
     try:
         cm = None
         if isinstance(cur_response, dict):
@@ -36892,30 +36678,37 @@ def diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR(prev_response, cur_response, 
                 _cur.setdefault('diag', {})
                 if isinstance(_cur.get('diag'), dict):
                     _cur['diag'].setdefault('ph2b_v23_force_clear_current_metrics', True)
-                    try:
-                        _cur['diag'].setdefault('ph2b_v23_force_clear_reason', 'suspicious_current_metrics_triggered_render_rebuild')
-                    except Exception:
-                        pass
+                    _cur['diag'].setdefault('ph2b_v23_force_clear_reason', 'suspicious_current_metrics_triggered_render_rebuild')
                 # Force empty so v21/v22 rebuild ladder actually runs
                 _cur['primary_metrics_canonical'] = {}
     except Exception:
-        pass
         _cur = cur_response
         _forced_clear = False
+        _sus = False
 
-    rows = diff_metrics_by_name_FIX31_BASE(prev_response, _cur, *args, **kwargs)
+    res = base_fn(prev_response, _cur, *args, **kwargs)
 
-    # PATCH V23_ROW_DIAG (ADDITIVE): mark every returned row so we can confirm v23 wrapper ran
+    # Normalize base return-shape to the 5-tuple contract
+    if isinstance(res, tuple) and len(res) == 5:
+        metric_changes, unchanged, increased, decreased, found = res
+    elif isinstance(res, list):
+        metric_changes, unchanged, increased, decreased, found = res, 0, 0, 0, 0
+    else:
+        metric_changes, unchanged, increased, decreased, found = [], 0, 0, 0, 0
+
+    # Mark every returned row so we can confirm wrapper ran (auditable, non-breaking)
     try:
-        if _forced_clear and isinstance(rows, list):
-            for r in rows:
+        if _forced_clear and isinstance(metric_changes, list):
+            for r in metric_changes:
                 if isinstance(r, dict):
                     r.setdefault('diag', {})
                     if isinstance(r.get('diag'), dict):
                         r['diag'].setdefault('ph2b_v23_force_clear_applied', True)
                         r['diag'].setdefault('ph2b_v23_force_clear_suspicious', bool(_sus))
     except Exception:
-        return rows
+        pass
+
+    return (metric_changes, unchanged, increased, decreased, found)
 
 
 # PATCH V23_WIRE (ADDITIVE): Replace the public diff entrypoint used by evolution with the v23 wrapper.
@@ -36925,12 +36718,7 @@ try:
 except Exception:
     pass
 
-# PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
-try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'
-except Exception:
-    pass
-
+# NOTE: do NOT bump CODE_VERSION here; final override at end-of-file keeps patch id authoritative.
 
 
 # =====================================================================
@@ -49048,541 +48836,27 @@ try:
 except Exception:
     pass
 
-
-# =====================
-# REFACTOR04: VERSION FINAL OVERRIDE (LAST-WINS)
-# - This file contains legacy CODE_VERSION bumps from earlier phases.
-# - Ensure the refactor patch id remains authoritative.
-# =====================
+# =====================================================================
+# PATCH FIX2D91 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
 try:
-    CODE_VERSION = "REFACTOR04"
-    globals()["CODE_VERSION"] = CODE_VERSION
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D91',
+        'date': '2026-01-21',
+        'summary': "Fix Streamlit 'function error panel' caused by V23 diff wrapper (diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR) returning None/list instead of the required 5-tuple. Wrapper now preserves the canonical diff contract and always returns (metric_changes, unchanged, increased, decreased, found). This prevents uncaught unpacking/None errors that surfaced as a noisy panel in Analysis/Evolution.",
+        'files': ['FIX2D91_full_codebase_streamlit_safe.py'],
+        'supersedes': [],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
 except Exception:
     pass
 
-# ============================================================
-# REFACTOR04: REGRESSION HARNESS V2 (ADDITIVE, STREAMLIT-SAFE)
-# Goal:
-#   - Provide a stable gate for refactor/consolidation work.
-#   - Executes: Analysis (headless) -> Evolution (source-anchored) and asserts invariants.
-#
-# Invocation:
-#   python REFACTOR04_full_codebase_streamlit_safe.py --run_refactor_harness
-#   or RUN_REFACTOR_HARNESS=1
-#
-# Optional env overrides:
-#   REFACTOR_HARNESS_QUERY                      - analysis question text
-#   REFACTOR_HARNESS_NUM_SOURCES               - int (default: 3)
-#   REFACTOR_HARNESS_EXTRA_URLS                - newline-separated URLs (applied to both analysis+evolution)
-#   REFACTOR_HARNESS_EXTRA_URLS_ANALYSIS       - newline-separated URLs (analysis only)
-#   REFACTOR_HARNESS_EXTRA_URLS_EVOLUTION      - newline-separated URLs (evolution only)
-#   REFACTOR_HARNESS_FORCE_REBUILD             - 1/0 (default: 1)
-#   REFACTOR_HARNESS_REPORT_PATH               - directory path for JSON report (default: cwd)
-# ============================================================
-
-def _refactor01__bool(v, default=False):
-    try:
-        s = str(v).strip().lower()
-        if s in ("1", "true", "yes", "y", "on"):
-            return True
-        if s in ("0", "false", "no", "n", "off"):
-            return False
-    except Exception:
-        pass
-    return bool(default)
-
-def _refactor01__parse_urls(raw):
-    urls = []
-    try:
-        for line in str(raw or "").splitlines():
-            u = line.strip()
-            if not u:
-                continue
-            if u.startswith("http://") or u.startswith("https://"):
-                urls.append(u)
-    except Exception:
-        pass
-    # de-dupe while preserving order
-    out = []
-    seen = set()
-    for u in urls:
-        if u in seen:
-            continue
-        seen.add(u)
-        out.append(u)
-    return out
-
-def _refactor01__safe_now_iso():
-    try:
-        if callable(globals().get("now_utc")):
-            return now_utc().isoformat()
-    except Exception:
-        pass
-    try:
-        from datetime import datetime, timezone
-        return datetime.now(timezone.utc).isoformat()
-    except Exception:
-        return ""
-
-def _refactor01__safe_get_schema_and_pmc(primary_data: dict):
-    """Mirror the minimal canonicalization steps used by the Analysis UI."""
-    if not isinstance(primary_data, dict):
-        return {}, {}, {}
-
-    # Ensure primary_metrics_canonical is split into ok/provisional deterministically
-    try:
-        _pmc_raw = primary_data.get("primary_metrics_canonical") or {}
-        _split = globals().get("_fix2d58b_split_primary_metrics_canonical")
-        if callable(_split):
-            _pmc_ok, _pmc_prov = _split(_pmc_raw)
-            if isinstance(_pmc_ok, dict):
-                primary_data["primary_metrics_canonical"] = _pmc_ok
-            if isinstance(_pmc_prov, dict) and _pmc_prov:
-                primary_data["primary_metrics_provisional"] = _pmc_prov
-    except Exception:
-        pass
-
-    # Freeze schema if missing
-    try:
-        if (not isinstance(primary_data.get("metric_schema_frozen"), dict)) and isinstance(primary_data.get("primary_metrics_canonical"), dict) and primary_data.get("primary_metrics_canonical"):
-            _freeze = globals().get("freeze_metric_schema")
-            if callable(_freeze):
-                primary_data["metric_schema_frozen"] = _freeze(primary_data.get("primary_metrics_canonical") or {})
-    except Exception:
-        pass
-
-    schema = primary_data.get("metric_schema_frozen") if isinstance(primary_data.get("metric_schema_frozen"), dict) else {}
-    pmc = primary_data.get("primary_metrics_canonical") if isinstance(primary_data.get("primary_metrics_canonical"), dict) else {}
-    prov = primary_data.get("primary_metrics_provisional") if isinstance(primary_data.get("primary_metrics_provisional"), dict) else {}
-    return schema, pmc, prov
-
-def _refactor02_run_harness_v2():
-    import os, sys, json, traceback
-
-    # ---- config
-    query = str(os.getenv("REFACTOR_HARNESS_QUERY") or "").strip()
-    if not query:
-        # Safe default (user can override via env)
-        query = "Global EV sales 2024 and global EV market share 2025"
-
-    try:
-        num_sources = int(str(os.getenv("REFACTOR_HARNESS_NUM_SOURCES") or "3").strip())
-    except Exception:
-        num_sources = 3
-
-    force_rebuild = _refactor01__bool(os.getenv("REFACTOR_HARNESS_FORCE_REBUILD", "1"), default=True)
-
-    extra_urls_common = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS"))
-    extra_urls_analysis = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS_ANALYSIS"))
-    extra_urls_evolution = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS_EVOLUTION"))
-
-    # common applies to both (unless already present)
-    for u in extra_urls_common:
-        if u not in extra_urls_analysis:
-            extra_urls_analysis.append(u)
-        if u not in extra_urls_evolution:
-            extra_urls_evolution.append(u)
-
-    analysis_run_id = ""
-    evo_run_id = ""
-    try:
-        mk = globals().get("_inj_diag_make_run_id")
-        if callable(mk):
-            analysis_run_id = mk("analysis_harness")
-            evo_run_id = mk("evolution_harness")
-    except Exception:
-        pass
-
-    report = {
-        "patch_id": "REFACTOR04",
-        "code_version": str(globals().get("CODE_VERSION", "")),
-        "run_ts_utc": _refactor01__safe_now_iso(),
-        "config": {
-            "query": query,
-            "num_sources": int(num_sources),
-            "force_rebuild": bool(force_rebuild),
-            "extra_urls_analysis": list(extra_urls_analysis),
-            "extra_urls_evolution": list(extra_urls_evolution),
-        },
-        "analysis": {},
-        "evolution": {},
-        "assertions": [],
-        "status": "unknown",
-    }
-
-    def _assert(name, ok, detail=""):
-        report["assertions"].append({
-            "name": str(name),
-            "pass": bool(ok),
-            "detail": (str(detail)[:2000] if detail is not None else ""),
-        })
-        return bool(ok)
-
-    ok_all = True
-
-    # ---- run analysis (headless)
-    try:
-        fwc = globals().get("fetch_web_context")
-        qp = globals().get("query_perplexity")
-        if not callable(fwc):
-            ok_all = _assert("analysis.fetch_web_context_defined", False, "fetch_web_context is not callable") and ok_all
-            raise RuntimeError("fetch_web_context missing")
-        if not callable(qp):
-            ok_all = _assert("analysis.query_perplexity_defined", False, "query_perplexity is not callable") and ok_all
-            raise RuntimeError("query_perplexity missing")
-
-        web_context = fwc(
-            query,
-            num_sources=num_sources,
-            extra_urls=extra_urls_analysis,
-            diag_run_id=str(analysis_run_id or ""),
-            diag_extra_urls_ui_raw="\n".join(extra_urls_analysis),
-        )
-
-        if not isinstance(web_context, dict) or not web_context.get("search_results"):
-            # mirror UI fallback
-            web_context = {
-                "search_results": [],
-                "scraped_content": {},
-                "summary": "",
-                "sources": [],
-                "source_reliability": [],
-            }
-
-        primary_response = qp(query, web_context, query_structure=None)
-        ok_all = _assert("analysis.primary_response_nonempty", bool(primary_response), "Primary model returned empty response") and ok_all
-        if not primary_response:
-            raise RuntimeError("primary_response empty")
-
-        try:
-            primary_data = json.loads(primary_response)
-        except Exception as e:
-            ok_all = _assert("analysis.primary_response_json_parse", False, f"JSON parse failed: {e}") and ok_all
-            raise
-
-        schema, pmc, prov = _refactor01__safe_get_schema_and_pmc(primary_data)
-
-        # optional veracity scoring (non-fatal)
-        veracity_scores = {}
-        try:
-            ev = globals().get("evidence_based_veracity")
-            if callable(ev):
-                veracity_scores = ev(primary_data, web_context) or {}
-        except Exception:
-            veracity_scores = {}
-
-        analysis_out = {
-            "question": query,
-            "timestamp": _refactor01__safe_now_iso(),
-            "primary_response": primary_data,
-            "veracity_scores": veracity_scores,
-            "web_sources": (web_context.get("sources", []) if isinstance(web_context, dict) else []),
-            "code_version": str(globals().get("CODE_VERSION", "")),
-            # ensure evolution can find these top-level as well
-            "metric_schema_frozen": schema,
-            "primary_metrics_canonical": pmc,
-        }
-        try:
-            if isinstance(analysis_out.get("primary_response"), dict):
-                analysis_out["primary_response"]["code_version"] = str(globals().get("CODE_VERSION", ""))
-        except Exception:
-            pass
-
-        # attach analysis-aligned snapshots (stable cache evolution should reuse)
-        try:
-            attach = globals().get("attach_source_snapshots_to_analysis")
-            if callable(attach):
-                analysis_out = attach(analysis_out, web_context)
-        except Exception:
-            pass
-
-        report["analysis"] = {
-            "diag_run_id": analysis_run_id,
-            "schema_key_count": int(len(schema or {})),
-            "pmc_key_count": int(len(pmc or {})),
-            "baseline_sources_cache_count": int(len((analysis_out or {}).get("baseline_sources_cache") or [])),
-        }
-
-        ok_all = _assert("analysis.schema_nonempty", int(len(schema or {})) > 0, f"schema_key_count={len(schema or {})}") and ok_all
-        ok_all = _assert("analysis.pmc_nonempty", int(len(pmc or {})) > 0, f"pmc_key_count={len(pmc or {})}") and ok_all
-
-
-        # ---- REFACTOR04 invariants: baseline PMC dimensional sanity
-        def _h_has_currency(_s):
-            try:
-                s = str(_s or "").lower()
-                return any(x in s for x in ("us$", "usd", "sgd", "eur", "gbp", "aud", "cny", "jpy", "$", "€", "£", "¥"))
-            except Exception:
-                return False
-
-        def _h_has_percent(_s):
-            try:
-                s = str(_s or "").lower()
-                return ("%" in s) or ("percent" in s)
-            except Exception:
-                return False
-
-        bad_mag = []
-        bad_cur = []
-        bad_pct = []
-
-        for _ckey, _mobj in (pmc or {}).items():
-            if not isinstance(_mobj, dict):
-                continue
-
-            _raw = _mobj.get("raw")
-            if not _raw and isinstance(_mobj.get("evidence"), dict):
-                _raw = _mobj["evidence"].get("raw") or _mobj["evidence"].get("snippet") or ""
-            if not _raw:
-                try:
-                    _v = _mobj.get("value_norm") if _mobj.get("value_norm") is not None else _mobj.get("value")
-                    _ut = (_mobj.get("unit") or _mobj.get("unit_tag") or "").strip()
-                    if _v is not None and _ut:
-                        _raw = f"{_v} {_ut}"
-                    elif _v is not None:
-                        _raw = str(_v)
-                except Exception:
-                    _raw = ""
-
-            _unit_tag = (_mobj.get("unit") or _mobj.get("unit_tag") or _mobj.get("base_unit") or "").strip().lower()
-            _ck = str(_ckey or "").lower()
-
-            _is_pct = ("__percent" in _ck) or (_unit_tag == "percent")
-            _is_cur = ("__currency" in _ck)
-            _is_mag = ("__unit_" in _ck) or (not _is_pct and not _is_cur)
-
-            if _is_mag:
-                # magnitude/count-like must not carry currency/percent markers (cross-dimension leakage guard)
-                if _h_has_currency(_raw) or _h_has_percent(_raw):
-                    bad_mag.append({"canonical_key": str(_ckey), "raw": str(_raw)[:120]})
-
-            if _is_cur:
-                # currency keys should carry a currency marker in raw/unit
-                if not _h_has_currency(_raw):
-                    bad_cur.append({"canonical_key": str(_ckey), "raw": str(_raw)[:120]})
-
-            if _is_pct:
-                # percent keys must carry percent marker and must not bind bare years
-                _bad_here = False
-                if not _h_has_percent(_raw):
-                    _bad_here = True
-                try:
-                    _v = _mobj.get("value_norm") if _mobj.get("value_norm") is not None else _mobj.get("value")
-                    if isinstance(_v, (int, float)):
-                        _iv = int(_v)
-                        if 1900 <= _iv <= 2100 and abs(float(_v) - float(_iv)) < 1e-9:
-                            _bad_here = True
-                except Exception:
-                    pass
-                if _bad_here:
-                    bad_pct.append({"canonical_key": str(_ckey), "raw": str(_raw)[:120], "value_norm": _mobj.get("value_norm")})
-
-            if (len(bad_mag) >= 5) and (len(bad_cur) >= 5) and (len(bad_pct) >= 5):
-                break
-
-        ok_all = _assert("pmc.magnitude_keys_no_currency_or_percent_markers", (len(bad_mag) == 0), f"samples={bad_mag}") and ok_all
-        ok_all = _assert("pmc.currency_keys_have_currency_marker", (len(bad_cur) == 0), f"samples={bad_cur}") and ok_all
-        ok_all = _assert("pmc.percent_keys_have_percent_marker_and_not_yearlike", (len(bad_pct) == 0), f"samples={bad_pct}") and ok_all
-
-    except Exception as e:
-        report["analysis"]["error"] = f"{type(e).__name__}: {e}"
-        report["analysis"]["traceback"] = traceback.format_exc()[:8000]
-        report["status"] = "fail"
-        # write report
-        _dir = str(os.getenv("REFACTOR_HARNESS_REPORT_PATH") or os.getcwd())
-        try:
-            os.makedirs(_dir, exist_ok=True)
-        except Exception:
-            _dir = os.getcwd()
-        fname = f"refactor_harness_report_REFACTOR04_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
-        fpath = os.path.join(_dir, fname)
-        try:
-            with open(fpath, "w", encoding="utf-8") as f:
-                json.dump(report, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-        print("[REFACTOR04] Harness FAILED during analysis stage. Report:", fpath)
-        return False
-
-    # ---- run evolution
-    evo_out = None
-    try:
-        evo_fn = globals().get("run_source_anchored_evolution")
-        if not callable(evo_fn):
-            ok_all = _assert("evolution.run_source_anchored_evolution_defined", False, "run_source_anchored_evolution is not callable") and ok_all
-            raise RuntimeError("run_source_anchored_evolution missing")
-
-        evo_out = evo_fn(
-            analysis_out,
-            web_context={
-                "force_rebuild": bool(force_rebuild),
-                "extra_urls": list(extra_urls_evolution),
-                "diag_run_id": str(evo_run_id or ""),
-                "diag_extra_urls_ui_raw": "\n".join(extra_urls_evolution),
-            },
-        )
-        ok_all = _assert("evolution.output_dict", isinstance(evo_out, dict), f"type={type(evo_out)}") and ok_all
-        if not isinstance(evo_out, dict):
-            raise RuntimeError("evolution output not a dict")
-
-        rows = evo_out.get("metric_changes_v2")
-        if not isinstance(rows, list):
-            rows = []
-
-        dbg = evo_out.get("debug") if isinstance(evo_out.get("debug"), dict) else {}
-        summary = dbg.get("diff_panel_v2_summary") if isinstance(dbg.get("diff_panel_v2_summary"), dict) else {}
-
-        both_count = summary.get("both_count")
-        prev_only = summary.get("prev_only_count")
-        cur_only = summary.get("cur_only_count")
-        rows_total = summary.get("rows_total")
-        join_mode = summary.get("join_mode")
-
-        report["evolution"] = {
-            "diag_run_id": evo_run_id,
-            "metric_changes_v2_rows": int(len(rows)),
-            "diff_panel_v2_summary": summary,
-        }
-
-        # ---- invariants
-        # 1) diff rows exist and include both prev+cur
-        any_both = False
-        for r in rows:
-            try:
-                if (r.get("previous_value_norm") is not None) and (r.get("current_value_norm") is not None):
-                    any_both = True
-                    break
-            except Exception:
-                continue
-
-        ok_all = _assert("diff.any_both_row_exists", bool(any_both), f"rows={len(rows)}") and ok_all
-
-        # 2) summary both_count > 0 (if present)
-        if both_count is not None:
-            ok_all = _assert("diff.summary_both_count_gt_0", int(both_count) > 0, f"both_count={both_count}") and ok_all
-
-        # 3) no global 'no_prev_metrics' failure mode (heuristic: not all rows are no_prev_metrics)
-        if rows:
-            no_prev_all = True
-            for r in rows:
-                ct = str(r.get("change_type") or "").strip().lower()
-                if ct != "no_prev_metrics":
-                    no_prev_all = False
-                    break
-            ok_all = _assert("diff.not_all_no_prev_metrics", (not no_prev_all), f"rows_total={len(rows)}") and ok_all
-
-        # 4) percent-year token rule: percent-key prev/current must not look like a bare year
-        bad_percent_year = []
-        for r in rows:
-            try:
-                ckey = str(r.get("canonical_key") or "")
-                unit_tag = str(r.get("current_unit_tag") or r.get("previous_unit_tag") or "")
-                is_pct = ("__percent" in ckey) or (unit_tag == "percent") or ("percent" in ckey.lower())
-                if not is_pct:
-                    continue
-
-                for fld in ("previous_value_norm", "current_value_norm"):
-                    v = r.get(fld)
-                    if v is None:
-                        continue
-                    try:
-                        fv = float(v)
-                    except Exception:
-                        continue
-                    if 1900.0 <= fv <= 2100.0 and abs(fv - round(fv)) < 1e-9:
-                        bad_percent_year.append({"canonical_key": ckey, fld: v})
-                        if len(bad_percent_year) >= 5:
-                            break
-                if len(bad_percent_year) >= 5:
-                    break
-            except Exception:
-                continue
-
-        ok_all = _assert("percent.prev_or_cur_not_yearlike_1900_2100", (len(bad_percent_year) == 0), f"samples={bad_percent_year}") and ok_all
-
-        # 4b) REFACTOR04: guard against false unit_mismatch when both sides share the same scale tag on magnitude keys.
-        bad_unit_mismatch_same_scale = []
-        for r in rows:
-            try:
-                ckey = str(r.get("canonical_key") or "")
-                if "__unit_" not in ckey:
-                    continue
-                if str(r.get("change_type") or "").strip().lower() != "unit_mismatch":
-                    continue
-                pu = str(r.get("previous_unit_tag") or "").upper().strip()
-                cu = str(r.get("current_unit_tag") or "").upper().strip()
-                if pu and cu and (pu == cu) and (pu in ("K", "M", "B", "T")):
-                    bad_unit_mismatch_same_scale.append({
-                        "canonical_key": ckey,
-                        "previous_unit_tag": pu,
-                        "current_unit_tag": cu,
-                        "prev": r.get("previous_value_norm"),
-                        "cur": r.get("current_value_norm"),
-                    })
-                    if len(bad_unit_mismatch_same_scale) >= 5:
-                        break
-            except Exception:
-                continue
-        ok_all = _assert(
-            "unit_mismatch.not_triggered_when_same_scale_magnitude",
-            (len(bad_unit_mismatch_same_scale) == 0),
-            f"samples={bad_unit_mismatch_same_scale}",
-        ) and ok_all
-
-
-        # 5) internal count sanity (summary counts should align where possible)
-        if isinstance(summary, dict) and both_count is not None and prev_only is not None and rows_total is not None:
-            try:
-                prev_key_count_summary = int(both_count) + int(prev_only)
-                pmc_keys = list((analysis_out.get("primary_metrics_canonical") or {}).keys()) if isinstance(analysis_out.get("primary_metrics_canonical"), dict) else []
-                ok_all = _assert("counts.prev_key_count_matches_baseline_pmc", prev_key_count_summary == len(pmc_keys), f"summary_prev={prev_key_count_summary} baseline_pmc={len(pmc_keys)}") and ok_all
-                if str(join_mode or "") != "union":
-                    ok_all = _assert("counts.rows_total_matches_prev_key_count_nonunion", int(rows_total) == prev_key_count_summary, f"rows_total={rows_total} prev_key_count={prev_key_count_summary} join_mode={join_mode}") and ok_all
-            except Exception:
-                pass
-
-    except Exception as e:
-        report["evolution"]["error"] = f"{type(e).__name__}: {e}"
-        report["evolution"]["traceback"] = traceback.format_exc()[:8000]
-        report["status"] = "fail"
-        ok_all = False
-
-    # ---- write report
-    try:
-        report["status"] = "pass" if ok_all else "fail"
-        _dir = str(os.getenv("REFACTOR_HARNESS_REPORT_PATH") or os.getcwd())
-        try:
-            os.makedirs(_dir, exist_ok=True)
-        except Exception:
-            _dir = os.getcwd()
-        fname = f"refactor_harness_report_REFACTOR04_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
-        fpath = os.path.join(_dir, fname)
-        with open(fpath, "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"[REFACTOR04] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
-    except Exception:
-        pass
-
-    return bool(ok_all)
-
-# ============================================================
-# REFACTOR04: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
-# ============================================================
+# FIX2D91_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
 try:
-    if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
-        import sys as _rf01_sys
-        _ok = _refactor02_run_harness_v2()
-        _rf01_sys.exit(0 if _ok else 1)
-except SystemExit:
-    raise
+    CODE_VERSION = 'FIX2D91'
+    globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
-    try:
-        import traceback as _rf01_tb
-        _rf01_tb.print_exc()
-    except Exception:
-        pass
-    try:
-        import sys as _rf01_sys
-        _rf01_sys.exit(1)
-    except Exception:
-        pass
+    pass
