@@ -87,61 +87,60 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D89"
+CODE_VERSION = "REFACTOR02"
 # ============================================================
-# ============================================================
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D89
+# PATCH TRACKER V1 (ADD): REFACTOR01
 # ============================================================
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D89",
+        "patch_id": "REFACTOR02",
         "date": "2026-01-21",
-        "summary": "Remove noisy patch-note text that was being displayed before Google Sheets export by trimming attach_source_snapshots_to_analysis docstring.",
-        "files": ["FIX2D89_full_codebase_streamlit_safe.py"],
-        "supersedes": ["FIX2D88"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): FIX2D88
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D88",
-        "date": "2026-01-21",
-        "summary": "Reinstate dashboard UX panels: Sources & Reliability (compact clickable source list with reliability classification, freshness + quality score) and Evidence Quality Scores (veracity score metrics), plus optional Web Search details expander.",
-        "files": ["FIX2D88_full_codebase_streamlit_safe.py"],
-        "supersedes": ["FIX2D87"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): FIX2D87
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D87",
-        "date": "2026-01-21",
-        "summary": "Reinstate Plotly graph rendering in the Analysis dashboard: render visualization_data (line/bar) and comparison_bars as interactive charts via st.plotly_chart, with robust coercion and legacy-key support.",
-        "files": ["FIX2D87_full_codebase_streamlit_safe.py"],
+        "summary": "Add refactor regression harness (Analysis→Evolution) gated by explicit flag; emits JSON report + asserts diff invariants (both_count > 0, no prev-metrics sentinel, percent-year token rule).",
+        "files": ["REFACTOR02_full_codebase_streamlit_safe.py"],
         "supersedes": ["FIX2D86"],
     })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR02
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "REFACTOR02",
+        "date": "2026-01-21",
+        "summary": "Harden candidate eligibility against cross-dimension leakage (magnitude/count vs currency/percent) and enforce percent-year token rejection in eligibility; upgrade refactor harness invariants (baseline PMC dimensional sanity + percent-year check on prev+cur).",
+        "files": ["REFACTOR02_full_codebase_streamlit_safe.py"],
+        "supersedes": ["REFACTOR01"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# REFACTOR02: HARNESS FLAG (ADDITIVE)
+# - Streamlit-safe: does nothing unless explicitly invoked.
+# Invocation:
+#   - python REFACTOR02_full_codebase_streamlit_safe.py --run_refactor_harness
+#   - or set RUN_REFACTOR_HARNESS=1
+# ============================================================
+try:
+    import os as _rf01_os
+    import sys as _rf01_sys
+    _REFACTOR01_HARNESS_REQUESTED = (
+        ("--run_refactor_harness" in (_rf01_sys.argv or []))
+        or (str(_rf01_os.getenv("RUN_REFACTOR_HARNESS", "")).strip().lower() in ("1", "true", "yes", "y"))
+    )
+except Exception:
+    _REFACTOR01_HARNESS_REQUESTED = False
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
@@ -16615,7 +16614,15 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     except Exception:
         pass
 
-    """Attach stable source snapshots (from web_context.scraped_meta) into analysis output."""
+    """
+    Attach stable source snapshots (from web_context.scraped_meta) into analysis.
+
+    Enhancements (v7_34 patch):
+    - Ensures scraped_meta.extracted_numbers is always list-like
+    - Adds RANGE capture per canonical metric using admitted snapshots:
+        primary_metrics_canonical[ckey]["value_range"] = {min,max,n,examples}
+      This restores earlier "range vs point estimate" behavior in a compatible way.
+    """
     import re
     from datetime import datetime, timezone
 
@@ -30428,264 +30435,50 @@ def render_dashboard(
 
     st.markdown("---")
 
+    # -------------------------
+    # Sources / Web Context summary
+    # -------------------------
+    st.subheader("🔎 Sources & Evidence")
+    sources = data.get("sources") or data.get("web_sources") or []
+    if isinstance(sources, list) and sources:
+        with st.expander(f"Show sources ({len(sources)})"):
+            for s in sources[:50]:
+                if s:
+                    st.markdown(f"- {s}")
+            if len(sources) > 50:
+                st.markdown(f"... (+{len(sources)-50} more)")
+
+    # Web context debug counters if present
+    if isinstance(web_context, dict):
+        dbg = web_context.get("debug_counts") or {}
+        if isinstance(dbg, dict) and dbg:
+            with st.expander("Collector debug counts"):
+                st.json(dbg)
+
     # =====================================================================
-    # PATCH FIX2D87 (RESTORE): Plotly chart rendering for visualization_data
-    # - Reintroduces graphs previously present in financial_assistant_v2 (17)_HAS GRAPHING
-    # - Pure UI: no upstream pipeline changes
+    # PATCH UI_EXTRA_URLS_TRACE2 (ADDITIVE): show injected extra-URL trace (if any)
     # =====================================================================
-    st.subheader("📊 Data Visualization")
-
-    def _fix2d87_as_dict(obj: Any) -> Optional[Dict[str, Any]]:
-        if obj is None:
-            return None
-        if isinstance(obj, dict):
-            return obj
-        try:
-            if hasattr(obj, "model_dump"):
-                return obj.model_dump()
-        except Exception:
-            pass
-        try:
-            return dict(obj)
-        except Exception:
-            return None
-
-    # Primary visualization
-    viz = _fix2d87_as_dict(data.get("visualization_data"))
-    if (not viz) and isinstance(data.get("primary_response"), dict):
-        viz = _fix2d87_as_dict((data.get("primary_response") or {}).get("visualization_data"))
-
-    if viz and isinstance(viz, dict):
-        labels = viz.get("chart_labels") or viz.get("labels") or []
-        values = viz.get("chart_values") or viz.get("values") or []
-        title = viz.get("chart_title") or viz.get("title") or "Trend Analysis"
-        chart_type = str(viz.get("chart_type") or "line").strip().lower()
-
-        # Normalize to lists
-        if not isinstance(labels, list):
-            labels = [labels]
-        if not isinstance(values, list):
-            values = [values]
-
-        pairs: List[Tuple[str, float]] = []
-        try:
-            for l, v in zip(labels, values):
-                fv = parse_to_float(v)
-                if fv is None:
-                    continue
-                pairs.append((str(l), float(fv)))
-        except Exception:
-            pairs = []
-
-        if pairs:
-            pairs = pairs[:20]
-            x_vals = [p[0] for p in pairs]
-            y_vals = [p[1] for p in pairs]
-
-            x_label = (viz.get("x_axis_label") or "").strip() or detect_x_label_dynamic(x_vals)
-            y_label = (viz.get("y_axis_label") or "").strip() or detect_y_label_dynamic(y_vals)
-
-            try:
-                df_viz = pd.DataFrame({"x": x_vals, "y": y_vals})
-                if chart_type == "bar":
-                    try:
-                        fig = px.bar(df_viz, x="x", y="y", title=title, text_auto=True)
-                    except Exception:
-                        fig = px.bar(df_viz, x="x", y="y", title=title)
-                else:
-                    fig = px.line(df_viz, x="x", y="y", title=title, markers=True)
-
-                fig.update_layout(
-                    xaxis_title=x_label,
-                    yaxis_title=y_label,
-                    title_font_size=16,
-                    font=dict(size=12),
-                )
-                if len(x_vals) > 5:
-                    fig.update_layout(xaxis=dict(tickangle=-45))
-
-                st.plotly_chart(fig, use_container_width=True)
-
-            except Exception as e:
-                st.info(f"⚠️ Chart rendering failed: {e}")
-        else:
-            st.info("📊 No usable numeric visualization data available.")
-    else:
-        st.info("📊 No visualization data available.")
-
-    # Comparison bars (optional secondary chart)
-    comp = _fix2d87_as_dict(data.get("comparison_bars"))
-    if (not comp) and isinstance(data.get("primary_response"), dict):
-        comp = _fix2d87_as_dict((data.get("primary_response") or {}).get("comparison_bars"))
-
-    if comp and isinstance(comp, dict):
-        cats = comp.get("categories") or []
-        vals = comp.get("values") or []
-        ctitle = comp.get("title") or "Comparison"
-
-        if not isinstance(cats, list):
-            cats = [cats]
-        if not isinstance(vals, list):
-            vals = [vals]
-
-        comp_pairs: List[Tuple[str, float]] = []
-        try:
-            for c, v in zip(cats, vals):
-                fv = parse_to_float(v)
-                if fv is None:
-                    continue
-                comp_pairs.append((str(c), float(fv)))
-        except Exception:
-            comp_pairs = []
-
-        if comp_pairs:
-            comp_pairs = comp_pairs[:20]
-            df_comp = pd.DataFrame({"Category": [p[0] for p in comp_pairs], "Value": [p[1] for p in comp_pairs]})
-            try:
-                try:
-                    fig2 = px.bar(df_comp, x="Category", y="Value", title=ctitle, text_auto=True)
-                except Exception:
-                    fig2 = px.bar(df_comp, x="Category", y="Value", title=ctitle)
-                st.plotly_chart(fig2, use_container_width=True)
-            except Exception:
-                pass
-
-    st.markdown("---")
-
-    # -------------------------
-    # -------------------------
-    # Sources & Reliability
-    # -------------------------
-    st.subheader("🔗 Sources & Reliability")
-
-    # Collect sources from both the primary payload and web_context (preserve order, de-dup)
-    _raw_sources: List[str] = []
     try:
-        _candidates = []
-        _candidates.append(data.get("sources"))
-        _candidates.append(data.get("web_sources"))
-        _candidates.append(data.get("web_context_sources"))
+        exdbg = {}
         if isinstance(web_context, dict):
-            _candidates.append(web_context.get("sources"))
-            _candidates.append(web_context.get("urls"))
-        for _cand in _candidates:
-            if isinstance(_cand, (list, tuple)):
-                for _s in _cand:
-                    if isinstance(_s, str) and _s.strip():
-                        _raw_sources.append(_s.strip())
+            exdbg = web_context.get("extra_urls_debug") or {}
+            # Back-compat: allow nested placement under debug_counts
+            if (not exdbg) and isinstance(web_context.get("debug_counts"), dict):
+                exdbg = (web_context.get("debug_counts") or {}).get("extra_urls_debug") or {}
+        if isinstance(exdbg, dict) and exdbg:
+            with st.expander("Extra URLs trace (injected sources)"):
+                st.json(exdbg)
     except Exception:
         pass
+    # =====================================================================
 
-    _seen = set()
-    all_sources: List[str] = []
-    for _s in _raw_sources:
-        if _s not in _seen:
-            _seen.add(_s)
-            all_sources.append(_s)
+    # Source reliability badges (if provided)
+    if isinstance(source_reliability, list) and source_reliability:
+        with st.expander("Source reliability"):
+            for line in source_reliability[:80]:
+                st.write(line)
 
-    if not all_sources:
-        st.info("No sources found.")
-    else:
-        st.success(f"📊 Found {len(all_sources)} sources")
-        # Reliability breakdown
-        try:
-            _rels = [classify_source_reliability(s) for s in all_sources]
-            _cnt = Counter(_rels)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("High", str(_cnt.get("✅ High", 0)))
-            c2.metric("Medium", str(_cnt.get("⚠️ Medium", 0)))
-            c3.metric("Low", str(_cnt.get("❌ Low", 0)))
-        except Exception:
-            _rels = []
 
-        # Compact display (2 columns, short URLs)
-        cols = st.columns(2)
-        for i, src in enumerate(all_sources[:10], 1):
-            col = cols[(i - 1) % 2]
-            short_url = src[:60] + "..." if len(src) > 60 else src
-            reliability = classify_source_reliability(str(src))
-            col.markdown(
-                f"**{i}.** [{short_url}]({src})<br><small>{reliability}</small>",
-                unsafe_allow_html=True,
-            )
-
-        # Metadata (freshness + computed source quality)
-        col_fresh, col_score = st.columns(2)
-        with col_fresh:
-            freshness = None
-            try:
-                freshness = data.get("freshness")
-            except Exception:
-                pass
-            if not freshness and isinstance(web_context, dict):
-                freshness = web_context.get("freshness")
-            st.metric("Data Freshness", str(freshness or "Current"))
-        with col_score:
-            try:
-                st.metric("Source Quality", f"{source_quality_score(all_sources):.0f}%")
-            except Exception:
-                pass
-
-        # Optional: pipeline-provided reliability lines (if present)
-        if isinstance(source_reliability, list) and source_reliability:
-            with st.expander("Reliability details"):
-                for line in source_reliability[:120]:
-                    if line:
-                        st.write(line)
-
-    st.markdown("---")
-
-    # -------------------------
-    # Evidence Quality Scores
-    # -------------------------
-    _vs = veracity_scores
-    if not (isinstance(_vs, dict) and _vs):
-        try:
-            _vs = data.get("veracity_scores")
-        except Exception:
-            _vs = None
-
-    if isinstance(_vs, dict) and _vs:
-        st.subheader("✅ Evidence Quality Scores")
-        cols = st.columns(5)
-        metrics_display = [
-            ("Sources", "source_quality"),
-            ("Numbers", "numeric_consistency"),
-            ("Citations", "citation_density"),
-            ("Consensus", "source_consensus"),
-            ("Overall", "overall"),
-        ]
-        for i, (label, key) in enumerate(metrics_display):
-            val = _vs.get(key, 0)
-            try:
-                val_f = float(val)
-            except Exception:
-                val_f = 0.0
-            cols[i].metric(label, f"{val_f:.0f}%")
-
-    # -------------------------
-    # Web Search Details (if present)
-    # -------------------------
-    if isinstance(web_context, dict) and web_context.get("search_results"):
-        with st.expander("🌐 Web Search Details"):
-            try:
-                for i, result in enumerate((web_context.get("search_results") or [])[:8]):
-                    if not isinstance(result, dict):
-                        continue
-                    title = result.get("title") or result.get("name") or "Result"
-                    st.markdown(f"**{i+1}. {title}**")
-                    meta = " - ".join([str(x) for x in [result.get("source"), result.get("date")] if x])
-                    if meta:
-                        st.caption(meta)
-                    snippet = result.get("snippet") or result.get("summary") or ""
-                    if snippet:
-                        st.write(snippet)
-                    link = result.get("link") or result.get("url")
-                    if link:
-                        st.caption(f"[{link}]({link})")
-                    st.markdown("---")
-            except Exception:
-                pass
 
 def render_native_comparison(baseline: Dict, compare: Dict):
     """Render a clean comparison between two analyses"""
@@ -31120,19 +30913,19 @@ def main():
 
             # ============================================================
 
-           # extra_sources_text_tab1 = st.text_area(
+            extra_sources_text_tab1 = st.text_area(
 
-           #     "Extra source URLs (optional, one per line)",
+                "Extra source URLs (optional, one per line)",
 
-           #     placeholder="https://example.com/report\nhttps://another-source.com/page",
+                placeholder="https://example.com/report\nhttps://another-source.com/page",
 
-           #     help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
+                help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
 
-           #     height=90,
+                height=90,
 
-           #     key="ui_extra_sources_tab1",
+                key="ui_extra_sources_tab1",
 
-           # )
+            )
 
             # ============================================================
 
@@ -31180,7 +30973,7 @@ def main():
                     except Exception:
                         pass
 
-                    # ============================================================
+                                        # ============================================================
                     # PATCH UI_EXTRA_SOURCES2 (ADDITIVE): parse extra source URLs
                     # ============================================================
                     extra_urls = []
@@ -31201,8 +30994,6 @@ def main():
                     # ============================================================
                     _analysis_run_id = _inj_diag_make_run_id("analysis")
                     # ============================================================
-
-                    extra_urls = ["https://veeyuen.github.io/injected-content/"] # Hardcode injected URL
 
                     web_context = fetch_web_context(
                         query,
@@ -31529,7 +31320,7 @@ def main():
         **How it works:**
         - Select a baseline from your history (stored in Google Sheets)
         - Re-fetches the **exact same sources** from that analysis
-        - Extracts current numbers using deterministic methods
+        - Extracts current numbers using regex (no LLM variance)
         - Computes deterministic diffs with context-aware matching
         """)
 
@@ -31588,14 +31379,12 @@ def main():
         # ============================================================
         # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
         # ============================================================
-       # extra_sources_text = st.text_area(
-       #     "Extra source URLs (optional, one per line)",
-       #     placeholder="https://example.com/report\nhttps://another-source.com/page",
-       #     help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
-       #     height=110,
-       # )
-
-        extra_sources_text = ("https://veeyuen.github.io/injected-content/")
+        extra_sources_text = st.text_area(
+            "Extra source URLs (optional, one per line)",
+            placeholder="https://example.com/report\nhttps://another-source.com/page",
+            help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
+            height=110,
+        )
 
         compare_data = None
         if "another saved analysis" in compare_method:
@@ -32021,7 +31810,9 @@ def _normalize_prev_response_for_rebuild(previous_data):
 
 
 if __name__ == "__main__":
-    main()
+    # REFACTOR02: if harness is requested, defer execution until end-of-file
+    if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
+        main()
 
 
 # ===================== PATCH RMS_DISPATCH2 (ADDITIVE) =====================
@@ -32118,6 +31909,25 @@ def _fix16_expected_dimension(metric_spec: dict) -> str:
         return ""
 
 
+def _fix16_infer_dimension_from_canonical_key(canonical_key: str) -> str:
+    """Infer an expected dimension when schema row is missing dimension/unit_family.
+    Keeps REFACTOR02 behavior deterministic and blocks cross-dimension leakage.
+    """
+    try:
+        ck = str(canonical_key or "").strip().lower()
+        if not ck:
+            return ""
+        if "__percent" in ck or ck.endswith("_percent"):
+            return "percent"
+        if "__currency" in ck or ck.endswith("_currency"):
+            return "currency"
+        if "__unit_" in ck:
+            return "magnitude"
+        return ""
+    except Exception:
+        return ""
+
+
 def _fix16_candidate_has_any_unit(c: dict) -> bool:
     try:
         if not isinstance(c, dict):
@@ -32135,45 +31945,101 @@ def _fix16_candidate_has_any_unit(c: dict) -> bool:
 
 
 def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
-    """Hard gate: if schema expects a unit family, candidate must be compatible."""
+    """Hard gate: if schema expects a unit family/dimension, candidate must be compatible.
+
+    Backward-compatible:
+      - Some legacy call sites pass (metric_spec_dict, candidate_dict). In that case we swap.
+    """
     try:
+        # ---- Back-compat: called as (metric_spec, candidate)
+        if isinstance(expected_dim, dict) and isinstance(c, dict):
+            spec_like = any(k in c for k in ("dimension", "unit_family", "expected_unit_family", "canonical_key", "name"))
+            cand_like = any(k in expected_dim for k in ("raw", "value", "value_norm", "unit", "unit_tag", "unit_family", "base_unit"))
+            if spec_like and cand_like:
+                _candidate = expected_dim
+                expected_dim = _fix16_expected_dimension(c)
+                c = _candidate
+
         if not expected_dim:
             return True
         if not isinstance(c, dict):
             return False
 
-        # Treat these as requiring explicit unit-ness
-        requires_unit = expected_dim in ("currency", "percent", "rate", "ratio")
+        dim = str(expected_dim).strip().lower()
+
+        # Normalize common synonyms
+        if dim in ("magnitude", "count", "quantity", "units", "unit_count", "unit_sales", "number", "numbers", "volume"):
+            dim = "magnitude"
+        if dim in ("pct", "percentage"):
+            dim = "percent"
+        if dim in ("money",):
+            dim = "currency"
+
+        raw = str(c.get("raw") or "").lower()
+        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip().lower()
+        cand_fam = (c.get("unit_family") or "").strip().lower()
+
+        def _has_percent_marker() -> bool:
+            try:
+                return ("%" in raw) or ("percent" in raw) or ("%" in u) or ("percent" in u)
+            except Exception:
+                return False
+
+        def _has_currency_marker() -> bool:
+            try:
+                return (
+                    ("$" in raw) or ("us$" in raw) or ("usd" in raw) or ("sgd" in raw) or ("eur" in raw) or ("gbp" in raw)
+                    or ("aud" in raw) or ("cny" in raw) or ("jpy" in raw) or ("€" in raw) or ("£" in raw) or ("¥" in raw)
+                    or ("$" in u) or ("usd" in u) or ("sgd" in u) or ("eur" in u) or ("gbp" in u) or ("€" in u) or ("£" in u) or ("¥" in u)
+                )
+            except Exception:
+                return False
+
+        # ---- Percent: require explicit percent marker; reject bare year tokens mis-tagged as percent
+        if dim == "percent":
+            if not _has_percent_marker():
+                return False
+            try:
+                v = c.get("value") if c.get("value") is not None else c.get("value_norm")
+                if isinstance(v, (int, float)):
+                    iv = int(v)
+                    if 1900 <= iv <= 2100 and abs(float(v) - float(iv)) < 1e-9:
+                        # if it really is a percent, raw should contain an explicit '%'
+                        if "%" not in raw:
+                            return False
+            except Exception:
+                pass
+            if cand_fam:
+                return cand_fam == "percent"
+            return True
+
+        # ---- Currency: require explicit currency marker (raw or unit); block magnitude-only tokens without currency context
+        if dim == "currency":
+            if not _has_currency_marker():
+                return False
+            if cand_fam:
+                return cand_fam == "currency"
+            return True
+
+        # ---- Magnitude / count-like: must NOT look like currency or percent
+        if dim == "magnitude":
+            if cand_fam in ("currency", "percent", "rate", "ratio"):
+                return False
+            if _has_currency_marker() or _has_percent_marker():
+                return False
+            return True
+
+        # ---- Other dims: keep legacy behavior (soft), but enforce unit presence when truly required
+        requires_unit = dim in ("rate", "ratio")
         if requires_unit and not _fix16_candidate_has_any_unit(c):
             return False
+        if cand_fam and dim in ("rate", "ratio"):
+            return cand_fam == dim
 
-        # If candidate has a unit_family, require match
-        cand_fam = (c.get("unit_family") or "").strip().lower()
-        if cand_fam:
-            return cand_fam == expected_dim
-
-        # Infer from unit/raw when unit_family missing
-        u = (c.get("base_unit") or c.get("unit") or c.get("unit_tag") or "").strip().lower()
-        raw = str(c.get("raw") or "").lower()
-
-        if expected_dim == "percent":
-            return ("%" in u) or ("percent" in u) or ("%" in raw)
-
-        if expected_dim == "currency":
-            # currency symbols/codes or magnitude suffix paired with a currency marker in raw
-            if any(x in u for x in ("usd", "eur", "gbp", "jpy", "cny", "aud", "sgd", "$", "€", "£", "¥")):
-                return True
-            if "$" in raw or "usd" in raw or "sgd" in raw or "eur" in raw or "gbp" in raw:
-                return True
-            # if unit is magnitude only (M/B/K), require a currency marker in raw
-            if u in ("m", "b", "k", "t", "mn", "bn", "million", "billion"):
-                return ("$" in raw) or ("usd" in raw) or ("sgd" in raw) or ("eur" in raw) or ("gbp" in raw)
-            return False
-
-        # Quantity/rate/ratio are tricky; enforce only the unit-presence gate above.
         return True
     except Exception:
         return True
+
 
 
 def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = "") -> bool:
@@ -32187,8 +32053,9 @@ def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = ""
         if callable(fn):
             if fn(c, dict(metric_spec or {}, canonical_key=canonical_key)):
                 return False
-
         expected_dim = _fix16_expected_dimension(metric_spec)
+        if not expected_dim:
+            expected_dim = _fix16_infer_dimension_from_canonical_key(canonical_key)
         if not _fix16_unit_compatible(c, expected_dim):
             return False
 
@@ -48747,3 +48614,512 @@ try:
         globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = rebuild_metrics_from_snapshots_schema_only_fix16
 except Exception:
     pass
+
+
+# =====================
+# REFACTOR02: VERSION FINAL OVERRIDE (LAST-WINS)
+# - This file contains legacy CODE_VERSION bumps from earlier phases.
+# - Ensure the refactor patch id remains authoritative.
+# =====================
+try:
+    CODE_VERSION = "REFACTOR02"
+    globals()["CODE_VERSION"] = CODE_VERSION
+except Exception:
+    pass
+
+# ============================================================
+# REFACTOR02: REGRESSION HARNESS V2 (ADDITIVE, STREAMLIT-SAFE)
+# Goal:
+#   - Provide a stable gate for refactor/consolidation work.
+#   - Executes: Analysis (headless) -> Evolution (source-anchored) and asserts invariants.
+#
+# Invocation:
+#   python REFACTOR02_full_codebase_streamlit_safe.py --run_refactor_harness
+#   or RUN_REFACTOR_HARNESS=1
+#
+# Optional env overrides:
+#   REFACTOR_HARNESS_QUERY                      - analysis question text
+#   REFACTOR_HARNESS_NUM_SOURCES               - int (default: 3)
+#   REFACTOR_HARNESS_EXTRA_URLS                - newline-separated URLs (applied to both analysis+evolution)
+#   REFACTOR_HARNESS_EXTRA_URLS_ANALYSIS       - newline-separated URLs (analysis only)
+#   REFACTOR_HARNESS_EXTRA_URLS_EVOLUTION      - newline-separated URLs (evolution only)
+#   REFACTOR_HARNESS_FORCE_REBUILD             - 1/0 (default: 1)
+#   REFACTOR_HARNESS_REPORT_PATH               - directory path for JSON report (default: cwd)
+# ============================================================
+
+def _refactor01__bool(v, default=False):
+    try:
+        s = str(v).strip().lower()
+        if s in ("1", "true", "yes", "y", "on"):
+            return True
+        if s in ("0", "false", "no", "n", "off"):
+            return False
+    except Exception:
+        pass
+    return bool(default)
+
+def _refactor01__parse_urls(raw):
+    urls = []
+    try:
+        for line in str(raw or "").splitlines():
+            u = line.strip()
+            if not u:
+                continue
+            if u.startswith("http://") or u.startswith("https://"):
+                urls.append(u)
+    except Exception:
+        pass
+    # de-dupe while preserving order
+    out = []
+    seen = set()
+    for u in urls:
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+def _refactor01__safe_now_iso():
+    try:
+        if callable(globals().get("now_utc")):
+            return now_utc().isoformat()
+    except Exception:
+        pass
+    try:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
+    except Exception:
+        return ""
+
+def _refactor01__safe_get_schema_and_pmc(primary_data: dict):
+    """Mirror the minimal canonicalization steps used by the Analysis UI."""
+    if not isinstance(primary_data, dict):
+        return {}, {}, {}
+
+    # Ensure primary_metrics_canonical is split into ok/provisional deterministically
+    try:
+        _pmc_raw = primary_data.get("primary_metrics_canonical") or {}
+        _split = globals().get("_fix2d58b_split_primary_metrics_canonical")
+        if callable(_split):
+            _pmc_ok, _pmc_prov = _split(_pmc_raw)
+            if isinstance(_pmc_ok, dict):
+                primary_data["primary_metrics_canonical"] = _pmc_ok
+            if isinstance(_pmc_prov, dict) and _pmc_prov:
+                primary_data["primary_metrics_provisional"] = _pmc_prov
+    except Exception:
+        pass
+
+    # Freeze schema if missing
+    try:
+        if (not isinstance(primary_data.get("metric_schema_frozen"), dict)) and isinstance(primary_data.get("primary_metrics_canonical"), dict) and primary_data.get("primary_metrics_canonical"):
+            _freeze = globals().get("freeze_metric_schema")
+            if callable(_freeze):
+                primary_data["metric_schema_frozen"] = _freeze(primary_data.get("primary_metrics_canonical") or {})
+    except Exception:
+        pass
+
+    schema = primary_data.get("metric_schema_frozen") if isinstance(primary_data.get("metric_schema_frozen"), dict) else {}
+    pmc = primary_data.get("primary_metrics_canonical") if isinstance(primary_data.get("primary_metrics_canonical"), dict) else {}
+    prov = primary_data.get("primary_metrics_provisional") if isinstance(primary_data.get("primary_metrics_provisional"), dict) else {}
+    return schema, pmc, prov
+
+def _refactor02_run_harness_v2():
+    import os, sys, json, traceback
+
+    # ---- config
+    query = str(os.getenv("REFACTOR_HARNESS_QUERY") or "").strip()
+    if not query:
+        # Safe default (user can override via env)
+        query = "Global EV sales 2024 and global EV market share 2025"
+
+    try:
+        num_sources = int(str(os.getenv("REFACTOR_HARNESS_NUM_SOURCES") or "3").strip())
+    except Exception:
+        num_sources = 3
+
+    force_rebuild = _refactor01__bool(os.getenv("REFACTOR_HARNESS_FORCE_REBUILD", "1"), default=True)
+
+    extra_urls_common = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS"))
+    extra_urls_analysis = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS_ANALYSIS"))
+    extra_urls_evolution = _refactor01__parse_urls(os.getenv("REFACTOR_HARNESS_EXTRA_URLS_EVOLUTION"))
+
+    # common applies to both (unless already present)
+    for u in extra_urls_common:
+        if u not in extra_urls_analysis:
+            extra_urls_analysis.append(u)
+        if u not in extra_urls_evolution:
+            extra_urls_evolution.append(u)
+
+    analysis_run_id = ""
+    evo_run_id = ""
+    try:
+        mk = globals().get("_inj_diag_make_run_id")
+        if callable(mk):
+            analysis_run_id = mk("analysis_harness")
+            evo_run_id = mk("evolution_harness")
+    except Exception:
+        pass
+
+    report = {
+        "patch_id": "REFACTOR01",
+        "code_version": str(globals().get("CODE_VERSION", "")),
+        "run_ts_utc": _refactor01__safe_now_iso(),
+        "config": {
+            "query": query,
+            "num_sources": int(num_sources),
+            "force_rebuild": bool(force_rebuild),
+            "extra_urls_analysis": list(extra_urls_analysis),
+            "extra_urls_evolution": list(extra_urls_evolution),
+        },
+        "analysis": {},
+        "evolution": {},
+        "assertions": [],
+        "status": "unknown",
+    }
+
+    def _assert(name, ok, detail=""):
+        report["assertions"].append({
+            "name": str(name),
+            "pass": bool(ok),
+            "detail": (str(detail)[:2000] if detail is not None else ""),
+        })
+        return bool(ok)
+
+    ok_all = True
+
+    # ---- run analysis (headless)
+    try:
+        fwc = globals().get("fetch_web_context")
+        qp = globals().get("query_perplexity")
+        if not callable(fwc):
+            ok_all = _assert("analysis.fetch_web_context_defined", False, "fetch_web_context is not callable") and ok_all
+            raise RuntimeError("fetch_web_context missing")
+        if not callable(qp):
+            ok_all = _assert("analysis.query_perplexity_defined", False, "query_perplexity is not callable") and ok_all
+            raise RuntimeError("query_perplexity missing")
+
+        web_context = fwc(
+            query,
+            num_sources=num_sources,
+            extra_urls=extra_urls_analysis,
+            diag_run_id=str(analysis_run_id or ""),
+            diag_extra_urls_ui_raw="\n".join(extra_urls_analysis),
+        )
+
+        if not isinstance(web_context, dict) or not web_context.get("search_results"):
+            # mirror UI fallback
+            web_context = {
+                "search_results": [],
+                "scraped_content": {},
+                "summary": "",
+                "sources": [],
+                "source_reliability": [],
+            }
+
+        primary_response = qp(query, web_context, query_structure=None)
+        ok_all = _assert("analysis.primary_response_nonempty", bool(primary_response), "Primary model returned empty response") and ok_all
+        if not primary_response:
+            raise RuntimeError("primary_response empty")
+
+        try:
+            primary_data = json.loads(primary_response)
+        except Exception as e:
+            ok_all = _assert("analysis.primary_response_json_parse", False, f"JSON parse failed: {e}") and ok_all
+            raise
+
+        schema, pmc, prov = _refactor01__safe_get_schema_and_pmc(primary_data)
+
+        # optional veracity scoring (non-fatal)
+        veracity_scores = {}
+        try:
+            ev = globals().get("evidence_based_veracity")
+            if callable(ev):
+                veracity_scores = ev(primary_data, web_context) or {}
+        except Exception:
+            veracity_scores = {}
+
+        analysis_out = {
+            "question": query,
+            "timestamp": _refactor01__safe_now_iso(),
+            "primary_response": primary_data,
+            "veracity_scores": veracity_scores,
+            "web_sources": (web_context.get("sources", []) if isinstance(web_context, dict) else []),
+            "code_version": str(globals().get("CODE_VERSION", "")),
+            # ensure evolution can find these top-level as well
+            "metric_schema_frozen": schema,
+            "primary_metrics_canonical": pmc,
+        }
+        try:
+            if isinstance(analysis_out.get("primary_response"), dict):
+                analysis_out["primary_response"]["code_version"] = str(globals().get("CODE_VERSION", ""))
+        except Exception:
+            pass
+
+        # attach analysis-aligned snapshots (stable cache evolution should reuse)
+        try:
+            attach = globals().get("attach_source_snapshots_to_analysis")
+            if callable(attach):
+                analysis_out = attach(analysis_out, web_context)
+        except Exception:
+            pass
+
+        report["analysis"] = {
+            "diag_run_id": analysis_run_id,
+            "schema_key_count": int(len(schema or {})),
+            "pmc_key_count": int(len(pmc or {})),
+            "baseline_sources_cache_count": int(len((analysis_out or {}).get("baseline_sources_cache") or [])),
+        }
+
+        ok_all = _assert("analysis.schema_nonempty", int(len(schema or {})) > 0, f"schema_key_count={len(schema or {})}") and ok_all
+        ok_all = _assert("analysis.pmc_nonempty", int(len(pmc or {})) > 0, f"pmc_key_count={len(pmc or {})}") and ok_all
+
+
+        # ---- REFACTOR02 invariants: baseline PMC dimensional sanity
+        def _h_has_currency(_s):
+            try:
+                s = str(_s or "").lower()
+                return any(x in s for x in ("us$", "usd", "sgd", "eur", "gbp", "aud", "cny", "jpy", "$", "€", "£", "¥"))
+            except Exception:
+                return False
+
+        def _h_has_percent(_s):
+            try:
+                s = str(_s or "").lower()
+                return ("%" in s) or ("percent" in s)
+            except Exception:
+                return False
+
+        bad_mag = []
+        bad_cur = []
+        bad_pct = []
+
+        for _ckey, _mobj in (pmc or {}).items():
+            if not isinstance(_mobj, dict):
+                continue
+
+            _raw = _mobj.get("raw")
+            if not _raw and isinstance(_mobj.get("evidence"), dict):
+                _raw = _mobj["evidence"].get("raw") or _mobj["evidence"].get("snippet") or ""
+            if not _raw:
+                try:
+                    _v = _mobj.get("value_norm") if _mobj.get("value_norm") is not None else _mobj.get("value")
+                    _ut = (_mobj.get("unit") or _mobj.get("unit_tag") or "").strip()
+                    if _v is not None and _ut:
+                        _raw = f"{_v} {_ut}"
+                    elif _v is not None:
+                        _raw = str(_v)
+                except Exception:
+                    _raw = ""
+
+            _unit_tag = (_mobj.get("unit") or _mobj.get("unit_tag") or _mobj.get("base_unit") or "").strip().lower()
+            _ck = str(_ckey or "").lower()
+
+            _is_pct = ("__percent" in _ck) or (_unit_tag == "percent")
+            _is_cur = ("__currency" in _ck)
+            _is_mag = ("__unit_" in _ck) or (not _is_pct and not _is_cur)
+
+            if _is_mag:
+                # magnitude/count-like must not carry currency/percent markers (cross-dimension leakage guard)
+                if _h_has_currency(_raw) or _h_has_percent(_raw):
+                    bad_mag.append({"canonical_key": str(_ckey), "raw": str(_raw)[:120]})
+
+            if _is_cur:
+                # currency keys should carry a currency marker in raw/unit
+                if not _h_has_currency(_raw):
+                    bad_cur.append({"canonical_key": str(_ckey), "raw": str(_raw)[:120]})
+
+            if _is_pct:
+                # percent keys must carry percent marker and must not bind bare years
+                _bad_here = False
+                if not _h_has_percent(_raw):
+                    _bad_here = True
+                try:
+                    _v = _mobj.get("value_norm") if _mobj.get("value_norm") is not None else _mobj.get("value")
+                    if isinstance(_v, (int, float)):
+                        _iv = int(_v)
+                        if 1900 <= _iv <= 2100 and abs(float(_v) - float(_iv)) < 1e-9:
+                            _bad_here = True
+                except Exception:
+                    pass
+                if _bad_here:
+                    bad_pct.append({"canonical_key": str(_ckey), "raw": str(_raw)[:120], "value_norm": _mobj.get("value_norm")})
+
+            if (len(bad_mag) >= 5) and (len(bad_cur) >= 5) and (len(bad_pct) >= 5):
+                break
+
+        ok_all = _assert("pmc.magnitude_keys_no_currency_or_percent_markers", (len(bad_mag) == 0), f"samples={bad_mag}") and ok_all
+        ok_all = _assert("pmc.currency_keys_have_currency_marker", (len(bad_cur) == 0), f"samples={bad_cur}") and ok_all
+        ok_all = _assert("pmc.percent_keys_have_percent_marker_and_not_yearlike", (len(bad_pct) == 0), f"samples={bad_pct}") and ok_all
+
+    except Exception as e:
+        report["analysis"]["error"] = f"{type(e).__name__}: {e}"
+        report["analysis"]["traceback"] = traceback.format_exc()[:8000]
+        report["status"] = "fail"
+        # write report
+        _dir = str(os.getenv("REFACTOR_HARNESS_REPORT_PATH") or os.getcwd())
+        try:
+            os.makedirs(_dir, exist_ok=True)
+        except Exception:
+            _dir = os.getcwd()
+        fname = f"refactor_harness_report_REFACTOR02_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fpath = os.path.join(_dir, fname)
+        try:
+            with open(fpath, "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        print("[REFACTOR02] Harness FAILED during analysis stage. Report:", fpath)
+        return False
+
+    # ---- run evolution
+    evo_out = None
+    try:
+        evo_fn = globals().get("run_source_anchored_evolution")
+        if not callable(evo_fn):
+            ok_all = _assert("evolution.run_source_anchored_evolution_defined", False, "run_source_anchored_evolution is not callable") and ok_all
+            raise RuntimeError("run_source_anchored_evolution missing")
+
+        evo_out = evo_fn(
+            analysis_out,
+            web_context={
+                "force_rebuild": bool(force_rebuild),
+                "extra_urls": list(extra_urls_evolution),
+                "diag_run_id": str(evo_run_id or ""),
+                "diag_extra_urls_ui_raw": "\n".join(extra_urls_evolution),
+            },
+        )
+        ok_all = _assert("evolution.output_dict", isinstance(evo_out, dict), f"type={type(evo_out)}") and ok_all
+        if not isinstance(evo_out, dict):
+            raise RuntimeError("evolution output not a dict")
+
+        rows = evo_out.get("metric_changes_v2")
+        if not isinstance(rows, list):
+            rows = []
+
+        dbg = evo_out.get("debug") if isinstance(evo_out.get("debug"), dict) else {}
+        summary = dbg.get("diff_panel_v2_summary") if isinstance(dbg.get("diff_panel_v2_summary"), dict) else {}
+
+        both_count = summary.get("both_count")
+        prev_only = summary.get("prev_only_count")
+        cur_only = summary.get("cur_only_count")
+        rows_total = summary.get("rows_total")
+        join_mode = summary.get("join_mode")
+
+        report["evolution"] = {
+            "diag_run_id": evo_run_id,
+            "metric_changes_v2_rows": int(len(rows)),
+            "diff_panel_v2_summary": summary,
+        }
+
+        # ---- invariants
+        # 1) diff rows exist and include both prev+cur
+        any_both = False
+        for r in rows:
+            try:
+                if (r.get("previous_value_norm") is not None) and (r.get("current_value_norm") is not None):
+                    any_both = True
+                    break
+            except Exception:
+                continue
+
+        ok_all = _assert("diff.any_both_row_exists", bool(any_both), f"rows={len(rows)}") and ok_all
+
+        # 2) summary both_count > 0 (if present)
+        if both_count is not None:
+            ok_all = _assert("diff.summary_both_count_gt_0", int(both_count) > 0, f"both_count={both_count}") and ok_all
+
+        # 3) no global 'no_prev_metrics' failure mode (heuristic: not all rows are no_prev_metrics)
+        if rows:
+            no_prev_all = True
+            for r in rows:
+                ct = str(r.get("change_type") or "").strip().lower()
+                if ct != "no_prev_metrics":
+                    no_prev_all = False
+                    break
+            ok_all = _assert("diff.not_all_no_prev_metrics", (not no_prev_all), f"rows_total={len(rows)}") and ok_all
+
+        # 4) percent-year token rule: percent-key prev/current must not look like a bare year
+        bad_percent_year = []
+        for r in rows:
+            try:
+                ckey = str(r.get("canonical_key") or "")
+                unit_tag = str(r.get("current_unit_tag") or r.get("previous_unit_tag") or "")
+                is_pct = ("__percent" in ckey) or (unit_tag == "percent") or ("percent" in ckey.lower())
+                if not is_pct:
+                    continue
+
+                for fld in ("previous_value_norm", "current_value_norm"):
+                    v = r.get(fld)
+                    if v is None:
+                        continue
+                    try:
+                        fv = float(v)
+                    except Exception:
+                        continue
+                    if 1900.0 <= fv <= 2100.0 and abs(fv - round(fv)) < 1e-9:
+                        bad_percent_year.append({"canonical_key": ckey, fld: v})
+                        if len(bad_percent_year) >= 5:
+                            break
+                if len(bad_percent_year) >= 5:
+                    break
+            except Exception:
+                continue
+
+        ok_all = _assert("percent.prev_or_cur_not_yearlike_1900_2100", (len(bad_percent_year) == 0), f"samples={bad_percent_year}") and ok_all
+
+        # 5) internal count sanity (summary counts should align where possible)
+        if isinstance(summary, dict) and both_count is not None and prev_only is not None and rows_total is not None:
+            try:
+                prev_key_count_summary = int(both_count) + int(prev_only)
+                pmc_keys = list((analysis_out.get("primary_metrics_canonical") or {}).keys()) if isinstance(analysis_out.get("primary_metrics_canonical"), dict) else []
+                ok_all = _assert("counts.prev_key_count_matches_baseline_pmc", prev_key_count_summary == len(pmc_keys), f"summary_prev={prev_key_count_summary} baseline_pmc={len(pmc_keys)}") and ok_all
+                if str(join_mode or "") != "union":
+                    ok_all = _assert("counts.rows_total_matches_prev_key_count_nonunion", int(rows_total) == prev_key_count_summary, f"rows_total={rows_total} prev_key_count={prev_key_count_summary} join_mode={join_mode}") and ok_all
+            except Exception:
+                pass
+
+    except Exception as e:
+        report["evolution"]["error"] = f"{type(e).__name__}: {e}"
+        report["evolution"]["traceback"] = traceback.format_exc()[:8000]
+        report["status"] = "fail"
+        ok_all = False
+
+    # ---- write report
+    try:
+        report["status"] = "pass" if ok_all else "fail"
+        _dir = str(os.getenv("REFACTOR_HARNESS_REPORT_PATH") or os.getcwd())
+        try:
+            os.makedirs(_dir, exist_ok=True)
+        except Exception:
+            _dir = os.getcwd()
+        fname = f"refactor_harness_report_REFACTOR02_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fpath = os.path.join(_dir, fname)
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        print(f"[REFACTOR02] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
+    except Exception:
+        pass
+
+    return bool(ok_all)
+
+# ============================================================
+# REFACTOR02: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
+# ============================================================
+try:
+    if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
+        import sys as _rf01_sys
+        _ok = _refactor02_run_harness_v2()
+        _rf01_sys.exit(0 if _ok else 1)
+except SystemExit:
+    raise
+except Exception:
+    try:
+        import traceback as _rf01_tb
+        _rf01_tb.print_exc()
+    except Exception:
+        pass
+    try:
+        import sys as _rf01_sys
+        _rf01_sys.exit(1)
+    except Exception:
+        pass
