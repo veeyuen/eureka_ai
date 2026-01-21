@@ -31120,19 +31120,19 @@ def main():
 
             # ============================================================
 
-            extra_sources_text_tab1 = st.text_area(
+           # extra_sources_text_tab1 = st.text_area(
 
-                "Extra source URLs (optional, one per line)",
+           #     "Extra source URLs (optional, one per line)",
 
-                placeholder="https://example.com/report\nhttps://another-source.com/page",
+           #     placeholder="https://example.com/report\nhttps://another-source.com/page",
 
-                help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
+           #     help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
 
-                height=90,
+           #     height=90,
 
-                key="ui_extra_sources_tab1",
+           #     key="ui_extra_sources_tab1",
 
-            )
+           # )
 
             # ============================================================
 
@@ -31180,7 +31180,7 @@ def main():
                     except Exception:
                         pass
 
-                                        # ============================================================
+                    # ============================================================
                     # PATCH UI_EXTRA_SOURCES2 (ADDITIVE): parse extra source URLs
                     # ============================================================
                     extra_urls = []
@@ -31527,7 +31527,7 @@ def main():
         **How it works:**
         - Select a baseline from your history (stored in Google Sheets)
         - Re-fetches the **exact same sources** from that analysis
-        - Extracts current numbers using regex (no LLM variance)
+        - Extracts current numbers using deterministic methods
         - Computes deterministic diffs with context-aware matching
         """)
 
@@ -31586,12 +31586,14 @@ def main():
         # ============================================================
         # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
         # ============================================================
-        extra_sources_text = st.text_area(
-            "Extra source URLs (optional, one per line)",
-            placeholder="https://example.com/report\nhttps://another-source.com/page",
-            help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
-            height=110,
-        )
+       # extra_sources_text = st.text_area(
+       #     "Extra source URLs (optional, one per line)",
+       #     placeholder="https://example.com/report\nhttps://another-source.com/page",
+       #     help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
+       #     height=110,
+       # )
+
+       extra_sources_text = ("https://veeyuen.github.io/injected-content/")
 
         compare_data = None
         if "another saved analysis" in compare_method:
