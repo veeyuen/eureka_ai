@@ -48906,7 +48906,7 @@ try:
     PATCH_TRACKER_V1.append({
         'patch_id': 'FIX2D92',
         'date': '2026-01-21',
-        'summary': "Eliminate Streamlit function-inspection panels by sanitizing callables before st.write/st.json (safe-render guard).\",
+        'summary': "Eliminate Streamlit function-inspection panels by sanitizing callables before st.write/st.json (safe-render guard).",
         'files': ['FIX2D92_full_codebase_streamlit_safe.py'],
         'supersedes': [],
     })
