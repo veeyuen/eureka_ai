@@ -23738,7 +23738,7 @@ def main():
     with tab1:
         query = st.text_input(
             "Enter your question about markets, industries, finance, or economics:",
-            placeholder="e.g., What is the size of the global EV battery market?"
+            placeholder="e.g., What is the size of the global EV battery market?",
             key="new_analysis_query",  # PATCH UI1 (ADDITIVE): unique Streamlit key
         )
 
