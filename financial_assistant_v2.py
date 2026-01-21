@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v15"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -1137,7 +1137,7 @@ def add_to_history(analysis: dict) -> bool:
                     "unit_family": best.get("unit_family"),
                     "base_unit": best.get("base_unit"),
                     "value": best.get("value"),
-                    "value_norm": best.get("value_norm"),
+                    "value_norm": (best.get("value") if best.get("value") is not None else best.get("value_norm")),
                     "measure_kind": best.get("measure_kind"),
                     "measure_assoc": best.get("measure_assoc"),
                     "context_snippet": (best.get("context_snippet") or "")[:220],
@@ -13748,6 +13748,264 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     except Exception:
                         pass
     # =====================================================================
+    # PATCH FIX2B_RANGE2 (ADDITIVE): override legacy snapshot_candidates range with schema-unit evidence range
+    # =====================================================================
+    try:
+        _res = analysis.get("results") if isinstance(analysis, dict) else None
+        if isinstance(_res, dict):
+            for _ck, _m in _res.items():
+                if not isinstance(_m, dict):
+                    continue
+                _ev = _m.get("evidence")
+                if not isinstance(_ev, list) or len(_ev) < 2:
+                    continue
+                _vals = []
+                for _e in _ev:
+                    if not isinstance(_e, dict):
+                        continue
+                    _v = _e.get("value_norm")
+                    if _v is None:
+                        _v = _e.get("value")
+                    if isinstance(_v, (int, float)):
+                        try:
+                            _vals.append(float(_v))
+                        except Exception:
+                            pass
+                if len(_vals) < 2:
+                    continue
+                _vmin = min(_vals); _vmax = max(_vals)
+                if abs(_vmax - _vmin) <= max(1e-9, abs(_vmin) * 0.02):
+                    continue
+                _m["value_range"] = {"min": _vmin, "max": _vmax, "n": len(_vals), "method": "ph2b_schema_unit_range_v1|fix2b_range2"}
+                try:
+                    _unit_disp = _m.get("unit") or _m.get("unit_tag") or ""
+                    _m["value_range_display"] = f"{_vmin:g}–{_vmax:g} {_unit_disp}".strip()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH FIX2B_RANGE3 (ADDITIVE): Schema-unit value_range rebuild for primary_metrics_canonical
+    #
+    # Why:
+    # - We observed value_range values scaled as if converted to billions (e.g., 17.8M -> 0.0178)
+    #   while still displaying "million units", causing downstream eligibility drift.
+    # - FIX2B_RANGE2 only patches analysis["results"] (often empty); the dashboard-facing
+    #   canonicals live under analysis["primary_response"]["primary_metrics_canonical"].
+    #
+    # What:
+    # - Rebuild value_range from baseline_sources_cache extracted_numbers, treating candidate.value_norm
+    #   as schema units (NO double scaling), constrained to the metric's chosen source_url.
+    # - Pure post-processing: NO IO, NO refetch, NO hashing changes.
+    # =====================================================================
+    try:
+        import re
+        _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
+        _pmc = _pr.get("primary_metrics_canonical") if isinstance(_pr, dict) else None
+        _schema = (
+            (analysis.get("metric_schema_frozen") if isinstance(analysis, dict) else None)
+            or (_pr.get("metric_schema_frozen") if isinstance(_pr, dict) else None)
+            or {}
+        )
+        _bsc = analysis.get("baseline_sources_cache") if isinstance(analysis, dict) else None
+        if isinstance(_pmc, dict) and isinstance(_schema, dict) and isinstance(_bsc, list) and _bsc:
+            # Flatten candidate universe from snapshots
+            _flat = []
+            for _src in _bsc:
+                if not isinstance(_src, dict):
+                    continue
+                _nums = _src.get("extracted_numbers")
+                if isinstance(_nums, list):
+                    _flat.extend([n for n in _nums if isinstance(n, dict)])
+            # Helper: scale evidence presence for common magnitudes
+            def _ph2b_scale_token_ok(_spec_unit_tag: str, _cand: dict) -> bool:
+                try:
+                    sut = str(_spec_unit_tag or "").lower()
+                    if not sut:
+                        return True
+                    # Only enforce for explicit scaled magnitudes
+                    if ("million" not in sut) and ("billion" not in sut) and ("thousand" not in sut) and ("trillion" not in sut):
+                        return True
+                    raw = str(_cand.get("raw") or "").lower()
+                    ut = str(_cand.get("unit_tag") or _cand.get("unit") or "").lower()
+                    ctx = str(_cand.get("context_snippet") or "").lower()
+                    blob = " ".join([raw, ut, ctx])
+                    if "million" in sut:
+                        return ("million" in blob) or re.search(r"\bm\b", blob) is not None or " mn" in blob
+                    if "billion" in sut:
+                        return ("billion" in blob) or re.search(r"\bb\b", blob) is not None or " bn" in blob
+                    if "thousand" in sut:
+                        return ("thousand" in blob) or re.search(r"\bk\b", blob) is not None
+                    if "trillion" in sut:
+                        return ("trillion" in blob) or re.search(r"\bt\b", blob) is not None
+                except Exception:
+                    pass
+                return True
+
+            for _ck, _m in list(_pmc.items()):
+                if not isinstance(_m, dict):
+                    continue
+                _spec = _schema.get(_ck) if isinstance(_schema, dict) else None
+                if not isinstance(_spec, dict):
+                    continue
+                _src_url = _m.get("source_url") or _spec.get("preferred_url") or ""
+                if not _src_url:
+                    continue
+                _src_url_n = _ph2b_norm_url(_src_url)
+                # Collect eligible vals from same source_url
+                _vals = []
+                _examples = []
+                for _c in _flat:
+                    try:
+                        if _ph2b_norm_url(_c.get("source_url") or "") != _src_url_n:
+                            continue
+                        if _c.get("is_junk") is True:
+                            continue
+                        # Reuse FIX16 allowlist if present
+                        try:
+                            if callable(globals().get("_fix16_candidate_allowed")):
+                                if not globals().get("_fix16_candidate_allowed")(_c, _spec, canonical_key=_ck):
+                                    continue
+                        except Exception:
+                            pass
+                        # Enforce scale token for scaled magnitudes
+                        if not _ph2b_scale_token_ok(_spec.get("unit_tag") or _spec.get("unit") or "", _c):
+                            continue
+                        _v = _c.get("value_norm")
+                        if _v is None:
+                            _v = _c.get("value")
+                        if isinstance(_v, (int, float)):
+                            _vals.append(float(_v))
+                            if len(_examples) < 4:
+                                _examples.append({
+                                    "raw": _c.get("raw"),
+                                    "source_url": _c.get("source_url"),
+                                    "context_snippet": (str(_c.get("context_snippet") or "")[:180])
+                                })
+                    except Exception:
+                        continue
+                if len(_vals) < 2:
+                    continue
+                _vmin = min(_vals); _vmax = max(_vals)
+                if abs(_vmax - _vmin) <= max(1e-9, abs(_vmin) * 0.02):
+                    continue
+                _m["value_range"] = {
+                    "min": _vmin,
+                    "max": _vmax,
+                    "n": len(_vals),
+                    "examples": _examples,
+                    "method": "ph2b_schema_unit_range_v2|fix2b_range3"
+                }
+                try:
+                    _unit_disp = _m.get("unit") or _m.get("unit_tag") or _spec.get("unit_tag") or ""
+                    _m["value_range_display"] = f"{_vmin:g}–{_vmax:g} {_unit_disp}".strip()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX2B_RANGE4 (ADDITIVE): late override of snapshot_candidates range builder (schema-unit semantics)
+    #
+    # Location:
+    # - This runs AFTER the legacy "snapshot_candidates" range builder blocks above.
+    #
+    # Goal:
+    # - Ensure value_range is computed in *schema units* (treat candidate.value_norm as schema units),
+    #   avoiding any double-scaling/divide behavior.
+    # - Constrain range computation to the metric's chosen current source_url when present,
+    #   preventing cross-source range pollution.
+    #
+    # Notes:
+    # - Downstream-only post-processing. Does NOT affect selection, only range/min/max display.
+    # - Safe even when evidence is missing: it simply no-ops.
+    # =====================================================================
+    try:
+        _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
+        _pmc = _pr.get("primary_metrics_canonical") if isinstance(_pr, dict) else None
+        _schema = (
+            (analysis.get("metric_schema_frozen") if isinstance(analysis, dict) else None)
+            or (_pr.get("metric_schema_frozen") if isinstance(_pr, dict) else None)
+            or {}
+        )
+        _bsc = analysis.get("baseline_sources_cache") if isinstance(analysis, dict) else None
+
+        if isinstance(_pmc, dict) and isinstance(_schema, dict) and isinstance(_bsc, list) and _bsc:
+            # Flatten candidates once
+            _flat = []
+            for _src in _bsc:
+                if not isinstance(_src, dict):
+                    continue
+                _nums = _src.get("extracted_numbers")
+                if isinstance(_nums, list):
+                    _flat.extend([n for n in _nums if isinstance(n, dict)])
+
+            def _ph2b_unit_tag_norm(x: str) -> str:
+                return _safe_norm_unit_tag(str(x or ""))
+
+            for _ckey, _m in _pmc.items():
+                if not isinstance(_m, dict):
+                    continue
+
+                _mdef = _schema.get(_ckey) if isinstance(_schema, dict) else None
+                _mdef = _mdef if isinstance(_mdef, dict) else {}
+                _exp_unit = str(_mdef.get("unit") or _m.get("unit") or _m.get("unit_tag") or "")
+                _exp_tag = _ph2b_unit_tag_norm(_exp_unit)
+
+                # If the metric already has a source_url, treat that as the range scope
+                _scope_url = _m.get("cur_source_url") or _m.get("source_url") or ""
+                _scope_url_n = _norm_url(_scope_url) if _scope_url else ""
+
+                _vals = []
+                for _cand in _flat:
+                    if not isinstance(_cand, dict):
+                        continue
+                    # source scope (if known)
+                    if _scope_url_n:
+                        _c_url = _cand.get("source_url") or ""
+                        if _norm_url(_c_url) != _scope_url_n:
+                            continue
+                    # unit_tag scope (only enforce when schema declares a scaled magnitude tag)
+                    if _exp_tag:
+                        _cand_tag = _ph2b_unit_tag_norm(_cand.get("unit_tag") or _cand.get("unit") or _cand.get("raw") or "")
+                        if _exp_tag in ("K", "M", "B", "T") and _cand_tag != _exp_tag:
+                            continue
+                    _vn = _cand.get("value_norm")
+                    if _vn is None:
+                        continue
+                    if isinstance(_vn, (int, float)):
+                        try:
+                            _vals.append(float(_vn))
+                        except Exception:
+                            pass
+
+                if len(_vals) >= 2:
+                    _vmin = min(_vals); _vmax = max(_vals)
+                    if abs(_vmax - _vmin) > max(1e-9, abs(_vmin) * 0.02):
+                        _m["value_range"] = {
+                            "min": _vmin,
+                            "max": _vmax,
+                            "n": len(_vals),
+                            "method": "ph2b_schema_unit_range_v2|fix2b_range4",
+                            "scope_url": _scope_url_n or "",
+                            "scope_unit_tag": _exp_tag or ""
+                        }
+                        try:
+                            _unit_disp = _m.get("unit") or _m.get("unit_tag") or _exp_unit or ""
+                            _m["value_range_display"] = f"{_vmin:g}–{_vmax:g} {_unit_disp}".strip()
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    # =====================================================================
+
+
+
+    # =====================================================================
     # PATCH V1 (ADDITIVE): analysis & schema version stamping
     # - Pure metadata, NO logic impact
     # - Allows downstream drift attribution:
@@ -14800,7 +15058,13 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 "cur_value_norm": cur_val,
                 "prev_unit_cmp": prev_unit_cmp,
                 "cur_unit_cmp": cur_unit_cmp,
-                "unit_mismatch": bool(unit_mismatch),
+                # PATCH FIX2B_TRACE_V1 (ADDITIVE): expose chosen URL + selector trace (no behavior change)
+                "cur_source_url": str((cur_can_obj or {}).get("source_url") or ""),
+                "selector_used": str((cur_can_obj or {}).get("selector_used") or ""),
+                "evo_selector_trace_v1": (dict((cur_can_obj or {}).get("analysis_selector_trace_v1") or {}) if isinstance((cur_can_obj or {}).get("analysis_selector_trace_v1"), dict) else {}),
+                "winner_candidate_debug": (dict((cur_can_obj or {}).get("winner_candidate_debug") or {}) if isinstance((cur_can_obj or {}).get("winner_candidate_debug"), dict) else {}),
+                "would_block_reason": str((cur_can_obj or {}).get("would_block_reason") or ""),
+"unit_mismatch": bool(unit_mismatch),
                 "abs_eps_used": abs_eps,
                 "rel_eps_used": rel_eps,
             })
@@ -17428,6 +17692,55 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     # ============================================================
 
     output["metric_changes"] = metric_changes or []
+    # =====================================================================
+    # PATCH PH2B_S3 (ADDITIVE): Attach selector breadcrumb + current fields per diff row
+    # - Makes Phase 2B runbook checks (#3/#7/#9) a fast scan.
+    # - Does not alter selection; only exposes chosen current metadata.
+    # =====================================================================
+    try:
+        if isinstance(output.get("metric_changes"), list) and isinstance(current_metrics, dict):
+            # local normalizer for safe comparisons in dashboards
+            def _ph2b_norm_url(_u: str) -> str:
+                try:
+                    _u = (_u or "").strip()
+                    if not _u:
+                        return ""
+                    _u = _u.replace("http://", "https://")
+                    # drop trailing slash
+                    while _u.endswith("/") and len(_u) > 8:
+                        _u = _u[:-1]
+                    # remove www.
+                    _u = _u.replace("://www.", "://")
+                    return _u
+                except Exception:
+                    return (_u or "").strip()
+
+            for _row in output["metric_changes"]:
+                if not isinstance(_row, dict):
+                    continue
+                _ck = _row.get("canonical_key") or _row.get("canonical_id") or ""
+                if not _ck:
+                    continue
+                _cur = current_metrics.get(_ck)
+                if not isinstance(_cur, dict):
+                    continue
+
+                if "selector_used" not in _row:
+                    _row["selector_used"] = _cur.get("selector_used") or ""
+                if not _row.get("cur_source_url"):
+                    _row["cur_source_url"] = _cur.get("source_url") or ""
+                if "cur_source_url_norm" not in _row:
+                    _row["cur_source_url_norm"] = _ph2b_norm_url(_row.get("cur_source_url") or "")
+                if "cur_value_norm" not in _row and _cur.get("value_norm") is not None:
+                    _row["cur_value_norm"] = _cur.get("value_norm")
+                if "cur_unit_cmp" not in _row:
+                    _row["cur_unit_cmp"] = _cur.get("unit") or _cur.get("unit_tag") or ""
+                if "anchor_used" not in _row and isinstance(_cur.get("anchor_used"), bool):
+                    _row["anchor_used"] = _cur.get("anchor_used")
+    except Exception:
+        pass
+    # =====================================================================
+
     output["summary"]["total_metrics"] = len(output["metric_changes"])
     output["summary"]["metrics_found"] = int(found or 0)
     output["summary"]["metrics_increased"] = int(increased or 0)
@@ -18943,6 +19256,31 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 or None
             )
 
+            # =====================================================================
+            # PATCH PH2B_S2 (ADDITIVE): Robust pool resolution for canonical rebuild
+            # - Some pipelines store the post-attach merged pool under different locals()
+            #   names (or only inside nested objects). If the pool is missed, FIX41AFC19
+            #   appears "not applied" even on rebuild runs.
+            # - We search locals() for any list-like baseline_sources_cache* variants and
+            #   choose the largest plausible pool as a safe fallback.
+            # =====================================================================
+            if _fix41afc19_pool is None:
+                try:
+                    _cand_pools = []
+                    for _k, _v in (locals() or {}).items():
+                        if not isinstance(_k, str):
+                            continue
+                        if "baseline_sources_cache" in _k and isinstance(_v, list) and _v:
+                            _cand_pools.append((_k, _v))
+                    # Choose the largest pool (most likely post-attach merged universe)
+                    if _cand_pools:
+                        _cand_pools.sort(key=lambda kv: len(kv[1] or []), reverse=True)
+                        _fix41afc19_pool = _cand_pools[0][1]
+                        _fix41afc19_reason = (_fix41afc19_reason or "") + "|ph2b_s2_pool_fallback:" + str(_cand_pools[0][0])
+                except Exception:
+                    pass
+            # =====================================================================
+
             # Prefer Analysis-canonical rebuild (Phase 2B hard-wire) when present; else fall back to FIX16 schema-only rebuild
             _fix41afc19_fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
             if callable(_fix41afc19_fn):
@@ -18966,6 +19304,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _fix41afc19_applied = True
                     _fix41afc19_rebuilt_count = len(current_metrics)
                     _fix41afc19_reason = "override_current_metrics_with_fix16_anchor_rebuild"
+                else:
+                    _fix41afc19_reason = (_fix41afc19_reason or "") + "|rebuilt_empty_or_non_dict"
     except Exception:
         pass
 
@@ -22333,7 +22673,8 @@ def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = ""
         # Extra deterministic guard: unitless year-like numbers should never compete
         # for non-year metrics even if upstream tagging missed them.
         if not _fix16_metric_is_year_like(metric_spec, canonical_key=canonical_key):
-            v = c.get("value_norm")
+            # PATCH FIX2B_RANGE_SCHEMA_V1 (ADDITIVE): range uses schema-unit value when available
+            v = c.get("value") if c.get("value") is not None else c.get("value_norm")
             u = (c.get("base_unit") or c.get("unit") or "").strip()
             if u == "" and isinstance(v, (int, float)):
                 iv = int(v)
@@ -22678,6 +23019,11 @@ def _analysis_canonical_final_selector_v1(
 
     # Candidate filtering
     cands = [c for c in (candidates or []) if isinstance(c, dict)]
+    # PATCH FIX2B_TRACE_V1 (ADDITIVE): candidate counts for trace
+    try:
+        meta["candidate_count_in"] = int(len(cands))
+    except Exception:
+        pass
     # Enforce preferred source lock when available (prevents cross-source hijack)
     if meta["preferred_url"]:
         pref = meta["preferred_url"]
@@ -22688,17 +23034,221 @@ def _analysis_canonical_final_selector_v1(
                 cands_pref.append(c)
         # If preferred exists but yields zero candidates, we keep empty (hard lock).
         cands = cands_pref
+        # PATCH FIX2B_TRACE_V1 (ADDITIVE): preferred-locked candidate count
+        try:
+            meta["candidate_count_pref"] = int(len(cands))
+        except Exception:
+            pass
 
     eligible = []
     for c in cands:
         try:
+            # =====================================================================
+            # PATCH PH2B_UF1 (ADDITIVE): Fill missing unit_family/unit_cmp deterministically
+            # Many snapshot candidates omit unit_family even when unit_tag/raw clearly indicates
+            # magnitude/percent/currency. The analysis selector treats unit_family as authoritative
+            # for schema gating; leaving it blank causes false ineligibility (empty Current).
+            # =====================================================================
+            try:
+                if isinstance(c, dict) and not str(c.get("unit_family") or "").strip():
+                    _raw = str(c.get("raw") or "")
+                    _ut = str(c.get("unit_tag") or c.get("unit") or "")
+                    _ctx = str(c.get("context_snippet") or "")
+                    _blob = (" ".join([_raw, _ut, _ctx])).lower()
+                    uf = ""
+                    if "%" in _blob or "percent" in _blob or "percentage" in _blob:
+                        uf = "percent"
+                    elif any(tok in _blob for tok in ["usd", "sgd", "eur", "gbp", "$", "€", "£", "¥", "aud", "cad", "inr", "cny", "rmb"]):
+                        uf = "currency"
+                    else:
+                        # Magnitude / counts (incl. unit sales)
+                        if any(w in _blob for w in ["million", "billion", "thousand", "trillion"]) or re.search(r"[mbkt]", _blob):
+                            uf = "magnitude"
+                        elif str(c.get("measure_kind") or "").lower() in ("count_units", "count", "quantity"):
+                            uf = "magnitude"
+                        elif str(c.get("measure_assoc") or "").lower() in ("units", "unit_sales", "sales"):
+                            uf = "magnitude"
+                    if uf:
+                        c["unit_family"] = uf
+                        # unit_cmp hint (best-effort; used only for display/debug)
+                        if not str(c.get("unit_cmp") or "").strip():
+                            if uf == "percent":
+                                c["unit_cmp"] = "%"
+                            elif uf == "currency":
+                                c["unit_cmp"] = "currency"
+                            else:
+                                c["unit_cmp"] = (_ut or "").strip()
+            except Exception:
+                pass
+
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
+
+            # =====================================================================
+            # PATCH FIX2B_SEL23 (ADDITIVE): unit-family hard gating + year suppression + scaled-magnitude unit evidence
+            # - Rejects percent/currency evidence when schema expects magnitude (prevents % hijacks).
+            # - Suppresses unitless bare years (e.g., 2030) as candidates.
+            # - Enforces unit evidence for scaled magnitude schemas (million/billion/etc.).
+            # =====================================================================
+            try:
+                _raw0 = str(c.get("raw") or "").strip()
+                _raw0_l = _raw0.lower()
+                _v0 = c.get("value_norm", None)
+                if _v0 is None:
+                    _v0 = c.get("value", None)
+
+                _cand_family = str(c.get("unit_family") or "").strip().lower()
+                _cand_ucmp = str(c.get("unit_cmp") or c.get("unit_tag") or "").strip().lower()
+                _spec_family = str(spec.get("unit_family") or "").strip().lower()
+                # =====================================================================
+                # PATCH FIX2B_SCHEMAFAM_INFER_V1 (ADDITIVE):
+                # If schema.unit_family is missing/blank, infer expected family deterministically
+                # from schema.dimension / canonical_key suffixes using existing FIX17 helper.
+                # This prevents silent bypass of percent/currency hard-gates.
+                # =====================================================================
+                try:
+                    if not _spec_family:
+                        _fn_exp = globals().get("_fix17_expected_dimension")
+                        if callable(_fn_exp):
+                            _exp = str(_fn_exp(spec, canonical_key=canonical_key) or "").strip().lower()
+                            if _exp in ("percent", "currency", "magnitude", "rate", "ratio"):
+                                _spec_family = _exp
+                except Exception:
+                    pass
+                _spec_ut = str(spec.get("unit_tag") or spec.get("unit") or "").strip().lower()
+
+                # evidence flags
+                _has_pct = ("%" in _raw0) or ("percent" in _raw0_l) or ("%" in _cand_ucmp) or (_cand_family == "percent")
+                _has_ccy = any(sym in _raw0 for sym in ("$", "€", "£", "¥")) or any(tok in _raw0_l for tok in ("usd", "eur", "sgd", "gbp", "jpy")) or (_cand_family == "currency")
+
+                _has_unit_ev0 = False
+                try:
+                    for _k in ("base_unit", "unit", "unit_tag", "unit_family"):
+                        if str(c.get(_k) or "").strip():
+                            _has_unit_ev0 = True
+                            break
+                    if not _has_unit_ev0:
+                        if any(tok in _raw0_l for tok in ("million", "billion", "trillion", "mn", "bn", "thousand")):
+                            _has_unit_ev0 = True
+                        if _has_pct or _has_ccy:
+                            _has_unit_ev0 = True
+                except Exception:
+                    pass
+
+                # unit-family hard gating (schema-driven)
+                try:
+                    if _spec_family == "percent":
+                        if not _has_pct:
+                            meta["blocked_reason"] = "percent_evidence_missing_hard_block"
+                            continue
+                    elif _spec_family == "currency":
+                        if not _has_ccy:
+                            meta["blocked_reason"] = "currency_evidence_missing_hard_block"
+                            continue
+                    elif _spec_family == "magnitude":
+                        # reject percent/currency candidates outright
+                        if _has_pct or _has_ccy:
+                            meta["blocked_reason"] = "unit_mismatch_hard_block"
+                            continue
+                except Exception:
+                    pass
+
+                # year-only candidate suppression (strict): only when unit evidence is missing
+                try:
+                    if (not _has_unit_ev0) and isinstance(_v0, (int, float)):
+                        _iv0 = int(float(_v0))
+                        if 1900 <= _iv0 <= 2100:
+                            import re as _re
+                            if _re.fullmatch(r"(19\d{2}|20\d{2})", _raw0 or str(_iv0)):
+                                continue
+                except Exception:
+                    pass
+
+                # scaled magnitude requires unit evidence (schema implies million/billion/etc.)
+                try:
+                    _spec_nm = str(spec.get("name") or "").lower()
+                    _scaled = any(t in _spec_ut for t in ("million", "billion", "trillion", "thousand")) or (_spec_ut in ("m", "b", "t", "k"))
+                    _countish = any(t in _spec_nm for t in ("unit", "units", "sales", "deliveries", "shipments", "registrations", "volume"))
+                    if _spec_family == "magnitude" and _scaled and _countish and (not _has_unit_ev0):
+                        meta["blocked_reason"] = "unit_evidence_missing_hard_block"
+                        continue
+                except Exception:
+                    pass
+
+                # =====================================================================
+                # PATCH FIX2B_SCALE_EV_V1 (ADDITIVE): require *scale* evidence for scaled magnitude schemas
+                # Why:
+                # - Earlier gating treated inferred unit_family='magnitude' as "unit evidence", allowing unitless
+                #   integers (e.g., 170) to pass for schemas like "million units".
+                # - For scaled schemas, we require explicit scale evidence in raw/unit_tag/unit_cmp (million/billion/etc.).
+                # Safety:
+                # - Only applies when schema implies a scale (million/billion/thousand/trillion or M/B/K/T).
+                # - Does NOT change fastpath/hashing/injection/snapshot attach.
+                # =====================================================================
+                try:
+                    _scaled2 = False
+                    try:
+                        _scaled2 = any(t in _spec_ut for t in ("million", "billion", "trillion", "thousand")) or (_spec_ut in ("m", "b", "t", "k"))
+                    except Exception:
+                        _scaled2 = False
+                    if _spec_family == "magnitude" and _scaled2:
+                        _blob = (" ".join([
+                            str(c.get("raw") or ""),
+                            str(c.get("unit_cmp") or ""),
+                            str(c.get("unit_tag") or c.get("unit") or ""),
+                            str(c.get("context_snippet") or c.get("context") or ""),
+                        ])).lower()
+                        _has_scale_ev = any(tok in _blob for tok in ("million", "billion", "trillion", "thousand", "mn", "bn")) or bool(re.search(r"\b[mbkt]\b", _blob))
+                        # =================================================================
+                        # PATCH FIX2B_SCALE_MATCH_V1 (ADDITIVE):
+                        # For scaled schemas, require scale to *match* the schema (e.g., million vs billion).
+                        # Prevents wrong-scale candidates from surviving for 'million units' schemas.
+                        # =================================================================
+                        try:
+                            _schema_scale = ""
+                            if "million" in _spec_ut or _spec_ut == "m":
+                                _schema_scale = "m"
+                            elif "billion" in _spec_ut or _spec_ut == "b":
+                                _schema_scale = "b"
+                            elif "thousand" in _spec_ut or _spec_ut == "k":
+                                _schema_scale = "k"
+                            elif "trillion" in _spec_ut or _spec_ut == "t":
+                                _schema_scale = "t"
+
+                            _cand_scale = ""
+                            if any(t in _blob for t in ("million", "mn")) or bool(re.search(r"m", _blob)):
+                                _cand_scale = "m"
+                            elif any(t in _blob for t in ("billion", "bn")) or bool(re.search(r"b", _blob)):
+                                _cand_scale = "b"
+                            elif "thousand" in _blob or bool(re.search(r"k", _blob)):
+                                _cand_scale = "k"
+                            elif "trillion" in _blob or bool(re.search(r"t", _blob)):
+                                _cand_scale = "t"
+
+                            if _schema_scale and _cand_scale and _schema_scale != _cand_scale:
+                                meta["blocked_reason"] = "scale_mismatch_hard_block"
+                                continue
+                        except Exception:
+                            pass
+                        if not _has_scale_ev:
+                            meta["blocked_reason"] = "scale_evidence_missing_hard_block"
+                            continue
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # =====================================================================
         except Exception:
             continue
         eligible.append(c)
 
     meta["eligible_count"] = int(len(eligible) or 0)
+    # PATCH FIX2B_TRACE_V1 (ADDITIVE): eligible candidate count
+    try:
+        meta["candidate_count_eligible"] = int(len(eligible))
+    except Exception:
+        pass
+
     if not eligible:
         meta["blocked_reason"] = "no_eligible_candidates_in_preferred_source" if meta["preferred_url"] else "no_eligible_candidates"
         return None, meta
@@ -22761,8 +23311,8 @@ def _analysis_canonical_final_selector_v1(
                 pass
         if len(vals) >= 2:
             vmin = min(vals); vmax = max(vals)
-            meta["value_range"] = {"min": vmin, "max": vmax, "n": len(vals), "method": "ph2b_schema_unit_range_v1"}
-            meta["range_method"] = "ph2b_schema_unit_range_v1"
+            meta["value_range"] = {"min": vmin, "max": vmax, "n": len(vals), "method": "ph2b_schema_unit_range_v2|fix2b_range4"}
+            meta["range_method"] = "ph2b_schema_unit_range_v2|fix2b_range4"
     except Exception:
         pass
 
@@ -22791,6 +23341,60 @@ def _analysis_canonical_final_selector_v1(
 
     meta["anchor_used"] = bool(out.get("anchor_used"))
     meta["chosen_source_url"] = _ph2b_norm_url(out.get("source_url") or "")
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX2B_TRACE_V2 (ADDITIVE): richer trace fields (NO behavior change)
+    # - Adds winner_candidate_debug + would_block_reason for scaled schemas.
+    # =====================================================================
+    try:
+        _winner = out if isinstance(out, dict) else {}
+        meta["winner_candidate_debug"] = {
+        "canonical_key": str(canonical_key),
+        "source_url": str(_winner.get("source_url") or ""),
+        "source_url_norm": _ph2b_norm_url(_winner.get("source_url") or ""),
+        "candidate_id": str(_winner.get("candidate_id") or _winner.get("id") or _winner.get("anchor_hash") or ""),
+        "value_norm": _winner.get("value_norm"),
+        "raw": str(_winner.get("raw") or _winner.get("value") or ""),
+        "unit_cmp": str(_winner.get("unit_cmp") or ""),
+        "unit_family": str(_winner.get("unit_family") or ""),
+        "unit_tag": str(_winner.get("unit_tag") or ""),
+        "context_snippet": str(_winner.get("context_snippet") or _winner.get("context") or ""),
+        }
+
+    # "Would block" diagnostic: scaled magnitude schema but chosen candidate lacks unit evidence.
+        _spec_unit = str((schema_frozen or {}).get("unit_tag") or (schema_frozen or {}).get("unit") or "")
+        _spec_unit_l = _spec_unit.lower()
+        _is_scaled = any(tok in _spec_unit_l for tok in ["million", "billion", "trillion", "thousand", "mn", "bn", "m ", "b ", "k "]) or (_spec_unit.strip() in ["M", "B", "K", "T"])
+        _winner_unit_cmp = str(_winner.get("unit_cmp") or "")
+        _winner_unit_tag = str(_winner.get("unit_tag") or "")
+        _winner_raw = str(_winner.get("raw") or _winner.get("value") or "")
+        _winner_has_scale = any(tok in (_winner_raw.lower()) for tok in ["million", "billion", "trillion", "thousand"]) or (_winner_unit_tag.strip().upper() in ["M", "B", "K", "T"]) or (_winner_unit_cmp.strip().upper() in ["M", "B", "K", "T", "%"])
+        if _is_scaled and not _winner_has_scale and not _winner_unit_cmp:
+            meta["would_block_reason"] = "unit_evidence_missing_for_scaled_schema"
+        else:
+            meta["would_block_reason"] = ""
+    except Exception:
+        pass
+
+    # PATCH FIX2B_TRACE_V1 (ADDITIVE): emit selector trace payload
+    # - Does NOT change selection; purely diagnostic.
+    # =====================================================================
+    try:
+        meta["analysis_selector_trace_v1"] = {
+            "selector_used": meta.get("selector_used"),
+            "preferred_url": meta.get("preferred_url"),
+            "chosen_source_url": meta.get("chosen_source_url"),
+            "n_candidates_in": int(meta.get("candidate_count_in") or 0),
+            "n_candidates_pref": int(meta.get("candidate_count_pref") or 0),
+            "n_candidates_eligible": int(meta.get("candidate_count_eligible") or 0),
+            "blocked_reason": meta.get("blocked_reason") or "",
+            "anchor_used": bool(meta.get("anchor_used")),
+            "would_block_reason": meta.get("would_block_reason") or "",
+            "winner_candidate_debug": dict(meta.get("winner_candidate_debug") or {}) if isinstance(meta.get("winner_candidate_debug"), dict) else {},
+        }
+    except Exception:
+        pass
     return out, meta
 
 
@@ -22841,10 +23445,27 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
     rebuilt = {}
     debug_sel = {}
     for canonical_key, spec in metric_schema.items():
+        # =====================================================================
+        # PATCH FIX2B_PREFLOCK_V1 (ADDITIVE): per-metric preferred source lock
+        # - Keeps canonicals anchored to their preferred URL (anchor.source_url or schema.source_url).
+        # - Prevents cross-source hijack from injected/other sources during rebuild.
+        # =====================================================================
+        try:
+            _pref = ""
+            if isinstance(metric_anchors, dict) and isinstance(metric_anchors.get(canonical_key), dict):
+                _pref = metric_anchors.get(canonical_key).get("source_url") or ""
+            _pref = _pref or (spec.get("preferred_url") or spec.get("source_url") or "")
+            _pref_n = _ph2b_norm_url(_pref) if _pref else ""
+            if _pref_n:
+                candidates_for_metric = [c for c in candidates if _ph2b_norm_url(c.get("source_url") or "") == _pref_n]
+            else:
+                candidates_for_metric = candidates
+        except Exception:
+            candidates_for_metric = candidates
         best, meta = _analysis_canonical_final_selector_v1(
             canonical_key=canonical_key,
             schema_frozen=spec,
-            candidates=candidates,
+            candidates=candidates_for_metric,
             anchors=metric_anchors,
             prev_metric=(prev_response.get("primary_metrics_canonical") or {}).get(canonical_key) if isinstance(prev_response.get("primary_metrics_canonical"), dict) else None,
             web_context=web_context,
@@ -22860,6 +23481,20 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                     pass
             # Breadcrumb
             best["selector_used"] = meta.get("selector_used") if isinstance(meta, dict) else "analysis_canonical_v1"
+            # PATCH FIX2B_TRACE_V1 (ADDITIVE): attach trace to metric dict
+            try:
+                if isinstance(meta, dict) and isinstance(meta.get("analysis_selector_trace_v1"), dict):
+                    best["analysis_selector_trace_v1"] = dict(meta.get("analysis_selector_trace_v1"))
+            except Exception:
+                pass
+            # PATCH FIX2B_TRACE_V2 (ADDITIVE): attach richer trace fields (NO behavior change)
+            try:
+                if isinstance(meta, dict) and isinstance(meta.get("winner_candidate_debug"), dict):
+                    best["winner_candidate_debug"] = dict(meta.get("winner_candidate_debug"))
+                if isinstance(meta, dict) and isinstance(meta.get("would_block_reason"), str):
+                    best["would_block_reason"] = meta.get("would_block_reason") or ""
+            except Exception:
+                pass
             rebuilt[canonical_key] = best
         debug_sel[canonical_key] = meta
 
