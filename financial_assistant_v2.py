@@ -77,7 +77,10 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc5_evo_rebuild_metric_eligibility_hardening_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc14_evo_injected_delta_pre_rebuild_fetch_and_merge_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
+#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
@@ -5422,6 +5425,19 @@ def fetch_web_context(
     # PATCH FWC_IDENTITY_ONLY1 (ADDITIVE): admission-only mode (no scraping)
     # ============================================================
     identity_only: bool = False,
+    # ============================================================
+    # PATCH FIX41AFC8 (ADDITIVE): force scrape extra_urls even if not admitted
+    # - Default False: no behavior change.
+    # - When True: normalized extra URLs will be appended to admitted list for scraping.
+    # ============================================================
+    force_scrape_extra_urls: bool = False,
+    # ============================================================
+    # PATCH FIX41AFC13 (ADDITIVE): force admit extra_urls into admitted list (pre-admission override)
+    # - Default False: no behavior change.
+    # - When True: normalized extra URLs will be appended to admitted list (not just scrape list),
+    #   enabling deterministic admission of injected URLs when delta exists.
+    # ============================================================
+    force_admit_extra_urls: bool = False,
 ) -> dict:
 
     """
@@ -5572,6 +5588,49 @@ def fetch_web_context(
     n = max(1, min(12, n))
     admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
 
+    # =====================================================================
+    # PATCH FIX41AFC8 (ADDITIVE): Force-scrape normalized extra URLs even if admission filters drop them
+    #
+    # Why:
+    # - In evolution injection scenarios, extra URLs may be deliberately outside the normal
+    #   admitted universe (domain allowlists, heuristics, etc.), but the user's intent is
+    #   to attempt a fetch so the run can either persist a snapshot or fail with a concrete reason.
+    #
+    # Behavior:
+    # - When force_scrape_extra_urls=True and normalized extras exist, append them into the
+    #   admitted list (deduped, stable order) so downstream scraping attempts occur.
+    #
+    # Safety:
+    # - Default is False (no change for normal runs).
+    # - Never raises.
+    # =====================================================================
+    try:
+        if bool(force_scrape_extra_urls):
+            _fx8_extras = []
+            if "_extras" in locals() and isinstance(_extras, list):
+                _fx8_extras = [u for u in _extras if isinstance(u, str) and u.strip()]
+            if _fx8_extras and isinstance(admitted, list):
+                _seen = set([u for u in admitted if isinstance(u, str)])
+                for _u in _fx8_extras:
+                    if _u not in _seen:
+                        admitted.append(_u)
+                        _seen.add(_u)
+                # breadcrumb for diagnostics
+                try:
+                    out.setdefault("debug_counts", {})
+                    if isinstance(out.get("debug_counts"), dict):
+                        out["debug_counts"].setdefault("fix41afc8", {})
+                        if isinstance(out["debug_counts"].get("fix41afc8"), dict):
+                            out["debug_counts"]["fix41afc8"].update({
+                                "force_scrape_extra_urls": True,
+                                "force_scrape_extra_urls_count": int(len(_fx8_extras)),
+                            })
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
     # ============================================================
     # PATCH FWC_EXTRA_URLS2 (ADDITIVE)
     # ============================================================
@@ -5646,6 +5705,51 @@ def fetch_web_context(
                 "intake_minus_admitted": sorted(list(set(_intake_norm) - set(list(admitted or [])))),
             },
         }
+    except Exception:
+        pass
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH FIX41AFC13 (ADDITIVE): Pre-admission override for extra_urls (injection lane)
+    #
+    # Goal:
+    # - When force_admit_extra_urls is True, ensure normalized extra_urls are INCLUDED in the
+    #   admitted list itself (not only the scrape list). This prevents injected URLs from dying
+    #   at "intake_minus_admitted" and allows deterministic fetch/persist behavior.
+    #
+    # Safety:
+    # - Default flag False => no behavior change.
+    # - Never raises.
+    # =====================================================================
+    try:
+        if force_admit_extra_urls:
+            _fix41afc13_extra = _inj_diag_norm_url_list(extra_urls) if extra_urls else []
+            if _fix41afc13_extra:
+                _fix41afc13_before = list(admitted or [])
+                _fix41afc13_set = set(_inj_diag_norm_url_list(_fix41afc13_before))
+                _fix41afc13_added = []
+                for _u in _fix41afc13_extra:
+                    if _u and _u not in _fix41afc13_set:
+                        _fix41afc13_before.append(_u)
+                        _fix41afc13_set.add(_u)
+                        _fix41afc13_added.append(_u)
+                if _fix41afc13_added:
+                    admitted = _fix41afc13_before
+                    out.setdefault("debug_counts", {})
+                    if isinstance(out.get("debug_counts"), dict):
+                        out["debug_counts"].update({
+                            "forced_admit_extra_urls_count": int(len(_fix41afc13_added)),
+                        })
+                    out.setdefault("debug", {})
+                    if isinstance(out.get("debug"), dict):
+                        out["debug"].setdefault("fix41afc13", {})
+                        if isinstance(out["debug"].get("fix41afc13"), dict):
+                            out["debug"]["fix41afc13"].update({
+                                "forced_admit_applied": True,
+                                "forced_admit_added": list(_fix41afc13_added),
+                                "forced_admit_total_extra": int(len(_fix41afc13_extra)),
+                            })
     except Exception:
         pass
     # =====================================================================
@@ -16636,6 +16740,121 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         return output
 
+
+    # =====================================================================
+    # PATCH FIX41AFC10 (ADDITIVE): Fetch + attach injected URL snapshots when injection delta exists
+    #
+    # Goal:
+    # - We already bypass fastpath when injected URL delta exists.
+    # - However, evolution can still be snapshot-gated and never actually fetch the injected URL.
+    # - This patch performs a **targeted fetch** for injected URLs that are not already present in
+    #   the baseline snapshot universe, then appends them to `baseline_sources_cache` so they can
+    #   participate in downstream admission / hashing / metric rebuild deterministically.
+    #
+    # Non-negotiables:
+    # - No change to normal (no-injection) behavior
+    # - Additive only; no refactors
+    # =====================================================================
+    try:
+        _fix41afc10_injected_norm = []
+        try:
+            # Robust extraction order (same intent as FIX41AFC9 lineage)
+            _fix41afc10_injected_norm = _inj_diag_norm_url_list(
+                (web_context or {}).get("extra_urls")
+                or (web_context or {}).get("diag_extra_urls_ui")
+                or []
+            )
+        except Exception:
+            _fix41afc10_injected_norm = []
+
+        # If UI raw textarea is present, merge its parsed URLs (newline/comma separated)
+        try:
+            _fix41afc10_ui_raw = str((web_context or {}).get("diag_extra_urls_ui_raw") or (web_context or {}).get("extra_urls_ui_raw") or "")
+            if _fix41afc10_ui_raw.strip():
+                _fix41afc10_from_raw = _inj_diag_norm_url_list(_fix41afc10_ui_raw)
+                if _fix41afc10_from_raw:
+                    _fix41afc10_injected_norm = _inj_diag_norm_url_list((_fix41afc10_injected_norm or []) + _fix41afc10_from_raw)
+        except Exception:
+            pass
+
+        # Only run when there is any injected URL present at all (do not affect normal runs)
+        if _fix41afc10_injected_norm:
+            # Build baseline URL set from existing snapshots
+            _fix41afc10_base_set = set()
+            try:
+                for _s in (baseline_sources_cache or []):
+                    if isinstance(_s, dict) and _s.get("url"):
+                        _fix41afc10_base_set.add(_normalize_url(_s.get("url")) or str(_s.get("url")))
+            except Exception:
+                pass
+
+            _fix41afc10_missing = [u for u in _fix41afc10_injected_norm if (u and (u not in _fix41afc10_base_set))]
+            if _fix41afc10_missing:
+                _fix41afc10_attempted = []
+                _fix41afc10_persisted = []
+                for _u in _fix41afc10_missing:
+                    try:
+                        _fix41afc10_attempted.append(_u)
+
+                        _txt = None
+                        try:
+                            _txt = fetch_url_content(_u)
+                        except Exception:
+                            _txt = None
+
+                        _status = "failed"
+                        _detail = "no_text"
+                        _nums = []
+                        if isinstance(_txt, str) and _txt.strip():
+                            _status = "success"
+                            _detail = "fetched"
+                            try:
+                                _nums = extract_numbers_with_context(_txt, source_url=_u) or []
+                            except Exception:
+                                _nums = []
+                        # fingerprint (best-effort; used only for determinism / debugging)
+                        _fp = ""
+                        try:
+                            if isinstance(_txt, str) and _txt:
+                                _fp = hashlib.sha256(_txt.encode("utf-8", errors="ignore")).hexdigest()
+                        except Exception:
+                            _fp = ""
+
+                        _snap = {
+                            "url": _u,
+                            "status": _status,
+                            "status_detail": _detail,
+                            "numbers_found": len(_nums or []),
+                            "fetched_at": _now(),
+                            "fingerprint": _fp,
+                            "extracted_numbers": _nums or [],
+                        }
+
+                        # Append snapshot (even if failed) so lifecycle is visible + deterministic
+                        try:
+                            if isinstance(baseline_sources_cache, list):
+                                baseline_sources_cache.append(_snap)
+                                _fix41afc10_persisted.append(_u)
+                        except Exception:
+                            pass
+                    except Exception:
+                        # never break evolution on injected fetch attempts
+                        pass
+
+                # Emit explicit debug for closure visibility
+                try:
+                    if isinstance(output.get("debug"), dict):
+                        output.setdefault("debug", {})
+                        output["debug"].setdefault("fix35", {})
+                        output["debug"]["fix35"]["injected_fetch_attempted_count"] = len(_fix41afc10_attempted)
+                        output["debug"]["fix35"]["injected_fetch_attempted"] = _fix41afc10_attempted
+                        output["debug"]["fix35"]["injected_fetch_snapshot_appended_count"] = len(_fix41afc10_persisted)
+                        output["debug"]["fix35"]["injected_fetch_snapshot_appended"] = _fix41afc10_persisted
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # ---------- Use your existing deterministic metric diff helper ----------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
 
@@ -16802,6 +17021,121 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     # Rebuild fallback only if anchors didn't produce metrics
     if not isinstance(current_metrics, dict) or not current_metrics:
         try:
+            # =====================================================================
+            # PATCH FIX41AFC14 (ADDITIVE): Augment baseline_sources_cache with injected URL delta BEFORE schema-only rebuild
+            #
+            # Problem:
+            # - With fastpath bypassed, evolution may fall back to schema-only rebuild *without* running any
+            #   fetch cycle. In that case, injected URLs never enter baseline_sources_cache, so rebuild cannot
+            #   see them and injection remains inert (attempted=0, persisted=0).
+            #
+            # Goal:
+            # - If injected URLs are present AND introduce a delta vs the current snapshot universe,
+            #   run fetch_web_context() once (normal mode) with force_admit/force_scrape enabled,
+            #   then merge any successful injected snapshots into baseline_sources_cache, and only then
+            #   call the rebuild function.
+            #
+            # Safety:
+            # - No effect when no injection or no delta.
+            # - Does NOT alter hashing logic; it only ensures the snapshot pool reflects successfully fetched injected sources.
+            # - Never raises; on any failure, proceeds with the original baseline_sources_cache.
+            # =====================================================================
+            try:
+                _fx14_wc = web_context if isinstance(web_context, dict) else {}
+                _fx14_extra_raw = []
+                if isinstance(_fx14_wc.get("extra_urls"), (list, tuple)) and _fx14_wc.get("extra_urls"):
+                    _fx14_extra_raw = list(_fx14_wc.get("extra_urls") or [])
+                elif isinstance(_fx14_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fx14_wc.get("diag_extra_urls_ui"):
+                    _fx14_extra_raw = list(_fx14_wc.get("diag_extra_urls_ui") or [])
+                elif isinstance(_fx14_wc.get("diag_extra_urls_ui_raw"), str) and (_fx14_wc.get("diag_extra_urls_ui_raw") or "").strip():
+                    _raw = str(_fx14_wc.get("diag_extra_urls_ui_raw") or "")
+                    _parts = []
+                    for _line in _raw.splitlines():
+                        _line = (_line or "").strip()
+                        if not _line:
+                            continue
+                        for _p in _line.split(","):
+                            _p = (_p or "").strip()
+                            if _p:
+                                _parts.append(_p)
+                    _fx14_extra_raw = _parts
+
+                _fx14_inj = _inj_diag_norm_url_list(_fx14_extra_raw) if _fx14_extra_raw else []
+                _fx14_base_urls = []
+                if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                    for _r in baseline_sources_cache:
+                        if isinstance(_r, dict) and isinstance(_r.get("source_url"), str) and _r.get("source_url"):
+                            _fx14_base_urls.append(_r.get("source_url"))
+                _fx14_base_set = set(_inj_diag_norm_url_list(_fx14_base_urls)) if _fx14_base_urls else set()
+                _fx14_delta = sorted(list(set(_fx14_inj) - _fx14_base_set)) if _fx14_inj else []
+
+                if _fx14_delta:
+                    _fx14_q = str((prev_response or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+                    _fx14_prev_snap = baseline_sources_cache
+                    _fx14_fwc = fetch_web_context(
+                        _fx14_q or "evolution_injection_fetch_pre_rebuild",
+                        num_sources=int(min(12, max(1, len(_fx14_base_set) + len(_fx14_inj)))),
+                        fallback_mode=True,
+                        fallback_urls=list(_inj_diag_norm_url_list(_fx14_base_urls)),
+                        existing_snapshots=_fx14_prev_snap,
+                        extra_urls=list(_fx14_inj),
+                        diag_run_id=str((_fx14_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                        diag_extra_urls_ui_raw=(_fx14_wc or {}).get("diag_extra_urls_ui_raw"),
+                        identity_only=False,
+                        force_scrape_extra_urls=True,
+                        force_admit_extra_urls=True,
+                    ) or {}
+
+                    try:
+                        if isinstance(_fx14_wc, dict):
+                            _fx14_wc["evolution_calls_fetch_web_context"] = True
+                    except Exception:
+                        pass
+
+                    _fx14_sm = _fx14_fwc.get("scraped_meta")
+                    _fx14_bsc_new = None
+                    try:
+                        _fn_bsc = globals().get("_fix24_baseline_sources_cache_from_scraped_meta")
+                        if callable(_fn_bsc) and isinstance(_fx14_sm, dict):
+                            _fx14_bsc_new = _fn_bsc(_fx14_sm)
+                    except Exception:
+                        _fx14_bsc_new = None
+
+                    if isinstance(_fx14_bsc_new, list) and _fx14_bsc_new:
+                        # Merge: keep original order for existing snapshots, append new unique ones
+                        _merged = list(baseline_sources_cache or [])
+                        _seen = set(_inj_diag_norm_url_list(_fx14_base_urls))
+                        _added = []
+                        for _row in _fx14_bsc_new:
+                            if not isinstance(_row, dict):
+                                continue
+                            _u = _row.get("source_url") or ""
+                            _nu = (_inj_diag_norm_url(_u) if isinstance(_u, str) else "")
+                            if _nu and _nu not in _seen:
+                                _merged.append(_row)
+                                _seen.add(_nu)
+                                _added.append(_nu)
+                        if _added:
+                            baseline_sources_cache = _merged
+
+                        # Debug
+                        try:
+                            output.setdefault("debug", {})
+                            if isinstance(output.get("debug"), dict):
+                                output["debug"].setdefault("fix41afc14", {})
+                                if isinstance(output["debug"].get("fix41afc14"), dict):
+                                    output["debug"]["fix41afc14"].update({
+                                        "inj_delta_count": int(len(_fx14_delta)),
+                                        "inj_delta": list(_fx14_delta),
+                                        "merged_added_count": int(len(_added)),
+                                        "merged_added": list(_added),
+                                        "baseline_sources_cache_count_after_merge": int(len(baseline_sources_cache or [])),
+                                    })
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # =====================================================================
             fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
             if callable(fn_rebuild):
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
@@ -18350,6 +18684,60 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
         # =====================================================================
 
+
+        # =====================================================================
+        # PATCH FIX41AFC12 (ADDITIVE): Admission-gate override for injected URLs + post-fetch trace
+        #
+        # Why:
+        # - inj_trace_v1 shows injected URLs at intake but missing from admitted (unknown_rejected_pre_admission).
+        # - We must "pin" injection at the admission boundary for evolution (delta-only), and emit a post-fetch trace
+        #   because inj_trace_v1 may be emitted before the fetch/persist stage completes.
+        #
+        # What:
+        # - If injected URLs are present (from web_context.extra_urls OR diag ui fields) we force-add them into
+        #   _wc_diag["admitted"] so the trace reflects admission override deterministically (delta-only).
+        # - Additionally, emit inj_trace_v2_postfetch using best-effort enrichment from scraped_meta / cur_bsc if available.
+        #
+        # Safety:
+        # - Purely additive; never raises; does not modify fastpath rules or hashing.
+        # =====================================================================
+        try:
+            _fx12_wc = web_context if isinstance(web_context, dict) else {}
+            _fx12_diag = _wc_diag if isinstance(locals().get("_wc_diag"), dict) else (_fx12_wc.get("diag_injected_urls") if isinstance(_fx12_wc.get("diag_injected_urls"), dict) else {})
+            _fx12_inj_raw = []
+            try:
+                _fx12_inj_raw = list(_fx12_wc.get("extra_urls") or [])
+            except Exception:
+                _fx12_inj_raw = []
+            if not _fx12_inj_raw and isinstance(_fx12_diag, dict):
+                try:
+                    _fx12_inj_raw = list(_fx12_diag.get("ui_norm") or _fx12_diag.get("intake_norm") or [])
+                except Exception:
+                    _fx12_inj_raw = []
+            _fx12_inj = _inj_diag_norm_url_list(_fx12_inj_raw or [])
+            if _fx12_inj and isinstance(_wc_diag, dict):
+                _fx12_prev_ad = _inj_diag_norm_url_list(_wc_diag.get("admitted") or [])
+                _fx12_forced = sorted(list(set(_fx12_inj) - set(_fx12_prev_ad)))
+                if _fx12_forced:
+                    _wc_diag["admitted"] = list(_inj_diag_stable_dedupe_order((_fx12_prev_ad or []) + _fx12_forced))
+                    _wc_diag.setdefault("forced_admit_reasons", {})
+                    if isinstance(_wc_diag.get("forced_admit_reasons"), dict):
+                        for _u in _fx12_forced:
+                            _wc_diag["forced_admit_reasons"][_u] = "forced_admit_injected_url_override"
+                    try:
+                        output.setdefault("debug", {})
+                        if isinstance(output.get("debug"), dict):
+                            output["debug"].setdefault("fix41afc12", {})
+                            if isinstance(output["debug"].get("fix41afc12"), dict):
+                                output["debug"]["fix41afc12"].update({
+                                    "forced_admit_injected_count": int(len(_fx12_forced)),
+                                    "forced_admit_injected_urls": list(_fx12_forced),
+                                })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # =====================================================================
         _trace = _inj_trace_v1_build(
             diag_injected_urls=_wc_diag if isinstance(_wc_diag, dict) else {},
             hash_inputs=_hash_inputs,
@@ -18370,6 +18758,42 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["results"].setdefault("debug", {})
             if isinstance(output["results"].get("debug"), dict):
                 output["results"]["debug"]["inj_trace_v1"] = _trace
+
+                # =====================================================================
+                # PATCH FIX41AFC12_POSTFETCH (ADDITIVE): inj_trace_v2_postfetch
+                #
+                # Emit a second trace after best-effort enrichment from scraped_meta / baseline cache so that
+                # attempted/persisted deltas reflect the true post-fetch state (inj_trace_v1 may be earlier).
+                # =====================================================================
+                try:
+                    _fx12_diag2 = dict(_wc_diag) if isinstance(_wc_diag, dict) else {}
+                    try:
+                        _sm = locals().get("scraped_meta")
+                        if isinstance(_sm, dict):
+                            _fx12_diag2 = _inj_trace_v1_enrich_diag_from_scraped_meta(_fx12_diag2, _sm, (_inj_extra_urls or []))
+                    except Exception:
+                        pass
+                    try:
+                        _cb = locals().get("cur_bsc") or locals().get("baseline_sources_cache") or locals().get("baseline_sources_cache_current")
+                        if isinstance(_cb, list):
+                            _fx12_diag2 = _inj_trace_v1_enrich_diag_from_bsc(_fx12_diag2, _cb)
+                    except Exception:
+                        pass
+                    _trace2 = _inj_trace_v1_build(
+                        diag_injected_urls=_fx12_diag2 if isinstance(_fx12_diag2, dict) else {},
+                        hash_inputs=_hash_inputs,
+                        stage="evolution",
+                        path=str(_path or "evolution") + "_postfetch",
+                        rebuild_pool=_hash_inputs,
+                        rebuild_selected=_selected,
+                        hash_exclusion_reasons=_evo_hash_reasons,
+                    )
+                    output["debug"]["inj_trace_v2_postfetch"] = _trace2
+                    if isinstance(output.get("results"), dict) and isinstance(output["results"].get("debug"), dict):
+                        output["results"]["debug"]["inj_trace_v2_postfetch"] = _trace2
+                except Exception:
+                    pass
+                # =====================================================================
     except Exception:
         pass
     # =====================================================================
@@ -22496,7 +22920,220 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # =====================================================================
     # =====================================================================
 
-    # PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
+
+    # =====================================================================
+        # =====================================================================
+    # PATCH FIX41AFC9 (ADDITIVE): Merge injected URLs into `urls` universe BEFORE scrape_meta build
+    #
+    # Problem observed (inj_trace_v1):
+    # - Injected URL shows up in ui_norm/intake_norm, but can still vanish from admitted_norm/hash_inputs_norm.
+    # - Root cause: the identity-only fetch_web_context() step may replace `urls` with an admitted list
+    #   that excludes injected URLs, and later injected logic may read from a different variable/path.
+    #
+    # Goal:
+    # - If injected URLs are present in web_context['extra_urls'], ensure they are ALWAYS merged into the
+    #   local `urls` list used by _fix24_build_scraped_meta(), so the injected URLs are at least
+    #   attempted (scraped_meta populated) and can become part of current hash identity when successful.
+    #
+    # Safety:
+    # - Only active when injection is present.
+    # - Purely additive: does not change hashing algorithm or fastpath rules; it only ensures the URL
+    #   universe includes the injected URLs when the user provided them.
+    # - Never raises.
+    # =====================================================================
+    try:
+        _fx9_wc = web_context if isinstance(web_context, dict) else {}
+        _fx9_inj = _inj_diag_norm_url_list((_fx9_wc or {}).get("extra_urls") or [])
+        if _fx9_inj and isinstance(urls, list):
+            _fx9_seen = set(_inj_diag_norm_url_list([(_d.get("url") if isinstance(_d, dict) else _d) for _d in urls]))
+            _fx9_added = []
+            for _u in _fx9_inj:
+                if _u in _fx9_seen:
+                    continue
+                _fx9_seen.add(_u)
+                urls.append(_u)
+                _fx9_added.append(_u)
+
+            if isinstance(_fx9_wc, dict):
+                _fx9_wc.setdefault("debug", {})
+                if isinstance(_fx9_wc.get("debug"), dict):
+                    _fx9_wc["debug"].setdefault("fix41afc9", {})
+                    if isinstance(_fx9_wc["debug"].get("fix41afc9"), dict):
+                        _fx9_wc["debug"]["fix41afc9"].update({
+                            "merged_into_urls_universe": True,
+                            "injected_urls_count": int(len(_fx9_inj)),
+                            "added_to_urls_count": int(len(_fx9_added)),
+                            "added_to_urls": list(_fx9_added),
+                            "urls_count_after_merge": int(len(urls)),
+                        })
+    except Exception:
+        pass
+    # =====================================================================
+
+# PATCH FIX41AFC6 (ADDITIVE): When injected URL delta exists, actually FETCH it
+    #
+    # Observation (from inj_trace_v1 in evolution JSON):
+    # - Injected URL appears in ui_norm/intake_norm, but attempted/persisted remain empty,
+    #   and the injected URL never reaches hash_inputs because evolution never performs a
+    #   fetch cycle for the injected delta (it only replays cached snapshots).
+    #
+    # Goal:
+    # - ONLY when injected URLs introduce a true delta vs the baseline source universe,
+    #   run fetch_web_context() in normal mode (identity_only=False) so the injected URL
+    #   is actually attempted/persisted and can become a first-class current source
+    #   (and thus can affect downstream identity/hash inputs).
+    #
+    # Safety:
+    # - No effect on no-injection runs.
+    # - No effect when injection is empty or introduces no delta.
+    # - Uses existing_snapshots to avoid re-fetching baseline sources.
+    # - Never raises; falls back to existing behavior.
+    # =====================================================================
+    try:
+        _fix41afc6_wc = web_context if isinstance(web_context, dict) else {}
+        _fix41afc6_inj = _inj_diag_norm_url_list((_fix41afc6_wc or {}).get("extra_urls") or [])
+        _fix41afc6_base = _inj_diag_norm_url_list(_fix24_extract_source_urls(prev_full) or [])
+        _fix41afc6_delta = sorted(list(set(_fix41afc6_inj) - set(_fix41afc6_base))) if _fix41afc6_inj else []
+        if _fix41afc6_delta:
+            _fix41afc6_q = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+            _fix41afc6_prev_snap = (prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None
+
+            _fix41afc6_fwc = fetch_web_context(
+                _fix41afc6_q or "evolution_injection_fetch",
+                num_sources=int(min(12, max(1, len(_fix41afc6_base) + len(_fix41afc6_inj)))),
+                fallback_mode=True,
+                fallback_urls=_fix41afc6_base,
+                existing_snapshots=_fix41afc6_prev_snap,
+                extra_urls=_fix41afc6_inj,
+                diag_run_id=str((_fix41afc6_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                diag_extra_urls_ui_raw=(_fix41afc6_wc or {}).get("diag_extra_urls_ui_raw"),
+                # PATCH FIX41AFC8 (ADDITIVE): force scrape injected extras even if not admitted
+                force_scrape_extra_urls=True,
+                force_admit_extra_urls=True,
+                identity_only=False,
+            ) or {}
+
+            # Prefer the admitted list from fetch_web_context (it includes injected URLs that pass admission)
+            _fix41afc6_admitted = _fix41afc6_fwc.get("web_sources") or _fix41afc6_fwc.get("sources") or []
+            if isinstance(_fix41afc6_admitted, list) and _fix41afc6_admitted:
+                urls = list(_fix41afc6_admitted)
+
+            # Bubble up a small marker so inj_trace_v1 can report whether evolution actually called FWC
+            if isinstance(web_context, dict):
+                web_context["evolution_calls_fetch_web_context"] = True
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("fix41afc6", {})
+                    if isinstance(web_context["debug"].get("fix41afc6"), dict):
+                        web_context["debug"]["fix41afc6"].update({
+                            "called_fetch_web_context": True,
+                            "injected_delta_count": int(len(_fix41afc6_delta)),
+                            "injected_delta": list(_fix41afc6_delta),
+                            "admitted_count": int(len(_fix41afc6_admitted or [])) if isinstance(_fix41afc6_admitted, list) else 0,
+                        })
+
+                    # =====================================================================
+                    # PATCH FIX41AFC8 (ADDITIVE): Emit forced-fetch diagnostics for injected delta
+                    # =====================================================================
+                    try:
+                        web_context.setdefault("debug", {})
+                        if isinstance(web_context.get("debug"), dict):
+                            web_context["debug"].setdefault("fix41afc8", {})
+                            if isinstance(web_context["debug"].get("fix41afc8"), dict):
+                                # delta URLs are what we intend to force-attempt
+                                _fx8_delta_urls = list(_fix41afc6_delta or [])
+                                # attempted/persist outcomes can be inferred from fetch_web_context scraped_meta
+                                _fx8_results = {}
+                                try:
+                                    _fx8_sm = _fix41afc6_fwc.get("scraped_meta") or {}
+                                    if isinstance(_fx8_sm, dict):
+                                        for _u in _fx8_delta_urls:
+                                            meta = _fx8_sm.get(_u) or {}
+                                            if isinstance(meta, dict) and meta:
+                                                _fx8_results[_u] = meta.get("status") or meta.get("fetch_status") or meta.get("reason") or "attempted"
+                                            else:
+                                                _fx8_results[_u] = "not_in_scraped_meta"
+                                except Exception:
+                                    pass
+                                web_context["debug"]["fix41afc8"].update({
+                                    "forced_fetch_reason": "injected_delta_present_force_fetch_even_if_not_admitted",
+                                    "forced_fetch_urls": _fx8_delta_urls,
+                                    "forced_fetch_count": int(len(_fx8_delta_urls)),
+                                    "forced_fetch_results": _fx8_results,
+                                })
+                    except Exception:
+                        pass
+
+    except Exception:
+        pass
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX41AFC7 (ADDITIVE): Early recovery + latching of injected URLs into web_context["extra_urls"]
+    #
+    # Problem observed in evolution JSON:
+    # - ui_norm/intake_norm contains the injected URL (from Streamlit textarea),
+    #   but web_context["extra_urls"] can still be empty at evolution core, which
+    #   causes downstream "fetch injected delta" and "forced admit" patches to see
+    #   an empty injected set and skip.
+    #
+    # Goal:
+    # - If web_context["extra_urls"] is empty, recover injected URLs from the same
+    #   Streamlit diagnostic fields used at intake:
+    #     1) web_context["diag_extra_urls_ui"] (list)
+    #     2) web_context["diag_extra_urls_ui_raw"] (string, newline/comma separated)
+    # - Normalize/canonicalize deterministically via _inj_diag_norm_url_list().
+    # - Latch the recovered list back into web_context["extra_urls"] so ALL later
+    #   injected URL logic (fetch + forced admit + hash identity) sees the same set.
+    #
+    # Safety:
+    # - Purely additive. No effect when extra_urls already present.
+    # - Never raises; falls back silently.
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            _fix41afc7_norm = []
+            _existing = web_context.get("extra_urls")
+            _need = (not isinstance(_existing, (list, tuple)) or not list(_existing))
+            if _need:
+                _raw = []
+                _v_list = web_context.get("diag_extra_urls_ui")
+                if isinstance(_v_list, (list, tuple)) and _v_list:
+                    _raw = list(_v_list)
+                if not _raw:
+                    _v_raw = web_context.get("diag_extra_urls_ui_raw")
+                    if isinstance(_v_raw, str) and _v_raw.strip():
+                        _parts = []
+                        for _line in _v_raw.splitlines():
+                            _line = (_line or "").strip()
+                            if not _line:
+                                continue
+                            for _p in _line.split(","):
+                                _p = (_p or "").strip()
+                                if _p:
+                                    _parts.append(_p)
+                        if _parts:
+                            _raw = _parts
+
+                _fix41afc7_norm = _inj_diag_norm_url_list(_raw)
+                if _fix41afc7_norm:
+                    web_context["extra_urls"] = list(_fix41afc7_norm)
+
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].setdefault("fix41afc7", {})
+                if isinstance(web_context["debug"].get("fix41afc7"), dict):
+                    web_context["debug"]["fix41afc7"].update({
+                        "recovery_needed": bool(_need),
+                        "recovered_extra_urls_count": int(len(_fix41afc7_norm or [])),
+                        "recovered_extra_urls": list(_fix41afc7_norm or [])[:20],
+                        "extra_urls_present_after_recovery": bool(isinstance(web_context.get("extra_urls"), (list, tuple)) and list(web_context.get("extra_urls") or [])),
+                    })
+    except Exception:
+        pass
+    # =====================================================================
+
+# PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
     # - Only active if caller provides web_context['extra_urls']
     # - Does NOT affect default fastpath behavior.
     # =====================================================================
@@ -22648,6 +23285,126 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     except Exception:
         pass
     # =====================================================================
+
+    # =====================================================================
+    # PATCH FIX41AFC11 (ADDITIVE): Injection admission override + must-fetch lane (delta-only)
+    #
+    # Problem:
+    # - Injected URLs can appear in UI intake but get dropped pre-admission, resulting in:
+    #     attempted=0, persisted_norm=0, hash_inputs_norm unchanged.
+    #
+    # Goal:
+    # - When injected URL DELTA exists (vs current urls baseline), deterministically:
+    #     1) Force-admit injected delta into local `urls` universe (so downstream meta sees it)
+    #     2) Force-fetch injected delta via fetch_web_context(force_scrape_extra_urls=True),
+    #        so we get attempted/persisted entries or an explicit failure reason.
+    #
+    # Safety:
+    # - No effect when no injection / no delta.
+    # - Does not weaken normal fastpath logic (already bypassed upstream when delta exists).
+    # =====================================================================
+    try:
+        _fix41afc11_wc = web_context if isinstance(web_context, dict) else {}
+        # Robust recovery (order required)
+        _fix41afc11_extra = []
+        if isinstance(_fix41afc11_wc.get("extra_urls"), (list, tuple)) and _fix41afc11_wc.get("extra_urls"):
+            _fix41afc11_extra = list(_fix41afc11_wc.get("extra_urls") or [])
+        elif isinstance(_fix41afc11_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fix41afc11_wc.get("diag_extra_urls_ui"):
+            _fix41afc11_extra = list(_fix41afc11_wc.get("diag_extra_urls_ui") or [])
+        elif isinstance(_fix41afc11_wc.get("diag_extra_urls_ui_raw"), str) and (_fix41afc11_wc.get("diag_extra_urls_ui_raw") or "").strip():
+            _raw = str(_fix41afc11_wc.get("diag_extra_urls_ui_raw") or "")
+            _parts = []
+            for _line in _raw.splitlines():
+                _line = (_line or "").strip()
+                if not _line:
+                    continue
+                for _p in _line.split(","):
+                    _p = (_p or "").strip()
+                    if _p:
+                        _parts.append(_p)
+            _fix41afc11_extra = _parts
+
+        _fix41afc11_inj_norm = _inj_diag_norm_url_list(_fix41afc11_extra) if _fix41afc11_extra else []
+        _fix41afc11_urls_norm = _inj_diag_norm_url_list(urls) if urls else []
+        _fix41afc11_inj_set = set(_fix41afc11_inj_norm or [])
+        _fix41afc11_base_set = set(_fix41afc11_urls_norm or [])
+        _fix41afc11_delta = sorted(list(_fix41afc11_inj_set - _fix41afc11_base_set)) if _fix41afc11_inj_set else []
+
+        if _fix41afc11_delta:
+            # (1) Force-admit delta into local urls universe deterministically
+            _added = []
+            if urls and isinstance(urls[0], dict):
+                _seen = set(_fix41afc11_urls_norm or [])
+                for _u in _fix41afc11_delta:
+                    if _u in _seen:
+                        continue
+                    urls.append({"url": _u, "source": "injected_force_admit", "is_injected": True})
+                    _seen.add(_u)
+                    _added.append(_u)
+            else:
+                _seen = set(_fix41afc11_urls_norm or [])
+                for _u in _fix41afc11_delta:
+                    if _u in _seen:
+                        continue
+                    urls.append(_u)
+                    _seen.add(_u)
+                    _added.append(_u)
+
+            # (2) Must-fetch lane: force scrape extra urls even if not admitted by normal filter
+            _q = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "evolution_injection_force_fetch").strip()
+            _prev_snap = (prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None
+            try:
+                _fwc = fetch_web_context(
+                    _q or "evolution_injection_force_fetch",
+                    num_sources=int(min(12, max(1, len(_fix41afc11_urls_norm or []) + len(_fix41afc11_inj_norm or [])))),
+                    fallback_mode=True,
+                    fallback_urls=list(_fix41afc11_urls_norm or []),
+                    existing_snapshots=_prev_snap,
+                    extra_urls=list(_fix41afc11_inj_norm or []),
+                    diag_run_id=str((_fix41afc11_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                    diag_extra_urls_ui_raw=(_fix41afc11_wc or {}).get("diag_extra_urls_ui_raw"),
+                    identity_only=False,
+                    force_scrape_extra_urls=True,
+                force_admit_extra_urls=True,
+                ) or {}
+            except TypeError:
+                # Backward-compat: older fetch_web_context without force_scrape_extra_urls
+                _fwc = fetch_web_context(
+                    _q or "evolution_injection_force_fetch",
+                    num_sources=int(min(12, max(1, len(_fix41afc11_urls_norm or []) + len(_fix41afc11_inj_norm or [])))),
+                    fallback_mode=True,
+                    fallback_urls=list(_fix41afc11_urls_norm or []),
+                    existing_snapshots=_prev_snap,
+                    extra_urls=list(_fix41afc11_inj_norm or []),
+                    diag_run_id=str((_fix41afc11_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
+                    diag_extra_urls_ui_raw=(_fix41afc11_wc or {}).get("diag_extra_urls_ui_raw"),
+                    identity_only=False,
+                ) or {}
+
+            # If fetch_web_context returns a concrete web_sources list, prefer it for downstream scraped_meta
+            _fwc_sources = _fwc.get("web_sources") or _fwc.get("sources") or None
+            if isinstance(_fwc_sources, list) and _fwc_sources:
+                urls = list(_fwc_sources)
+
+            # Emit explicit debug fields
+            if isinstance(web_context, dict):
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("fix41afc11", {})
+                    if isinstance(web_context["debug"].get("fix41afc11"), dict):
+                        web_context["debug"]["fix41afc11"].update({
+                            "inj_force_admit_applied": True,
+                            "inj_force_admit_count": int(len(_added)),
+                            "inj_force_admit_urls": list(_added),
+                            "inj_delta_count": int(len(_fix41afc11_delta)),
+                            "inj_delta": list(_fix41afc11_delta),
+                            "inj_must_fetch_called": True,
+                            "inj_must_fetch_sources_count": int(len(_fwc_sources or [])) if isinstance(_fwc_sources, list) else 0,
+                        })
+    except Exception:
+        pass
+    # =====================================================================
+
 
 
     scraped_meta = _fix24_build_scraped_meta(urls)
