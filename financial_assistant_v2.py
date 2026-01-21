@@ -79,335 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1"  # PATCH FIX2BQ (ADD): bump CODE_VERSION to match patch filename
-
-
-# =========================
-# PATCH START: PHASE3_HARNESS_AND_EXPORT_V1
-# CODE_VERSION: FIX2BK_PHASE3_CONSOLIDATION_V1
-#
-# Goal:
-#   Consolidate Phase-3 injection harness + export wiring into ONE additive module block.
-#   This is consolidation scaffolding on top of FIX2AF (no behavior changes required).
-#
-# Notes:
-#   - Harness features are only active when injected URLs are present (web_context.extra_urls),
-#     so production runs remain unaffected unless the harness is used.
-#   - Export wiring (canonical_for_render_v1) is intentionally left as a stub in this patch;
-#     it will be implemented by FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1.
-# =========================
-
-PHASE3_HARNESS_AND_EXPORT_V1 = {
-    # Harness toggles (default: auto-enable only when injection is present)
-    "ENABLE_INJECTION_HARNESS": True,
-    "ENABLE_INJECTION_TEXT_FALLBACK": True,
-
-    # Export wiring (implemented in FIX2BK, keep False until that patch lands)
-    "ENABLE_EXPORT_CANONICAL_FOR_RENDER_V1": True,
-
-    # Diagnostics (keep off by default; enable temporarily when needed)
-    "ENABLE_DIAGNOSTICS": False,
-}
-
-def _p3v1__safe_get(d, k, default=None):
-    try:
-        if isinstance(d, dict) and k in d:
-            return d[k]
-    except Exception:
-        pass
-    return default
-
-def _p3v1__as_list(x):
-    if x is None:
-        return []
-    if isinstance(x, list):
-        return x
-    if isinstance(x, tuple):
-        return list(x)
-    return [x]
-
-def _p3v1__inj_present(web_context: dict) -> bool:
-    try:
-        if not isinstance(web_context, dict):
-            return False
-        ex = web_context.get("extra_urls") or web_context.get("diag_extra_urls_ui") or web_context.get("diag_extra_urls_ui_raw")
-        if isinstance(ex, str):
-            return bool(ex.strip())
-        return bool(ex)
-    except Exception:
-        return False
-
-def _p3v1__recover_extra_urls_into_web_context(web_context: dict) -> None:
-    """Recover injected URLs into web_context['extra_urls'] if missing/empty."""
-    try:
-        if not isinstance(web_context, dict):
-            return
-        cur = web_context.get("extra_urls")
-        if isinstance(cur, (list, tuple)) and cur:
-            return
-
-        recovered = []
-        v_list = web_context.get("diag_extra_urls_ui")
-        if isinstance(v_list, (list, tuple)) and v_list:
-            recovered = list(v_list)
-
-        if not recovered:
-            raw = web_context.get("diag_extra_urls_ui_raw")
-            if isinstance(raw, str) and raw.strip():
-                parts = []
-                for line in raw.splitlines():
-                    line = (line or "").strip()
-                    if not line:
-                        continue
-                    for p in line.split(","):
-                        p = (p or "").strip()
-                        if p:
-                            parts.append(p)
-                recovered = parts
-
-        if recovered:
-            norm = globals().get("_inj_diag_norm_url_list")
-            normed = norm(recovered) if callable(norm) else recovered
-            if normed:
-                web_context["extra_urls"] = list(normed)
-                dbg = web_context.get("debug")
-                if not isinstance(dbg, dict):
-                    dbg = {}
-                    web_context["debug"] = dbg
-                f = dbg.get("phase3_v1")
-                if not isinstance(f, dict):
-                    f = {}
-                    dbg["phase3_v1"] = f
-                f.update({"extra_urls_recovered": True, "extra_urls_recovered_count": int(len(normed))})
-    except Exception:
-        pass
-
-def _p3v1_evo_prepare_url_universe(prev_full: dict, previous_data: dict, web_context: dict, urls: list):
-    """
-    Consolidated URL-universe preparation for Evolution runs when injection harness is used.
-
-    - Recovers injected URLs into web_context['extra_urls'] (if only present in diag fields)
-    - Routes baseline+injected through fetch_web_context(identity_only=True) to get admitted list
-    - Ensures injected URLs are merged into urls list before scraped_meta build
-    """
-    try:
-        if not PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_INJECTION_HARNESS"):
-            return urls
-        if not _p3v1__inj_present(web_context):
-            return urls
-
-        if isinstance(web_context, dict):
-            _p3v1__recover_extra_urls_into_web_context(web_context)
-
-        extra_raw = (web_context or {}).get("extra_urls") or []
-        _norm = globals().get("_inj_diag_norm_url_list")
-        extra_norm = _norm(extra_raw) if callable(_norm) else list(extra_raw)
-        if not extra_norm:
-            return urls
-
-        baseline_urls = []
-        try:
-            baseline_urls = _fix24_extract_source_urls(prev_full) or []
-        except Exception:
-            baseline_urls = []
-        baseline_norm = _norm(baseline_urls) if callable(_norm) else list(baseline_urls)
-
-        q = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
-        diag_run_id = str((web_context or {}).get("diag_run_id") or "") or (globals().get("_inj_diag_make_run_id")("evo") if callable(globals().get("_inj_diag_make_run_id")) else "evo")
-
-        admitted = None
-        try:
-            _fwc = fetch_web_context(
-                q or "evolution_identity_only",
-                num_sources=int(min(12, max(1, len(baseline_norm) + len(extra_norm)))),
-                fallback_mode=True,
-                fallback_urls=baseline_norm,
-                existing_snapshots=(prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None,
-                extra_urls=extra_norm,
-                diag_run_id=diag_run_id,
-                diag_extra_urls_ui_raw=(web_context or {}).get("diag_extra_urls_ui_raw"),
-                identity_only=True,
-            ) or {}
-            admitted = _fwc.get("web_sources") or _fwc.get("sources") or None
-
-            # Attach diag injected urls if available (non-clobber)
-            if isinstance(web_context, dict) and isinstance(_fwc.get("diag_injected_urls"), dict):
-                web_context.setdefault("diag_injected_urls", {})
-                if isinstance(web_context.get("diag_injected_urls"), dict):
-                    for k, v in _fwc.get("diag_injected_urls").items():
-                        web_context["diag_injected_urls"].setdefault(k, v)
-
-            if isinstance(web_context, dict):
-                web_context.setdefault("debug", {})
-                if isinstance(web_context.get("debug"), dict):
-                    web_context["debug"].setdefault("phase3_v1", {})
-                    if isinstance(web_context["debug"].get("phase3_v1"), dict):
-                        _h = globals().get("_inj_diag_set_hash")
-                        _hval = _h(extra_norm) if callable(_h) else ""
-                        web_context["debug"]["phase3_v1"].update({
-                            "fwc_identity_only_called": True,
-                            "baseline_urls_count": int(len(baseline_norm)),
-                            "extra_urls_count": int(len(extra_norm)),
-                        })
-        except Exception:
-            admitted = None
-
-        # Adopt admitted list if it looks valid
-        if isinstance(admitted, list) and admitted:
-            urls = list(admitted)
-
-        # Merge injected URLs into urls universe (ensure attempted)
-        if isinstance(urls, list) and extra_norm:
-            seen = set()
-            try:
-                # urls may be list of dicts or strings
-                for d in urls:
-                    u = d.get("url") if isinstance(d, dict) else d
-                    u = str(u or "").strip()
-                    if not u:
-                        continue
-                    seen.add((_norm([u])[0] if callable(_norm) else u))
-            except Exception:
-                pass
-
-            for u in extra_norm:
-                if u in seen:
-                    continue
-                urls.append(u)
-                seen.add(u)
-
-        return urls
-    except Exception:
-        return urls
-
-def _p3v1_attach(payload: dict, context: dict = None) -> dict:
-    """Single end-of-export attach point for Phase3 module."""
-    if not isinstance(payload, dict):
-        return payload
-    context = context if isinstance(context, dict) else {}
-
-    # Export wiring stub (FIX2BK will implement)
-    if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_EXPORT_CANONICAL_FOR_RENDER_V1"):
-        # intentionally empty in consolidation patch
-        pass
-
-    # Optional minimal diagnostics
-    if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_DIAGNOSTICS"):
-        payload.setdefault("debug", {})
-        if isinstance(payload.get("debug"), dict):
-            payload["debug"].setdefault("phase3_v1", {})
-            if isinstance(payload["debug"].get("phase3_v1"), dict):
-                payload["debug"]["phase3_v1"]["attached"] = True
-    return payload
-
-# =========================
-
-# =========================
-# PATCH START: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
-# CODE_VERSION: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
-#
-# Purpose:
-#   Ensure Evolution emits render-ready canonical metrics to the namespace
-#   consumed by the Diff join:
-#       output_debug.canonical_for_render_v1
-#
-# Behavior:
-#   - Derives from the *actual* canonical pool already present in the payload
-#     (primary_response.primary_metrics_canonical or primary_metrics_canonical).
-#   - Non-overwriting: if canonical_for_render_v1 already exists and is non-empty,
-#     we leave it unchanged.
-#   - Always emits the key (empty dict allowed) to avoid "missing_output_debug..." diagnoses.
-# =========================
-
-def _p3v1__get_primary_metrics_canonical(payload: dict):
-    try:
-        if not isinstance(payload, dict):
-            return None
-        pmc = payload.get("primary_metrics_canonical")
-        if isinstance(pmc, dict) and pmc:
-            return pmc
-        pr = payload.get("primary_response")
-        if isinstance(pr, dict):
-            pmc2 = pr.get("primary_metrics_canonical")
-            if isinstance(pmc2, dict) and pmc2:
-                return pmc2
-        return pmc if isinstance(pmc, dict) else None
-    except Exception:
-        return None
-
-def _p3v1__build_canonical_for_render_v1(pmc: dict) -> dict:
-    out = {}
-    if not isinstance(pmc, dict):
-        return out
-    for ck, m in pmc.items():
-        if not ck:
-            continue
-        if not isinstance(m, dict):
-            out[str(ck)] = {"value": m, "unit": None, "value_norm": None, "unit_tag": None}
-            continue
-        out[str(ck)] = {
-            # prefer normalized value when available
-            "value": m.get("value", m.get("value_norm")),
-            "value_norm": m.get("value_norm", m.get("value")),
-            "unit": m.get("unit", m.get("unit_tag")),
-            "unit_tag": m.get("unit_tag", m.get("unit")),
-            "unit_family": m.get("unit_family", ""),
-            "dimension": m.get("dimension", m.get("dimension_kind", "")),
-            "canonical_id": m.get("canonical_id", m.get("canonical_metric_id", "")),
-            "canonical_key": m.get("canonical_key", str(ck)),
-            # optional evidence pointers (safe)
-            "source_url": m.get("source_url", ""),
-            "context_snippet": m.get("context_snippet", ""),
-        }
-    return out
-
-def _p3v1__emit_canonical_for_render_v1(payload: dict) -> None:
-    try:
-        if not isinstance(payload, dict):
-            return
-
-        od = payload.get("output_debug")
-        if not isinstance(od, dict):
-            od = {}
-            payload["output_debug"] = od
-
-        existing = od.get("canonical_for_render_v1")
-        if isinstance(existing, dict) and existing:
-            # Non-overwriting: if already present and non-empty, leave it.
-            return
-
-        pmc = _p3v1__get_primary_metrics_canonical(payload)
-        cfr = _p3v1__build_canonical_for_render_v1(pmc or {})
-
-        # Always emit (even empty dict) to avoid "missing_output_debug..." gating downstream.
-        od["canonical_for_render_v1"] = cfr
-
-        # Optional: also mirror top-level namespace (safe/non-breaking) for robustness
-        if "canonical_for_render_v1" not in payload or not payload.get("canonical_for_render_v1"):
-            payload["canonical_for_render_v1"] = cfr
-
-        # Minimal audit breadcrumb (non-invasive)
-        if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_DIAGNOSTICS"):
-            dbg = payload.get("debug")
-            if not isinstance(dbg, dict):
-                dbg = {}
-                payload["debug"] = dbg
-            fx = dbg.get("fix2bk_export_v1")
-            if not isinstance(fx, dict):
-                fx = {}
-                dbg["fix2bk_export_v1"] = fx
-            fx["emitted"] = True
-            fx["keys"] = int(len(cfr))
-            fx["sample_keys"] = list(cfr.keys())[:5]
-    except Exception:
-        return
-
-# =========================
-# PATCH END: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
-# =========================
-
-# PATCH END: PHASE3_HARNESS_AND_EXPORT_V1
-# =========================
+CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -20978,125 +20650,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
 
 
-
-
         # =====================================================================
-        # PATCH FIX2BP (ADDITIVE): Injection Fetch / Placeholder Elimination (relaxed)
-        #
-        # Observed gap:
-        #   Some injected URLs remain as placeholder rows (e.g. injected_reason="prehash_placeholder")
-        #   with empty snapshot_text and numbers_found==0. Downstream extraction/binding cannot run.
-        #
-        # Fix:
-        #   Best-effort second-pass fetch+extract for injected placeholder/failed rows, using a
-        #   relaxed minimum-text threshold (GitHub Pages test pages can be short).
-        #
-        # Safety:
-        #   - Additive-only.
-        #   - Only targets injected rows with empty snapshot_text and 0 numbers.
-        #   - Never overwrites non-empty snapshot_text or existing extracted_numbers.
-        # =====================================================================
-        try:
-            _fx2bp_min_len = 20  # relaxed threshold for short injected test pages
-            _fx2bp_targets = []
-            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
-                for _row in (baseline_sources_cache or []):
-                    if not isinstance(_row, dict):
-                        continue
-                    if not (_row.get("injected") is True or isinstance(_row.get("injected_reason"), str)):
-                        continue
-                    _u = _row.get("source_url") or _row.get("url") or ""
-                    if not (isinstance(_u, str) and _u.strip()):
-                        continue
-                    # Only target placeholder/failed injected rows that have no text/numbers yet
-                    _txt0 = _row.get("snapshot_text")
-                    _nums0 = _row.get("extracted_numbers")
-                    _nf0 = _row.get("numbers_found")
-                    if isinstance(_txt0, str) and _txt0.strip():
-                        continue
-                    if isinstance(_nums0, list) and len(_nums0 or []) > 0:
-                        continue
-                    if isinstance(_nf0, int) and _nf0 > 0:
-                        continue
-                    _why = _row.get("injected_reason") or _row.get("status_detail") or _row.get("status") or "unknown"
-                    _fx2bp_targets.append((_u.strip(), _row, str(_why)))
-
-            _fx2bp_fetched = []
-            _fx2bp_failed = []
-            if _fx2bp_targets:
-                for (_u, _row, _why) in _fx2bp_targets:
-                    _txt = None
-                    _detail = ""
-                    try:
-                        _txt, _detail = fetch_url_content_with_status(_u, timeout=35)
-                    except Exception as _e:
-                        _txt, _detail = None, f"exception:{type(_e).__name__}"
-
-                    if isinstance(_txt, str) and len(_txt.strip()) >= _fx2bp_min_len:
-                        try:
-                            _nums = extract_numbers_with_context(_txt, source_url=_u) or []
-                        except Exception:
-                            _nums = []
-                        try:
-                            _row.update({
-                                "status": "fetched",
-                                "status_detail": (_detail or "success"),
-                                "snapshot_text": _txt[:7000],
-                                "extracted_numbers": _nums,
-                                "numbers_found": int(len(_nums or [])),
-                                "injected": True,
-                                "injected_reason": _row.get("injected_reason") or "fix2bp_relaxed_fetch",
-                            })
-                        except Exception:
-                            pass
-                        _fx2bp_fetched.append({
-                            "url": _u,
-                            "why": _why,
-                            "min_len": int(_fx2bp_min_len),
-                            "text_len": int(len(_txt.strip())),
-                            "numbers_found": int(len(_nums or [])),
-                            "status_detail": (_detail or "success"),
-                        })
-                    else:
-                        try:
-                            # Keep status_detail for debugging but avoid the misleading "success" label if no text
-                            _row.update({
-                                "status": "failed",
-                                "status_detail": (_detail or "failed:no_text"),
-                                "snapshot_text": "",
-                                "extracted_numbers": [],
-                                "numbers_found": 0,
-                                "injected": True,
-                                "injected_reason": _row.get("injected_reason") or "fix2bp_relaxed_fetch_failed",
-                            })
-                        except Exception:
-                            pass
-                        _fx2bp_failed.append({
-                            "url": _u,
-                            "why": _why,
-                            "min_len": int(_fx2bp_min_len),
-                            "status_detail": (_detail or "failed:no_text"),
-                        })
-
-            # Debug breadcrumb (non-fatal)
-            try:
-                output.setdefault("debug", {})
-                if isinstance(output.get("debug"), dict):
-                    output["debug"].setdefault("fix2bp", {})
-                    if isinstance(output["debug"].get("fix2bp"), dict):
-                        output["debug"]["fix2bp"].update({
-                            "min_len": int(_fx2bp_min_len),
-                            "target_count": int(len(_fx2bp_targets or [])),
-                            "fetched_count": int(len(_fx2bp_fetched or [])),
-                            "failed_count": int(len(_fx2bp_failed or [])),
-                            "fetched": list(_fx2bp_fetched or [])[:10],
-                            "failed": list(_fx2bp_failed or [])[:10],
-                        })
-            except Exception:
-                pass
-        except Exception:
-            pass
-# =====================================================================
         # PATCH FIX41AFC17 (ADDITIVE): Pin fetched injected snapshots into canonical snapshot plumbing
         #
         # Observed gap (from evolution JSON after FIX41AFC16):
@@ -21591,62 +21145,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["sources_fetched"] = len(baseline_sources_cache)
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
-
-    # =========================
-    # PATCH FIX2BM START
-    # CODE_VERSION: FIX2BM_EXPORT_CANONICAL_FOR_RENDER_V1_HARDWIRE
-    # Purpose:
-    #   Hardwire emission of canonical_for_render_v1 into the *actual* namespace
-    #   inspected by the diff join diagnostics (output["debug"]["canonical_for_render_v1"]).
-    #   This is computed from the already-built current_metrics map and is non-overwriting.
-    # =========================
-    try:
-        _dbg = output.setdefault("debug", {}) if isinstance(output, dict) else None
-        if isinstance(_dbg, dict):
-            if not _dbg.get("canonical_for_render_v1"):
-                _cfr = {}
-                try:
-                    if isinstance(current_metrics, dict):
-                        for _ck, _m in current_metrics.items():
-                            if not _ck:
-                                continue
-                            if isinstance(_m, dict):
-                                _val = _m.get("value_norm")
-                                if _val is None:
-                                    _val = _m.get("value")
-                                if _val is None:
-                                    _val = _m.get("current_value_norm")
-                                if _val is None:
-                                    _val = _m.get("current_value")
-                                _unit = _m.get("unit_tag")
-                                if not _unit:
-                                    _unit = _m.get("unit")
-                                if not _unit:
-                                    _unit = _m.get("unit_norm")
-                                _cfr[str(_ck)] = {
-                                    "value_norm": _val,
-                                    "unit_tag": _unit,
-                                    "source_url": _m.get("source_url") or _m.get("url"),
-                                    "anchor_used": bool(_m.get("anchor_used")) if isinstance(_m.get("anchor_used"), (bool, int)) else False,
-                                }
-                except Exception:
-                    _cfr = {}
-                _dbg["canonical_for_render_v1"] = _cfr if isinstance(_cfr, dict) else {}
-            # Minimal audit (safe, compact)
-            _dbg.setdefault("fix2bm_export_v1", {})
-            try:
-                _dbg["fix2bm_export_v1"]["emitted"] = True
-                _dbg["fix2bm_export_v1"]["keys_n"] = int(len(_dbg.get("canonical_for_render_v1") or {}))
-                _dbg["fix2bm_export_v1"]["keys_sample"] = list((_dbg.get("canonical_for_render_v1") or {}).keys())[:10]
-                _dbg["fix2bm_export_v1"]["source"] = "current_metrics"
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # =========================
-    # PATCH FIX2BM END
-    # =========================
-
 
 
     # =====================================================================
@@ -23202,91 +22700,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
     except Exception:
         pass
-
-    # =====================================================================
-    # PATCH FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1 (ADDITIVE)
-    # Goal:
-    # - If Diff Panel V2 overrides `metric_changes`, re-hydrate "Current" fields
-    #   from canonical-for-render (analysis-aligned) so the dashboard Current column
-    #   is not blank/N/A.
-    # Safety:
-    # - Render-only: does NOT affect hashing/fastpath/snapshot attach/extraction.
-    # - Non-overwriting: only fills when current_value is blank/N/A.
-    # =====================================================================
-    try:
-        _fix2bn_pool = None
-        if isinstance(canonical_for_render, dict) and canonical_for_render:
-            _fix2bn_pool = canonical_for_render
-        elif isinstance(current_metrics, dict) and current_metrics:
-            _fix2bn_pool = current_metrics
-        else:
-            _fix2bn_pool = None
-
-        if isinstance(metric_changes, list) and isinstance(_fix2bn_pool, dict) and _fix2bn_pool:
-            _fix2bn_hydrated = 0
-            for _r in metric_changes:
-                if not isinstance(_r, dict):
-                    continue
-                _ck = _r.get("canonical_key") or _r.get("canonical") or _r.get("canonical_id") or ""
-                if not _ck:
-                    continue
-
-                _cm = _fix2bn_pool.get(_ck)
-                if not isinstance(_cm, dict):
-                    continue
-
-                # Only fill if blank/N/A
-                _cur = _r.get("current_value")
-                if _cur is not None and str(_cur).strip() not in ("", "N/A", "n/a", "NA"):
-                    continue
-
-                _vn = _cm.get("value_norm")
-                _unit = str((_cm.get("unit") or _cm.get("unit_tag") or "")).strip()
-                _raw = str((_cm.get("raw") or _cm.get("value_raw") or _cm.get("raw_value") or "")).strip()
-
-                if (_vn is None) and (not _raw):
-                    continue
-
-                if not _raw:
-                    try:
-                        if _vn is not None and _unit:
-                            _raw = f"{_vn} {_unit}".strip()
-                        elif _vn is not None:
-                            _raw = str(_vn)
-                    except Exception:
-                        _raw = ""
-
-                _r["current_value_norm"] = _vn
-                _r["cur_value_norm"] = _vn
-                _r["current_unit"] = _unit
-                _r["cur_unit_cmp"] = _unit
-                _r["current_value"] = _raw
-
-                _r.setdefault("diag", {})
-                if isinstance(_r.get("diag"), dict):
-                    _r["diag"].setdefault("fix2bn", {})
-                    if isinstance(_r["diag"].get("fix2bn"), dict):
-                        _r["diag"]["fix2bn"]["applied"] = True
-                        _r["diag"]["fix2bn"]["canonical_key"] = _ck
-
-                _fix2bn_hydrated += 1
-
-            # lightweight audit
-            try:
-                output.setdefault("debug", {})
-                if isinstance(output.get("debug"), dict):
-                    output["debug"]["fix2bn"] = {
-                        "applied": True,
-                        "rows_hydrated": int(_fix2bn_hydrated),
-                        "pool": "canonical_for_render" if _fix2bn_pool is canonical_for_render else "current_metrics",
-                    }
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # =====================================================================
-    # END PATCH FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1
-    # =====================================================================
 
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
@@ -29087,16 +28500,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     # Step 2: Build current scraped_meta by fetching the same URLs used previously
     urls = _fix24_extract_source_urls(prev_full)
-
-    # =========================
-    # PATCH START: PHASE3_HARNESS_AND_EXPORT_V1 (consolidated URL universe)
-    # Purpose: keep injected URL parity logic centralized (no behavior change intended)
-    try:
-        urls = _p3v1_evo_prepare_url_universe(prev_full, previous_data, web_context, urls)
-    except Exception:
-        pass
-    # PATCH END: PHASE3_HARNESS_AND_EXPORT_V1 (consolidated URL universe)
-    # =========================
     # =====================================================================
     # PATCH FIX41AFC3 (ADDITIVE): Recover Evolution injected URLs into web_context['extra_urls']
     #
@@ -29982,10 +29385,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         # =====================================================================
         # END PATCH EVO_INJ_TRACE_REPLAY1
         # =====================================================================
-        try:
-            _p3v1__emit_canonical_for_render_v1(out_replay)
-        except Exception:
-            pass
         return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
@@ -30025,14 +29424,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
                     out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
-            try:
-                _p3v1__emit_canonical_for_render_v1(out)
-            except Exception:
-                pass
-            try:
-                _fix2bq__apply(out)
-            except Exception:
-                pass
             return out
         except Exception as e:
             # Fall through to original behavior if anything unexpected
@@ -30057,25 +29448,9 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
             except Exception:
                 pass
-            try:
-                _p3v1__emit_canonical_for_render_v1(out_changed)
-            except Exception:
-                pass
-            try:
-                _fix2bq__apply(out_changed)
-            except Exception:
-                pass
             return out_changed
         except Exception:
             pass
-
-    try:
-
-        _p3v1__emit_canonical_for_render_v1(locals().get("out_changed") or locals().get("out") or locals().get("out_replay") or {})
-
-    except Exception:
-
-        pass
 
     return {
         "status": "failed",
@@ -30085,193 +29460,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         "metric_changes": [],
         "debug": {"fix24": True, "fix24_mode": "recompute_failed"},
     }
-
-
-
-# =========================
-# PATCH START: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
-# CODE_VERSION: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
-#
-# Goal:
-# - Hydrate Diff rows' Current fields using metric_definition.canonical_key (preferred),
-#   falling back to row.canonical_key / canonical_id.
-# - Pull values from the best available "current pool" already present in the output:
-#     1) results.debug.canonical_for_render_v1 (preferred, if keyed correctly)
-#     2) results.debug.evo_winner_trace_v1 (fallback; can use cur_value_norm, or top candidate glimpse)
-#
-# Safety:
-# - Additive-only, non-overwriting: only fills when current_value is blank/"N/A"/None.
-# - Never raises.
-# =========================
-
-def _fix2bq__is_blank_current(v):
-    try:
-        if v is None:
-            return True
-        if isinstance(v, str):
-            s = v.strip()
-            return (s == "" or s.upper() == "N/A")
-        return False
-    except Exception:
-        return True
-
-def _fix2bq__safe_dict(d):
-    return d if isinstance(d, dict) else {}
-
-def _fix2bq__safe_list(x):
-    return x if isinstance(x, list) else []
-
-def _fix2bq__get_row_key(row):
-    if not isinstance(row, dict):
-        return None
-    md = row.get("metric_definition")
-    if isinstance(md, dict):
-        k = md.get("canonical_key") or md.get("canonical_id")
-        if k:
-            return str(k)
-    # fallbacks
-    k2 = row.get("canonical_key") or row.get("canonical_id") or row.get("metric_id")
-    return str(k2) if k2 else None
-
-def _fix2bq__extract_from_pool_entry(entry):
-    """
-    Accepts various pool shapes and returns (value, value_norm, unit) tuple.
-    """
-    if entry is None:
-        return (None, None, None)
-    if isinstance(entry, dict):
-        v = entry.get("value")
-        vn = entry.get("value_norm", entry.get("cur_value_norm"))
-        u = entry.get("unit") or entry.get("unit_norm") or entry.get("cur_unit")
-        return (v, vn, u)
-    # scalar
-    return (entry, None, None)
-
-def _fix2bq__extract_from_winner_trace(trace_entry):
-    """
-    Winner trace shape (debug.evo_winner_trace_v1[k]):
-      - cur_value_norm / cur_unit may be None
-      - top3_candidates_glimpse may contain usable candidate
-    Returns (value_norm, unit_tag, source_tag) or (None,None,None)
-    """
-    if not isinstance(trace_entry, dict):
-        return (None, None, None)
-    vn = trace_entry.get("cur_value_norm")
-    u = trace_entry.get("cur_unit")
-    if vn is not None:
-        return (vn, u, "winner_trace.cur_value_norm")
-    # fallback to candidate glimpse
-    for c in _fix2bq__safe_list(trace_entry.get("top3_candidates_glimpse")):
-        if not isinstance(c, dict):
-            continue
-        if not c.get("has_unit_evidence"):
-            continue
-        vn2 = c.get("value_norm")
-        ut = c.get("unit_tag") or c.get("unit") or ""
-        if vn2 is None:
-            continue
-        return (vn2, ut, "winner_trace.top_candidate")
-    return (None, None, None)
-
-def _fix2bq__apply_to_results(results_obj):
-    """
-    results_obj is the dict under output['results'] (or similar).
-    Mutates results_obj in-place.
-    """
-    if not isinstance(results_obj, dict):
-        return
-
-    dbg = _fix2bq__safe_dict(results_obj.get("debug"))
-    pool = _fix2bq__safe_dict(dbg.get("canonical_for_render_v1"))
-    winner_trace = _fix2bq__safe_dict(dbg.get("evo_winner_trace_v1"))
-
-    # Candidate: apply to multiple metric_changes variants
-    targets = []
-    for k in ("metric_changes", "metric_changes_legacy", "metric_changes_v2"):
-        v = results_obj.get(k)
-        if isinstance(v, list) and v:
-            targets.append((k, v))
-
-    hydrated = 0
-    used_pool = 0
-    used_winner = 0
-
-    for name, rows in targets:
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            if not _fix2bq__is_blank_current(row.get("current_value")):
-                continue
-            key = _fix2bq__get_row_key(row)
-            if not key:
-                continue
-
-            # 1) Try canonical_for_render_v1
-            if key in pool:
-                v, vn, u = _fix2bq__extract_from_pool_entry(pool.get(key))
-                if vn is None and v is None:
-                    # nothing usable
-                    pass
-                else:
-                    # prefer numeric norm if present
-                    row["current_value_norm"] = vn if vn is not None else row.get("current_value_norm")
-                    row["current_value"] = vn if vn is not None else (v if v is not None else row.get("current_value"))
-                    if u and not row.get("current_unit"):
-                        row["current_unit"] = u
-                    hydrated += 1
-                    used_pool += 1
-                    continue
-
-            # 2) Try winner trace fallback
-            if key in winner_trace:
-                vn2, ut2, src_tag = _fix2bq__extract_from_winner_trace(winner_trace.get(key))
-                if vn2 is None:
-                    continue
-                row["current_value_norm"] = vn2
-                row["current_value"] = vn2
-                if ut2 and not row.get("current_unit"):
-                    row["current_unit"] = ut2
-                row.setdefault("debug", {})
-                if isinstance(row.get("debug"), dict):
-                    row["debug"].setdefault("fix2bq", {})
-                    if isinstance(row["debug"].get("fix2bq"), dict):
-                        row["debug"]["fix2bq"].update({"source": src_tag})
-                hydrated += 1
-                used_winner += 1
-
-    # Attach audit
-    results_obj.setdefault("debug", {})
-    if isinstance(results_obj.get("debug"), dict):
-        results_obj["debug"].setdefault("fix2bq", {})
-        if isinstance(results_obj["debug"].get("fix2bq"), dict):
-            results_obj["debug"]["fix2bq"].update({
-                "applied": True,
-                "hydrated_rows": int(hydrated),
-                "used_canonical_for_render_v1": int(used_pool),
-                "used_winner_trace": int(used_winner),
-                "pool_keys_n": int(len(pool)),
-                "winner_keys_n": int(len(winner_trace)),
-            })
-
-def _fix2bq__apply(output):
-    """
-    Applies FIX2BQ to an output dict that may contain:
-      - output['results'] (primary)
-      - or be itself a 'results' dict (fallback)
-    """
-    try:
-        if not isinstance(output, dict):
-            return
-        if isinstance(output.get("results"), dict):
-            _fix2bq__apply_to_results(output["results"])
-        else:
-            _fix2bq__apply_to_results(output)
-    except Exception:
-        pass
-
-# =========================
-# PATCH END: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
-# =========================
 
 
 # ==============================================================================
@@ -33860,4 +33048,1118 @@ except Exception:
     pass
 # =====================================================================
 # END PATCH FIX2Y_VERSION_BUMP
+# =====================================================================
+
+# =====================================================================
+# PATCH FIX2AG_SPINE_PUBLISHER_ADAPTER_V1 (ADDITIVE)
+# Purpose:
+#   - Provide a minimal, write-only publisher adapter that deterministically
+#     writes a canonical "current metrics" map into the exact contract path
+#     used by Diff Panel V2 ("primary_metrics_canonical").
+#   - Provide an opt-in synthetic hydration mode (env-var gated) so you can
+#     prove the UI hydrates Current before implementing binding/normalization.
+#
+# Safety / Constraints:
+#   - Additive only; does not refactor or modify existing extraction/canon/UI.
+#   - Synthetic mode is OFF by default. When OFF, this patch is no-op.
+#
+# How to use (synthetic proof):
+#   - Set env var YUREEKA_SPINE_V1_SYNTHETIC=1 to auto-publish 3 dummy keys
+#     from metric_schema_frozen (if available) or use YUREEKA_SPINE_V1_SYNTHETIC_JSON
+#     to provide an explicit map.
+#   - Example JSON:
+#       {"global_ev_sales_2024__unknown":{"value_norm":17.8,"unit_tag":"million units"}}
+# =====================================================================
+
+# -------------------------
+# PATCH TRACKER (ADDITIVE)
+# -------------------------
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AG_SPINE_PUBLISHER_ADAPTER_V1",
+            "code_version": "fix2ag_spine_pub_v1",
+            "date": "2026-01-13",
+            "adds": [
+                "publisher adapter -> primary_metrics_canonical",
+                "env-gated synthetic hydration proof",
+                "debug.spine_v1 publish diagnostics",
+            ],
+            "notes": "Historical patches prior to this tracker block are not enumerated here.",
+        })
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AH_SPINE_SCHEMA_BINDER_V1",
+            "code_version": "fix2ah_spine_bind_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "Phase 1 deterministic schema binder that maps existing candidates to frozen metric_schema_frozen keys",
+                "Explainable binding trace + coverage diagnostics under debug.spine_v1.phase1_schema_bind",
+                "Publishes schema-keyed canonical current metrics into primary_metrics_canonical (disable via env YUREEKA_SPINE_V1_SCHEMA_BIND=0)"
+            ],
+            "risk": "low",
+            "notes": "Additive-only; does not modify extraction. Phase 2 will add unit/scale normalization and stricter unit-family enforcement."
+        })
+except Exception:
+    pass
+# -------------------------
+
+def _spine_v1__coerce_metric_row(ckey: str, v: Any) -> Dict[str, Any]:
+    """
+    Coerce an incoming map entry into a stable primary_metrics_canonical row.
+    Accepts:
+      - dict metric row
+      - scalar numeric
+      - (value, unit_tag) tuple/list (len>=2)
+    """
+    try:
+        ck = str(ckey or "").strip()
+    except Exception:
+        ck = ""
+    row: Dict[str, Any] = {"canonical_key": ck}
+
+    if isinstance(v, dict):
+        try:
+            row.update(dict(v))
+        except Exception:
+            pass
+    elif isinstance(v, (list, tuple)) and len(v) >= 1:
+        try:
+            row["value_norm"] = v[0]
+            row["value"] = v[0]
+            if len(v) >= 2:
+                row["unit_tag"] = v[1]
+                row["unit"] = v[1]
+        except Exception:
+            pass
+    else:
+        # scalar
+        row["value_norm"] = v
+        row["value"] = v
+
+    # Minimal stabilization / defaults (do not fabricate semantics)
+    try:
+        row.setdefault("canonical_key", ck)
+        row.setdefault("canonical_id", row.get("canonical_id") or ck)
+        row.setdefault("name", row.get("name") or row.get("metric_name") or ck)
+        # unit fields (optional)
+        if "unit_tag" in row and "unit" not in row:
+            row["unit"] = row.get("unit_tag")
+        if "unit" in row and "unit_tag" not in row:
+            row["unit_tag"] = row.get("unit")
+        # keep anchor fields present
+        row.setdefault("anchor_hash", row.get("anchor_hash"))
+        # prefer numeric normalization if possible
+        if row.get("value_norm") is None and row.get("value") is not None:
+            row["value_norm"] = row.get("value")
+    except Exception:
+        pass
+
+    return row
+
+
+def spine_v1_publish_primary_metrics_canonical(output_obj: Dict[str, Any], current_metrics_map: Dict[str, Any],
+                                              publish_path: str = "primary_metrics_canonical",
+                                              debug_obj: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Deterministically publish a canonical current-metrics map into output_obj[publish_path].
+    - Does not validate semantics; write-only adapter.
+    - Orders keys deterministically (sorted).
+    - Emits debug.spine_v1 publish diagnostics.
+    Returns output_obj for convenience.
+    """
+    if not isinstance(output_obj, dict):
+        return output_obj
+
+    if not isinstance(current_metrics_map, dict):
+        current_metrics_map = {}
+
+    published: Dict[str, Any] = {}
+    keys = []
+    try:
+        keys = sorted([str(k) for k in current_metrics_map.keys() if isinstance(k, str) and k and not k.startswith("_")])
+    except Exception:
+        keys = []
+
+    for ck in keys:
+        try:
+            published[ck] = _spine_v1__coerce_metric_row(ck, current_metrics_map.get(ck))
+        except Exception:
+            continue
+
+    # Write contract
+    try:
+        output_obj[publish_path] = published
+    except Exception:
+        pass
+
+    # Debug
+    try:
+        output_obj.setdefault("debug", {})
+        if isinstance(output_obj.get("debug"), dict):
+            output_obj["debug"].setdefault("spine_v1", {})
+            if isinstance(output_obj["debug"].get("spine_v1"), dict):
+                output_obj["debug"]["spine_v1"].update({
+                    "publish_path_used": publish_path,
+                    "keys_written": int(len(published)),
+                    "sample_keys": keys[:10],
+                })
+                if isinstance(debug_obj, dict):
+                    output_obj["debug"]["spine_v1"].update(dict(debug_obj))
+    except Exception:
+        pass
+
+    return output_obj
+
+
+def _spine_v1__build_synth_map_from_schema(prev_response: Dict[str, Any], max_keys: int = 3) -> Dict[str, Any]:
+    """Pick up to max_keys canonical keys from metric_schema_frozen and create dummy values."""
+    out_map: Dict[str, Any] = {}
+    schema = None
+    try:
+        if isinstance(prev_response, dict):
+            schema = prev_response.get("metric_schema_frozen") or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+    except Exception:
+        schema = None
+    if not isinstance(schema, dict) or not schema:
+        return out_map
+
+    keys = []
+    try:
+        keys = sorted([str(k) for k in schema.keys() if isinstance(k, str) and k and not k.startswith("_")])[:max_keys]
+    except Exception:
+        keys = []
+
+    # Stable dummy values: 101,102,103...
+    base = 101
+    for i, ck in enumerate(keys):
+        try:
+            spec = schema.get(ck) if isinstance(schema.get(ck), dict) else {}
+            unit_tag = (spec or {}).get("unit_tag") or (spec or {}).get("unit") or ""
+            out_map[ck] = {
+                "value_norm": float(base + i),
+                "value": float(base + i),
+                "unit_tag": unit_tag,
+                "unit": unit_tag,
+                "rebuild_method": "spine_v1_synthetic",
+                "provenance": {"method": "spine_v1_synthetic"},
+            }
+        except Exception:
+            pass
+    return out_map
+
+
+def spine_v1_maybe_publish_synthetic(prev_response: Dict[str, Any], cur_response: Dict[str, Any]) -> bool:
+    """
+    Opt-in synthetic hydration:
+      - YUREEKA_SPINE_V1_SYNTHETIC_JSON: JSON dict to publish directly
+      - YUREEKA_SPINE_V1_SYNTHETIC=1: auto-generate dummy keys from schema
+    Returns True if a publish occurred.
+    """
+    try:
+        if not isinstance(cur_response, dict):
+            return False
+
+        synth_json = str(os.environ.get("YUREEKA_SPINE_V1_SYNTHETIC_JSON") or "").strip()
+        if synth_json:
+            try:
+                m = json.loads(synth_json)
+                if isinstance(m, dict) and m:
+                    spine_v1_publish_primary_metrics_canonical(
+                        cur_response, m,
+                        publish_path="primary_metrics_canonical",
+                        debug_obj={"synthetic_used": True, "synthetic_mode": "env_json"},
+                    )
+                    return True
+            except Exception:
+                # fall through to flag mode
+                pass
+
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_SYNTHETIC") or "").strip().lower()
+        if flag in ("1", "true", "yes", "y", "on"):
+            m2 = _spine_v1__build_synth_map_from_schema(prev_response, max_keys=3)
+            if isinstance(m2, dict) and m2:
+                spine_v1_publish_primary_metrics_canonical(
+                    cur_response, m2,
+                    publish_path="primary_metrics_canonical",
+                    debug_obj={"synthetic_used": True, "synthetic_mode": "schema_auto"},
+                )
+                return True
+
+        return False
+    except Exception:
+        return False
+
+
+
+# -------------------------
+# FIX2AH Phase 1: Schema Binder (additive)
+# -------------------------
+# Goal: deterministically bind existing extracted/canonical candidates to the frozen metric schema
+# and publish a schema-keyed current metrics map into primary_metrics_canonical (or sidecar),
+# with full explainability. No unit/scale normalization in this phase (beyond pass-through).
+
+def spine_v1__safe_text(x: Any) -> str:
+    try:
+        if x is None:
+            return ""
+        if isinstance(x, (int, float)):
+            return str(x)
+        return str(x)
+    except Exception:
+        return ""
+
+
+def spine_v1__tokenize(s: str) -> List[str]:
+    try:
+        s = (s or "").lower()
+        toks = re.findall(r"[a-z0-9]+", s)
+        return [t for t in toks if t and t not in ("and", "or", "the", "a", "an", "of", "to", "in", "by", "for")]
+    except Exception:
+        return []
+
+
+def spine_v1_build_schema_index(metric_schema_frozen: Any) -> Dict[str, Dict[str, Any]]:
+    """Return {schema_canonical_key: schema_spec}, filtered to dict-like entries."""
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        if not isinstance(metric_schema_frozen, dict):
+            return out
+        for k, v in metric_schema_frozen.items():
+            if not isinstance(k, str) or not k:
+                continue
+            if isinstance(v, dict):
+                spec = dict(v)
+                spec.setdefault("canonical_key", k)
+                spec.setdefault("canonical_id", spec.get("canonical_id") or spec.get("metric_id") or k)
+                spec.setdefault("dimension", spec.get("dimension") or spec.get("metric_dimension") or "")
+                spec.setdefault("unit_tag", spec.get("unit_tag") or spec.get("unit") or "")
+                kws = spec.get("keywords") or []
+                if not isinstance(kws, list):
+                    kws = []
+                spec["keywords"] = [spine_v1__safe_text(x).lower() for x in kws if spine_v1__safe_text(x)]
+                out[k] = spec
+            else:
+                out[k] = {"canonical_key": k, "canonical_id": k, "dimension": "", "unit_tag": "", "keywords": []}
+        return out
+    except Exception:
+        return out
+
+
+def spine_v1_collect_candidate_pool(cur_response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Collect candidate rows from existing cur_response structures (priority: primary_metrics_canonical)."""
+    pool: List[Dict[str, Any]] = []
+    try:
+        if not isinstance(cur_response, dict):
+            return pool
+
+        pmc = cur_response.get("primary_metrics_canonical")
+        if isinstance(pmc, dict):
+            for ck, row in pmc.items():
+                if not isinstance(ck, str) or not isinstance(row, dict):
+                    continue
+                r = dict(row)
+                r["_candidate_source"] = "primary_metrics_canonical"
+                r["_candidate_key"] = ck
+                r.setdefault("canonical_key", ck)
+                r.setdefault("canonical_id", r.get("canonical_id") or ck)
+                r.setdefault("dimension", r.get("dimension") or r.get("metric_dimension") or "")
+                r.setdefault("unit_tag", r.get("unit_tag") or r.get("unit") or "")
+                name = r.get("name") or r.get("metric_name") or r.get("original_name") or ck
+                r["_match_text"] = " ".join([
+                    spine_v1__safe_text(name),
+                    spine_v1__safe_text(r.get("canonical_id")),
+                    spine_v1__safe_text(r.get("canonical_key")),
+                    spine_v1__safe_text(r.get("geo_scope")),
+                    spine_v1__safe_text(r.get("geo_name")),
+                    spine_v1__safe_text(r.get("context_snippet")),
+                ])
+                pool.append(r)
+
+        # Secondary pool if pmc empty (kept for forward compatibility)
+        if not pool:
+            bsc = cur_response.get("baseline_sources_cache")
+            if isinstance(bsc, list):
+                for src in bsc:
+                    if not isinstance(src, dict):
+                        continue
+                    nums = src.get("extracted_numbers")
+                    if not isinstance(nums, list):
+                        continue
+                    for n in nums:
+                        if not isinstance(n, dict):
+                            continue
+                        r = dict(n)
+                        r["_candidate_source"] = "baseline_sources_cache"
+                        r["_candidate_key"] = spine_v1__safe_text(r.get("anchor_hash") or r.get("raw") or "")
+                        r.setdefault("canonical_key", "")
+                        r.setdefault("canonical_id", "")
+                        r.setdefault("dimension", "")
+                        r.setdefault("unit_tag", r.get("unit_tag") or r.get("unit") or "")
+                        r["_match_text"] = " ".join([
+                            spine_v1__safe_text(r.get("raw")),
+                            spine_v1__safe_text(r.get("context_snippet")),
+                            spine_v1__safe_text(r.get("source_url")),
+                        ])
+                        pool.append(r)
+
+        return pool
+    except Exception:
+        return pool
+
+
+def spine_v1_score_candidate_for_schema(schema_spec: Dict[str, Any], cand: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    """Deterministic, explainable score. Higher is better. Returns (score, breakdown)."""
+    breakdown: Dict[str, Any] = {"rules": []}
+    score = 0
+    try:
+        sk = spine_v1__safe_text(schema_spec.get("canonical_key"))
+        scid = spine_v1__safe_text(schema_spec.get("canonical_id"))
+        sd = spine_v1__safe_text(schema_spec.get("dimension")).lower()
+        su = spine_v1__safe_text(schema_spec.get("unit_tag")).lower()
+        keywords = schema_spec.get("keywords") or []
+        if not isinstance(keywords, list):
+            keywords = []
+
+        ck = spine_v1__safe_text(cand.get("canonical_key"))
+        cid = spine_v1__safe_text(cand.get("canonical_id"))
+        cd = spine_v1__safe_text(cand.get("dimension")).lower()
+        cu = spine_v1__safe_text(cand.get("unit_tag")).lower()
+
+        if sk and ck and sk == ck:
+            score += 1000
+            breakdown["rules"].append({"id": "R1_exact_canonical_key", "add": 1000})
+
+        if scid and cid and scid == cid:
+            score += 250
+            breakdown["rules"].append({"id": "R2_canonical_id_match", "add": 250})
+
+        if sd and cd and sd == cd:
+            score += 120
+            breakdown["rules"].append({"id": "R3_dimension_match", "add": 120})
+
+        if su and cu and su == cu:
+            score += 40
+            breakdown["rules"].append({"id": "R4_unit_tag_match", "add": 40})
+
+        text = spine_v1__safe_text(cand.get("_match_text"))
+        toks = set(spine_v1__tokenize(text))
+        kw_hits = 0
+        for kw in keywords:
+            ktoks = spine_v1__tokenize(spine_v1__safe_text(kw))
+            if ktoks and all(t in toks for t in ktoks):
+                kw_hits += 1
+        if kw_hits:
+            add = min(kw_hits, 10) * 15
+            score += add
+            breakdown["rules"].append({"id": "R5_keyword_hits", "add": add, "kw_hits": kw_hits})
+
+        # context_score as small deterministic bump
+        cs = cand.get("context_score")
+        try:
+            csf = float(cs)
+            add = int(max(0.0, min(30.0, csf / 5.0)))
+            if add:
+                score += add
+                breakdown["rules"].append({"id": "R6_context_score", "add": add, "context_score": csf})
+        except Exception:
+            pass
+
+        breakdown["score"] = int(score)
+        return int(score), breakdown
+    except Exception:
+        breakdown["score"] = int(score)
+        return int(score), breakdown
+
+
+def spine_v1_bind_to_schema(schema_index: Dict[str, Dict[str, Any]], candidate_pool: List[Dict[str, Any]],
+                           max_rejects: int = 8) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return (schema_keyed_map, diagnostics)."""
+    bound: Dict[str, Any] = {}
+    diag: Dict[str, Any] = {"coverage": {}, "binding_trace": {}, "candidate_source_used": None}
+
+    try:
+        if candidate_pool:
+            diag["candidate_source_used"] = spine_v1__safe_text(candidate_pool[0].get("_candidate_source") or "")
+
+        total = 0
+        hit = 0
+        for sk, spec in sorted(schema_index.items(), key=lambda kv: kv[0]):
+            total += 1
+            best = None
+            best_score = -10**9
+            best_break = None
+            rejects = []
+
+            for cand in candidate_pool:
+                sc, br = spine_v1_score_candidate_for_schema(spec, cand)
+                cand_key = spine_v1__safe_text(cand.get("_candidate_key") or cand.get("canonical_key") or "")
+                cand_anchor = spine_v1__safe_text(cand.get("anchor_hash") or "")
+                if sc > best_score:
+                    if best is not None:
+                        rejects.append({"candidate_key": spine_v1__safe_text(best.get("canonical_key") or ""),
+                                        "score": int(best_score), "why": best_break})
+                    best = cand
+                    best_score = sc
+                    best_break = br
+                    continue
+                if sc == best_score and best is not None:
+                    best_key = spine_v1__safe_text(best.get("_candidate_key") or best.get("canonical_key") or "")
+                    best_anchor = spine_v1__safe_text(best.get("anchor_hash") or "")
+                    if (cand_key, cand_anchor) < (best_key, best_anchor):
+                        rejects.append({"candidate_key": spine_v1__safe_text(best.get("canonical_key") or ""),
+                                        "score": int(best_score), "why": best_break})
+                        best = cand
+                        best_score = sc
+                        best_break = br
+                    else:
+                        if len(rejects) < max_rejects:
+                            rejects.append({"candidate_key": spine_v1__safe_text(cand.get("canonical_key") or ""),
+                                            "score": int(sc), "why": br})
+                else:
+                    if len(rejects) < max_rejects:
+                        rejects.append({"candidate_key": spine_v1__safe_text(cand.get("canonical_key") or ""),
+                                        "score": int(sc), "why": br})
+
+            accepted = False
+            accept_reason = "none"
+            if best is not None:
+                if spine_v1__safe_text(best.get("canonical_key")) == sk:
+                    accepted = True
+                    accept_reason = "exact_canonical_key"
+                else:
+                    if best_score >= 150:
+                        accepted = True
+                        accept_reason = "score_threshold"
+                    else:
+                        rules = (best_break or {}).get("rules") or []
+                        has_dim = any(r.get("id") == "R3_dimension_match" for r in rules)
+                        has_kw = any(r.get("id") == "R5_keyword_hits" and (r.get("kw_hits") or 0) >= 1 for r in rules)
+                        if has_dim and has_kw:
+                            accepted = True
+                            accept_reason = "dim_plus_keyword"
+
+            if accepted and best is not None:
+                hit += 1
+                out_row = dict(best)
+                out_row["canonical_key"] = sk
+                out_row["canonical_id"] = spine_v1__safe_text(spec.get("canonical_id") or out_row.get("canonical_id") or sk)
+                out_row["dimension"] = spine_v1__safe_text(spec.get("dimension") or out_row.get("dimension") or "")
+                out_row.setdefault("schema_unit_tag", spine_v1__safe_text(spec.get("unit_tag") or spec.get("unit") or ""))
+                out_row.setdefault("schema_keywords", spec.get("keywords") or [])
+                out_row["binding_accept_reason"] = accept_reason
+                out_row["binding_score"] = int(best_score)
+                bound[sk] = out_row
+
+                diag["binding_trace"][sk] = {
+                    "selected_candidate_key": spine_v1__safe_text(best.get("canonical_key") or ""),
+                    "selected_source": spine_v1__safe_text(best.get("_candidate_source") or ""),
+                    "accept_reason": accept_reason,
+                    "score": int(best_score),
+                    "score_breakdown": best_break,
+                    "rejected": rejects[:max_rejects],
+                }
+            else:
+                diag["binding_trace"][sk] = {
+                    "selected_candidate_key": "",
+                    "selected_source": "",
+                    "accept_reason": "no_match",
+                    "score": int(best_score) if best is not None else 0,
+                    "score_breakdown": best_break,
+                    "rejected": rejects[:max_rejects],
+                }
+
+        diag["coverage"] = {"schema_total": int(total), "schema_bound": int(hit), "schema_unbound": int(max(0, total-hit))}
+        return bound, diag
+    except Exception:
+        return bound, diag
+
+
+
+# =====================================================================
+# PATCH FIX2AJ_SPINE_PHASE2_NORMALIZATION_V2 (ADDITIVE)
+# Phase 2: deterministic unit + scale normalization (schema-driven, no NLP)
+#
+# Goals:
+# - Normalize bound values into schema-expected unit families with explicit traces
+# - Avoid silent failure: keep raw fields; add norm_* fields + per-key norm trace
+# - Deterministic, inference-free (only apply transformations when supported by explicit unit evidence)
+#
+# Env controls (optional):
+# - YUREEKA_SPINE_V1_NORMALIZE=0  (disable normalization; publish Phase1-bound values)
+# =====================================================================
+
+def spine_v1__is_yearlike_value(v: Any) -> bool:
+    try:
+        iv = int(float(v))
+        return 1900 <= iv <= 2100
+    except Exception:
+        return False
+
+def spine_v1__lower(s: Any) -> str:
+    try:
+        return str(s or "").strip().lower()
+    except Exception:
+        return ""
+
+def spine_v1__pick_unit_tag(row: Dict[str, Any]) -> str:
+    for k in ("unit_tag", "unit_norm", "unit", "base_unit"):
+        u = row.get(k)
+        if isinstance(u, str) and u.strip():
+            return u.strip()
+    return ""
+
+def spine_v1__unit_scale_multiplier(unit_tag: str, context: str = "") -> Tuple[float, str]:
+    """
+    Return (multiplier_to_base, scale_label) for common human scales.
+    Base for currency/count = 1 (units or currency base).
+    Only applies when explicit scale evidence is present in unit_tag/context.
+    """
+    ut = spine_v1__lower(unit_tag)
+    ctx = spine_v1__lower(context)
+    combo = f"{ut} {ctx}".strip()
+
+    # billions
+    if any(x in combo for x in [" billion", "bn", " b$", " b ", " usd b", " bnb", "billions"]):
+        return (1e9, "B")
+    # millions
+    if any(x in combo for x in [" million", "mn", " m$", " m ", " usd m", "millions"]):
+        return (1e6, "M")
+    # thousands
+    if any(x in combo for x in [" thousand", "k ", " k$", " usd k", "thousands"]):
+        return (1e3, "K")
+    return (1.0, "")
+
+def spine_v1_normalize_row_v1(schema_spec: Dict[str, Any], row_in: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Normalize a single bound row into schema-expected unit family.
+    Returns (row_out, norm_trace).
+    """
+    row = dict(row_in or {})
+    trace: Dict[str, Any] = {
+        "applied": False,
+        "expected_family": spine_v1__lower(schema_spec.get("unit_family") or schema_spec.get("unit") or ""),
+        "expected_unit": str(schema_spec.get("unit") or ""),
+        "input_unit_tag": spine_v1__pick_unit_tag(row),
+        "input_value_norm": row.get("value_norm"),
+        "actions": [],
+        "warnings": [],
+    }
+
+    # preserve originals
+    row.setdefault("value_norm_raw", row.get("value_norm"))
+    row.setdefault("unit_tag_raw", row.get("unit_tag") or row.get("unit") or row.get("base_unit") or "")
+
+    # numeric guard
+    try:
+        v = float(row.get("value_norm")) if row.get("value_norm") is not None else None
+    except Exception:
+        v = None
+
+    if v is None:
+        trace["warnings"].append("no_numeric_value_norm")
+        row["value_norm_norm"] = None
+        row["unit_tag_norm"] = trace["input_unit_tag"]
+        return row, trace
+
+    expected = trace["expected_family"]
+
+    # context for scale detection
+    ctx = str(row.get("context_snippet") or row.get("context") or row.get("evidence_text") or "")
+
+    # -------- Percent --------
+    if expected == "percent" or str(row.get("canonical_key") or "").endswith("__percent"):
+        ut = spine_v1__lower(trace["input_unit_tag"])
+        if "%" in ut or ut == "%":
+            row["value_norm_norm"] = v
+            row["unit_tag_norm"] = "%"
+            trace["applied"] = True
+            trace["actions"].append("percent_keep")
+            return row, trace
+
+        # Explicit evidence missing: only convert fraction->percent when schema expects percent AND value is [0,1]
+        if (row.get("unit_tag") in (None, "", " ") or not trace["input_unit_tag"]) and 0.0 <= v <= 1.0:
+            row["value_norm_norm"] = v * 100.0
+            row["unit_tag_norm"] = "%"
+            trace["applied"] = True
+            trace["actions"].append("fraction_to_percent_by_range")
+            trace["warnings"].append("unit_missing_used_range_rule")
+            return row, trace
+
+        # otherwise do not guess
+        row["value_norm_norm"] = v
+        row["unit_tag_norm"] = trace["input_unit_tag"]
+        trace["warnings"].append("percent_expected_but_no_percent_evidence")
+        return row, trace
+
+    # -------- Currency --------
+    if expected == "currency" or str(row.get("canonical_key") or "").endswith("__currency"):
+        ut = trace["input_unit_tag"]
+        mult, scale = spine_v1__unit_scale_multiplier(ut, ctx)
+
+        # also honor explicit base_unit shorthand when present
+        bu = spine_v1__lower(str(row.get("base_unit") or ""))
+        if mult == 1.0 and bu in ("b", "bn"):
+            mult, scale = (1e9, "B")
+        elif mult == 1.0 and bu in ("m", "mn"):
+            mult, scale = (1e6, "M")
+        elif mult == 1.0 and bu in ("k",):
+            mult, scale = (1e3, "K")
+
+        row["value_norm_norm"] = v * mult
+        row["unit_tag_norm"] = (row.get("currency") or row.get("currency_code") or row.get("currency_symbol") or "").strip() or (trace["input_unit_tag"] or "")
+        row["norm_multiplier_to_base"] = mult
+        row["norm_scale_tag"] = scale
+        trace["applied"] = True
+        trace["actions"].append(f"currency_scale_{scale or '1'}")
+        return row, trace
+
+    # -------- Energy (TWh/GWh/MWh/kWh/Wh) --------
+    if expected == "energy":
+        ut = spine_v1__lower(trace["input_unit_tag"])
+        # explicit conversions only
+        if "twh" in ut:
+            row["value_norm_norm"] = v * 1e12
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("twh_to_wh")
+            return row, trace
+        if "gwh" in ut:
+            row["value_norm_norm"] = v * 1e9
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("gwh_to_wh")
+            return row, trace
+        if "mwh" in ut:
+            row["value_norm_norm"] = v * 1e6
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("mwh_to_wh")
+            return row, trace
+        if "kwh" in ut:
+            row["value_norm_norm"] = v * 1e3
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("kwh_to_wh")
+            return row, trace
+        if "wh" in ut:
+            row["value_norm_norm"] = v
+            row["unit_tag_norm"] = "Wh"
+            trace["applied"] = True
+            trace["actions"].append("wh_keep")
+            return row, trace
+
+        row["value_norm_norm"] = v
+        row["unit_tag_norm"] = trace["input_unit_tag"]
+        trace["warnings"].append("energy_expected_but_no_energy_unit_evidence")
+        return row, trace
+
+    # -------- Count / unit_sales (default) --------
+    # Treat any non-percent/non-currency/non-energy as count-like unless schema says otherwise.
+    ut = spine_v1__lower(trace["input_unit_tag"])
+    mult, scale = (1.0, "")
+    # explicit "million" / "billion" / "thousand" evidence
+    mult, scale = spine_v1__unit_scale_multiplier(trace["input_unit_tag"], ctx)
+
+    # if unit tag explicitly mentions "units" but also scale evidence, convert to base units
+    if mult != 1.0:
+        row["value_norm_norm"] = v * mult
+        row["unit_tag_norm"] = "units"
+        row["norm_multiplier_to_base"] = mult
+        row["norm_scale_tag"] = scale
+        trace["applied"] = True
+        trace["actions"].append(f"count_scale_{scale or '1'}")
+        return row, trace
+
+    # If explicit unit is already "units"
+    if "unit" in ut or ut in ("units", "vehicles", "cars"):
+        row["value_norm_norm"] = v
+        row["unit_tag_norm"] = "units"
+        trace["applied"] = True
+        trace["actions"].append("units_keep")
+        return row, trace
+
+    # No explicit evidence -> don't guess
+    row["value_norm_norm"] = v
+    row["unit_tag_norm"] = trace["input_unit_tag"]
+    trace["warnings"].append("no_scale_or_unit_evidence_applied")
+    return row, trace
+
+
+def spine_v1_phase2_normalize_bound_metrics(schema_index: Dict[str, Dict[str, Any]],
+                                           bound_map: Dict[str, Any],
+                                           max_traces: int = 500) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Normalize all Phase1-bound metrics using schema expectations.
+    Returns (normalized_map, diag) where diag contains per-key normalization traces.
+    """
+    out: Dict[str, Any] = {}
+    diag: Dict[str, Any] = {"norm_trace": {}, "summary": {}}
+
+    total = 0
+    applied = 0
+    warnings = 0
+    yearlike_suspect = 0
+
+    for sk, row in sorted((bound_map or {}).items(), key=lambda kv: kv[0]):
+        total += 1
+        spec = schema_index.get(sk) or {}
+        row2, tr = spine_v1_normalize_row_v1(spec, row if isinstance(row, dict) else {})
+        out[sk] = row2
+        if tr.get("applied"):
+            applied += 1
+        if tr.get("warnings"):
+            warnings += 1
+        if spine_v1__is_yearlike_value(tr.get("input_value_norm")) and not (str(tr.get("input_unit_tag") or "").strip()):
+            yearlike_suspect += 1
+            tr.setdefault("warnings", []).append("yearlike_value_with_no_unit_evidence")
+
+        if len(diag["norm_trace"]) < int(max_traces):
+            diag["norm_trace"][sk] = tr
+
+    diag["summary"] = {
+        "total": int(total),
+        "normalized_applied": int(applied),
+        "keys_with_warnings": int(warnings),
+        "yearlike_suspect_count": int(yearlike_suspect),
+    }
+    return out, diag
+
+# END PATCH FIX2AJ_SPINE_PHASE2_NORMALIZATION_V2
+
+def spine_v1_maybe_schema_bind_and_publish(prev_response: Dict[str, Any], cur_response: Dict[str, Any]) -> bool:
+    """Phase 1 driver. Enabled by default if metric_schema_frozen exists; disable via YUREEKA_SPINE_V1_SCHEMA_BIND=0."""
+    try:
+        if not isinstance(cur_response, dict):
+            return False
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_SCHEMA_BIND") or "").strip().lower()
+        if flag in ("0", "false", "no", "n", "off"):
+            return False
+
+        schema = cur_response.get("metric_schema_frozen")
+        schema_index = spine_v1_build_schema_index(schema)
+        if not schema_index:
+            return False
+
+        pool = spine_v1_collect_candidate_pool(cur_response)
+        bound_map, diag = spine_v1_bind_to_schema(schema_index, pool)
+
+        # Phase 2 normalization (schema-driven)
+        normalize_flag = str(os.environ.get("YUREEKA_SPINE_V1_NORMALIZE") or "").strip().lower()
+        _do_norm = True
+        if normalize_flag in ("0", "false", "no", "n", "off"):
+            _do_norm = False
+
+        norm_map = bound_map
+        norm_diag = {}
+        if _do_norm:
+            try:
+                norm_map, norm_diag = spine_v1_phase2_normalize_bound_metrics(schema_index, bound_map)
+            except Exception as _e_norm:
+                norm_map = bound_map
+                norm_diag = {"error": str(_e_norm)}
+
+
+        # keep a backup for audit
+        if isinstance(cur_response.get("primary_metrics_canonical"), dict):
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"].setdefault("spine_v1", {})
+                if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                    cur_response["debug"]["spine_v1"].setdefault("primary_metrics_canonical_legacy", cur_response.get("primary_metrics_canonical"))
+
+        spine_v1_publish_primary_metrics_canonical(
+            cur_response,
+            norm_map,
+            publish_path="primary_metrics_canonical",
+            debug_obj={
+                "phase": "phase1_schema_bind",
+                "schema_bind_enabled": True,
+                "schema_total": diag.get("coverage", {}).get("schema_total"),
+                "schema_bound": diag.get("coverage", {}).get("schema_bound"),
+                "candidate_source_used": diag.get("candidate_source_used"),
+            },
+        )
+
+        cur_response.setdefault("debug", {})
+        if isinstance(cur_response.get("debug"), dict):
+            cur_response["debug"].setdefault("spine_v1", {})
+            if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                cur_response["debug"]["spine_v1"]["phase1_schema_bind"] = diag
+
+                # Phase 2 normalization diagnostics (additive)
+                try:
+                    cur_response["debug"]["spine_v1"]["phase2_normalization_v1"] = norm_diag
+                except Exception:
+                    pass
+
+
+        return True
+    except Exception:
+        return False
+
+# -------------------------
+# Wire-in (additive override)
+# -------------------------
+try:
+    _FIX2AG_LEGACY_DIFF_METRICS_BY_NAME = diff_metrics_by_name  # capture current entrypoint
+except Exception:
+    _FIX2AG_LEGACY_DIFF_METRICS_BY_NAME = None
+
+def diff_metrics_by_name_FIX2AG_SPINE_PUB(prev_response: dict, cur_response: dict):  # noqa: F811
+    """
+    Additive wrapper:
+      - Phase 1: schema-bind and publish into cur_response['primary_metrics_canonical'] (enabled by default if schema exists;
+        disable via YUREEKA_SPINE_V1_SCHEMA_BIND=0)
+      - If env-gated synthetic is enabled, publish into cur_response['primary_metrics_canonical'] before the legacy diff runs.
+      - Otherwise no-op.
+    """
+    try:
+        # FIX2AH: Phase 1 schema binding (deterministic)
+        try:
+            spine_v1_maybe_schema_bind_and_publish(prev_response, cur_response)
+        except Exception:
+            pass
+
+        # FIX2AG: Optional synthetic hydration proof (env-gated)
+        try:
+            spine_v1_maybe_publish_synthetic(prev_response, cur_response)
+        except Exception:
+            pass
+
+        if callable(_FIX2AG_LEGACY_DIFF_METRICS_BY_NAME):
+            return _FIX2AG_LEGACY_DIFF_METRICS_BY_NAME(prev_response, cur_response)
+
+        # ultra-safe fallback
+        return ([], 0, 0, 0, 0)
+    except Exception:
+        try:
+            return ([], 0, 0, 0, 0)
+        except Exception:
+            return ([], 0, 0, 0, 0)
+
+
+try:
+    diff_metrics_by_name = diff_metrics_by_name_FIX2AG_SPINE_PUB  # type: ignore
+except Exception:
+    pass
+
+
+# Version bump (additive)
+try:
+    CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"
+except Exception:
+    pass
+
+# =====================================================================
+# END PATCH FIX2AG_SPINE_PUBLISHER_ADAPTER_V1
+# =====================================================================
+
+
+
+# -------------------------
+# PATCH TRACKER (ADDITIVE): FIX2AJ
+# -------------------------
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AJ_SPINE_PHASE2_NORMALIZATION_V2",
+            "date": "2026-01-14",
+            "summary": "Phase 2 schema-driven normalization (percent/currency/energy/count scales) with explicit traces; integrates into spine_v1_maybe_schema_bind_and_publish; env-gated via YUREEKA_SPINE_V1_NORMALIZE.",
+            "scope": "additive-only; no refactors",
+        })
+except Exception:
+    pass
+
+# VERSION STAMP (ADDITIVE): bump CODE_VERSION
+try:
+    _cv = str(globals().get("CODE_VERSION") or "")
+    if "fix2aj" not in _cv.lower():
+        CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2AK_SPINE_PHASE3_V2_WIRING_V1 (ADDITIVE)
+# Objective:
+# - Ensure Evolution's render/diff path that calls build_diff_metrics_panel_v2()
+#   receives a cur_response that has:
+#     (a) metric_schema_frozen attached, and
+#     (b) primary_metrics_canonical re-published by the new spine (Phase 1+2)
+#   so the Diff Panel V2 "Current" side is hydrated deterministically.
+# Why:
+# - In practice, the evolution builder often passes a minimal _cur_for_v2 dict
+#   that lacks metric_schema_frozen, causing Phase1/2 to be skipped.
+# Safety:
+# - Additive wrapper only; does not modify extraction, caching, fastpath, hashing,
+#   or legacy diff logic. If spine errors, fall back to legacy behavior.
+# Controls:
+# - Disable via YUREEKA_SPINE_V1_V2_WIRING=0
+# =====================================================================
+
+try:
+    _FIX2AK_LEGACY_BUILD_DIFF_V2 = build_diff_metrics_panel_v2  # capture current entrypoint
+except Exception:
+    _FIX2AK_LEGACY_BUILD_DIFF_V2 = None
+
+
+def _spine_v1__attach_schema_if_missing(prev_response: dict, cur_response: dict) -> dict:
+    """Attach metric_schema_frozen to cur_response if missing; prefer prev_response schema."""
+    try:
+        if not isinstance(cur_response, dict):
+            return cur_response
+        if isinstance(cur_response.get("metric_schema_frozen"), dict) and cur_response.get("metric_schema_frozen"):
+            return cur_response
+
+        schema = None
+        try:
+            if isinstance(prev_response, dict):
+                schema = prev_response.get("metric_schema_frozen")
+                if not isinstance(schema, dict) or not schema:
+                    schema = (prev_response.get("primary_response") or {}).get("metric_schema_frozen") if isinstance(prev_response.get("primary_response"), dict) else schema
+                if not isinstance(schema, dict) or not schema:
+                    schema = (prev_response.get("results") or {}).get("metric_schema_frozen") if isinstance(prev_response.get("results"), dict) else schema
+        except Exception:
+            schema = None
+
+        if isinstance(schema, dict) and schema:
+            cur_response["metric_schema_frozen"] = schema
+            # mild provenance
+            cur_response.setdefault("debug", {})
+            if isinstance(cur_response.get("debug"), dict):
+                cur_response["debug"].setdefault("spine_v1", {})
+                if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                    cur_response["debug"]["spine_v1"].setdefault("phase3_v2_wiring", {})
+                    cur_response["debug"]["spine_v1"]["phase3_v2_wiring"]["schema_attached"] = True
+                    cur_response["debug"]["spine_v1"]["phase3_v2_wiring"]["schema_source"] = "prev_response"
+        return cur_response
+    except Exception:
+        return cur_response
+
+
+def build_diff_metrics_panel_v2_FIX2AK_SPINE_WIRE(prev_response: dict, cur_response: dict):  # noqa: F811
+    """
+    Additive wrapper around build_diff_metrics_panel_v2:
+      - Attaches metric_schema_frozen to cur_response if missing
+      - Runs spine Phase1+2 publish into cur_response['primary_metrics_canonical']
+      - Emits debug.spine_v1.phase3_v2_wiring diagnostics
+      - Calls legacy build_diff_metrics_panel_v2
+    """
+    try:
+        # Disable switch
+        flag = str(os.environ.get("YUREEKA_SPINE_V1_V2_WIRING") or "").strip().lower()
+        if flag in ("0", "false", "no", "n", "off"):
+            if callable(_FIX2AK_LEGACY_BUILD_DIFF_V2):
+                return _FIX2AK_LEGACY_BUILD_DIFF_V2(prev_response, cur_response)
+            return ([], None)
+
+        if isinstance(cur_response, dict):
+            pre_keys = 0
+            try:
+                pmc = cur_response.get("primary_metrics_canonical")
+                pre_keys = int(len(pmc)) if isinstance(pmc, dict) else 0
+            except Exception:
+                pre_keys = 0
+
+            # Attach schema if needed
+            cur_response = _spine_v1__attach_schema_if_missing(prev_response, cur_response)
+
+            # Run spine (Phase1+2) into this cur_response (best-effort)
+            try:
+                spine_v1_maybe_schema_bind_and_publish(prev_response, cur_response)
+            except Exception as _e_sp:
+                try:
+                    cur_response.setdefault("debug", {})
+                    if isinstance(cur_response.get("debug"), dict):
+                        cur_response["debug"].setdefault("spine_v1", {})
+                        if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                            cur_response["debug"]["spine_v1"].setdefault("phase3_v2_wiring", {})
+                            cur_response["debug"]["spine_v1"]["phase3_v2_wiring"]["spine_error"] = f"{type(_e_sp).__name__}: {_e_sp}"
+                except Exception:
+                    pass
+
+            post_keys = 0
+            try:
+                pmc2 = cur_response.get("primary_metrics_canonical")
+                post_keys = int(len(pmc2)) if isinstance(pmc2, dict) else 0
+            except Exception:
+                post_keys = 0
+
+            # Wiring diag
+            try:
+                cur_response.setdefault("debug", {})
+                if isinstance(cur_response.get("debug"), dict):
+                    cur_response["debug"].setdefault("spine_v1", {})
+                    if isinstance(cur_response["debug"].get("spine_v1"), dict):
+                        cur_response["debug"]["spine_v1"].setdefault("phase3_v2_wiring", {})
+                        cur_response["debug"]["spine_v1"]["phase3_v2_wiring"].update({
+                            "v2_wiring_enabled": True,
+                            "pmc_pre_keys": int(pre_keys),
+                            "pmc_post_keys": int(post_keys),
+                            "pmc_growth": int(post_keys - pre_keys),
+                        })
+            except Exception:
+                pass
+
+        if callable(_FIX2AK_LEGACY_BUILD_DIFF_V2):
+            return _FIX2AK_LEGACY_BUILD_DIFF_V2(prev_response, cur_response)
+
+        return ([], None)
+    except Exception:
+        try:
+            if callable(_FIX2AK_LEGACY_BUILD_DIFF_V2):
+                return _FIX2AK_LEGACY_BUILD_DIFF_V2(prev_response, cur_response)
+        except Exception:
+            pass
+        return ([], None)
+
+
+try:
+    build_diff_metrics_panel_v2 = build_diff_metrics_panel_v2_FIX2AK_SPINE_WIRE  # type: ignore
+except Exception:
+    pass
+
+
+# -------------------------
+# PATCH TRACKER (ADDITIVE): FIX2AK
+# -------------------------
+try:
+    PATCH_TRACKER
+except Exception:
+    PATCH_TRACKER = []
+try:
+    if isinstance(PATCH_TRACKER, list):
+        PATCH_TRACKER.append({
+            "patch_id": "FIX2AK_SPINE_PHASE3_V2_WIRING_V1",
+            "code_version": "fix2ak_spine_phase3_wiring_v1",
+            "date": "2026-01-14",
+            "adds": [
+                "Wrap build_diff_metrics_panel_v2 to attach metric_schema_frozen when missing",
+                "Invoke spine Phase1+2 publish before V2 diff so Current side hydrates deterministically",
+                "Emit debug.spine_v1.phase3_v2_wiring with pre/post key counts and schema attachment provenance",
+                "Disable switch: YUREEKA_SPINE_V1_V2_WIRING=0",
+            ],
+            "risk": "low",
+            "scope": "render/diff wiring only; additive",
+        })
+except Exception:
+    pass
+
+# VERSION STAMP (ADDITIVE): ensure CODE_VERSION matches filename
+try:
+    _cv = str(globals().get("CODE_VERSION") or "")
+    if "fix2ak" not in _cv.lower():
+        CODE_VERSION = "fix2ak_spine_phase3_wiring_v1"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX2AK_SPINE_PHASE3_V2_WIRING_V1
 # =====================================================================
