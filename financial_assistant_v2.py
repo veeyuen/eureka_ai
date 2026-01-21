@@ -77,7 +77,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_wip_8_steps2_4_patched_additive"
+CODE_VERSION = "v7_41_endstate_wip_8_anchor_integrity_patched_ai_patches_fix12_year_suppression"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -368,6 +368,194 @@ def generate_analysis_id() -> str:
     """Generate unique ID for analysis"""
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:6]}"
 
+
+# =====================================================================
+# PATCH AI_A (ADDITIVE): emit metric_anchors in analysis payload (analysis-time)
+# Why:
+# - Evolution/diff are now anchor-driven; analysis must persist a deterministic
+#   canonical_key -> anchor_hash mapping for drift=0 convergence.
+# - Some UI/Sheets wrappers omit anchors unless explicitly emitted.
+# Determinism:
+# - Only uses existing evidence/candidates already present in the analysis payload.
+# - No re-fetching; no heuristic matching.
+# =====================================================================
+def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
+    try:
+        if not isinstance(analysis_obj, dict):
+            return analysis_obj
+
+        # If already present and non-empty, keep as-is
+        existing = analysis_obj.get("metric_anchors")
+        if isinstance(existing, dict) and existing:
+            return analysis_obj
+
+        # Identify the primary response container (some payloads store it nested)
+        pr = analysis_obj.get("primary_response") if isinstance(analysis_obj.get("primary_response"), dict) else None
+        pr = pr or analysis_obj
+
+        # Canonical metrics (preferred)
+        pmc = pr.get("primary_metrics_canonical") if isinstance(pr, dict) else None
+        if not isinstance(pmc, dict) or not pmc:
+            pmc = analysis_obj.get("primary_metrics_canonical") if isinstance(analysis_obj.get("primary_metrics_canonical"), dict) else {}
+
+        # Candidate lookup table from baseline snapshots (if present)
+        bsc = None
+        try:
+            r = analysis_obj.get("results")
+            if isinstance(r, dict) and isinstance(r.get("baseline_sources_cache"), list):
+                bsc = r.get("baseline_sources_cache")
+        except Exception:
+            bsc = None
+        if bsc is None and isinstance(analysis_obj.get("baseline_sources_cache"), list):
+            bsc = analysis_obj.get("baseline_sources_cache")
+
+        def _safe_str(x):
+            try:
+                return str(x).strip()
+            except Exception:
+                return ""
+
+        # Build (anchor_hash -> best candidate) index deterministically
+        anchor_to_candidate = {}
+        cand_to_candidate = {}
+        try:
+            if isinstance(bsc, list):
+                for sr in bsc:
+                    if not isinstance(sr, dict):
+                        continue
+                    surl = sr.get("source_url") or sr.get("url")
+                    for n in (sr.get("extracted_numbers") or []):
+                        if not isinstance(n, dict):
+                            continue
+                        ah = _safe_str(n.get("anchor_hash"))
+                        cid = _safe_str(n.get("candidate_id"))
+                        if ah and ah not in anchor_to_candidate:
+                            anchor_to_candidate[ah] = dict(n, source_url=n.get("source_url") or surl)
+                        if cid and cid not in cand_to_candidate:
+                            cand_to_candidate[cid] = dict(n, source_url=n.get("source_url") or surl)
+        except Exception:
+            pass
+
+        metric_anchors = {}
+
+        # Deterministic iteration for stable JSON output
+        for ckey in sorted([str(k) for k in (pmc or {}).keys()]):
+            m = pmc.get(ckey)
+            if not isinstance(m, dict):
+                continue
+
+            # Pick anchor identifiers from evidence first (most authoritative)
+            ev = m.get("evidence") or []
+            if not isinstance(ev, list):
+                ev = []
+
+            best = None
+            for e in ev:
+                if not isinstance(e, dict):
+                    continue
+                ah = _safe_str(e.get("anchor_hash") or e.get("anchor"))
+                cid = _safe_str(e.get("candidate_id"))
+                if ah or cid:
+                    best = e
+                    break
+
+            # Fallback: sometimes metric row carries anchor_hash directly
+            if best is None:
+                best = {
+                    "anchor_hash": m.get("anchor_hash") or m.get("anchor"),
+                    "candidate_id": m.get("candidate_id"),
+                    "source_url": m.get("source_url") or m.get("url"),
+                    "context_snippet": m.get("context_snippet") or m.get("context"),
+                    "anchor_confidence": m.get("anchor_confidence"),
+                }
+
+            ah = _safe_str(best.get("anchor_hash") or best.get("anchor"))
+            cid = _safe_str(best.get("candidate_id"))
+            surl = best.get("source_url") or best.get("url")
+            ctx = best.get("context_snippet") or best.get("context")
+            aconf = best.get("anchor_confidence")
+
+            # Enrich from candidate index if needed
+            if (not surl) or (not ctx):
+                cand = None
+                if ah and ah in anchor_to_candidate:
+                    cand = anchor_to_candidate.get(ah)
+                elif cid and cid in cand_to_candidate:
+                    cand = cand_to_candidate.get(cid)
+                if isinstance(cand, dict):
+                    surl = surl or (cand.get("source_url") or cand.get("url"))
+                    ctx = ctx or (cand.get("context_snippet") or cand.get("context"))
+
+            # Only emit if we actually have an anchor id
+            if not (ah or cid):
+                continue
+
+            try:
+                if isinstance(ctx, str):
+                    ctx = ctx.strip()[:220]
+                else:
+                    ctx = None
+            except Exception:
+                ctx = None
+
+            try:
+                aconf = float(aconf) if aconf is not None else None
+            except Exception:
+                aconf = None
+
+            metric_anchors[ckey] = {
+                "canonical_key": ckey,
+                "anchor_hash": ah or None,
+                "candidate_id": cid or None,
+                "source_url": surl or None,
+                "context_snippet": ctx,
+                "anchor_confidence": aconf,
+            }
+
+            # -----------------------------------------------------------------
+            # PATCH AI_B (ADDITIVE): also backfill anchor fields onto the metric row
+            # -----------------------------------------------------------------
+            try:
+                if ah and not _safe_str(m.get("anchor_hash")):
+                    m["anchor_hash"] = ah
+                if cid and not _safe_str(m.get("candidate_id")):
+                    m["candidate_id"] = cid
+                if surl and not (m.get("source_url") or m.get("url")):
+                    m["source_url"] = surl
+                if ctx and not (m.get("context_snippet") or m.get("context")):
+                    m["context_snippet"] = ctx
+                if aconf is not None and m.get("anchor_confidence") is None:
+                    m["anchor_confidence"] = aconf
+            except Exception:
+                pass
+            # -----------------------------------------------------------------
+
+        if metric_anchors:
+            # -----------------------------------------------------------------
+            # PATCH AI_C (ADDITIVE): persist in all common locations
+            # -----------------------------------------------------------------
+            try:
+                analysis_obj["metric_anchors"] = metric_anchors
+            except Exception:
+                pass
+            try:
+                if isinstance(pr, dict):
+                    pr.setdefault("metric_anchors", metric_anchors)
+            except Exception:
+                pass
+            try:
+                analysis_obj.setdefault("results", {})
+                if isinstance(analysis_obj["results"], dict):
+                    analysis_obj["results"].setdefault("metric_anchors", metric_anchors)
+            except Exception:
+                pass
+            # -----------------------------------------------------------------
+
+        return analysis_obj
+    except Exception:
+        return analysis_obj
+# =====================================================================
+
 def add_to_history(analysis: dict) -> bool:
     """
     Save analysis to Google Sheet (or session fallback).
@@ -384,6 +572,16 @@ def add_to_history(analysis: dict) -> bool:
       - Never blocks saving if enrichment fails.
       - If Sheets unavailable, falls back to session_state.
     """
+
+    # =====================================================================
+    # PATCH AI_A_CALL (ADDITIVE): ensure metric_anchors emitted before persistence
+    # =====================================================================
+    try:
+        analysis = _emit_metric_anchors_in_analysis_payload(analysis)
+    except Exception:
+        pass
+    # =====================================================================
+
     import json
     import re
     import streamlit as st
@@ -457,6 +655,14 @@ def add_to_history(analysis: dict) -> bool:
                         "raw": raw,
                         "context_snippet": ctx[:240],
                         "anchor_hash": anchor_hash,
+            # =====================================================================
+            # PATCH AI2 (ADDITIVE): anchor integrity fields
+            # - candidate_id is a stable short id derived from anchor_hash
+            # - anchor_basis documents what the anchor_hash was built from
+            # =====================================================================
+            "candidate_id": (str(anchor_hash)[:16] if anchor_hash else None),
+            "anchor_basis": "url|raw|context",
+            # =====================================================================
                         "source_url": n.get("source_url") or url,
 
                         "start_idx": n.get("start_idx"),
@@ -502,24 +708,192 @@ def add_to_history(analysis: dict) -> bool:
     # -----------------------
     # PATCH A3 (ADDITIVE): build metric_anchors deterministically (schema-first if present)
     # -----------------------
-    def _build_metric_anchors(primary_metrics_canonical, metric_schema_frozen, evidence_records):
+    def _build_metric_anchors(primary_metrics_canonical, evidence_records):
         """
-        Deterministically anchor each canonical metric to the best matching extracted number
-        from evidence_records.
+        Build a deterministic metric_anchors mapping for drift=0.
 
-        Returns:
-        anchors: Dict[canonical_key -> anchor_dict]
-
-        Notes:
-        - Schema-first gating (unit_family/dimension) for drift stability.
-        - Backward compatible: emits legacy fields metric_id/metric_name in each anchor.
+        PATCH AI1 (ADDITIVE): Anchor integrity
+        - Prefer the anchor_hash/candidate_id already chosen during analysis (metric["evidence"]).
+        - Fall back to scanning evidence_records for a candidate with the same anchor_hash/candidate_id.
+        - As a last resort, pick a best candidate deterministically by (abs(value_norm-target), context length).
+        - NEVER invent anchors; if no usable candidate, omit the anchor for that metric.
         """
-        import re
-
         anchors = {}
-        if not isinstance(primary_metrics_canonical, dict) or not isinstance(evidence_records, list):
+        if not isinstance(primary_metrics_canonical, dict) or not primary_metrics_canonical:
             return anchors
+        if not isinstance(evidence_records, list):
+            evidence_records = []
 
+        import hashlib
+
+        def _sha1(s: str) -> str:
+            try:
+                return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+            except Exception:
+                return ""
+
+        def _ensure_anchor_fields(c: dict, source_url: str = "") -> dict:
+            c = c if isinstance(c, dict) else {}
+            # context snippet normalization
+            ctx = c.get("context_snippet") or c.get("context") or ""
+            if isinstance(ctx, str):
+                ctx = ctx.strip()[:240]
+            else:
+                ctx = ""
+            raw = c.get("raw")
+            if raw is None:
+                # stable raw representation
+                v = c.get("value_norm") if c.get("value_norm") is not None else c.get("value")
+                u = c.get("base_unit") or c.get("unit") or ""
+                raw = f"{v}{u}"
+            raw = str(raw)[:120]
+
+            ah = c.get("anchor_hash") or c.get("anchor") or ""
+            if not ah:
+                ah = _sha1(f"{source_url}|{raw}|{ctx}")
+                if ah:
+                    c["anchor_hash"] = ah
+
+            if not c.get("candidate_id") and ah:
+                c["candidate_id"] = str(ah)[:16]
+
+            # keep normalized ctx/source_url for downstream
+            if source_url and not c.get("source_url"):
+                c["source_url"] = source_url
+            if ctx and not c.get("context_snippet"):
+                c["context_snippet"] = ctx
+
+            return c
+
+        # Pre-index evidence_records by (anchor_hash, candidate_id)
+        anchor_index = {}
+        candidate_index = {}
+        value_index = {}  # ckey -> list of candidates (for fallback)
+
+        for rec in evidence_records:
+            if not isinstance(rec, dict):
+                continue
+            url = rec.get("source_url") or rec.get("url") or ""
+            for c in (rec.get("candidates") or rec.get("extracted_numbers") or []):
+                if not isinstance(c, dict):
+                    continue
+                c = _ensure_anchor_fields(c, url)
+                ah = c.get("anchor_hash")
+                cid = c.get("candidate_id")
+                if ah and ah not in anchor_index:
+                    anchor_index[ah] = c
+                if cid and cid not in candidate_index:
+                    candidate_index[cid] = c
+
+        # Determine anchors per metric
+        for ckey, m in primary_metrics_canonical.items():
+            if not isinstance(m, dict):
+                continue
+
+            # --- Preferred: use the analysis-chosen evidence (integrity) ---
+            chosen = None
+            ev = m.get("evidence") or []
+            if isinstance(ev, list) and ev:
+                # pick first usable evidence deterministically
+                for e in ev:
+                    if not isinstance(e, dict):
+                        continue
+                    url = e.get("source_url") or e.get("url") or ""
+                    e2 = _ensure_anchor_fields(dict(e), url)
+                    ah = e2.get("anchor_hash")
+                    cid = e2.get("candidate_id")
+                    if ah or cid:
+                        chosen = e2
+                        break
+
+            # --- Fallback 1: resolve by anchor_hash/candidate_id in evidence_records ---
+            if isinstance(chosen, dict):
+                ah = chosen.get("anchor_hash")
+                cid = chosen.get("candidate_id")
+                if ah and ah in anchor_index:
+                    chosen = dict(anchor_index[ah])
+                elif cid and cid in candidate_index:
+                    chosen = dict(candidate_index[cid])
+
+            # --- Fallback 2: deterministic best-by-value in the same source_url (if any) ---
+            if not isinstance(chosen, dict) or not (chosen.get("anchor_hash") or chosen.get("candidate_id")):
+                # gather candidates from evidence_records that match the metric's preferred source_url (if known)
+                preferred_url = ""
+                try:
+                    if isinstance(ev, list) and ev:
+                        preferred_url = str((ev[0] or {}).get("source_url") or (ev[0] or {}).get("url") or "")
+                except Exception:
+                    preferred_url = ""
+
+                target = m.get("value_norm")
+                try:
+                    target = float(target) if target is not None else None
+                except Exception:
+                    target = None
+
+                pool = []
+                for rec in evidence_records:
+                    if not isinstance(rec, dict):
+                        continue
+                    url = str(rec.get("source_url") or rec.get("url") or "")
+                    if preferred_url and url != preferred_url:
+                        continue
+                    for c in (rec.get("candidates") or rec.get("extracted_numbers") or []):
+                        if not isinstance(c, dict):
+                            continue
+                        cc = _ensure_anchor_fields(dict(c), url)
+                        pool.append(cc)
+
+                if pool:
+                    def _score(cc):
+                        ctx = cc.get("context_snippet") or ""
+                        try:
+                            v = cc.get("value_norm")
+                            v = float(v) if v is not None else None
+                        except Exception:
+                            v = None
+                        dv = abs(v - target) if (v is not None and target is not None) else 1e30
+                        return (dv, -len(str(ctx)), str(cc.get("anchor_hash") or ""), str(url))
+                    pool.sort(key=_score)
+                    chosen = pool[0]
+
+            if not isinstance(chosen, dict):
+                continue
+
+            # emit anchor record (stable shape)
+            anchors[ckey] = {
+                "canonical_key": ckey,
+                "anchor_hash": chosen.get("anchor_hash"),
+# =====================================================================
+# PATCH AI3 (ADDITIVE): anchor integrity fingerprint (analysis-time)
+# Why:
+# - Provides a stable, inspectable signature tying the anchor to a specific
+#   candidate (url + anchor_hash + value_norm + base_unit).
+# - Helps detect silent anchor drift across analysis/evolution.
+# =====================================================================
+"anchor_integrity": {
+    "candidate_id": chosen.get("candidate_id"),
+    "value_norm": chosen.get("value_norm"),
+    "base_unit": chosen.get("base_unit") or chosen.get("unit"),
+    "fingerprint": chosen.get("fingerprint"),
+    "integrity_hash": _es_hash_text(
+        f"{ckey}|{chosen.get('anchor_hash')}|{chosen.get('source_url') or chosen.get('url') or ''}|{chosen.get('value_norm')}|{chosen.get('base_unit') or chosen.get('unit') or ''}"
+    ) if callable(globals().get("_es_hash_text")) else None,
+},
+# =====================================================================
+                "candidate_id": chosen.get("candidate_id"),
+                "source_url": chosen.get("source_url") or chosen.get("url"),
+                "context_snippet": chosen.get("context_snippet") or chosen.get("context"),
+                "anchor_confidence": chosen.get("anchor_confidence") or chosen.get("confidence"),
+            }
+
+        # deterministic ordering (stable JSON)
+        try:
+            anchors = dict(sorted(anchors.items(), key=lambda kv: str(kv[0])))
+        except Exception:
+            pass
+
+        return anchors
         def _tokenize(s: str):
             return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
 
@@ -766,6 +1140,27 @@ def add_to_history(analysis: dict) -> bool:
         except Exception:
             pass
 
+        # =====================================================================
+        # PATCH AI_ANCHHASH1 (ADDITIVE): propagate anchor_hash into metric rows
+        # Why:
+        # - Drift=0 requires prev metrics to carry anchor_hash so diff can compare
+        #   prev_anchor_hash vs cur_anchor_hash deterministically.
+        # - We ONLY copy existing anchor_hash from anchors map; no fabrication.
+        # =====================================================================
+        try:
+            if isinstance(primary_metrics_canonical, dict) and isinstance(anchors, dict):
+                for _ck, _a in anchors.items():
+                    if not isinstance(_a, dict):
+                        continue
+                    _ah = _a.get("anchor_hash") or _a.get("anchor")
+                    if not _ah:
+                        continue
+                    _mrow = primary_metrics_canonical.get(_ck)
+                    if isinstance(_mrow, dict) and not _mrow.get("anchor_hash"):
+                        _mrow["anchor_hash"] = _ah
+        except Exception:
+            pass
+        # =====================================================================
         return anchors
 
     # -----------------------
@@ -800,13 +1195,197 @@ def add_to_history(analysis: dict) -> bool:
                 schema = analysis.get("metric_schema_frozen") or {}
 
             metric_anchors = _build_metric_anchors(pmc, schema, evidence_records)
+            # =====================================================================
+            # PATCH ANCH_EMIT1 (ADDITIVE): emit metric_anchors into analysis payload
+            # Why:
+            # - Evolution (and diff) expects anchors to be discoverable without guessing.
+            # - Some storage paths wrap/summarize analysis objects; we persist anchors
+            #   at multiple stable locations to survive those wrappers.
+            # Determinism:
+            # - Anchors are derived only from existing evidence_records / schema / pmc.
+            # - No re-fetching; no heuristic matching.
+            # =====================================================================
+            try:
+                if isinstance(metric_anchors, dict) and metric_anchors:
+                    # Top-level (preferred)
+                    if not isinstance(analysis.get("metric_anchors"), dict):
+                        analysis["metric_anchors"] = metric_anchors
+
+                    # Under primary_response (common for older shapes)
+                    pr = analysis.get("primary_response")
+                    if isinstance(pr, dict) and not isinstance(pr.get("metric_anchors"), dict):
+                        pr["metric_anchors"] = metric_anchors
+
+                    # Under results (some evolution lookups)
+                    res = analysis.get("results")
+                    if isinstance(res, dict) and not isinstance(res.get("metric_anchors"), dict):
+                        res["metric_anchors"] = metric_anchors
+
+                    # Lightweight debug hint for wrappers
+                    try:
+                        dbg = analysis.get("debug")
+                        if not isinstance(dbg, dict):
+                            dbg = {}
+                            analysis["debug"] = dbg
+                        dbg.setdefault("metric_anchor_count", int(len(metric_anchors)))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # =====================================================================
+
             analysis["metric_anchors"] = metric_anchors
-    except Exception:
-        pass
+# =====================================================================
+            # =====================================================================
+            # PATCH AI4 (ADDITIVE): anchor integrity audit (analysis-time)
+            # Why:
+            # - Detect duplicate anchor_hash values across canonical keys.
+            # - Detect missing anchor_hash on anchors and on baseline canonical metrics.
+            # - Provide non-breaking debug/audit fields for drift investigations.
+            # Notes:
+            # - Purely additive; does not mutate anchors beyond attaching audit metadata.
+            # =====================================================================
+            try:
+                if isinstance(analysis, dict):
+                    _ma = analysis.get('metric_anchors')
+                    _pmc = analysis.get('primary_metrics_canonical')
+                    _dup = {}  # anchor_hash -> [canonical_key,...]
+                    _missing_anchor = []
+                    _missing_metric_anchor = []
+                    if isinstance(_ma, dict):
+                        for _ck, _a in _ma.items():
+                            if not isinstance(_a, dict):
+                                _missing_anchor.append(str(_ck))
+                                continue
+                            _ah = _a.get('anchor_hash') or _a.get('anchor')
+                            if not _ah:
+                                _missing_anchor.append(str(_ck))
+                                continue
+                            _ah = str(_ah)
+                            _dup.setdefault(_ah, []).append(str(_ck))
+                    # anchors missing on baseline metrics (best-effort diagnostic)
+                    if isinstance(_pmc, dict):
+                        for _ck, _m in _pmc.items():
+                            if not isinstance(_m, dict):
+                                continue
+                            if not (_m.get('anchor_hash') or _m.get('anchor') or _m.get('candidate_id')):
+                                _missing_metric_anchor.append(str(_ck))
+                    _dup_only = {k: v for k, v in _dup.items() if isinstance(v, list) and len(v) > 1}
+                    analysis['anchor_integrity_audit'] = {
+                        'anchor_count': int(len(_ma)) if isinstance(_ma, dict) else 0,
+                        'duplicate_anchor_hash_count': int(len(_dup_only)),
+                        'duplicate_anchor_hash_examples': dict(list(_dup_only.items())[:10]) if _dup_only else {},
+                        'missing_anchor_hash_count': int(len(_missing_anchor)),
+                        'missing_anchor_hash_examples': _missing_anchor[:20],
+                        'metrics_missing_any_anchor_id_count': int(len(_missing_metric_anchor)),
+                        'metrics_missing_any_anchor_id_examples': _missing_metric_anchor[:20],
+                    }
+            except Exception:
+                pass
+            # =====================================================================
 
     # -----------------------
     # Existing Google Sheet save behavior (guarded)
     # -----------------------
+    except Exception:
+        pass
+
+    # =====================================================================
+    # PATCH D (ADDITIVE): propagate metric_anchors onto metric rows + evidence
+    # Why:
+    # - Drift=0 depends on analysis and evolution sharing the SAME anchor IDs.
+    # - Some downstream code paths expect anchor_hash on the metric row itself
+    #   and/or inside evidence entries (not only in analysis["metric_anchors"]).
+    # - This patch copies existing anchor metadata only (no fabrication, no refetch).
+    # =====================================================================
+    try:
+        import re
+        import hashlib
+
+        def _norm_ctx(s: str) -> str:
+            try:
+                return re.sub(r"\s+", " ", (s or "").strip())
+            except Exception:
+                return (s or "").strip()
+
+        def _compute_anchor_hash_fallback(url: str, ctx: str) -> str:
+            try:
+                u = (url or "").strip()
+                c = _norm_ctx(ctx or "")
+                if not u or not c:
+                    return ""
+                return hashlib.sha1((u + "||" + c).encode("utf-8")).hexdigest()[:16]
+            except Exception:
+                return ""
+
+        def _compute_anchor_hash(url: str, ctx: str) -> str:
+            try:
+                fn = globals().get("compute_anchor_hash")
+                if callable(fn):
+                    return str(fn(url, ctx) or "")
+            except Exception:
+                pass
+            return _compute_anchor_hash_fallback(url, ctx)
+
+        # Locate canonical metrics dict (prefer primary_response)
+        _pmc = None
+        _pr0 = analysis.get("primary_response") if isinstance(analysis, dict) else None
+        if isinstance(_pr0, dict) and isinstance(_pr0.get("primary_metrics_canonical"), dict):
+            _pmc = _pr0.get("primary_metrics_canonical")
+        if _pmc is None and isinstance(analysis, dict) and isinstance(analysis.get("primary_metrics_canonical"), dict):
+            _pmc = analysis.get("primary_metrics_canonical")
+
+        if isinstance(metric_anchors, dict) and isinstance(_pmc, dict):
+            for _ckey, _a in metric_anchors.items():
+                if not isinstance(_ckey, str) or not _ckey:
+                    continue
+                if not isinstance(_a, dict) or not _a:
+                    continue
+
+                _m = _pmc.get(_ckey)
+                if not isinstance(_m, dict):
+                    continue
+
+                _ah = str(_a.get("anchor_hash") or _a.get("anchor") or "").strip()
+                _src = str(_a.get("source_url") or _a.get("url") or "").strip()
+                _ctx = _a.get("context_snippet") or _a.get("context") or ""
+                _ctx = _ctx.strip() if isinstance(_ctx, str) else ""
+
+                # Copy onto metric row (only if missing)
+                if _ah and not _m.get("anchor_hash"):
+                    _m["anchor_hash"] = _ah
+                if _src and not (_m.get("source_url") or _m.get("url")):
+                    _m["source_url"] = _src
+                if _ctx and not (_m.get("context_snippet") or _m.get("context")):
+                    _m["context_snippet"] = _ctx[:220]
+
+                # Pass through extra metadata if present (additive)
+                if _a.get("anchor_confidence") is not None and _m.get("anchor_confidence") is None:
+                    _m["anchor_confidence"] = _a.get("anchor_confidence")
+                if _a.get("candidate_id") and not _m.get("candidate_id"):
+                    _m["candidate_id"] = _a.get("candidate_id")
+                if _a.get("fingerprint") and not _m.get("fingerprint"):
+                    _m["fingerprint"] = _a.get("fingerprint")
+
+                # Ensure evidence entries carry anchor_hash (deterministic; no new evidence)
+                _ev = _m.get("evidence")
+                if isinstance(_ev, list) and _ev:
+                    for _e in _ev:
+                        if not isinstance(_e, dict):
+                            continue
+                        if _e.get("anchor_hash"):
+                            continue
+                        _e_url = str(_e.get("url") or _e.get("source_url") or _src or "").strip()
+                        _e_ctx = _e.get("context_snippet") or _e.get("context") or _ctx or ""
+                        _e_ctx = _e_ctx.strip() if isinstance(_e_ctx, str) else ""
+                        _eh = _compute_anchor_hash(_e_url, _e_ctx)
+                        if _eh:
+                            _e["anchor_hash"] = _eh
+    except Exception:
+        pass
+    # =====================================================================
+
+
     def _try_make_sheet_json(obj: dict) -> str:
         try:
             fn = globals().get("make_sheet_safe_json")
@@ -1162,46 +1741,365 @@ def unit_family(unit_tag: str) -> str:
 
 
 def canonicalize_numeric_candidate(candidate: dict) -> dict:
+
+
     """
+
+
     Additive: attach canonical numeric fields to a candidate dict.
+
+
     Safe to call multiple times.
+
+
+
+    PATCH AI4 (ADDITIVE): anchor integrity
+
+
+    - Ensures anchor_hash + candidate_id are present when possible (derived if missing).
+
+
+    - Does not change extraction behavior; only enriches fields.
+
+
     """
-    try:
-        v = candidate.get("value")
-        if v is None:
+
+
+    import hashlib
+
+
+
+    if not isinstance(candidate, dict):
+
+
+        return {}
+
+
+
+    # ---------- numeric value ----------
+
+
+    v_raw = candidate.get("value_norm")
+
+
+    v = None
+
+
+    if v_raw is not None:
+
+
+        try:
+
+
+            v = float(v_raw)
+
+
+        except Exception:
+
+
+            v = None
+
+
+    if v is None:
+
+
+        try:
+
+
+            v0 = candidate.get("value")
+
+
+            if v0 is None:
+
+
+                return candidate
+
+
+            v = float(v0)
+
+
+        except Exception:
+
+
             return candidate
-        v = float(v)
+
+
+
+    # ---------- unit normalization ----------
+
+
+    try:
+
+
+        ut = normalize_unit_tag(candidate.get("unit_tag") or candidate.get("unit") or "")
+
+
     except Exception:
-        return candidate
 
-    # Prefer unit_tag if already present
-    ut = normalize_unit_tag(
-        candidate.get("unit_tag") or candidate.get("unit") or ""
-    )
-    fam = unit_family(ut)
 
-    base_unit = ut
-    mult = 1.0
+        ut = str(candidate.get("unit_tag") or candidate.get("unit") or "").strip()
 
-    if ut == "TWh":
-        base_unit, mult = "Wh", 1e12
-    elif ut == "GWh":
-        base_unit, mult = "Wh", 1e9
-    elif ut == "MWh":
-        base_unit, mult = "Wh", 1e6
-    elif ut == "kWh":
-        base_unit, mult = "Wh", 1e3
-    elif ut == "Wh":
-        base_unit, mult = "Wh", 1.0
+
+
+    try:
+
+
+        fam = normalize_unit_family(ut)
+
+
+    except Exception:
+
+
+        fam = ""
+
+
+
+    # If candidate already has base_unit/multiplier_to_base, respect them
+
+
+    base_unit = candidate.get("base_unit")
+
+
+    mult = candidate.get("multiplier_to_base")
+
+
+
+    try:
+
+
+        mult = float(mult) if mult is not None else None
+
+
+    except Exception:
+
+
+        mult = None
+
+
+
+    # Minimal deterministic mapping (extend as needed)
+
+
+    if (not base_unit) or (mult is None):
+
+
+        base_unit = ""
+
+
+        mult = 1.0
+
+
+
+        # percents
+
+
+        if ut in ("%", "pct"):
+
+
+            base_unit, mult = "%", 1.0
+
+
+
+        # energy
+
+
+        elif ut == "MWh":
+
+
+            base_unit, mult = "Wh", 1e6
+
+
+        elif ut == "kWh":
+
+
+            base_unit, mult = "Wh", 1e3
+
+
+        elif ut == "Wh":
+
+
+            base_unit, mult = "Wh", 1.0
+
+
+
+        # power
+
+
+        elif ut == "GW":
+
+
+            base_unit, mult = "W", 1e9
+
+
+        elif ut == "MW":
+
+
+            base_unit, mult = "W", 1e6
+
+
+        elif ut == "kW":
+
+
+            base_unit, mult = "W", 1e3
+
+
+        elif ut == "W":
+
+
+            base_unit, mult = "W", 1.0
+
+
+
+        # mass
+
+
+        elif ut in ("Mt", "million_tonnes", "million_tons"):
+
+
+            base_unit, mult = "t", 1e6
+
+
+        elif ut in ("kt", "kilo_tonnes", "kilo_tons"):
+
+
+            base_unit, mult = "t", 1e3
+
+
+        elif ut in ("t", "tonne", "tonnes", "ton", "tons"):
+
+
+            base_unit, mult = "t", 1.0
+
+
+
+        # count-ish
+
+
+        elif ut in ("vehicles", "units", "count"):
+
+
+            base_unit, mult = ut, 1.0
+
+
+
+        else:
+
+
+            # unknown unit: treat as-is
+
+
+            base_unit, mult = (ut or str(candidate.get("unit") or "").strip()), 1.0
+
+
+
+    # Only set defaults to avoid overriding existing enriched fields
+
 
     candidate.setdefault("unit_tag", ut)
+
+
     candidate.setdefault("unit_family", fam)
+
+
     candidate.setdefault("base_unit", base_unit)
+
+
     candidate.setdefault("multiplier_to_base", mult)
-    candidate.setdefault("value_norm", v * mult)
+
+
+
+    # value_norm: if already present, do not overwrite
+
+
+    if candidate.get("value_norm") is None:
+
+
+        try:
+
+
+            candidate["value_norm"] = float(v) * float(mult)
+
+
+        except Exception:
+
+
+            pass
+
+
+
+    # ---------- anchor integrity ----------
+
+
+    def _sha1(s: str) -> str:
+
+
+        try:
+
+
+            return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+
+
+        except Exception:
+
+
+            return ""
+
+
+
+    ah = candidate.get("anchor_hash") or candidate.get("anchor")
+
+
+    if not ah:
+
+
+        # attempt deterministic derive if fields exist
+
+
+        src = candidate.get("source_url") or candidate.get("url") or ""
+
+
+        ctx = candidate.get("context_snippet") or candidate.get("context") or ""
+
+
+        if isinstance(ctx, str):
+
+
+            ctx = ctx.strip()[:240]
+
+
+        else:
+
+
+            ctx = ""
+
+
+        raw = candidate.get("raw")
+
+
+        if raw is None:
+
+
+            raw = f"{candidate.get('value')}{candidate.get('unit') or ''}"
+
+
+        ah = _sha1(f"{src}|{str(raw)[:120]}|{ctx}") if (src or ctx) else ""
+
+
+        if ah:
+
+
+            candidate["anchor_hash"] = ah
+
+
+
+    if not candidate.get("candidate_id") and ah:
+
+
+        candidate["candidate_id"] = str(ah)[:16]
+
+
 
     return candidate
-
 
 def rebuild_metrics_from_snapshots(
     prev_response: dict,
@@ -2011,6 +2909,82 @@ def rebuild_metrics_from_snapshots_schema_only(
         best_key = None
 
         for c in candidates:
+            # =====================================================================
+            # PATCH AI2 (ADDITIVE): guard against year-only candidates on currency-like metrics
+            # Why:
+            # - Some sources contain many years (e.g., 2023, 2024) that can outscore true values.
+            # - For currency-ish metrics, suppress candidates that look like bare years unless context clearly indicates money.
+            # Determinism:
+            # - Pure filter; does not invent candidates or refetch content.
+            # =====================================================================
+            try:
+                def _ai2_is_year_only(cand: dict) -> bool:
+                    try:
+                        if not isinstance(cand, dict):
+                            return False
+                        raw = str(cand.get('raw') or cand.get('value') or '').strip()
+                        # =====================================================================
+                        # PATCH YEAR1 (ADDITIVE): treat numeric years like 2024.0 as year-only too
+                        # Why: some extractors store year as float/string '2024.0', bypassing raw.isdigit().
+                        # =====================================================================
+                        try:
+                            vraw = cand.get('value_norm') if cand.get('value_norm') is not None else cand.get('value')
+                            iv = int(float(str(vraw).strip())) if vraw is not None else None
+                            if iv is not None and 1900 <= iv <= 2105:
+                                u0 = str(cand.get('unit') or cand.get('base_unit') or '').strip()
+                                if not u0:
+                                    raw = str(iv)
+                        except Exception:
+                            pass
+                        # =====================================================================
+                        if raw.endswith('%'):
+                            return False
+                        # accept plain 4-digit years in a plausible range
+                        if raw.isdigit() and len(raw) == 4:
+                            y = int(raw)
+                            return 1900 <= y <= 2100
+                        return False
+                    except Exception:
+                        return False
+
+                def _ai2_schema_currencyish(sd: dict) -> bool:
+                    try:
+                        if not isinstance(sd, dict):
+                            return False
+                        u = str(sd.get('unit') or sd.get('base_unit') or '').lower()
+                        if any(x in u for x in ('usd','sgd','eur','gbp','jpy','$','€','£')):
+                            return True
+                        # heuristic keywords on definition (safe, schema-driven-ish)
+                        nm = str(sd.get('name') or '').lower()
+                        if any(x in nm for x in ('revenue','sales','cost','price','capex','opex','investment','spend','spending','expenditure','value')):
+                            return True
+                        return False
+                    except Exception:
+                        return False
+
+                _sd = locals().get('schema_def')
+                if _ai2_schema_currencyish(_sd) and _ai2_is_year_only(c):
+                    continue
+
+                # =====================================================================
+                # PATCH YEAR3 (ADDITIVE): suppress year-only candidates for percent/CAGR-like metrics too
+                # Why: year tokens (e.g., 2025) can outrank true percent values when unit evidence is weak.
+                # Safe: only suppress when candidate has no explicit unit and looks like a bare year.
+                # =====================================================================
+                try:
+                    if _ai2_is_year_only(c):
+                        _sd_name = str((_sd or {}).get('name') or '').lower()
+                        _sd_ckey = str((_sd or {}).get('canonical_key') or ckey or '').lower()
+                        _sd_unit_tag = str((_sd or {}).get('unit_tag') or '').lower()
+                        _sd_unit_family = str((_sd or {}).get('unit_family') or '').lower()
+                        if ('cagr' in _sd_name) or ('cagr' in _sd_ckey) or (_sd_unit_tag in ('percent','pct')) or (_sd_unit_family in ('percent','ratio','rate')):
+                            continue
+                except Exception:
+                    pass
+                # =====================================================================
+            except Exception:
+                pass
+            # =====================================================================
             ctx = _norm_text(c.get("context_snippet") or "")
             if not ctx:
                 continue
@@ -2192,18 +3166,20 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
         expected_dim = ((sch or {}).get("dimension") or (sch or {}).get("unit_family") or "").strip().lower()
 
         best = None
-        for c in candidates:
-            if (c.get("anchor_hash") or "") != ah:
-                continue
-            # If we can infer unit family, enforce compatibility when expected_dim is given
-            fam = _unit_family(c.get("unit") or "")
-            if expected_dim and fam and expected_dim != fam:
-                continue
-            best = c
-            break
 
+        # =====================================================================
+        # PATCH AI_CAND3 (ADDITIVE): pick best candidate among same anchor_hash
+        # =====================================================================
+        same = [c for c in candidates if isinstance(c, dict) and (c.get("anchor_hash") or "") == ah and c.get("is_junk") is not True]
+        best = _pick_best_candidate(
+            same,
+            expected_dim=expected_dim,
+            expected_unit_family=str((schema.get(ckey) or {}).get("unit_family") or ""),
+            expected_base_unit=str((schema.get(ckey) or {}).get("base_unit") or ""),
+        )
         if not best:
             continue
+        # =====================================================================
 
         rebuilt[canonical_key] = {
             "canonical_key": canonical_key,
@@ -6272,7 +7248,66 @@ def canonicalize_metrics(
                     pass
         # =========================
 
-        if vals:
+        # =====================================================================
+        # PATCH ANCHOR_VAL1 (ADDITIVE): set metric value from selected evidence candidate
+        # Why:
+        # - Avoid median/aggregate drift between analysis and evolution.
+        # - If we already chose a specific evidence candidate (candidate_id/anchor_hash),
+        #   that candidate should determine the metric's reported value/value_norm/unit.
+        # Determinism:
+        # - Select the evidence row with highest confidence if present, else first.
+        # - No re-fetching, no new extraction; uses existing evidence payload only.
+        # =====================================================================
+        _anchored_value_set = False
+        try:
+            _ev = base_metric.get("evidence")
+            if isinstance(_ev, list) and _ev:
+                # pick best evidence deterministically
+                def _ev_score(e):
+                    try:
+                        c = e.get("confidence")
+                        return float(c) if c is not None else 0.0
+                    except Exception:
+                        return 0.0
+                _ev_sorted = sorted([e for e in _ev if isinstance(e, dict)], key=_ev_score, reverse=True)
+                _best = _ev_sorted[0] if _ev_sorted else None
+
+                if isinstance(_best, dict):
+                    # Prefer canonical normalized fields if present
+                    _bn = _best.get("value_norm")
+                    _bu = _best.get("base_unit") or _best.get("unit")
+                    _rawv = _best.get("raw") if _best.get("raw") is not None else _best.get("value")
+
+                    if _bn is not None:
+                        try:
+                            base_metric["value_norm"] = float(_bn)
+                        except Exception:
+                            pass
+
+                    # Preserve unit/base_unit
+                    if _bu:
+                        try:
+                            base_metric["base_unit"] = str(_bu)
+                        except Exception:
+                            pass
+                    if _best.get("unit"):
+                        base_metric["unit"] = _best.get("unit")
+
+                    # Preserve raw/value display from evidence (preferred)
+                    if _rawv is not None:
+                        base_metric["raw"] = _rawv
+                        base_metric["value"] = _rawv
+
+                    # Helpful debug: show that we anchored value from evidence
+                    base_metric.setdefault("debug", {})
+                    if isinstance(base_metric.get("debug"), dict):
+                        base_metric["debug"]["value_origin"] = "evidence_best_candidate"
+                        base_metric["debug"]["evidence_candidate_id"] = _best.get("candidate_id") or _best.get("anchor_hash")
+                    _anchored_value_set = True
+        except Exception:
+            pass
+        if vals and not _anchored_value_set:
+
             vals_sorted = sorted(vals)
             vmin, vmax = vals_sorted[0], vals_sorted[-1]
             vmed = vals_sorted[len(vals_sorted) // 2]
@@ -10173,58 +11208,180 @@ def compute_source_snapshot_hash_v2(baseline_sources_cache: list, max_items_per_
             return "0"*64
 
 def build_baseline_sources_cache_from_evidence_records(evidence_records):
-    """Return a list-shaped baseline_sources_cache rebuilt from evidence_records, or [].
 
-    Expected evidence_records shape (existing pipeline):
-      [{"url":..., "fingerprint":..., "fetched_at":..., "numbers":[{...candidate...}, ...]}, ...]
-    We map:
-      source_url <- url
-      extracted_numbers <- numbers
     """
-    try:
-        if not isinstance(evidence_records, list) or not evidence_records:
-            return []
-        rebuilt = []
-        for rec in evidence_records:
-            if not isinstance(rec, dict):
-                continue
-            url = (rec.get("url") or rec.get("source_url") or "").strip()
-            nums = rec.get("numbers") or rec.get("extracted_numbers") or []
-            if not url or not isinstance(nums, list):
-                continue
-            rebuilt.append({
-                "source_url": url,
-                "url": url,  # legacy compatibility
-                "fingerprint": rec.get("fingerprint") or rec.get("content_fingerprint"),
-                "fetched_at": rec.get("fetched_at"),
-                "extracted_numbers": nums,
-            })
-        # Deterministic ordering
-        rebuilt.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
-        return rebuilt
-    except Exception:
+
+    Rebuild a minimal baseline_sources_cache from evidence_records deterministically.
+
+
+    PATCH AI3 (ADDITIVE): anchor integrity
+
+    - Ensures each candidate has anchor_hash + candidate_id (derived if missing)
+
+    - Preserves analysis-aligned numeric normalization fields when present
+
+    - Deterministic ordering by (source_url, fingerprint)
+
+    """
+
+    import hashlib
+
+
+    if not isinstance(evidence_records, list) or not evidence_records:
+
         return []
-# =====================================================================
 
 
-# =====================================================================
+    def _sha1(s: str) -> str:
 
-# =====================================================================
-# PATCH SHEETS_CACHE1 (ADDITIVE): In-run Google Sheets read caching + rate-limit fallback
-# Why:
-# - Google Sheets consumer quota is very low (e.g., 60 reads/min/user). Evolution may trigger
-#   multiple reads (History, HistoryFull, Snapshots) within a single run.
-# - When quota is exceeded (429 RESOURCE_EXHAUSTED), we should:
-#     (1) reuse cached reads within the same run, and
-#     (2) fall back to last cached value (if any) rather than hard-failing.
-# Notes:
-# - Additive only. No behavior changes unless we would otherwise exceed quota.
-# - Cache is in-memory per Python process; it resets when the app restarts.
-# =====================================================================
-_SHEETS_READ_CACHE = {}
-_SHEETS_READ_CACHE_TTL_SEC = 55  # keep under the 60s/min quota window
-_SHEETS_LAST_READ_ERROR = None
+        try:
 
+            return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+
+        except Exception:
+
+            return ""
+
+
+    def _ensure_anchor_fields(c: dict, source_url: str = "") -> dict:
+
+        c = c if isinstance(c, dict) else {}
+
+        ctx = c.get("context_snippet") or c.get("context") or ""
+
+        if isinstance(ctx, str):
+
+            ctx = ctx.strip()[:240]
+
+        else:
+
+            ctx = ""
+
+        raw = c.get("raw")
+
+        if raw is None:
+
+            v = c.get("value_norm") if c.get("value_norm") is not None else c.get("value")
+
+            u = c.get("base_unit") or c.get("unit") or ""
+
+            raw = f"{v}{u}"
+
+        raw = str(raw)[:120]
+
+
+        ah = c.get("anchor_hash") or c.get("anchor") or ""
+
+        if not ah:
+
+            ah = _sha1(f"{source_url}|{raw}|{ctx}")
+
+            if ah:
+
+                c["anchor_hash"] = ah
+
+        if not c.get("candidate_id") and ah:
+
+            c["candidate_id"] = str(ah)[:16]
+
+        if source_url and not c.get("source_url"):
+
+            c["source_url"] = source_url
+
+        if ctx and not c.get("context_snippet"):
+
+            c["context_snippet"] = ctx
+
+        return c
+
+
+    by_url = {}
+
+    for rec in evidence_records:
+
+        if not isinstance(rec, dict):
+
+            continue
+
+        url = rec.get("source_url") or rec.get("url") or ""
+
+        fp = rec.get("fingerprint") or ""
+
+        # candidates may be stored under candidates or extracted_numbers depending on producer
+
+        cand_list = rec.get("candidates")
+
+        if not isinstance(cand_list, list):
+
+            cand_list = rec.get("extracted_numbers")
+
+        if not isinstance(cand_list, list):
+
+            cand_list = []
+
+
+        out_cands = []
+
+        for c in cand_list:
+
+            if not isinstance(c, dict):
+
+                continue
+
+            cc = _ensure_anchor_fields(dict(c), url)
+
+            out_cands.append(cc)
+
+
+        if not out_cands:
+
+            continue
+
+
+        key = (str(url), str(fp))
+
+        by_url.setdefault(key, {"source_url": url, "fingerprint": fp, "extracted_numbers": []})
+
+        by_url[key]["extracted_numbers"].extend(out_cands)
+
+
+    rebuilt = list(by_url.values())
+
+
+    # deterministic sort & per-source deterministic candidate order
+
+    try:
+
+        rebuilt.sort(key=lambda d: (str(d.get("source_url") or ""), str(d.get("fingerprint") or "")))
+
+        for s in rebuilt:
+
+            if isinstance(s, dict) and isinstance(s.get("extracted_numbers"), list):
+
+                s["extracted_numbers"] = sorted(
+
+                    s["extracted_numbers"],
+
+                    key=lambda c: (
+
+                        str(c.get("anchor_hash") or ""),
+
+                        str(c.get("candidate_id") or ""),
+
+                        str(c.get("raw") or ""),
+
+                        str(c.get("unit") or ""),
+
+                    )
+
+                )
+
+    except Exception:
+
+        pass
+
+
+    return rebuilt
 def _sheets_now_ts():
     import time
     return time.time()
@@ -11517,6 +12674,19 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
     def _looks_like_year_only(n: dict) -> bool:
         try:
             raw = str(n.get("raw") or "").strip()
+            # =====================================================================
+            # PATCH YEAR2 (ADDITIVE): handle years stored as numeric/float strings
+            # - If raw is empty or looks like '2024.0', normalize to '2024' for checks.
+            # =====================================================================
+            try:
+                if (not raw) or (raw and raw.replace('.', '', 1).isdigit() and '.' in raw):
+                    vraw = n.get('value_norm') if n.get('value_norm') is not None else n.get('value')
+                    iv = int(float(str(vraw).strip())) if vraw is not None else None
+                    if iv is not None and 1900 <= iv <= 2105:
+                        raw = str(iv)
+            except Exception:
+                pass
+            # =====================================================================
             unit = str(n.get("unit") or "").strip()
             ctx = str(n.get("context") or n.get("context_snippet") or "").strip()
             # exactly 4 digits year and nothing else
@@ -12637,6 +13807,41 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
     prev_response = prev_response if isinstance(prev_response, dict) else {}
     cur_response = cur_response if isinstance(cur_response, dict) else {}
 
+    # =====================================================================
+    # PATCH AI_ANCHMAP1 (ADDITIVE): normalize metric_anchors shape (list -> dict)
+    # Why:
+    # - Some pipelines persist metric_anchors as a list of records:
+    #     [{"canonical_key": ..., "anchor_hash": ..., ...}, ...]
+    # - Diff expects a dict mapping canonical_key -> anchor object.
+    # Determinism:
+    # - Pure reshaping; no new anchors invented.
+    # =====================================================================
+    def _coerce_metric_anchors_to_dict(resp: dict):
+        try:
+            if not isinstance(resp, dict):
+                return resp
+            ma = resp.get("metric_anchors")
+            if isinstance(ma, dict) or ma is None:
+                return resp
+            if isinstance(ma, list):
+                out = {}
+                for a in ma:
+                    if not isinstance(a, dict):
+                        continue
+                    ck = a.get("canonical_key") or a.get("ckey") or a.get("metric_key")
+                    if not ck:
+                        continue
+                    if ck not in out:
+                        out[str(ck)] = a
+                resp["metric_anchors"] = out
+            return resp
+        except Exception:
+            return resp
+
+    prev_response = _coerce_metric_anchors_to_dict(prev_response)
+    cur_response = _coerce_metric_anchors_to_dict(cur_response)
+    # =====================================================================
+
     prev_can = prev_response.get("primary_metrics_canonical")
     cur_can = cur_response.get("primary_metrics_canonical")
 
@@ -13173,6 +14378,41 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
 
     prev_response = prev_response if isinstance(prev_response, dict) else {}
     cur_response = cur_response if isinstance(cur_response, dict) else {}
+
+    # =====================================================================
+    # PATCH AI_ANCHMAP1 (ADDITIVE): normalize metric_anchors shape (list -> dict)
+    # Why:
+    # - Some pipelines persist metric_anchors as a list of records:
+    #     [{"canonical_key": ..., "anchor_hash": ..., ...}, ...]
+    # - Diff expects a dict mapping canonical_key -> anchor object.
+    # Determinism:
+    # - Pure reshaping; no new anchors invented.
+    # =====================================================================
+    def _coerce_metric_anchors_to_dict(resp: dict):
+        try:
+            if not isinstance(resp, dict):
+                return resp
+            ma = resp.get("metric_anchors")
+            if isinstance(ma, dict) or ma is None:
+                return resp
+            if isinstance(ma, list):
+                out = {}
+                for a in ma:
+                    if not isinstance(a, dict):
+                        continue
+                    ck = a.get("canonical_key") or a.get("ckey") or a.get("metric_key")
+                    if not ck:
+                        continue
+                    if ck not in out:
+                        out[str(ck)] = a
+                resp["metric_anchors"] = out
+            return resp
+        except Exception:
+            return resp
+
+    prev_response = _coerce_metric_anchors_to_dict(prev_response)
+    cur_response = _coerce_metric_anchors_to_dict(cur_response)
+    # =====================================================================
 
     prev_can = prev_response.get("primary_metrics_canonical")
     cur_can = cur_response.get("primary_metrics_canonical")
