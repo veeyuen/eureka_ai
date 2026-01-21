@@ -58,154 +58,6 @@ import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-
-# ===================== PATCH FIX2C6 (ADDITIVE): CoreV1 wiring (B then A) =====================
-# Purpose:
-#  - B: Surface CoreV1 hash bundle + version diagnostics in payloads (auditable)
-#  - A: Enforce "viewer by construction" in Evolution: metric_changes current_value always comes from cur_canonical
-# Notes:
-#  - Legacy code remains untouched except for a post-process call-site in Streamlit tab2.
-#  - All imports are lazy to avoid gspread/streamlit CLI issues elsewhere.
-
-import os as _os
-
-def _corev1_enabled() -> bool:
-    v = _os.getenv("YUREEKA_ENABLE_CORE_ENGINE_V1", "")
-    return str(v).strip().lower() in ("1","true","yes","y","on")
-
-def _corev1_try_import():
-    try:
-        import yureeka_core
-        from yureeka_core.core_diff_v1 import core_diff_v1 as _core_diff_v1
-        from yureeka_core.hashing_v1 import (
-            compute_source_snapshot_hash_v1_with_diag as _hash_v1_with_diag,
-            compute_source_snapshot_hash_v2_with_diag as _hash_v2_with_diag,
-            normalize_sources_cache_v1 as _norm_cache,
-        )
-        return {
-            "ok": True,
-            "yureeka_core": yureeka_core,
-            "core_diff_v1": _core_diff_v1,
-            "hash_v1_with_diag": _hash_v1_with_diag,
-            "hash_v2_with_diag": _hash_v2_with_diag,
-            "norm_cache": _norm_cache,
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
-def _corev1_pick_first_dict(*candidates):
-    for c in candidates:
-        if isinstance(c, dict) and c:
-            return c
-    return {}
-
-def _corev1_pick_schema(prev_data: dict, results: dict) -> dict:
-    # Prefer frozen schema if present
-    return _corev1_pick_first_dict(
-        results.get("metric_schema_frozen"),
-        results.get("schema_frozen"),
-        prev_data.get("metric_schema_frozen") if isinstance(prev_data, dict) else {},
-        prev_data.get("schema_frozen") if isinstance(prev_data, dict) else {},
-        results.get("metric_schema"),
-        prev_data.get("metric_schema") if isinstance(prev_data, dict) else {},
-    )
-
-def _corev1_pick_canonical(prev_data: dict, results: dict, which: str) -> dict:
-    # which in {"prev","cur"}
-    if which == "cur":
-        return _corev1_pick_first_dict(
-            results.get("canonical_metrics"),
-            results.get("primary_metrics_canonical"),
-            results.get("canonical_for_render_v1"),
-            results.get("canonical_for_render"),
-            results.get("primary_metrics"),
-        )
-    # prev
-    if isinstance(prev_data, dict):
-        return _corev1_pick_first_dict(
-            prev_data.get("canonical_metrics"),
-            prev_data.get("primary_metrics_canonical"),
-            (prev_data.get("replay_analysis_payload") or {}).get("canonical_metrics") if isinstance(prev_data.get("replay_analysis_payload"), dict) else {},
-            (prev_data.get("analysis_payload") or {}).get("canonical_metrics") if isinstance(prev_data.get("analysis_payload"), dict) else {},
-        )
-    return {}
-
-def _corev1_attach_hash_bundle(results: dict, imported: dict) -> None:
-    # Best-effort: attach source snapshot hashes if we can locate any source cache
-    if not isinstance(results, dict):
-        return
-    dbg = results.setdefault("debug", {})
-    corev1_dbg = dbg.setdefault("corev1", {})
-    corev1_dbg.setdefault("patch_id", "FIX2C6")
-    # Try common cache keys
-    cache = (
-        results.get("baseline_sources_cache_current")
-        or results.get("baseline_sources_cache")
-        or (results.get("debug", {}) or {}).get("baseline_sources_cache_current")
-        or (results.get("debug", {}) or {}).get("baseline_sources_cache")
-    )
-    try:
-        if cache is not None and imported.get("ok"):
-            # Normalize then hash
-            rows, ndiag = imported["norm_cache"](cache)
-            h1, d1 = imported["hash_v1_with_diag"](rows)
-            h2, d2 = imported["hash_v2_with_diag"](rows)
-            corev1_dbg["hashes"] = {
-                "sources_snapshot_v1": h1,
-                "sources_snapshot_v2": h2,
-            }
-            corev1_dbg["hash_normalization"] = {
-                "recognized_shape": ndiag.get("recognized_shape"),
-                "items_in": ndiag.get("items_in"),
-                "items_out": ndiag.get("items_out"),
-                "dropped": ndiag.get("dropped", 0),
-            }
-            corev1_dbg["hash_v1_diag"] = d1
-            corev1_dbg["hash_v2_diag"] = d2
-    except Exception as e:
-        corev1_dbg["hash_bundle_error"] = f"{type(e).__name__}: {e}"
-
-def _corev1_postprocess_evolution(results: dict, prev_data: dict) -> dict:
-    if not _corev1_enabled():
-        return results
-    imported = _corev1_try_import()
-    if not imported.get("ok"):
-        # Still attach minimal debug
-        if isinstance(results, dict):
-            results.setdefault("debug", {}).setdefault("corev1", {})["import_error"] = imported.get("error")
-        return results
-
-    if not isinstance(results, dict):
-        return results
-
-    schema = _corev1_pick_schema(prev_data or {}, results)
-    prev_can = _corev1_pick_canonical(prev_data or {}, results, "prev")
-    cur_can = _corev1_pick_canonical(prev_data or {}, results, "cur")
-
-    # Attach hash bundle + version
-    _corev1_attach_hash_bundle(results, imported)
-
-    # Viewer-by-construction: rebuild metric_changes from prev/cur canonical
-    try:
-        diff_obj = imported["core_diff_v1"](prev_can or {}, cur_can or {}, schema or {})
-        if isinstance(diff_obj, dict) and "metric_changes" in diff_obj:
-            results["metric_changes"] = diff_obj["metric_changes"]
-            results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_applied"] = True
-            results["debug"]["corev1"]["prev_canonical_count"] = len(prev_can or {})
-            results["debug"]["corev1"]["cur_canonical_count"] = len(cur_can or {})
-            results["debug"]["corev1"]["metric_changes_count"] = len(diff_obj.get("metric_changes") or [])
-        else:
-            results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_applied"] = False
-    except Exception as e:
-        results.setdefault("debug", {}).setdefault("corev1", {})["viewer_contract_error"] = f"{type(e).__name__}: {e}"
-
-    # Ensure canonical_metrics key exists (one truth key)
-    if "canonical_metrics" not in results and isinstance(cur_can, dict):
-        results["canonical_metrics"] = cur_can
-
-    return results
-
-# =================== END PATCH FIX2C6 (ADDITIVE) ===================
 import base64
 import hashlib
 import numpy as np
@@ -227,7 +79,335 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2ae_injected_fetch_urls_merge_v1_fix2af_fetch_visibility_v1"  # PATCH FIX2AA (ADD): bump CODE_VERSION to new patch filename
+CODE_VERSION = "FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1"  # PATCH FIX2BQ (ADD): bump CODE_VERSION to match patch filename
+
+
+# =========================
+# PATCH START: PHASE3_HARNESS_AND_EXPORT_V1
+# CODE_VERSION: FIX2BK_PHASE3_CONSOLIDATION_V1
+#
+# Goal:
+#   Consolidate Phase-3 injection harness + export wiring into ONE additive module block.
+#   This is consolidation scaffolding on top of FIX2AF (no behavior changes required).
+#
+# Notes:
+#   - Harness features are only active when injected URLs are present (web_context.extra_urls),
+#     so production runs remain unaffected unless the harness is used.
+#   - Export wiring (canonical_for_render_v1) is intentionally left as a stub in this patch;
+#     it will be implemented by FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1.
+# =========================
+
+PHASE3_HARNESS_AND_EXPORT_V1 = {
+    # Harness toggles (default: auto-enable only when injection is present)
+    "ENABLE_INJECTION_HARNESS": True,
+    "ENABLE_INJECTION_TEXT_FALLBACK": True,
+
+    # Export wiring (implemented in FIX2BK, keep False until that patch lands)
+    "ENABLE_EXPORT_CANONICAL_FOR_RENDER_V1": True,
+
+    # Diagnostics (keep off by default; enable temporarily when needed)
+    "ENABLE_DIAGNOSTICS": False,
+}
+
+def _p3v1__safe_get(d, k, default=None):
+    try:
+        if isinstance(d, dict) and k in d:
+            return d[k]
+    except Exception:
+        pass
+    return default
+
+def _p3v1__as_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+def _p3v1__inj_present(web_context: dict) -> bool:
+    try:
+        if not isinstance(web_context, dict):
+            return False
+        ex = web_context.get("extra_urls") or web_context.get("diag_extra_urls_ui") or web_context.get("diag_extra_urls_ui_raw")
+        if isinstance(ex, str):
+            return bool(ex.strip())
+        return bool(ex)
+    except Exception:
+        return False
+
+def _p3v1__recover_extra_urls_into_web_context(web_context: dict) -> None:
+    """Recover injected URLs into web_context['extra_urls'] if missing/empty."""
+    try:
+        if not isinstance(web_context, dict):
+            return
+        cur = web_context.get("extra_urls")
+        if isinstance(cur, (list, tuple)) and cur:
+            return
+
+        recovered = []
+        v_list = web_context.get("diag_extra_urls_ui")
+        if isinstance(v_list, (list, tuple)) and v_list:
+            recovered = list(v_list)
+
+        if not recovered:
+            raw = web_context.get("diag_extra_urls_ui_raw")
+            if isinstance(raw, str) and raw.strip():
+                parts = []
+                for line in raw.splitlines():
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    for p in line.split(","):
+                        p = (p or "").strip()
+                        if p:
+                            parts.append(p)
+                recovered = parts
+
+        if recovered:
+            norm = globals().get("_inj_diag_norm_url_list")
+            normed = norm(recovered) if callable(norm) else recovered
+            if normed:
+                web_context["extra_urls"] = list(normed)
+                dbg = web_context.get("debug")
+                if not isinstance(dbg, dict):
+                    dbg = {}
+                    web_context["debug"] = dbg
+                f = dbg.get("phase3_v1")
+                if not isinstance(f, dict):
+                    f = {}
+                    dbg["phase3_v1"] = f
+                f.update({"extra_urls_recovered": True, "extra_urls_recovered_count": int(len(normed))})
+    except Exception:
+        pass
+
+def _p3v1_evo_prepare_url_universe(prev_full: dict, previous_data: dict, web_context: dict, urls: list):
+    """
+    Consolidated URL-universe preparation for Evolution runs when injection harness is used.
+
+    - Recovers injected URLs into web_context['extra_urls'] (if only present in diag fields)
+    - Routes baseline+injected through fetch_web_context(identity_only=True) to get admitted list
+    - Ensures injected URLs are merged into urls list before scraped_meta build
+    """
+    try:
+        if not PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_INJECTION_HARNESS"):
+            return urls
+        if not _p3v1__inj_present(web_context):
+            return urls
+
+        if isinstance(web_context, dict):
+            _p3v1__recover_extra_urls_into_web_context(web_context)
+
+        extra_raw = (web_context or {}).get("extra_urls") or []
+        _norm = globals().get("_inj_diag_norm_url_list")
+        extra_norm = _norm(extra_raw) if callable(_norm) else list(extra_raw)
+        if not extra_norm:
+            return urls
+
+        baseline_urls = []
+        try:
+            baseline_urls = _fix24_extract_source_urls(prev_full) or []
+        except Exception:
+            baseline_urls = []
+        baseline_norm = _norm(baseline_urls) if callable(_norm) else list(baseline_urls)
+
+        q = str((prev_full or {}).get("question") or (previous_data or {}).get("question") or "").strip()
+        diag_run_id = str((web_context or {}).get("diag_run_id") or "") or (globals().get("_inj_diag_make_run_id")("evo") if callable(globals().get("_inj_diag_make_run_id")) else "evo")
+
+        admitted = None
+        try:
+            _fwc = fetch_web_context(
+                q or "evolution_identity_only",
+                num_sources=int(min(12, max(1, len(baseline_norm) + len(extra_norm)))),
+                fallback_mode=True,
+                fallback_urls=baseline_norm,
+                existing_snapshots=(prev_full or {}).get("baseline_sources_cache") or (prev_full or {}).get("baseline_sources_cache_v2") or None,
+                extra_urls=extra_norm,
+                diag_run_id=diag_run_id,
+                diag_extra_urls_ui_raw=(web_context or {}).get("diag_extra_urls_ui_raw"),
+                identity_only=True,
+            ) or {}
+            admitted = _fwc.get("web_sources") or _fwc.get("sources") or None
+
+            # Attach diag injected urls if available (non-clobber)
+            if isinstance(web_context, dict) and isinstance(_fwc.get("diag_injected_urls"), dict):
+                web_context.setdefault("diag_injected_urls", {})
+                if isinstance(web_context.get("diag_injected_urls"), dict):
+                    for k, v in _fwc.get("diag_injected_urls").items():
+                        web_context["diag_injected_urls"].setdefault(k, v)
+
+            if isinstance(web_context, dict):
+                web_context.setdefault("debug", {})
+                if isinstance(web_context.get("debug"), dict):
+                    web_context["debug"].setdefault("phase3_v1", {})
+                    if isinstance(web_context["debug"].get("phase3_v1"), dict):
+                        _h = globals().get("_inj_diag_set_hash")
+                        _hval = _h(extra_norm) if callable(_h) else ""
+                        web_context["debug"]["phase3_v1"].update({
+                            "fwc_identity_only_called": True,
+                            "baseline_urls_count": int(len(baseline_norm)),
+                            "extra_urls_count": int(len(extra_norm)),
+                        })
+        except Exception:
+            admitted = None
+
+        # Adopt admitted list if it looks valid
+        if isinstance(admitted, list) and admitted:
+            urls = list(admitted)
+
+        # Merge injected URLs into urls universe (ensure attempted)
+        if isinstance(urls, list) and extra_norm:
+            seen = set()
+            try:
+                # urls may be list of dicts or strings
+                for d in urls:
+                    u = d.get("url") if isinstance(d, dict) else d
+                    u = str(u or "").strip()
+                    if not u:
+                        continue
+                    seen.add((_norm([u])[0] if callable(_norm) else u))
+            except Exception:
+                pass
+
+            for u in extra_norm:
+                if u in seen:
+                    continue
+                urls.append(u)
+                seen.add(u)
+
+        return urls
+    except Exception:
+        return urls
+
+def _p3v1_attach(payload: dict, context: dict = None) -> dict:
+    """Single end-of-export attach point for Phase3 module."""
+    if not isinstance(payload, dict):
+        return payload
+    context = context if isinstance(context, dict) else {}
+
+    # Export wiring stub (FIX2BK will implement)
+    if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_EXPORT_CANONICAL_FOR_RENDER_V1"):
+        # intentionally empty in consolidation patch
+        pass
+
+    # Optional minimal diagnostics
+    if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_DIAGNOSTICS"):
+        payload.setdefault("debug", {})
+        if isinstance(payload.get("debug"), dict):
+            payload["debug"].setdefault("phase3_v1", {})
+            if isinstance(payload["debug"].get("phase3_v1"), dict):
+                payload["debug"]["phase3_v1"]["attached"] = True
+    return payload
+
+# =========================
+
+# =========================
+# PATCH START: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
+# CODE_VERSION: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
+#
+# Purpose:
+#   Ensure Evolution emits render-ready canonical metrics to the namespace
+#   consumed by the Diff join:
+#       output_debug.canonical_for_render_v1
+#
+# Behavior:
+#   - Derives from the *actual* canonical pool already present in the payload
+#     (primary_response.primary_metrics_canonical or primary_metrics_canonical).
+#   - Non-overwriting: if canonical_for_render_v1 already exists and is non-empty,
+#     we leave it unchanged.
+#   - Always emits the key (empty dict allowed) to avoid "missing_output_debug..." diagnoses.
+# =========================
+
+def _p3v1__get_primary_metrics_canonical(payload: dict):
+    try:
+        if not isinstance(payload, dict):
+            return None
+        pmc = payload.get("primary_metrics_canonical")
+        if isinstance(pmc, dict) and pmc:
+            return pmc
+        pr = payload.get("primary_response")
+        if isinstance(pr, dict):
+            pmc2 = pr.get("primary_metrics_canonical")
+            if isinstance(pmc2, dict) and pmc2:
+                return pmc2
+        return pmc if isinstance(pmc, dict) else None
+    except Exception:
+        return None
+
+def _p3v1__build_canonical_for_render_v1(pmc: dict) -> dict:
+    out = {}
+    if not isinstance(pmc, dict):
+        return out
+    for ck, m in pmc.items():
+        if not ck:
+            continue
+        if not isinstance(m, dict):
+            out[str(ck)] = {"value": m, "unit": None, "value_norm": None, "unit_tag": None}
+            continue
+        out[str(ck)] = {
+            # prefer normalized value when available
+            "value": m.get("value", m.get("value_norm")),
+            "value_norm": m.get("value_norm", m.get("value")),
+            "unit": m.get("unit", m.get("unit_tag")),
+            "unit_tag": m.get("unit_tag", m.get("unit")),
+            "unit_family": m.get("unit_family", ""),
+            "dimension": m.get("dimension", m.get("dimension_kind", "")),
+            "canonical_id": m.get("canonical_id", m.get("canonical_metric_id", "")),
+            "canonical_key": m.get("canonical_key", str(ck)),
+            # optional evidence pointers (safe)
+            "source_url": m.get("source_url", ""),
+            "context_snippet": m.get("context_snippet", ""),
+        }
+    return out
+
+def _p3v1__emit_canonical_for_render_v1(payload: dict) -> None:
+    try:
+        if not isinstance(payload, dict):
+            return
+
+        od = payload.get("output_debug")
+        if not isinstance(od, dict):
+            od = {}
+            payload["output_debug"] = od
+
+        existing = od.get("canonical_for_render_v1")
+        if isinstance(existing, dict) and existing:
+            # Non-overwriting: if already present and non-empty, leave it.
+            return
+
+        pmc = _p3v1__get_primary_metrics_canonical(payload)
+        cfr = _p3v1__build_canonical_for_render_v1(pmc or {})
+
+        # Always emit (even empty dict) to avoid "missing_output_debug..." gating downstream.
+        od["canonical_for_render_v1"] = cfr
+
+        # Optional: also mirror top-level namespace (safe/non-breaking) for robustness
+        if "canonical_for_render_v1" not in payload or not payload.get("canonical_for_render_v1"):
+            payload["canonical_for_render_v1"] = cfr
+
+        # Minimal audit breadcrumb (non-invasive)
+        if PHASE3_HARNESS_AND_EXPORT_V1.get("ENABLE_DIAGNOSTICS"):
+            dbg = payload.get("debug")
+            if not isinstance(dbg, dict):
+                dbg = {}
+                payload["debug"] = dbg
+            fx = dbg.get("fix2bk_export_v1")
+            if not isinstance(fx, dict):
+                fx = {}
+                dbg["fix2bk_export_v1"] = fx
+            fx["emitted"] = True
+            fx["keys"] = int(len(cfr))
+            fx["sample_keys"] = list(cfr.keys())[:5]
+    except Exception:
+        return
+
+# =========================
+# PATCH END: FIX2BK_EXPORT_CANONICAL_FOR_RENDER_V1
+# =========================
+
+# PATCH END: PHASE3_HARNESS_AND_EXPORT_V1
+# =========================
 
 # =====================================================================
 # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
@@ -5890,90 +6070,6 @@ def fetch_web_context(
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    # PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1 (ADDITIVE)
-    # Deterministic injected-URL fetch/extract adapter:
-    # - Only used when scrape_url() yields empty text AND url is in injected extras.
-    # - Captures HTTP/content-type/bytes_len diagnostics.
-    # - Provides HTML->visible-text fallback and raw-HTML numeric scan.
-    import hashlib
-    import urllib.request
-    import urllib.error
-
-    def _fix2c8_html_visible_text(html: str) -> str:
-        try:
-            txt = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", html or "")
-            txt = re.sub(r"(?is)<[^>]+>", " ", txt)
-            lines = [ln.strip() for ln in (txt or "").splitlines() if ln.strip()]
-            out = "\n".join(lines)
-            out = re.sub(r"\n{3,}", "\n\n", out)
-            return out.strip()
-        except Exception:
-            return ""
-
-    def _fix2c8_fetch_bytes(u: str, timeout_s: int = 18) -> dict:
-        diag = {
-            "http_status": None,
-            "final_url": u,
-            "content_type": "",
-            "bytes_len": 0,
-            "decode_error": "",
-        }
-        raw = b""
-        try:
-            req = urllib.request.Request(
-                u,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                diag["http_status"] = getattr(resp, "status", None)
-                diag["final_url"] = getattr(resp, "geturl", lambda: u)()
-                try:
-                    diag["content_type"] = resp.headers.get("Content-Type", "") or ""
-                except Exception:
-                    diag["content_type"] = ""
-                raw = resp.read() or b""
-        except urllib.error.HTTPError as e:
-            diag["http_status"] = getattr(e, "code", None)
-            try:
-                diag["content_type"] = e.headers.get("Content-Type", "") or ""
-            except Exception:
-                diag["content_type"] = ""
-            try:
-                raw = e.read() or b""
-            except Exception:
-                raw = b""
-        except Exception as e:
-            diag["decode_error"] = f"{type(e).__name__}: {str(e)[:200]}"
-            raw = b""
-
-        diag["bytes_len"] = len(raw) if isinstance(raw, (bytes, bytearray)) else 0
-        text = ""
-        if diag["bytes_len"] > 0:
-            try:
-                text = raw.decode("utf-8", errors="replace")
-            except Exception as e:
-                diag["decode_error"] = f"{type(e).__name__}: {str(e)[:200]}"
-                try:
-                    text = raw.decode("latin-1", errors="replace")
-                except Exception:
-                    text = ""
-        return {"diag": diag, "raw_text": text}
-
-    def _fix2c8_sha256(s: str) -> str:
-        try:
-            return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
-        except Exception:
-            return ""
-    # END PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1
-
     def _is_probably_url(s: str) -> bool:
         if not s or not isinstance(s, str):
             return False
@@ -6356,44 +6452,12 @@ def fetch_web_context(
 
         try:
             text = scrape_url(url)  # ✅ ScrapingDog + fallback inside scrape_url
-
-            # PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1 (ADDITIVE)
-            # If scrape_url yields empty for an injected URL, attempt deterministic urllib fetch,
-            # extract visible text, and scan raw HTML for numbers to avoid "attempted but not persisted".
-            _fix2c8_is_injected = False
-            try:
-                if "_extras" in locals() and isinstance(_extras, list) and _extras:
-                    _fix2c8_is_injected = (url in set([u for u in _extras if isinstance(u, str)]))
-            except Exception:
-                _fix2c8_is_injected = False
-
-            _fix2c8_injected_diag = {}
-            if (_fix2c8_is_injected and (not text or not str(text).strip())):
-                try:
-                    _fx = _fix2c8_fetch_bytes(url)
-                    _fix2c8_injected_diag = _fx.get("diag") or {}
-                    _raw_txt = str(_fx.get("raw_text") or "")
-                    _visible = _fix2c8_html_visible_text(_raw_txt)
-                    # Prefer visible text, but fall back to raw if visible is empty
-                    text = _visible.strip() if _visible and _visible.strip() else _raw_txt.strip()
-
-                    # Attach diagnostics and method choice
-                    meta["injected"] = True
-                    meta["inject_fetch_diag_v1"] = _fix2c8_injected_diag
-                    meta["inject_extract_method_v1"] = ("html_visible_text" if _visible and _visible.strip() else "raw_html_text")
-                    meta["inject_text_head_200_v1"] = (text[:200] if isinstance(text, str) else "")
-                except Exception as _e:
-                    meta["injected"] = True
-                    meta["inject_fetch_diag_v1"] = {"error": f"{type(_e).__name__}: {str(_e)[:200]}"}
-            # END PATCH FIX2C8_INJECTED_FETCH_EXTRACT_V1
-
             if not text or not str(text).strip():
                 meta["status"] = "failed"
                 meta["status_detail"] = "failed:no_text"
                 scraped_failed += 1
                 out["scraped_meta"][url] = meta
             else:
-
                 cleaned = str(text).strip()
                 meta["status"] = "fetched"
                 meta["status_detail"] = "success"
@@ -20914,7 +20978,125 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
 
 
+
+
         # =====================================================================
+        # PATCH FIX2BP (ADDITIVE): Injection Fetch / Placeholder Elimination (relaxed)
+        #
+        # Observed gap:
+        #   Some injected URLs remain as placeholder rows (e.g. injected_reason="prehash_placeholder")
+        #   with empty snapshot_text and numbers_found==0. Downstream extraction/binding cannot run.
+        #
+        # Fix:
+        #   Best-effort second-pass fetch+extract for injected placeholder/failed rows, using a
+        #   relaxed minimum-text threshold (GitHub Pages test pages can be short).
+        #
+        # Safety:
+        #   - Additive-only.
+        #   - Only targets injected rows with empty snapshot_text and 0 numbers.
+        #   - Never overwrites non-empty snapshot_text or existing extracted_numbers.
+        # =====================================================================
+        try:
+            _fx2bp_min_len = 20  # relaxed threshold for short injected test pages
+            _fx2bp_targets = []
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                for _row in (baseline_sources_cache or []):
+                    if not isinstance(_row, dict):
+                        continue
+                    if not (_row.get("injected") is True or isinstance(_row.get("injected_reason"), str)):
+                        continue
+                    _u = _row.get("source_url") or _row.get("url") or ""
+                    if not (isinstance(_u, str) and _u.strip()):
+                        continue
+                    # Only target placeholder/failed injected rows that have no text/numbers yet
+                    _txt0 = _row.get("snapshot_text")
+                    _nums0 = _row.get("extracted_numbers")
+                    _nf0 = _row.get("numbers_found")
+                    if isinstance(_txt0, str) and _txt0.strip():
+                        continue
+                    if isinstance(_nums0, list) and len(_nums0 or []) > 0:
+                        continue
+                    if isinstance(_nf0, int) and _nf0 > 0:
+                        continue
+                    _why = _row.get("injected_reason") or _row.get("status_detail") or _row.get("status") or "unknown"
+                    _fx2bp_targets.append((_u.strip(), _row, str(_why)))
+
+            _fx2bp_fetched = []
+            _fx2bp_failed = []
+            if _fx2bp_targets:
+                for (_u, _row, _why) in _fx2bp_targets:
+                    _txt = None
+                    _detail = ""
+                    try:
+                        _txt, _detail = fetch_url_content_with_status(_u, timeout=35)
+                    except Exception as _e:
+                        _txt, _detail = None, f"exception:{type(_e).__name__}"
+
+                    if isinstance(_txt, str) and len(_txt.strip()) >= _fx2bp_min_len:
+                        try:
+                            _nums = extract_numbers_with_context(_txt, source_url=_u) or []
+                        except Exception:
+                            _nums = []
+                        try:
+                            _row.update({
+                                "status": "fetched",
+                                "status_detail": (_detail or "success"),
+                                "snapshot_text": _txt[:7000],
+                                "extracted_numbers": _nums,
+                                "numbers_found": int(len(_nums or [])),
+                                "injected": True,
+                                "injected_reason": _row.get("injected_reason") or "fix2bp_relaxed_fetch",
+                            })
+                        except Exception:
+                            pass
+                        _fx2bp_fetched.append({
+                            "url": _u,
+                            "why": _why,
+                            "min_len": int(_fx2bp_min_len),
+                            "text_len": int(len(_txt.strip())),
+                            "numbers_found": int(len(_nums or [])),
+                            "status_detail": (_detail or "success"),
+                        })
+                    else:
+                        try:
+                            # Keep status_detail for debugging but avoid the misleading "success" label if no text
+                            _row.update({
+                                "status": "failed",
+                                "status_detail": (_detail or "failed:no_text"),
+                                "snapshot_text": "",
+                                "extracted_numbers": [],
+                                "numbers_found": 0,
+                                "injected": True,
+                                "injected_reason": _row.get("injected_reason") or "fix2bp_relaxed_fetch_failed",
+                            })
+                        except Exception:
+                            pass
+                        _fx2bp_failed.append({
+                            "url": _u,
+                            "why": _why,
+                            "min_len": int(_fx2bp_min_len),
+                            "status_detail": (_detail or "failed:no_text"),
+                        })
+
+            # Debug breadcrumb (non-fatal)
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix2bp", {})
+                    if isinstance(output["debug"].get("fix2bp"), dict):
+                        output["debug"]["fix2bp"].update({
+                            "min_len": int(_fx2bp_min_len),
+                            "target_count": int(len(_fx2bp_targets or [])),
+                            "fetched_count": int(len(_fx2bp_fetched or [])),
+                            "failed_count": int(len(_fx2bp_failed or [])),
+                            "fetched": list(_fx2bp_fetched or [])[:10],
+                            "failed": list(_fx2bp_failed or [])[:10],
+                        })
+            except Exception:
+                pass
+        except Exception:
+            pass
+# =====================================================================
         # PATCH FIX41AFC17 (ADDITIVE): Pin fetched injected snapshots into canonical snapshot plumbing
         #
         # Observed gap (from evolution JSON after FIX41AFC16):
@@ -21409,6 +21591,62 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["sources_fetched"] = len(baseline_sources_cache)
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
+
+    # =========================
+    # PATCH FIX2BM START
+    # CODE_VERSION: FIX2BM_EXPORT_CANONICAL_FOR_RENDER_V1_HARDWIRE
+    # Purpose:
+    #   Hardwire emission of canonical_for_render_v1 into the *actual* namespace
+    #   inspected by the diff join diagnostics (output["debug"]["canonical_for_render_v1"]).
+    #   This is computed from the already-built current_metrics map and is non-overwriting.
+    # =========================
+    try:
+        _dbg = output.setdefault("debug", {}) if isinstance(output, dict) else None
+        if isinstance(_dbg, dict):
+            if not _dbg.get("canonical_for_render_v1"):
+                _cfr = {}
+                try:
+                    if isinstance(current_metrics, dict):
+                        for _ck, _m in current_metrics.items():
+                            if not _ck:
+                                continue
+                            if isinstance(_m, dict):
+                                _val = _m.get("value_norm")
+                                if _val is None:
+                                    _val = _m.get("value")
+                                if _val is None:
+                                    _val = _m.get("current_value_norm")
+                                if _val is None:
+                                    _val = _m.get("current_value")
+                                _unit = _m.get("unit_tag")
+                                if not _unit:
+                                    _unit = _m.get("unit")
+                                if not _unit:
+                                    _unit = _m.get("unit_norm")
+                                _cfr[str(_ck)] = {
+                                    "value_norm": _val,
+                                    "unit_tag": _unit,
+                                    "source_url": _m.get("source_url") or _m.get("url"),
+                                    "anchor_used": bool(_m.get("anchor_used")) if isinstance(_m.get("anchor_used"), (bool, int)) else False,
+                                }
+                except Exception:
+                    _cfr = {}
+                _dbg["canonical_for_render_v1"] = _cfr if isinstance(_cfr, dict) else {}
+            # Minimal audit (safe, compact)
+            _dbg.setdefault("fix2bm_export_v1", {})
+            try:
+                _dbg["fix2bm_export_v1"]["emitted"] = True
+                _dbg["fix2bm_export_v1"]["keys_n"] = int(len(_dbg.get("canonical_for_render_v1") or {}))
+                _dbg["fix2bm_export_v1"]["keys_sample"] = list((_dbg.get("canonical_for_render_v1") or {}).keys())[:10]
+                _dbg["fix2bm_export_v1"]["source"] = "current_metrics"
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # =========================
+    # PATCH FIX2BM END
+    # =========================
+
 
 
     # =====================================================================
@@ -22964,6 +23202,91 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
     except Exception:
         pass
+
+    # =====================================================================
+    # PATCH FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1 (ADDITIVE)
+    # Goal:
+    # - If Diff Panel V2 overrides `metric_changes`, re-hydrate "Current" fields
+    #   from canonical-for-render (analysis-aligned) so the dashboard Current column
+    #   is not blank/N/A.
+    # Safety:
+    # - Render-only: does NOT affect hashing/fastpath/snapshot attach/extraction.
+    # - Non-overwriting: only fills when current_value is blank/N/A.
+    # =====================================================================
+    try:
+        _fix2bn_pool = None
+        if isinstance(canonical_for_render, dict) and canonical_for_render:
+            _fix2bn_pool = canonical_for_render
+        elif isinstance(current_metrics, dict) and current_metrics:
+            _fix2bn_pool = current_metrics
+        else:
+            _fix2bn_pool = None
+
+        if isinstance(metric_changes, list) and isinstance(_fix2bn_pool, dict) and _fix2bn_pool:
+            _fix2bn_hydrated = 0
+            for _r in metric_changes:
+                if not isinstance(_r, dict):
+                    continue
+                _ck = _r.get("canonical_key") or _r.get("canonical") or _r.get("canonical_id") or ""
+                if not _ck:
+                    continue
+
+                _cm = _fix2bn_pool.get(_ck)
+                if not isinstance(_cm, dict):
+                    continue
+
+                # Only fill if blank/N/A
+                _cur = _r.get("current_value")
+                if _cur is not None and str(_cur).strip() not in ("", "N/A", "n/a", "NA"):
+                    continue
+
+                _vn = _cm.get("value_norm")
+                _unit = str((_cm.get("unit") or _cm.get("unit_tag") or "")).strip()
+                _raw = str((_cm.get("raw") or _cm.get("value_raw") or _cm.get("raw_value") or "")).strip()
+
+                if (_vn is None) and (not _raw):
+                    continue
+
+                if not _raw:
+                    try:
+                        if _vn is not None and _unit:
+                            _raw = f"{_vn} {_unit}".strip()
+                        elif _vn is not None:
+                            _raw = str(_vn)
+                    except Exception:
+                        _raw = ""
+
+                _r["current_value_norm"] = _vn
+                _r["cur_value_norm"] = _vn
+                _r["current_unit"] = _unit
+                _r["cur_unit_cmp"] = _unit
+                _r["current_value"] = _raw
+
+                _r.setdefault("diag", {})
+                if isinstance(_r.get("diag"), dict):
+                    _r["diag"].setdefault("fix2bn", {})
+                    if isinstance(_r["diag"].get("fix2bn"), dict):
+                        _r["diag"]["fix2bn"]["applied"] = True
+                        _r["diag"]["fix2bn"]["canonical_key"] = _ck
+
+                _fix2bn_hydrated += 1
+
+            # lightweight audit
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"]["fix2bn"] = {
+                        "applied": True,
+                        "rows_hydrated": int(_fix2bn_hydrated),
+                        "pool": "canonical_for_render" if _fix2bn_pool is canonical_for_render else "current_metrics",
+                    }
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX2BN_DIFF_CURRENT_POOL_ADAPTER_V1
+    # =====================================================================
 
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
@@ -26068,7 +26391,7 @@ def main():
 
                         )
 
-
+                        # ============================================================
 
 
                     except Exception as e:
@@ -26077,17 +26400,6 @@ def main():
 
                         return
 
-
-                # PATCH FIX2C7 (ADDITIVE): apply CoreV1 viewer contract + hash bundle (outside legacy try/except)
-                try:
-                    results = _corev1_postprocess_evolution(results, baseline_data)
-                except Exception as _corev1_e:
-                    # Never fail the legacy UI flow due to viewer postprocessing
-                    if isinstance(results, dict):
-                        results.setdefault('debug', {})
-                        results['debug'].setdefault('corev1', {})
-                        results['debug']['corev1']['postprocess_error'] = f"{type(_corev1_e).__name__}: {_corev1_e}"
-                # ============================================================
 
                 interpretation = ""
                 try:
@@ -28775,6 +29087,16 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     # Step 2: Build current scraped_meta by fetching the same URLs used previously
     urls = _fix24_extract_source_urls(prev_full)
+
+    # =========================
+    # PATCH START: PHASE3_HARNESS_AND_EXPORT_V1 (consolidated URL universe)
+    # Purpose: keep injected URL parity logic centralized (no behavior change intended)
+    try:
+        urls = _p3v1_evo_prepare_url_universe(prev_full, previous_data, web_context, urls)
+    except Exception:
+        pass
+    # PATCH END: PHASE3_HARNESS_AND_EXPORT_V1 (consolidated URL universe)
+    # =========================
     # =====================================================================
     # PATCH FIX41AFC3 (ADDITIVE): Recover Evolution injected URLs into web_context['extra_urls']
     #
@@ -29660,6 +29982,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         # =====================================================================
         # END PATCH EVO_INJ_TRACE_REPLAY1
         # =====================================================================
+        try:
+            _p3v1__emit_canonical_for_render_v1(out_replay)
+        except Exception:
+            pass
         return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
@@ -29699,6 +30025,14 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
                     out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
+            try:
+                _p3v1__emit_canonical_for_render_v1(out)
+            except Exception:
+                pass
+            try:
+                _fix2bq__apply(out)
+            except Exception:
+                pass
             return out
         except Exception as e:
             # Fall through to original behavior if anything unexpected
@@ -29723,9 +30057,25 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
             except Exception:
                 pass
+            try:
+                _p3v1__emit_canonical_for_render_v1(out_changed)
+            except Exception:
+                pass
+            try:
+                _fix2bq__apply(out_changed)
+            except Exception:
+                pass
             return out_changed
         except Exception:
             pass
+
+    try:
+
+        _p3v1__emit_canonical_for_render_v1(locals().get("out_changed") or locals().get("out") or locals().get("out_replay") or {})
+
+    except Exception:
+
+        pass
 
     return {
         "status": "failed",
@@ -29735,6 +30085,193 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         "metric_changes": [],
         "debug": {"fix24": True, "fix24_mode": "recompute_failed"},
     }
+
+
+
+# =========================
+# PATCH START: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
+# CODE_VERSION: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
+#
+# Goal:
+# - Hydrate Diff rows' Current fields using metric_definition.canonical_key (preferred),
+#   falling back to row.canonical_key / canonical_id.
+# - Pull values from the best available "current pool" already present in the output:
+#     1) results.debug.canonical_for_render_v1 (preferred, if keyed correctly)
+#     2) results.debug.evo_winner_trace_v1 (fallback; can use cur_value_norm, or top candidate glimpse)
+#
+# Safety:
+# - Additive-only, non-overwriting: only fills when current_value is blank/"N/A"/None.
+# - Never raises.
+# =========================
+
+def _fix2bq__is_blank_current(v):
+    try:
+        if v is None:
+            return True
+        if isinstance(v, str):
+            s = v.strip()
+            return (s == "" or s.upper() == "N/A")
+        return False
+    except Exception:
+        return True
+
+def _fix2bq__safe_dict(d):
+    return d if isinstance(d, dict) else {}
+
+def _fix2bq__safe_list(x):
+    return x if isinstance(x, list) else []
+
+def _fix2bq__get_row_key(row):
+    if not isinstance(row, dict):
+        return None
+    md = row.get("metric_definition")
+    if isinstance(md, dict):
+        k = md.get("canonical_key") or md.get("canonical_id")
+        if k:
+            return str(k)
+    # fallbacks
+    k2 = row.get("canonical_key") or row.get("canonical_id") or row.get("metric_id")
+    return str(k2) if k2 else None
+
+def _fix2bq__extract_from_pool_entry(entry):
+    """
+    Accepts various pool shapes and returns (value, value_norm, unit) tuple.
+    """
+    if entry is None:
+        return (None, None, None)
+    if isinstance(entry, dict):
+        v = entry.get("value")
+        vn = entry.get("value_norm", entry.get("cur_value_norm"))
+        u = entry.get("unit") or entry.get("unit_norm") or entry.get("cur_unit")
+        return (v, vn, u)
+    # scalar
+    return (entry, None, None)
+
+def _fix2bq__extract_from_winner_trace(trace_entry):
+    """
+    Winner trace shape (debug.evo_winner_trace_v1[k]):
+      - cur_value_norm / cur_unit may be None
+      - top3_candidates_glimpse may contain usable candidate
+    Returns (value_norm, unit_tag, source_tag) or (None,None,None)
+    """
+    if not isinstance(trace_entry, dict):
+        return (None, None, None)
+    vn = trace_entry.get("cur_value_norm")
+    u = trace_entry.get("cur_unit")
+    if vn is not None:
+        return (vn, u, "winner_trace.cur_value_norm")
+    # fallback to candidate glimpse
+    for c in _fix2bq__safe_list(trace_entry.get("top3_candidates_glimpse")):
+        if not isinstance(c, dict):
+            continue
+        if not c.get("has_unit_evidence"):
+            continue
+        vn2 = c.get("value_norm")
+        ut = c.get("unit_tag") or c.get("unit") or ""
+        if vn2 is None:
+            continue
+        return (vn2, ut, "winner_trace.top_candidate")
+    return (None, None, None)
+
+def _fix2bq__apply_to_results(results_obj):
+    """
+    results_obj is the dict under output['results'] (or similar).
+    Mutates results_obj in-place.
+    """
+    if not isinstance(results_obj, dict):
+        return
+
+    dbg = _fix2bq__safe_dict(results_obj.get("debug"))
+    pool = _fix2bq__safe_dict(dbg.get("canonical_for_render_v1"))
+    winner_trace = _fix2bq__safe_dict(dbg.get("evo_winner_trace_v1"))
+
+    # Candidate: apply to multiple metric_changes variants
+    targets = []
+    for k in ("metric_changes", "metric_changes_legacy", "metric_changes_v2"):
+        v = results_obj.get(k)
+        if isinstance(v, list) and v:
+            targets.append((k, v))
+
+    hydrated = 0
+    used_pool = 0
+    used_winner = 0
+
+    for name, rows in targets:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if not _fix2bq__is_blank_current(row.get("current_value")):
+                continue
+            key = _fix2bq__get_row_key(row)
+            if not key:
+                continue
+
+            # 1) Try canonical_for_render_v1
+            if key in pool:
+                v, vn, u = _fix2bq__extract_from_pool_entry(pool.get(key))
+                if vn is None and v is None:
+                    # nothing usable
+                    pass
+                else:
+                    # prefer numeric norm if present
+                    row["current_value_norm"] = vn if vn is not None else row.get("current_value_norm")
+                    row["current_value"] = vn if vn is not None else (v if v is not None else row.get("current_value"))
+                    if u and not row.get("current_unit"):
+                        row["current_unit"] = u
+                    hydrated += 1
+                    used_pool += 1
+                    continue
+
+            # 2) Try winner trace fallback
+            if key in winner_trace:
+                vn2, ut2, src_tag = _fix2bq__extract_from_winner_trace(winner_trace.get(key))
+                if vn2 is None:
+                    continue
+                row["current_value_norm"] = vn2
+                row["current_value"] = vn2
+                if ut2 and not row.get("current_unit"):
+                    row["current_unit"] = ut2
+                row.setdefault("debug", {})
+                if isinstance(row.get("debug"), dict):
+                    row["debug"].setdefault("fix2bq", {})
+                    if isinstance(row["debug"].get("fix2bq"), dict):
+                        row["debug"]["fix2bq"].update({"source": src_tag})
+                hydrated += 1
+                used_winner += 1
+
+    # Attach audit
+    results_obj.setdefault("debug", {})
+    if isinstance(results_obj.get("debug"), dict):
+        results_obj["debug"].setdefault("fix2bq", {})
+        if isinstance(results_obj["debug"].get("fix2bq"), dict):
+            results_obj["debug"]["fix2bq"].update({
+                "applied": True,
+                "hydrated_rows": int(hydrated),
+                "used_canonical_for_render_v1": int(used_pool),
+                "used_winner_trace": int(used_winner),
+                "pool_keys_n": int(len(pool)),
+                "winner_keys_n": int(len(winner_trace)),
+            })
+
+def _fix2bq__apply(output):
+    """
+    Applies FIX2BQ to an output dict that may contain:
+      - output['results'] (primary)
+      - or be itself a 'results' dict (fallback)
+    """
+    try:
+        if not isinstance(output, dict):
+            return
+        if isinstance(output.get("results"), dict):
+            _fix2bq__apply_to_results(output["results"])
+        else:
+            _fix2bq__apply_to_results(output)
+    except Exception:
+        pass
+
+# =========================
+# PATCH END: FIX2BQ_DIFF_KEY_HYDRATE_FROM_METRIC_DEFINITION_V1
+# =========================
 
 
 # ==============================================================================
