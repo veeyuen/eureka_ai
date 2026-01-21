@@ -31593,7 +31593,7 @@ def main():
        #     height=110,
        # )
 
-       extra_sources_text = ("https://veeyuen.github.io/injected-content/")
+        extra_sources_text = ("https://veeyuen.github.io/injected-content/")
 
         compare_data = None
         if "another saved analysis" in compare_method:
