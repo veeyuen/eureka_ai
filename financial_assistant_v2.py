@@ -79,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v19'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
@@ -88,7 +88,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -26058,146 +26058,3 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
 # ==============================================================================
 # END FIX32
 # ==============================================================================
-# =====================================================================
-# PATCH V23_CANONICAL_FOR_RENDER_FORCE_CLEAR (ADDITIVE)
-# Goal: When the current evolution canonical dict is "present but junk" (year-like / unitless winners),
-# force the canonical-for-render rebuild path to actually run.
-#
-# Root cause (observed in v22 outputs):
-# - canonical_for_render is initially assigned from current_metrics (non-empty)
-# - _need_render_rebuild can become True due to suspiciousness
-# - BUT rebuild attempts are guarded by `if (not canonical_for_render)` so they never execute
-#   when canonical_for_render is already non-empty.
-#
-# Fix (render-only):
-# - Wrap diff_metrics_by_name so that when we detect a suspicious current canonical dict,
-#   we pass an empty current canonical map into the base diff function.
-# - This triggers the existing v21/v22 rebuild ladder to actually run.
-# - Fully auditable: adds diag markers at row-level and (optionally) at top-level.
-# =====================================================================
-try:
-    diff_metrics_by_name_FIX32_V22_BASE
-except Exception:
-    diff_metrics_by_name_FIX32_V22_BASE = None
-
-try:
-    diff_metrics_by_name_FIX31_BASE
-except Exception:
-    diff_metrics_by_name_FIX31_BASE = None
-
-
-def _ph2b_v23_yearlike(_x):
-    try:
-        if _x is None:
-            return False
-        fx = float(_x)
-        if abs(fx - round(fx)) < 1e-9:
-            ix = int(round(fx))
-            return 1900 <= ix <= 2105
-        return False
-    except Exception:
-        return False
-
-
-def _ph2b_v23_metric_suspicious(_m):
-    try:
-        if not isinstance(_m, dict):
-            return True
-        u = (str(_m.get('unit') or _m.get('unit_tag') or '').strip())
-        vn = _m.get('value_norm')
-        # Most problematic pattern: unitless + yearlike/None
-        if (not u) and (_ph2b_v23_yearlike(vn) or vn is None):
-            return True
-        # Also treat empty raw+unit as suspicious when vn is present but unitless
-        raw = (str(_m.get('raw') or '').strip())
-        if vn is not None and (not u) and (not raw):
-            return True
-        return False
-    except Exception:
-        return True
-
-
-def _ph2b_v23_current_metrics_suspicious(_cm_map):
-    try:
-        if not isinstance(_cm_map, dict) or not _cm_map:
-            return True
-        ks = list(sorted(list(_cm_map.keys())))[:25]
-        if not ks:
-            return True
-        sus = 0
-        tot = 0
-        for k in ks:
-            tot += 1
-            if _ph2b_v23_metric_suspicious(_cm_map.get(k)):
-                sus += 1
-        if tot <= 0:
-            return True
-        return (sus / float(tot)) >= 0.30
-    except Exception:
-        return False
-
-
-def diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR(prev_response, cur_response, *args, **kwargs):
-    """Wrapper around the existing diff implementation to force render-only rebuild when current canonical is suspicious."""
-    if not callable(diff_metrics_by_name_FIX31_BASE):
-        # If we can't find the base function, fall back to any existing diff impl
-        if callable(diff_metrics_by_name_FIX32_V22_BASE):
-            return diff_metrics_by_name_FIX32_V22_BASE(prev_response, cur_response, *args, **kwargs)
-        return []
-
-    _cur = cur_response
-    _forced_clear = False
-    _sus = False
-    try:
-        cm = None
-        if isinstance(cur_response, dict):
-            cm = cur_response.get('primary_metrics_canonical')
-        _sus = bool(_ph2b_v23_current_metrics_suspicious(cm))
-        if _sus:
-            _forced_clear = True
-            # Shallow-copy cur_response and clear primary_metrics_canonical only.
-            _cur = dict(cur_response) if isinstance(cur_response, dict) else cur_response
-            if isinstance(_cur, dict):
-                # Preserve original for audit
-                _cur.setdefault('diag', {})
-                if isinstance(_cur.get('diag'), dict):
-                    _cur['diag'].setdefault('ph2b_v23_force_clear_current_metrics', True)
-                    try:
-                        _cur['diag'].setdefault('ph2b_v23_force_clear_reason', 'suspicious_current_metrics_triggered_render_rebuild')
-                    except Exception:
-                        pass
-                # Force empty so v21/v22 rebuild ladder actually runs
-                _cur['primary_metrics_canonical'] = {}
-    except Exception:
-        _cur = cur_response
-        _forced_clear = False
-
-    rows = diff_metrics_by_name_FIX31_BASE(prev_response, _cur, *args, **kwargs)
-
-    # PATCH V23_ROW_DIAG (ADDITIVE): mark every returned row so we can confirm v23 wrapper ran
-    try:
-        if _forced_clear and isinstance(rows, list):
-            for r in rows:
-                if isinstance(r, dict):
-                    r.setdefault('diag', {})
-                    if isinstance(r.get('diag'), dict):
-                        r['diag'].setdefault('ph2b_v23_force_clear_applied', True)
-                        r['diag'].setdefault('ph2b_v23_force_clear_suspicious', bool(_sus))
-    except Exception:
-        pass
-
-    return rows
-
-
-# PATCH V23_WIRE (ADDITIVE): Replace the public diff entrypoint used by evolution with the v23 wrapper.
-try:
-    if callable(diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR):
-        diff_metrics_by_name = diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR
-except Exception:
-    pass
-
-# PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
-try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'
-except Exception:
-    pass
