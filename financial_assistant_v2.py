@@ -46,6 +46,8 @@
 # Anchor Matching Correctness
 # Unit Measure + Attribute Association e.g. M + units (sold)
 # Enriched metric_schema_frozen (analysis side)
+# THIS VERSION HAS THE PLUMBING LOCKED-DOWN
+# ONLY THE METRIC EXTRACTION LAYER FOR EVOLUTION REQUIRES WORK
 # ================================================================================
 
 import io
@@ -77,7 +79,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc14_evo_injected_delta_pre_rebuild_fetch_and_merge_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v1"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
 #CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
 
@@ -99,6 +101,11 @@ CODE_VERSION = "fix41afc14_evo_injected_delta_pre_rebuild_fetch_and_merge_v1"  #
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
+# =====================================================================
+# PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
+# =====================================================================
+#CODE_VERSION = "fix41afc18_evo_schema_preserve_guard_on_injection_v1"
+# =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
 ENDSTATE_FINAL_VERSION = "v7_41_endstate_final_1"
@@ -17146,6 +17153,169 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                             output["debug"]["fix35"]["current_metrics_origin"] = "schema_only_rebuild"
                 except Exception:
                     pass
+                # =====================================================================
+                # PATCH FIX41AFC18 (ADDITIVE): schema-preserve guard on rebuild when injected URLs are present
+                # Intent:
+                #   - Keep drift-0 for existing metrics even when an injected URL forces rebuild
+                #   - Only allow a rebuilt metric to replace the previous metric if it carries
+                #     evidence anchors and passes basic schema/unit sanity checks
+                #   - Never changes fastpath logic; only post-rebuild metric selection safety
+                # =====================================================================
+                try:
+                    _fix41afc18_prev = prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else None
+                    _fix41afc18_schema = prev_response.get("metric_schema_frozen") if isinstance(prev_response, dict) else None
+
+                    # Recover injected-delta set (normalized) from earlier patches, if available
+                    _fix41afc18_inj_delta = []
+                    try:
+                        if isinstance(output.get("debug"), dict):
+                            _d15 = output["debug"].get("fix41afc15") or output["debug"].get("fix41afc16") or output["debug"].get("fix41afc14") or {}
+                            if isinstance(_d15, dict):
+                                _fix41afc18_inj_delta = list(_d15.get("inj_delta") or [])
+                    except Exception:
+                        _fix41afc18_inj_delta = []
+                    _fix41afc18_inj_set = set()
+                    try:
+                        _norm_fn = globals().get("_inj_diag_norm_url_list")
+                        if callable(_norm_fn) and _fix41afc18_inj_delta:
+                            _fix41afc18_inj_set = set(_norm_fn(_fix41afc18_inj_delta))
+                        else:
+                            _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
+                    except Exception:
+                        _fix41afc18_inj_set = set([str(u).strip() for u in (_fix41afc18_inj_delta or []) if str(u).strip()])
+
+                    def _fix41afc18_has_evidence(m: dict) -> bool:
+                        if not isinstance(m, dict):
+                            return False
+                        ev = m.get("evidence")
+                        if isinstance(ev, list) and len(ev) > 0:
+                            return True
+                        # fallback: anchor_hash present
+                        ah = m.get("anchor_hash") or m.get("anchorHash") or m.get("anchor")
+                        return bool(ah and str(ah) not in ("None", "none", ""))
+
+                    def _fix41afc18_unit_ok(prev_m: dict, cur_m: dict) -> bool:
+                        try:
+                            # Prefer schema unit_family/unit_tag if available
+                            ck = str(cur_m.get("canonical_key") or "")
+                            schema_row = _fix41afc18_schema.get(ck) if isinstance(_fix41afc18_schema, dict) else None
+                            if isinstance(schema_row, dict):
+                                exp_fam = str(schema_row.get("unit_family") or "")
+                                exp_tag = str(schema_row.get("unit_tag") or schema_row.get("unit") or "")
+                                cur_fam = str(cur_m.get("unit_family") or "")
+                                cur_tag = str(cur_m.get("unit_tag") or cur_m.get("unit") or "")
+                                # If schema expects a family/tag, require match when present
+                                if exp_fam and cur_fam and exp_fam != cur_fam:
+                                    return False
+                                if exp_tag and cur_tag and exp_tag != cur_tag:
+                                    return False
+                            # Fallback: if both prev and cur have unit_family, require equality
+                            pf = str(prev_m.get("unit_family") or "")
+                            cf = str(cur_m.get("unit_family") or "")
+                            if pf and cf and pf != cf:
+                                return False
+                            return True
+                        except Exception:
+                            return True
+
+                    def _fix41afc18_from_injected_source(cur_m: dict) -> bool:
+                        try:
+                            su = str(cur_m.get("source_url") or cur_m.get("source") or "")
+                            if not su:
+                                return False
+                            # normalize by simple strip only (avoid heavy deps)
+                            su = su.strip()
+                            # if we have inj set, treat any exact/startswith match as injected
+                            for iu in _fix41afc18_inj_set:
+                                if not iu:
+                                    continue
+                                if su == iu or su.startswith(iu) or iu.startswith(su):
+                                    return True
+                            return False
+                        except Exception:
+                            return False
+
+                    def _fix41afc18_value(prev_m: dict):
+                        for k in ("value_norm", "value"):
+                            v = prev_m.get(k) if isinstance(prev_m, dict) else None
+                            if isinstance(v, (int, float)):
+                                return float(v)
+                        return None
+
+                    _fix41afc18_replaced = 0
+                    _fix41afc18_preserved = 0
+                    _fix41afc18_added = 0
+                    _fix41afc18_notes = []
+
+                    # Only apply guard when injected delta is present (no-change case remains locked)
+                    if _fix41afc18_inj_set and isinstance(_fix41afc18_prev, dict) and isinstance(current_metrics, dict):
+                        for _ck, _prev_m in _fix41afc18_prev.items():
+                            if not isinstance(_ck, str) or not _ck:
+                                continue
+                            _cur_m = current_metrics.get(_ck)
+                            if not isinstance(_cur_m, dict):
+                                # If rebuild dropped a metric, preserve previous
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_metric_missing_in_rebuild"})
+                                continue
+
+                            # If rebuild metric lacks evidence, preserve previous (schema-driven drift lock)
+                            if not _fix41afc18_has_evidence(_cur_m):
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_no_evidence"})
+                                continue
+
+                            # If unit sanity fails, preserve previous
+                            if not _fix41afc18_unit_ok(_prev_m, _cur_m):
+                                current_metrics[_ck] = _prev_m
+                                _fix41afc18_preserved += 1
+                                _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_unit_mismatch"})
+                                continue
+
+                            # If the replacement comes only from injected source and is wildly different, preserve prev
+                            try:
+                                pv = _fix41afc18_value(_prev_m)
+                                cv = _fix41afc18_value(_cur_m)
+                                if pv is not None and cv is not None and pv != 0:
+                                    rel = abs(cv - pv) / max(abs(pv), 1e-9)
+                                    if _fix41afc18_from_injected_source(_cur_m) and rel >= 0.50:
+                                        current_metrics[_ck] = _prev_m
+                                        _fix41afc18_preserved += 1
+                                        _fix41afc18_notes.append({"canonical_key": _ck, "action": "preserve_prev_suspicious_injected_delta", "prev": pv, "cur": cv, "rel": rel})
+                                        continue
+                            except Exception:
+                                pass
+
+                            # Otherwise accept rebuilt metric (explicit replace)
+                            _fix41afc18_replaced += 1
+
+                        # If rebuild produced new metrics not in schema, keep them but track (non-breaking)
+                        for _ck2, _cur_m2 in list(current_metrics.items()):
+                            if not isinstance(_ck2, str) or not _ck2:
+                                continue
+                            if _ck2 not in _fix41afc18_prev:
+                                _fix41afc18_added += 1
+
+                    # Emit debug for traceability
+                    try:
+                        if isinstance(output.get("debug"), dict):
+                            output["debug"].setdefault("fix41afc18", {})
+                            if isinstance(output["debug"].get("fix41afc18"), dict):
+                                output["debug"]["fix41afc18"].update({
+                                    "inj_delta_present": bool(_fix41afc18_inj_set),
+                                    "inj_delta_count": int(len(_fix41afc18_inj_set)),
+                                    "rebuild_metrics_replaced_count": int(_fix41afc18_replaced),
+                                    "rebuild_metrics_preserved_count": int(_fix41afc18_preserved),
+                                    "rebuild_metrics_added_count": int(_fix41afc18_added),
+                                    "notes_sample": _fix41afc18_notes[:10],
+                                })
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                # =====================================================================
         except Exception:
             current_metrics = {}
 
@@ -17980,6 +18150,325 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # ============================================================
         _fix36_cur_hash = None
         _fix36_reason = ""
+
+        # =====================================================================
+        # PATCH FIX41AFC15 (ADDITIVE): Pre-hash merge of injected URL delta into baseline_sources_cache
+        #
+        # Why:
+        # - In your latest evolution JSON, fastpath was correctly bypassed due to injected delta,
+        #   but the current snapshot universe (baseline_sources_cache) still did NOT include the
+        #   injected URL, so the stable hash still matched and downstream logic treated the run
+        #   as "no delta" (no fetch, no rebuild, no injected lifecycle).
+        #
+        # Goal:
+        # - BEFORE computing the current stable hash / fastpath eligibility, deterministically
+        #   append placeholder snapshot rows for any injected URLs missing from the current
+        #   baseline_sources_cache universe. This makes the hash differ (as it should when the
+        #   source universe changes), forcing the normal rebuild/fetch pathways without changing
+        #   the hashing algorithm itself.
+        #
+        # Safety:
+        # - Purely additive.
+        # - No effect when no injected URLs are present OR all injected URLs already exist in
+        #   baseline_sources_cache.
+        # =====================================================================
+        try:
+            _fx15_wc = web_context if isinstance(web_context, dict) else {}
+            _fx15_extra = []
+            # Prefer already-wired list fields
+            if isinstance(_fx15_wc.get("extra_urls"), (list, tuple)):
+                _fx15_extra = list(_fx15_wc.get("extra_urls") or [])
+            elif isinstance(_fx15_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fx15_wc.get("diag_extra_urls_ui"):
+                _fx15_extra = list(_fx15_wc.get("diag_extra_urls_ui") or [])
+            elif isinstance(_fx15_wc.get("diag_extra_urls_ui_raw"), str) and (_fx15_wc.get("diag_extra_urls_ui_raw") or "").strip():
+                _raw = str(_fx15_wc.get("diag_extra_urls_ui_raw") or "")
+                _parts = []
+                for _line in _raw.splitlines():
+                    _line = (_line or "").strip()
+                    if not _line:
+                        continue
+                    for _p in _line.split(","):
+                        _p = (_p or "").strip()
+                        if _p:
+                            _parts.append(_p)
+                _fx15_extra = _parts
+
+            _fx15_inj_norm = _inj_diag_norm_url_list(_fx15_extra) if _fx15_extra else []
+            if _fx15_inj_norm and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                _fx15_base_urls = []
+                for _r in (baseline_sources_cache or []):
+                    if not isinstance(_r, dict):
+                        continue
+                    _u = _r.get("source_url") or _r.get("url") or ""
+                    if isinstance(_u, str) and _u:
+                        _fx15_base_urls.append(_u)
+                _fx15_base_set = set(_inj_diag_norm_url_list(_fx15_base_urls)) if _fx15_base_urls else set()
+                _fx15_delta = [u for u in _fx15_inj_norm if u and u not in _fx15_base_set]
+                if _fx15_delta:
+                    # Append stable placeholders so the snapshot hash changes deterministically.
+                    for _u in _fx15_delta:
+                        baseline_sources_cache.append({
+                            "source_url": _u,
+                            "url": _u,
+                            "status": "injected_pending",
+                            "status_detail": "injected_url_placeholder_pre_hash",
+                            "snapshot_text": "",
+                            "extracted_numbers": [],
+                            "numbers_found": 0,
+                            "injected": True,
+                            "injected_reason": "prehash_placeholder",
+                        })
+                    # Also ensure downstream sees a consistent universe via web_context["extra_urls"].
+                    try:
+                        if isinstance(_fx15_wc, dict):
+                            _fx15_wc.setdefault("extra_urls", [])
+                            if isinstance(_fx15_wc.get("extra_urls"), list):
+                                # keep original order; append unique normalized
+                                _seen = set(_inj_diag_norm_url_list(_fx15_wc.get("extra_urls") or []))
+                                for _u in _fx15_delta:
+                                    if _u not in _seen:
+                                        _fx15_wc["extra_urls"].append(_u)
+                                        _seen.add(_u)
+                    except Exception:
+                        pass
+                    # Debug
+                    try:
+                        output.setdefault("debug", {})
+                        if isinstance(output.get("debug"), dict):
+                            output["debug"].setdefault("fix41afc15", {})
+                            if isinstance(output["debug"].get("fix41afc15"), dict):
+                                output["debug"]["fix41afc15"].update({
+                                    "inj_norm_count": int(len(_fx15_inj_norm)),
+                                    "inj_norm": list(_fx15_inj_norm),
+                                    "inj_delta_count": int(len(_fx15_delta)),
+                                    "inj_delta": list(_fx15_delta),
+                                    "baseline_sources_cache_count_after_placeholder": int(len(baseline_sources_cache or [])),
+                                })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # =====================================================================
+        # PATCH FIX41AFC16 (ADDITIVE): If injected URL placeholders exist, actually fetch+extract them
+        #
+        # Observed gap (from evolution JSON):
+        #   - Injected URLs were present in ui/intake/hash_inputs, but remained:
+        #       status = "injected_pending" / status_detail = "injected_url_placeholder_pre_hash"
+        #   - So they never produced snapshot_text / extracted_numbers, and thus could not
+        #     influence metric rebuild beyond a "hash universe" delta.
+        #
+        # Goal:
+        #   - When injection is present, attempt to fetch+extract the injected URLs (delta-only),
+        #     and update their baseline_sources_cache rows in-place so downstream rebuild sees them
+        #     like normal fetched sources (or explicit failed reasons).
+        #
+        # Safety:
+        #   - Purely additive.
+        #   - No effect when no injected URLs are present.
+        #   - Only touches rows that are injected placeholders (status == injected_pending) OR
+        #     URLs that are injected_delta (not already in baseline).
+        # =====================================================================
+        try:
+            _fx16_wc = web_context if isinstance(web_context, dict) else {}
+            _fx16_extra = []
+            if isinstance(_fx16_wc.get("extra_urls"), (list, tuple)) and _fx16_wc.get("extra_urls"):
+                _fx16_extra = list(_fx16_wc.get("extra_urls") or [])
+            elif isinstance(_fx16_wc.get("diag_extra_urls_ui"), (list, tuple)) and _fx16_wc.get("diag_extra_urls_ui"):
+                _fx16_extra = list(_fx16_wc.get("diag_extra_urls_ui") or [])
+            elif isinstance(_fx16_wc.get("diag_extra_urls_ui_raw"), str) and (_fx16_wc.get("diag_extra_urls_ui_raw") or "").strip():
+                _raw = str(_fx16_wc.get("diag_extra_urls_ui_raw") or "")
+                _parts = []
+                for _line in _raw.splitlines():
+                    _line = (_line or "").strip()
+                    if not _line:
+                        continue
+                    for _p in _line.split(","):
+                        _p = (_p or "").strip()
+                        if _p:
+                            _parts.append(_p)
+                _fx16_extra = _parts
+
+            _fx16_inj_norm = _inj_diag_norm_url_list(_fx16_extra) if _fx16_extra else []
+            _fx16_base_urls = []
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                for _r in (baseline_sources_cache or []):
+                    if not isinstance(_r, dict):
+                        continue
+                    _u = _r.get("source_url") or _r.get("url") or ""
+                    if isinstance(_u, str) and _u:
+                        _fx16_base_urls.append(_u)
+            _fx16_base_set = set(_inj_diag_norm_url_list(_fx16_base_urls)) if _fx16_base_urls else set()
+            _fx16_delta = [u for u in _fx16_inj_norm if u and u not in _fx16_base_set]
+
+            # Identify placeholder rows that should be fetched
+            _fx16_targets = []
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                for _r in (baseline_sources_cache or []):
+                    if not isinstance(_r, dict):
+                        continue
+                    _u = _r.get("source_url") or _r.get("url") or ""
+                    _u_norm = _inj_diag_norm_url_list([_u])[0] if isinstance(_u, str) and _u else ""
+                    if not _u_norm:
+                        continue
+                    if _r.get("status") == "injected_pending":
+                        _fx16_targets.append((_u_norm, _r, "placeholder_row"))
+                    elif _u_norm in _fx16_delta:
+                        _fx16_targets.append((_u_norm, _r, "delta_row"))
+
+            # Also cover the case where placeholders were not appended (defensive)
+            for _u in (_fx16_delta or []):
+                if not isinstance(baseline_sources_cache, list):
+                    continue
+                if any((_inj_diag_norm_url_list([(_r.get("source_url") or _r.get("url") or "")])[0] if isinstance(_r, dict) else "") == _u for _r in (baseline_sources_cache or [])):
+                    continue
+                baseline_sources_cache.append({
+                    "source_url": _u,
+                    "url": _u,
+                    "status": "injected_pending",
+                    "status_detail": "injected_url_placeholder_pre_hash",
+                    "snapshot_text": "",
+                    "extracted_numbers": [],
+                    "numbers_found": 0,
+                    "injected": True,
+                    "injected_reason": "fx16_defensive_placeholder",
+                })
+                _fx16_targets.append((_u, baseline_sources_cache[-1], "defensive_placeholder"))
+
+            # Fetch+extract for targets (best-effort)
+            _fx16_fetched = []
+            _fx16_failed = []
+            if _fx16_targets:
+                for (_u_norm, _row, _why) in _fx16_targets:
+                    # Skip if row already has text/numbers (idempotent)
+                    try:
+                        if isinstance(_row.get("snapshot_text"), str) and _row.get("snapshot_text").strip():
+                            continue
+                        if isinstance(_row.get("extracted_numbers"), list) and len(_row.get("extracted_numbers") or []) > 0:
+                            continue
+                    except Exception:
+                        pass
+
+                    _txt = None
+                    _detail = ""
+                    try:
+                        _txt, _detail = fetch_url_content_with_status(_u_norm, timeout=25)
+                    except Exception as _e:
+                        _txt, _detail = None, f"exception:{type(_e).__name__}"
+
+                    if _txt and isinstance(_txt, str) and len(_txt.strip()) >= 200:
+                        try:
+                            _nums = extract_numbers_with_context(_txt, source_url=_u_norm) or []
+                        except Exception:
+                            _nums = []
+                        _row.update({
+                            "status": "fetched",
+                            "status_detail": (_detail or "success"),
+                            "snapshot_text": _txt[:7000],
+                            "extracted_numbers": _nums,
+                            "numbers_found": int(len(_nums or [])),
+                            "injected": True,
+                            "injected_reason": _row.get("injected_reason") or "fx16_fetch_and_extract",
+                        })
+                        _fx16_fetched.append({"url": _u_norm, "why": _why, "numbers_found": int(len(_nums or [])), "status_detail": (_detail or "success")})
+                    else:
+                        _row.update({
+                            "status": "failed",
+                            "status_detail": (_detail or "failed:no_text"),
+                            "snapshot_text": "",
+                            "extracted_numbers": [],
+                            "numbers_found": 0,
+                            "injected": True,
+                            "injected_reason": _row.get("injected_reason") or "fx16_fetch_failed",
+                        })
+                        _fx16_failed.append({"url": _u_norm, "why": _why, "status_detail": (_detail or "failed:no_text")})
+
+            # Emit debug
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix41afc16", {})
+                    if isinstance(output["debug"].get("fix41afc16"), dict):
+                        output["debug"]["fix41afc16"].update({
+                            "inj_norm_count": int(len(_fx16_inj_norm or [])),
+                            "inj_delta_count": int(len(_fx16_delta or [])),
+                            "fetch_target_count": int(len(_fx16_targets or [])),
+                            "fetched_count": int(len(_fx16_fetched or [])),
+                            "failed_count": int(len(_fx16_failed or [])),
+                            "fetched": list(_fx16_fetched or []),
+                            "failed": list(_fx16_failed or []),
+                        })
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
+        # =====================================================================
+        # PATCH FIX41AFC17 (ADDITIVE): Pin fetched injected snapshots into canonical snapshot plumbing
+        #
+        # Observed gap (from evolution JSON after FIX41AFC16):
+        #   - Injected URL reaches intake/admitted/attempted/hash_inputs, but snapshot_debug remains empty
+        #     (origin none / raw_count 0), and downstream consumers appear to miss the fetched snapshot_text.
+        #
+        # Goal:
+        #   - Ensure the same snapshot-carrier fields used by New Analysis are populated for Evolution,
+        #     so that attach_source_snapshots_to_analysis() (and any downstream rebuild plumbing) can
+        #     “see” the injected (and other) snapshots deterministically.
+        #
+        # Safety:
+        #   - Purely additive wiring.
+        #   - No effect if baseline_sources_cache is missing.
+        #   - Does not alter hashing logic; only ensures snapshots are attached consistently.
+        # =====================================================================
+        try:
+            if isinstance(baseline_sources_cache, list) and baseline_sources_cache and isinstance(web_context, dict):
+                # Provide canonical aliases for current pool (additive; downstream may read any of these)
+                web_context.setdefault("current_baseline_sources_cache", baseline_sources_cache)
+                web_context.setdefault("baseline_sources_cache_current", baseline_sources_cache)
+                web_context.setdefault("current_source_results", baseline_sources_cache)
+
+                # Mirror into output for downstream consumers/debug (additive)
+                try:
+                    output.setdefault("baseline_sources_cache_current", baseline_sources_cache)
+                except Exception:
+                    pass
+                try:
+                    output.setdefault("baseline_sources_cache", baseline_sources_cache)
+                except Exception:
+                    pass
+                try:
+                    output.setdefault("results", {})
+                    if isinstance(output.get("results"), dict):
+                        output["results"].setdefault("baseline_sources_cache_current", baseline_sources_cache)
+                        output["results"].setdefault("baseline_sources_cache", baseline_sources_cache)
+                except Exception:
+                    pass
+
+                # Call the same snapshot attach helper used by analysis if present (best-effort)
+                try:
+                    _att_fn = globals().get("attach_source_snapshots_to_analysis")
+                    if callable(_att_fn):
+                        _att_fn(output, web_context)
+                except Exception:
+                    pass
+
+                # Small debug breadcrumb
+                try:
+                    output.setdefault("debug", {})
+                    if isinstance(output.get("debug"), dict):
+                        output["debug"].setdefault("fix41afc17", {})
+                        if isinstance(output["debug"].get("fix41afc17"), dict):
+                            output["debug"]["fix41afc17"].update({
+                                "attached_pool_count": int(len(baseline_sources_cache)),
+                                "attach_called": bool(callable(globals().get("attach_source_snapshots_to_analysis"))),
+                            })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # =====================================================================
+
         try:
             if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
                 _fix36_reason = "no_snapshots"
@@ -18411,7 +18900,87 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["interpretation"] = "Snapshot-ready but metric rebuild not implemented or returned empty; add/verify rebuild_metrics_from_snapshots* hooks."
         return output
 
-    # Diff using existing diff helper if present
+
+    # =====================================================================
+    # PATCH FIX41AFC19 (ADDITIVE): Anchor-first FIX16 rebuild override (schema parity)
+    #
+    # Why:
+    # - Latest evo JSON shows current metrics can be selected from non-matching units
+    #   (e.g., unit_sales metric receiving a unitless/negative number; percent metric
+    #   receiving a magnitude unit like 'B'). This leads the dashboard "Current" column
+    #   to display the wrong metric values even though injection plumbing is progressing.
+    # - The new analysis pipeline already relies on FIX16-style hard eligibility gates +
+    #   anchor_hash deterministic rebuild. Evolution must use the same selection rules
+    #   when fastpath is NOT taken (hash mismatch or injection-triggered rebuild).
+    #
+    # What:
+    # - Right before diffing, attempt an anchor-first rebuild using:
+    #     rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, pool, web_context)
+    #   when available.
+    # - If it returns a non-empty dict, it *overrides* the previously computed
+    #   current_metrics (additive override only when rebuild succeeded).
+    # - Emits explicit debug fields for traceability.
+    #
+    # Non-negotiables:
+    # - Does NOT alter fastpath logic.
+    # - Only activates when fastpath is not taken (i.e., not authoritative reuse).
+    # =====================================================================
+    try:
+        _fix41afc19_applied = False
+        _fix41afc19_reason = ""
+        _fix41afc19_fn_name = ""
+        _fix41afc19_rebuilt_count = 0
+
+        # Only consider override when fastpath is not active
+        if not bool(locals().get("_fix31_authoritative_reuse")):
+            # Attempt to locate the "current" snapshot pool (post-injection merge/attach)
+            _fix41afc19_pool = (
+                locals().get("baseline_sources_cache_current")
+                or (output.get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+                or (output.get("results", {}).get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+                or locals().get("baseline_sources_cache")
+                or locals().get("baseline_sources_cache_prefetched")
+                or None
+            )
+
+            # Prefer Analysis-canonical rebuild (Phase 2B hard-wire) when present; else fall back to FIX16 schema-only rebuild
+            _fix41afc19_fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+            if callable(_fix41afc19_fn):
+                _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+            else:
+                _fix41afc19_fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+                if callable(_fix41afc19_fn):
+                    _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+                else:
+                    _fix41afc19_fn = None
+
+            if callable(_fix41afc19_fn) and _fix41afc19_pool is not None:
+                try:
+                    _fix41afc19_rebuilt = _fix41afc19_fn(prev_response, _fix41afc19_pool, web_context=web_context)
+                except TypeError:
+                    # Backward-compat: older signature without web_context
+                    _fix41afc19_rebuilt = _fix41afc19_fn(prev_response, _fix41afc19_pool)
+
+                if isinstance(_fix41afc19_rebuilt, dict) and _fix41afc19_rebuilt:
+                    current_metrics = dict(_fix41afc19_rebuilt)
+                    _fix41afc19_applied = True
+                    _fix41afc19_rebuilt_count = len(current_metrics)
+                    _fix41afc19_reason = "override_current_metrics_with_fix16_anchor_rebuild"
+    except Exception:
+        pass
+
+    # Emit debug for FIX41AFC19 (non-breaking)
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"].setdefault("fix41afc19", {})
+            output["debug"]["fix41afc19"]["applied"] = bool(locals().get("_fix41afc19_applied"))
+            output["debug"]["fix41afc19"]["reason"] = locals().get("_fix41afc19_reason") or ""
+            output["debug"]["fix41afc19"]["fn"] = locals().get("_fix41afc19_fn_name") or ""
+            output["debug"]["fix41afc19"]["rebuilt_count"] = int(locals().get("_fix41afc19_rebuilt_count") or 0)
+    except Exception:
+        pass
+    # =====================================================================
+# Diff using existing diff helper if present
     metric_changes = []
     try:
         fn_diff = globals().get("diff_metrics_by_name")
@@ -22008,6 +22577,303 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
 # END PATCH FIX16
 # =====================================================================
 
+
+# =====================================================================
+# PATCH PH2B_S1 (ADDITIVE): Extract a PURE analysis-canonical final selector (v1)
+# Goal:
+#   - Provide exactly ONE authoritative selector for dashboard-facing "Current"
+#   - Treat candidate.value_norm as schema units (no base-unit assumption)
+#   - Deterministic tie-breaks; NO IO; NO re-fetch; NO hashing changes
+#
+# Notes:
+#   - This is a single-metric selector. Batch rebuild helpers may call it.
+#   - Reuses FIX16 hard eligibility gates (_fix16_candidate_allowed) + FIX16 scoring.
+#   - Adds optional preferred/anchor lock when anchors are present (stays in preferred source).
+# =====================================================================
+
+def _ph2b_norm_url(url: str) -> str:
+    try:
+        fn = globals().get("_normalize_url")
+        if callable(fn):
+            return str(fn(url or ""))
+    except Exception:
+        pass
+    return str((url or "").strip())
+
+def _analysis_canonical_final_selector_v1(
+    canonical_key: str,
+    schema_frozen: dict,
+    candidates: list,
+    anchors: dict = None,
+    prev_metric: dict = None,
+    web_context: dict = None,
+) -> tuple:
+    """Pure selector: returns (best_metric_or_None, meta_dict)."""
+    import re
+
+    meta = {
+        "selector_used": "analysis_canonical_v1",
+        "canonical_key": canonical_key or "",
+        "anchor_used": False,
+        "blocked_reason": "",
+        "preferred_url": "",
+        "chosen_source_url": "",
+        "tie_break": "",
+        "eligible_count": 0,
+        "range_method": "",
+    }
+
+    spec = schema_frozen or {}
+    if not isinstance(spec, dict) or not spec:
+        meta["blocked_reason"] = "missing_schema"
+        return None, meta
+
+    # Determine preferred URL from anchors (strongest) or schema if present
+    preferred_url = ""
+    anchor = None
+    if isinstance(anchors, dict) and canonical_key in anchors and isinstance(anchors.get(canonical_key), dict):
+        anchor = anchors.get(canonical_key) or {}
+        preferred_url = anchor.get("source_url") or ""
+    preferred_url = preferred_url or (spec.get("preferred_url") or spec.get("source_url") or "")
+    if preferred_url:
+        meta["preferred_url"] = _ph2b_norm_url(preferred_url)
+
+    # Prepare FIX16 keyword scoring (same as rebuild_metrics_from_snapshots_schema_only_fix16)
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    def _cand_sort_key(c: dict):
+        try:
+            return (
+                str(c.get("anchor_hash") or ""),
+                str(c.get("source_url") or ""),
+                int(c.get("start_idx") or 0),
+                str(c.get("raw") or ""),
+                str(c.get("unit") or ""),
+                float(c.get("value_norm") or 0.0),
+            )
+        except Exception:
+            return ("", "", 0, "", "", 0.0)
+
+    # FIX16 keyword pruning helper if present; otherwise keep keywords as-is
+    metric_is_year_like = False
+    try:
+        fn_year = globals().get("_fix16_metric_is_year_like")
+        if callable(fn_year):
+            metric_is_year_like = bool(fn_year(spec, canonical_key=canonical_key))
+    except Exception:
+        metric_is_year_like = False
+
+    keywords = spec.get("keywords") or spec.get("keyword_hints") or []
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    try:
+        fn_prune = globals().get("_fix16_prune_year_keywords")
+        if callable(fn_prune):
+            keywords = fn_prune(list(keywords), metric_is_year_like)
+    except Exception:
+        keywords = list(keywords) if isinstance(keywords, list) else []
+
+    kw_norm = [_norm(k) for k in (keywords or []) if k]
+
+    # Candidate filtering
+    cands = [c for c in (candidates or []) if isinstance(c, dict)]
+    # Enforce preferred source lock when available (prevents cross-source hijack)
+    if meta["preferred_url"]:
+        pref = meta["preferred_url"]
+        cands_pref = []
+        for c in cands:
+            cu = _ph2b_norm_url(c.get("source_url") or "")
+            if cu and cu == pref:
+                cands_pref.append(c)
+        # If preferred exists but yields zero candidates, we keep empty (hard lock).
+        cands = cands_pref
+
+    eligible = []
+    for c in cands:
+        try:
+            if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
+                continue
+        except Exception:
+            continue
+        eligible.append(c)
+
+    meta["eligible_count"] = int(len(eligible) or 0)
+    if not eligible:
+        meta["blocked_reason"] = "no_eligible_candidates_in_preferred_source" if meta["preferred_url"] else "no_eligible_candidates"
+        return None, meta
+
+    # Deterministic scoring: keyword hits + stable tie-break
+    best = None
+    best_tie = None
+    for c in sorted(eligible, key=_cand_sort_key):
+        ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
+        raw = _norm(c.get("raw") or "")
+        hits = 0
+        for k in kw_norm:
+            if not k:
+                continue
+            if k in ctx:
+                hits += 2
+            if k in raw:
+                hits += 1
+
+        # Prefer anchored candidate_id/anchor_hash when anchors exist
+        anchor_bonus = 0
+        if isinstance(anchor, dict) and anchor:
+            ah = str(anchor.get("anchor_hash") or "")
+            cid = str(anchor.get("candidate_id") or "")
+            if ah and str(c.get("anchor_hash") or "") == ah:
+                anchor_bonus += 10
+            if cid and str(c.get("candidate_id") or "") == cid:
+                anchor_bonus += 10
+
+        score = hits + anchor_bonus
+
+        # Tie-break: higher score, then earlier occurrence, then stable sort key
+        tie = (int(score), -int(c.get("start_idx") or 0), _cand_sort_key(c))
+        if best is None or tie > best_tie:
+            best = c
+            best_tie = tie
+
+    if best is None:
+        meta["blocked_reason"] = "no_winner_after_scoring"
+        return None, meta
+
+    # Build value_range in schema units (NO double divide)
+    try:
+        vals = []
+        for c in eligible:
+            v = c.get("value_norm")
+            if v is None:
+                # fallback to parsing 'value'/'raw' in the unit of the candidate/spec
+                try:
+                    fn_parse = globals().get("_parse_num")
+                    if callable(fn_parse):
+                        v = fn_parse(c.get("value"), c.get("unit") or "") or fn_parse(c.get("raw"), c.get("unit") or "")
+                except Exception:
+                    v = None
+            if v is None:
+                continue
+            try:
+                vals.append(float(v))
+            except Exception:
+                pass
+        if len(vals) >= 2:
+            vmin = min(vals); vmax = max(vals)
+            meta["value_range"] = {"min": vmin, "max": vmax, "n": len(vals), "method": "ph2b_schema_unit_range_v1"}
+            meta["range_method"] = "ph2b_schema_unit_range_v1"
+    except Exception:
+        pass
+
+    out = {
+        "name": spec.get("name") or spec.get("label") or canonical_key,
+        "canonical_key": canonical_key,
+        "value": best.get("value"),
+        "unit": best.get("unit") or spec.get("unit_tag") or "",
+        "value_norm": best.get("value_norm"),
+        "source_url": best.get("source_url") or "",
+        "anchor_hash": best.get("anchor_hash") or "",
+        "candidate_id": best.get("candidate_id") or "",
+        "context_snippet": best.get("context_snippet") or best.get("context") or "",
+        "anchor_used": bool(isinstance(anchor, dict) and anchor and (
+            (anchor.get("anchor_hash") and str(best.get("anchor_hash") or "") == str(anchor.get("anchor_hash")))
+            or (anchor.get("candidate_id") and str(best.get("candidate_id") or "") == str(anchor.get("candidate_id")))
+        )),
+        "evidence": [{
+            "source_url": best.get("source_url") or "",
+            "raw": best.get("raw") or "",
+            "context_snippet": (best.get("context_snippet") or best.get("context") or best.get("context_window") or "")[:400],
+            "anchor_hash": best.get("anchor_hash") or "",
+            "method": "analysis_canonical_selector_v1",
+        }],
+    }
+
+    meta["anchor_used"] = bool(out.get("anchor_used"))
+    meta["chosen_source_url"] = _ph2b_norm_url(out.get("source_url") or "")
+    return out, meta
+
+
+def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
+    """Batch rebuild using the extracted canonical selector (pure, deterministic)."""
+    if not isinstance(prev_response, dict):
+        return {}
+    metric_schema = (
+        prev_response.get("metric_schema_frozen")
+        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
+        or (prev_response.get("results") or {}).get("metric_schema_frozen")
+        or {}
+    )
+    if not isinstance(metric_schema, dict) or not metric_schema:
+        return {}
+
+    metric_anchors = (
+        prev_response.get("metric_anchors")
+        or (prev_response.get("results") or {}).get("metric_anchors")
+        or {}
+    )
+    if not isinstance(metric_anchors, dict):
+        metric_anchors = {}
+
+    # Flatten candidates from snapshots
+    if isinstance(baseline_sources_cache, dict) and isinstance(baseline_sources_cache.get("snapshots"), list):
+        sources = baseline_sources_cache.get("snapshots", [])
+    elif isinstance(baseline_sources_cache, list):
+        sources = baseline_sources_cache
+    else:
+        sources = []
+
+    candidates = []
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        url = s.get("source_url") or s.get("url") or ""
+        xs = s.get("extracted_numbers")
+        if isinstance(xs, list) and xs:
+            for c in xs:
+                if not isinstance(c, dict):
+                    continue
+                c2 = dict(c)
+                if url and not c2.get("source_url"):
+                    c2["source_url"] = url
+                candidates.append(c2)
+
+    rebuilt = {}
+    debug_sel = {}
+    for canonical_key, spec in metric_schema.items():
+        best, meta = _analysis_canonical_final_selector_v1(
+            canonical_key=canonical_key,
+            schema_frozen=spec,
+            candidates=candidates,
+            anchors=metric_anchors,
+            prev_metric=(prev_response.get("primary_metrics_canonical") or {}).get(canonical_key) if isinstance(prev_response.get("primary_metrics_canonical"), dict) else None,
+            web_context=web_context,
+        )
+        if isinstance(best, dict) and best:
+            # Attach value_range if available in meta
+            if isinstance(meta, dict) and isinstance(meta.get("value_range"), dict):
+                best["value_range"] = dict(meta.get("value_range"))
+                try:
+                    unit_disp = best.get("unit") or ""
+                    best["value_range_display"] = f"{best['value_range']['min']:g}–{best['value_range']['max']:g} {unit_disp}".strip()
+                except Exception:
+                    pass
+            # Breadcrumb
+            best["selector_used"] = meta.get("selector_used") if isinstance(meta, dict) else "analysis_canonical_v1"
+            rebuilt[canonical_key] = best
+        debug_sel[canonical_key] = meta
+
+    # Attach batch debug for audit (non-breaking)
+    try:
+        if isinstance(prev_response.get("debug"), dict):
+            prev_response["debug"].setdefault("ph2b_selector_v1", {})
+            prev_response["debug"]["ph2b_selector_v1"]["note"] = "batch_debug_in_prev_response_only"
+    except Exception:
+        pass
+
+    return rebuilt
+
+# =================== END PATCH PH2B_S1 (ADDITIVE) ===================
 
 # =====================================================================
 # PATCH FIX17 (ADDITIVE): end the "circles" by making fallback explicit,
