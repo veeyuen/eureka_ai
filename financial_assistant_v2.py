@@ -182,6 +182,32 @@ except Exception:
 
 
 
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR06
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR06":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR06",
+            "date": "2026-01-22",
+            "summary": "Freeze authoritative runtime bindings: add FINAL BINDINGS section for diff_metrics_by_name, tag authoritative function for harness verification, and update harness report/version labels.",
+            "files": ["REFACTOR06_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR05"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
 # ============================================================
 # PATCH TRACKER V1 (ADD): REFACTOR02
 # ============================================================
@@ -49254,6 +49280,20 @@ def _refactor02_run_harness_v2():
 
     ok_all = True
 
+
+    # 0) Binding sanity: ensure we are running against the authoritative diff binding.
+    try:
+        _auth = getattr(globals().get("diff_metrics_by_name"), "__YUREEKA_AUTHORITATIVE_BINDING__", None)
+    except Exception:
+        _auth = None
+    ok_all = _assert("binding.diff_metrics_by_name_authoritative", (_auth == "REFACTOR06"), f"auth={_auth}") and ok_all
+    try:
+        _obj = globals().get("diff_metrics_by_name")
+        _auth_obj = globals().get("_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE")
+        ok_all = _assert("binding.diff_fn_object_match", (_auth_obj is None) or (_obj is _auth_obj), f"obj={type(_obj)}") and ok_all
+    except Exception:
+        ok_all = _assert("binding.diff_fn_object_match", False, "exception") and ok_all
+
     # ---- run analysis (headless)
     try:
         fwc = globals().get("fetch_web_context")
@@ -49432,14 +49472,14 @@ def _refactor02_run_harness_v2():
             os.makedirs(_dir, exist_ok=True)
         except Exception:
             _dir = os.getcwd()
-        fname = f"refactor_harness_report_REFACTOR04_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fname = f"refactor_harness_report_REFACTOR06_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
         fpath = os.path.join(_dir, fname)
         try:
             with open(fpath, "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-        print("[REFACTOR04] Harness FAILED during analysis stage. Report:", fpath)
+        print("[REFACTOR06] Harness FAILED during analysis stage. Report:", fpath)
         return False
 
     # ---- run evolution
@@ -49593,18 +49633,59 @@ def _refactor02_run_harness_v2():
             os.makedirs(_dir, exist_ok=True)
         except Exception:
             _dir = os.getcwd()
-        fname = f"refactor_harness_report_REFACTOR04_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fname = f"refactor_harness_report_REFACTOR06_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
         fpath = os.path.join(_dir, fname)
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"[REFACTOR04] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
+        print(f"[REFACTOR06] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
     except Exception:
         pass
 
     return bool(ok_all)
 
+
 # ============================================================
-# REFACTOR04: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
+# REFACTOR06: FINAL BINDINGS (AUTHORITATIVE)
+#
+# Purpose:
+#   - Eliminate "edited the wrong function" risk by ensuring a single,
+#     explicit, end-of-file binding wins.
+#   - Tag the authoritative binding so the refactor harness can verify it.
+#
+# Notes:
+#   - Legacy diff/binding blocks earlier in the file remain for archaeology,
+#     but are overridden here.
+# ============================================================
+try:
+    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR06"
+    globals()["_YUREEKA_FINAL_BINDINGS_VERSION"] = _YUREEKA_FINAL_BINDINGS_VERSION
+except Exception:
+    pass
+
+# --- Authoritative diff binding
+try:
+    _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE = globals().get("diff_metrics_by_name")
+    if callable(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE):
+        try:
+            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR06")
+        except Exception:
+            pass
+        diff_metrics_by_name = _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE  # type: ignore
+        globals()["diff_metrics_by_name"] = diff_metrics_by_name
+    globals()["_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE"] = _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE
+except Exception:
+    pass
+
+# --- Final CODE_VERSION override (refactor sequence)
+try:
+    CODE_VERSION = "REFACTOR06"
+    globals()["CODE_VERSION"] = CODE_VERSION
+except Exception:
+    pass
+
+
+# ============================================================
+# REFACTOR06: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
 # ============================================================
 try:
     if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
