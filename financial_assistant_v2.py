@@ -87,9 +87,28 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D88"
+CODE_VERSION = "FIX2D89"
 # ============================================================
 # ============================================================
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D89
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D89",
+        "date": "2026-01-21",
+        "summary": "Remove noisy patch-note text that was being displayed before Google Sheets export by trimming attach_source_snapshots_to_analysis docstring.",
+        "files": ["FIX2D89_full_codebase_streamlit_safe.py"],
+        "supersedes": ["FIX2D88"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): FIX2D88
 # ============================================================
 try:
@@ -16596,15 +16615,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     except Exception:
         pass
 
-    """
-    Attach stable source snapshots (from web_context.scraped_meta) into analysis.
-
-    Enhancements (v7_34 patch):
-    - Ensures scraped_meta.extracted_numbers is always list-like
-    - Adds RANGE capture per canonical metric using admitted snapshots:
-        primary_metrics_canonical[ckey]["value_range"] = {min,max,n,examples}
-      This restores earlier "range vs point estimate" behavior in a compatible way.
-    """
+    """Attach stable source snapshots (from web_context.scraped_meta) into analysis output."""
     import re
     from datetime import datetime, timezone
 
