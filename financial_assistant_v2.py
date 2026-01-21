@@ -61,14 +61,15 @@ import streamlit as st
 
 
 
+
 # ============================================================
 # STREAMLIT SAFE-RENDER GUARD (FIX2D92)
 # ============================================================
-# Prevent Streamlit from rendering callables (functions) as large
-# inspection "panels" in the UI when callables leak into debug objects.
+# Prevent Streamlit from rendering callables (functions) as large inspection panels
+# when callables leak into debug objects.
 
 def _sanitize_for_streamlit(obj, *, _depth: int = 0, _max_depth: int = 6):
-    # Return a Streamlit-safe version of obj by stripping callables.
+    """Return a Streamlit-safe version of obj by stripping callables."""
     try:
         if callable(obj):
             # Hide callables entirely to avoid Streamlit function-inspection panels.
@@ -90,32 +91,154 @@ def _sanitize_for_streamlit(obj, *, _depth: int = 0, _max_depth: int = 6):
             return {_sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for v in obj}
     except Exception:
         return obj
-
     return obj
 
-
 try:
-    # Patch st.write / st.json early, once.
-    if not getattr(st, "_yureeka_safe_render_patched", False):
-        st._yureeka_safe_render_patched = True  # type: ignore[attr-defined]
+    _yureeka__orig_write = getattr(st, "write", None)
+    _yureeka__orig_json = getattr(st, "json", None)
 
-        _yureeka__orig_write = st.write
-        _yureeka__orig_json = getattr(st, "json", None)
-
+    if callable(_yureeka__orig_write):
         def _yureeka_safe_write(*args, **kwargs):
             args = tuple(_sanitize_for_streamlit(a) for a in args)
             return _yureeka__orig_write(*args, **kwargs)
-
         st.write = _yureeka_safe_write  # type: ignore[assignment]
 
-        if callable(_yureeka__orig_json):
-            def _yureeka_safe_json(obj=None, *args, **kwargs):
-                obj = _sanitize_for_streamlit(obj)
-                return _yureeka__orig_json(obj, *args, **kwargs)
-            st.json = _yureeka_safe_json  # type: ignore[assignment]
+    if callable(_yureeka__orig_json):
+        def _yureeka_safe_json(obj=None, *args, **kwargs):
+            obj = _sanitize_for_streamlit(obj)
+            return _yureeka__orig_json(obj, *args, **kwargs)
+        st.json = _yureeka_safe_json  # type: ignore[assignment]
 except Exception:
     # Never block app startup due to a defensive UI patch.
     pass
+
+
+# ============================================================
+# EVOLUTION STABILITY RECOMPUTE (FIX2D93)
+# ============================================================
+def _fix2d93_recompute_evolution_summary_and_stability(rows):
+    """Recompute Evolution summary counters and stability from final diff rows.
+
+    Why:
+    - Render-layer wrappers can rewrite row.current fields / change_type after the base diff
+      has already computed (unchanged/increased/decreased/found) counters.
+    - The legacy Evolution panel uses results['stability_score'], which was derived from stale counters,
+      causing it to stick at 0% even when rows indicate unchanged/stable metrics.
+
+    Definition:
+    - stable = unchanged + non_numeric_found (found but not numerically comparable)
+    - changed = increased + decreased
+    - Unit mismatches and not_found rows are excluded from comparable_total
+    - stability_score = 100 if comparable_total==0 else stable/comparable_total*100
+    """
+    if not isinstance(rows, list) or not rows:
+        return {
+            "total_metrics": 0,
+            "metrics_found": 0,
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_unchanged": 0,
+            "metrics_non_numeric_stable": 0,
+            "metrics_unit_mismatch": 0,
+            "metrics_not_found": 0,
+            "stability_score": 100.0,
+        }
+
+    def _to_float(x):
+        try:
+            if x is None:
+                return None
+            if isinstance(x, (int, float)):
+                return float(x)
+            s = str(x).strip()
+            if not s or s.lower() in ("n/a", "na", "none", "-", "null"):
+                return None
+            s = s.replace(",", "")
+            return float(s)
+        except Exception:
+            return None
+
+    total = len(rows)
+    found = 0
+    inc = 0
+    dec = 0
+    unch = 0
+    nonnum_stable = 0
+    unit_mismatch = 0
+    not_found = 0
+
+    stable = 0
+    changed = 0
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+
+        ct = str(r.get("change_type") or "").strip().lower()
+        um = bool(r.get("unit_mismatch")) or (ct == "unit_mismatch")
+
+        # Determine presence of current-side value
+        cur_vn = r.get("cur_value_norm", r.get("current_value_norm", None))
+        cur_disp = r.get("current_value", r.get("new", r.get("cur", "")))
+        has_cur = (cur_vn is not None) or (isinstance(cur_disp, str) and cur_disp.strip() not in ("", "-", "N/A", "n/a"))
+
+        # Determine not_found
+        if ct in ("not_found", "missing", "removed", "dropped") or (not has_cur and ct == ""):
+            not_found += 1
+            continue
+
+        found += 1
+
+        if um:
+            unit_mismatch += 1
+            # Exclude from comparable stability denominator
+            continue
+
+        # Prefer numeric compare on existing normalized fields
+        pv = _to_float(r.get("prev_value_norm", r.get("previous_value_norm", r.get("previous_value", None))))
+        cv = _to_float(cur_vn)
+
+        if pv is not None and cv is not None:
+            if abs(cv - pv) < 1e-9:
+                unch += 1
+                stable += 1
+            elif cv > pv:
+                inc += 1
+                changed += 1
+            else:
+                dec += 1
+                changed += 1
+            continue
+
+        # Fall back to change_type tags (no inference)
+        if ct == "unchanged":
+            unch += 1
+            stable += 1
+        elif ct == "increased":
+            inc += 1
+            changed += 1
+        elif ct == "decreased":
+            dec += 1
+            changed += 1
+        else:
+            # Found but non-numeric / non-comparable -> treat as stable for stability purposes
+            nonnum_stable += 1
+            stable += 1
+
+    comparable_total = stable + changed
+    stability = 100.0 if comparable_total <= 0 else (stable / float(comparable_total)) * 100.0
+
+    return {
+        "total_metrics": int(total),
+        "metrics_found": int(found),
+        "metrics_increased": int(inc),
+        "metrics_decreased": int(dec),
+        "metrics_unchanged": int(unch),
+        "metrics_non_numeric_stable": int(nonnum_stable),
+        "metrics_unit_mismatch": int(unit_mismatch),
+        "metrics_not_found": int(not_found),
+        "stability_score": float(stability),
+    }
 
 
 # PATCH FIX2D64 (SHADOW MODE): Canonical Identity Spine module import (no behavior change).
@@ -145,9 +268,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D92"
-
-
+CODE_VERSION = "FIX2D91"
 
 
 # ============================================================
@@ -22460,14 +22581,40 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         pass
     # =====================================================================
 
-    output["summary"]["total_metrics"] = len(output["metric_changes"])
-    output["summary"]["metrics_found"] = int(found or 0)
-    output["summary"]["metrics_increased"] = int(increased or 0)
-    output["summary"]["metrics_decreased"] = int(decreased or 0)
-    output["summary"]["metrics_unchanged"] = int(unchanged or 0)
-
-    total = max(1, len(output["metric_changes"]))
-    output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
+    # FIX2D93 (ADDITIVE): recompute summary + stability from the FINAL diff rows.
+    # Why:
+    # - Render-layer wrappers can adjust row.change_type/current fields without updating counters.
+    # - Legacy stability used metrics_unchanged/len(metric_changes), which can stick at 0%.
+    try:
+        _rows = output.get("metric_changes") or []
+        _stats = _fix2d93_recompute_evolution_summary_and_stability(_rows)
+        if isinstance(_stats, dict) and _stats:
+            output["summary"]["total_metrics"] = int(_stats.get("total_metrics", len(_rows)))
+            output["summary"]["metrics_found"] = int(_stats.get("metrics_found", 0))
+            output["summary"]["metrics_increased"] = int(_stats.get("metrics_increased", 0))
+            output["summary"]["metrics_decreased"] = int(_stats.get("metrics_decreased", 0))
+            output["summary"]["metrics_unchanged"] = int(_stats.get("metrics_unchanged", 0))
+            # non-breaking extra diagnostics
+            output["summary"]["metrics_non_numeric_stable"] = int(_stats.get("metrics_non_numeric_stable", 0))
+            output["summary"]["metrics_unit_mismatch"] = int(_stats.get("metrics_unit_mismatch", 0))
+            output["summary"]["metrics_not_found"] = int(_stats.get("metrics_not_found", 0))
+            output["stability_score"] = float(_stats.get("stability_score", 0.0))
+        else:
+            output["summary"]["total_metrics"] = len(output["metric_changes"])
+            output["summary"]["metrics_found"] = int(found or 0)
+            output["summary"]["metrics_increased"] = int(increased or 0)
+            output["summary"]["metrics_decreased"] = int(decreased or 0)
+            output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+            _den = max(1, int(output["summary"]["metrics_unchanged"]) + int(output["summary"]["metrics_increased"]) + int(output["summary"]["metrics_decreased"]))
+            output["stability_score"] = (float(output["summary"]["metrics_unchanged"]) / float(_den)) * 100.0
+    except Exception:
+        output["summary"]["total_metrics"] = len(output["metric_changes"])
+        output["summary"]["metrics_found"] = int(found or 0)
+        output["summary"]["metrics_increased"] = int(increased or 0)
+        output["summary"]["metrics_decreased"] = int(decreased or 0)
+        output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+        total = max(1, len(output["metric_changes"]))
+        output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
 
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
@@ -27769,14 +27916,40 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
 
     output["metric_changes"] = metric_changes or []
-    output["summary"]["total_metrics"] = len(output["metric_changes"])
-    output["summary"]["metrics_found"] = int(found or 0)
-    output["summary"]["metrics_increased"] = int(increased or 0)
-    output["summary"]["metrics_decreased"] = int(decreased or 0)
-    output["summary"]["metrics_unchanged"] = int(unchanged or 0)
-
-    total = max(1, len(output["metric_changes"]))
-    output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
+    # FIX2D93 (ADDITIVE): recompute summary + stability from the FINAL diff rows.
+    # Why:
+    # - Render-layer wrappers can adjust row.change_type/current fields without updating counters.
+    # - Legacy stability used metrics_unchanged/len(metric_changes), which can stick at 0%.
+    try:
+        _rows = output.get("metric_changes") or []
+        _stats = _fix2d93_recompute_evolution_summary_and_stability(_rows)
+        if isinstance(_stats, dict) and _stats:
+            output["summary"]["total_metrics"] = int(_stats.get("total_metrics", len(_rows)))
+            output["summary"]["metrics_found"] = int(_stats.get("metrics_found", 0))
+            output["summary"]["metrics_increased"] = int(_stats.get("metrics_increased", 0))
+            output["summary"]["metrics_decreased"] = int(_stats.get("metrics_decreased", 0))
+            output["summary"]["metrics_unchanged"] = int(_stats.get("metrics_unchanged", 0))
+            # non-breaking extra diagnostics
+            output["summary"]["metrics_non_numeric_stable"] = int(_stats.get("metrics_non_numeric_stable", 0))
+            output["summary"]["metrics_unit_mismatch"] = int(_stats.get("metrics_unit_mismatch", 0))
+            output["summary"]["metrics_not_found"] = int(_stats.get("metrics_not_found", 0))
+            output["stability_score"] = float(_stats.get("stability_score", 0.0))
+        else:
+            output["summary"]["total_metrics"] = len(output["metric_changes"])
+            output["summary"]["metrics_found"] = int(found or 0)
+            output["summary"]["metrics_increased"] = int(increased or 0)
+            output["summary"]["metrics_decreased"] = int(decreased or 0)
+            output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+            _den = max(1, int(output["summary"]["metrics_unchanged"]) + int(output["summary"]["metrics_increased"]) + int(output["summary"]["metrics_decreased"]))
+            output["stability_score"] = (float(output["summary"]["metrics_unchanged"]) / float(_den)) * 100.0
+    except Exception:
+        output["summary"]["total_metrics"] = len(output["metric_changes"])
+        output["summary"]["metrics_found"] = int(found or 0)
+        output["summary"]["metrics_increased"] = int(increased or 0)
+        output["summary"]["metrics_decreased"] = int(decreased or 0)
+        output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+        total = max(1, len(output["metric_changes"]))
+        output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
 
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
@@ -48897,26 +49070,52 @@ except Exception:
     pass
 
 # =====================================================================
-# PATCH FIX2D92 PATCH TRACKER ENTRY (ADDITIVE)
+# PATCH FIX2D91 PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
 try:
     PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D92',
+        'patch_id': 'FIX2D91',
         'date': '2026-01-21',
-        'summary': "Eliminate Streamlit function-inspection panels by sanitizing callables before st.write/st.json (safe-render guard).",
-        'files': ['FIX2D92_full_codebase_streamlit_safe.py'],
+        'summary': "Fix Streamlit 'function error panel' caused by V23 diff wrapper (diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR) returning None/list instead of the required 5-tuple. Wrapper now preserves the canonical diff contract and always returns (metric_changes, unchanged, increased, decreased, found). This prevents uncaught unpacking/None errors that surfaced as a noisy panel in Analysis/Evolution.",
+        'files': ['FIX2D91_full_codebase_streamlit_safe.py'],
         'supersedes': [],
     })
     globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
 except Exception:
     pass
 
-# FIX2D92_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
+# FIX2D91_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
 try:
-    CODE_VERSION = 'FIX2D92'
+    CODE_VERSION = 'FIX2D91'
+    globals()['CODE_VERSION'] = CODE_VERSION
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D93 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D93',
+        'date': '2026-01-21',
+        'summary': "Fix Evolution Stability metric stuck at 0% by recomputing summary counters from the FINAL metric_changes rows (after render-layer wrappers) and computing stability over comparable metrics. Also incorporates the FIX2D92 Streamlit safe-render guard (sanitizes callables before st.write/st.json) to prevent function-inspection panels.",
+        'files': ['FIX2D93_full_codebase_streamlit_safe.py'],
+        'supersedes': ['FIX2D92'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# FIX2D93_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
+try:
+    CODE_VERSION = 'FIX2D93'
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
