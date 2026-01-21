@@ -68,7 +68,7 @@ import streamlit as st
 # inspection "panels" in the UI when callables leak into debug objects.
 
 def _sanitize_for_streamlit(obj, *, _depth: int = 0, _max_depth: int = 6):
-    \"\"\"Return a Streamlit-safe version of obj by stripping callables.\"\"\"
+    # Return a Streamlit-safe version of obj by stripping callables.
     try:
         if callable(obj):
             # Hide callables entirely to avoid Streamlit function-inspection panels.
