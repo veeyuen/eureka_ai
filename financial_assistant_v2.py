@@ -60,6 +60,64 @@ import plotly.express as px
 import streamlit as st
 
 
+
+# ============================================================
+# STREAMLIT SAFE-RENDER GUARD (FIX2D92)
+# ============================================================
+# Prevent Streamlit from rendering callables (functions) as large
+# inspection "panels" in the UI when callables leak into debug objects.
+
+def _sanitize_for_streamlit(obj, *, _depth: int = 0, _max_depth: int = 6):
+    \"\"\"Return a Streamlit-safe version of obj by stripping callables.\"\"\"
+    try:
+        if callable(obj):
+            # Hide callables entirely to avoid Streamlit function-inspection panels.
+            return ""
+    except Exception:
+        pass
+
+    if _depth >= _max_depth:
+        return obj
+
+    try:
+        if isinstance(obj, dict):
+            return {k: _sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for v in obj)
+        if isinstance(obj, set):
+            return {_sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for v in obj}
+    except Exception:
+        return obj
+
+    return obj
+
+
+try:
+    # Patch st.write / st.json early, once.
+    if not getattr(st, "_yureeka_safe_render_patched", False):
+        st._yureeka_safe_render_patched = True  # type: ignore[attr-defined]
+
+        _yureeka__orig_write = st.write
+        _yureeka__orig_json = getattr(st, "json", None)
+
+        def _yureeka_safe_write(*args, **kwargs):
+            args = tuple(_sanitize_for_streamlit(a) for a in args)
+            return _yureeka__orig_write(*args, **kwargs)
+
+        st.write = _yureeka_safe_write  # type: ignore[assignment]
+
+        if callable(_yureeka__orig_json):
+            def _yureeka_safe_json(obj=None, *args, **kwargs):
+                obj = _sanitize_for_streamlit(obj)
+                return _yureeka__orig_json(obj, *args, **kwargs)
+            st.json = _yureeka_safe_json  # type: ignore[assignment]
+except Exception:
+    # Never block app startup due to a defensive UI patch.
+    pass
+
+
 # PATCH FIX2D64 (SHADOW MODE): Canonical Identity Spine module import (no behavior change).
 # Enabled only if caller sets web_context["enable_spine_shadow_fix2d64"]=True or env ENABLE_SPINE_SHADOW_FIX2D64=1.
 try:
@@ -87,7 +145,9 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D91"
+CODE_VERSION = "FIX2D92"
+
+
 
 
 # ============================================================
@@ -48837,26 +48897,26 @@ except Exception:
     pass
 
 # =====================================================================
-# PATCH FIX2D91 PATCH TRACKER ENTRY (ADDITIVE)
+# PATCH FIX2D92 PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
 try:
     PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
     if not isinstance(PATCH_TRACKER_V1, list):
         PATCH_TRACKER_V1 = []
     PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D91',
+        'patch_id': 'FIX2D92',
         'date': '2026-01-21',
-        'summary': "Fix Streamlit 'function error panel' caused by V23 diff wrapper (diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR) returning None/list instead of the required 5-tuple. Wrapper now preserves the canonical diff contract and always returns (metric_changes, unchanged, increased, decreased, found). This prevents uncaught unpacking/None errors that surfaced as a noisy panel in Analysis/Evolution.",
-        'files': ['FIX2D91_full_codebase_streamlit_safe.py'],
+        'summary': "Eliminate Streamlit function-inspection panels by sanitizing callables before st.write/st.json (safe-render guard).\",
+        'files': ['FIX2D92_full_codebase_streamlit_safe.py'],
         'supersedes': [],
     })
     globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
 except Exception:
     pass
 
-# FIX2D91_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
+# FIX2D92_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
 try:
-    CODE_VERSION = 'FIX2D91'
+    CODE_VERSION = 'FIX2D92'
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
