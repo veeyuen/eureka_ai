@@ -275,17 +275,17 @@ CODE_VERSION = "FIX2D91"
 # HARD-CODE TOGGLES (UI + INJECTION)
 # ============================================================
 # Extra URL injection textbox: set to True to hide or disable (and ignore any prior value).
-HIDE_EXTRA_URL_TEXTBOX_ANALYSIS = False
+HIDE_EXTRA_URL_TEXTBOX_ANALYSIS = True
 DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS = False
 
-HIDE_EXTRA_URL_TEXTBOX_EVOLUTION = False
+HIDE_EXTRA_URL_TEXTBOX_EVOLUTION = True
 DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION = False
 
 # Hard-coded injected URL(s) for Evolution (newline-separated allowed).
 # When FORCE_INJECTED_URL_IN_EVOLUTION is True, Evolution will ALWAYS inject these URL(s),
 # regardless of any UI input.
-INJECTED_URL = ""
-FORCE_INJECTED_URL_IN_EVOLUTION = False
+INJECTED_URL = "https://veeyuen.github.io/injected-content/"
+FORCE_INJECTED_URL_IN_EVOLUTION = True
 # ============================================================
 # ============================================================
 
