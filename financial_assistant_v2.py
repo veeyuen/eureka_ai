@@ -31202,6 +31202,8 @@ def main():
                     _analysis_run_id = _inj_diag_make_run_id("analysis")
                     # ============================================================
 
+                    extra_urls = ["https://veeyuen.github.io/injected-content/"] # Hardcode injected URL
+
                     web_context = fetch_web_context(
                         query,
                         num_sources=3,
