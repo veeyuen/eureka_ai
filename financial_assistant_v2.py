@@ -77,7 +77,8 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41_force_rebuild_honored.py"  # PATCH FIX41 (ADD): set CODE_VERSION to filename
+# PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
+CODE_VERSION = "fix41j_current_pool_override_safe.py"
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
@@ -11133,6 +11134,19 @@ NON_DATA_CONTEXT_HINTS = [
 
 def _truncate_json_safely_for_sheets(json_str: str, max_chars: int = 45000) -> str:
     """
+# =====================================================================
+# PATCH FIX41G (ADDITIVE): Normalize web_context and capture force_rebuild
+# Ensures the UI flag reaches the fastpath gate and is recorded in output.
+# =====================================================================
+if web_context is None or not isinstance(web_context, dict):
+    web_context = {}
+_fix41_force_rebuild_seen = False
+try:
+    _fix41_force_rebuild_seen = bool(web_context.get("force_rebuild"))
+except Exception:
+    _fix41_force_rebuild_seen = False
+# =====================================================================
+
     PATCH TS1 (ADDITIVE): JSON-safe truncation wrapper
     - Ensures json.loads always succeeds for any returned value.
     - Stores a preview when oversized.
@@ -15581,6 +15595,32 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             _ref = previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref")
             _hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
 
+            # ============================================================
+            # PATCH FIX41I_SS6_STABLE (ADDITIVE): prefer v2/stable snapshot refs & hashes
+            # Why:
+            # - Analysis now emits stable/v2 snapshot hashes (source_snapshot_hash_v2 / _stable) and
+            #   snapshot_store_ref_v2 pointing at the same Snapshots row key.
+            # - Evolution must prefer these fields to keep fastpath alignment intact.
+            # ============================================================
+            try:
+                _ref_v2 = previous_data.get("snapshot_store_ref_v2") or previous_data.get("snapshot_store_ref_stable")
+                if (not _ref_v2) and isinstance(previous_data.get("results"), dict):
+                    _ref_v2 = (previous_data.get("results") or {}).get("snapshot_store_ref_v2") or (previous_data.get("results") or {}).get("snapshot_store_ref_stable")
+                if isinstance(_ref_v2, str) and _ref_v2:
+                    _ref = _ref_v2  # prefer stable ref
+            except Exception:
+                pass
+
+            try:
+                _hash_stable = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2")
+                if (not _hash_stable) and isinstance(previous_data.get("results"), dict):
+                    _hash_stable = (previous_data.get("results") or {}).get("source_snapshot_hash_stable") or (previous_data.get("results") or {}).get("source_snapshot_hash_v2")
+                if isinstance(_hash_stable, str) and _hash_stable:
+                    _hash = _hash_stable  # prefer stable hash
+            except Exception:
+                pass
+            # ============================================================
+
             if isinstance(_ref, str) and _ref.startswith("gsheet:"):
                 parts = _ref.split(":")
                 _ws_title = parts[1] if len(parts) > 1 and parts[1] else "Snapshots"
@@ -16309,6 +16349,32 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _ref = previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref")
             _hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
 
+            # ============================================================
+            # PATCH FIX41I_SS6_STABLE (ADDITIVE): prefer v2/stable snapshot refs & hashes
+            # Why:
+            # - Analysis now emits stable/v2 snapshot hashes (source_snapshot_hash_v2 / _stable) and
+            #   snapshot_store_ref_v2 pointing at the same Snapshots row key.
+            # - Evolution must prefer these fields to keep fastpath alignment intact.
+            # ============================================================
+            try:
+                _ref_v2 = previous_data.get("snapshot_store_ref_v2") or previous_data.get("snapshot_store_ref_stable")
+                if (not _ref_v2) and isinstance(previous_data.get("results"), dict):
+                    _ref_v2 = (previous_data.get("results") or {}).get("snapshot_store_ref_v2") or (previous_data.get("results") or {}).get("snapshot_store_ref_stable")
+                if isinstance(_ref_v2, str) and _ref_v2:
+                    _ref = _ref_v2  # prefer stable ref
+            except Exception:
+                pass
+
+            try:
+                _hash_stable = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2")
+                if (not _hash_stable) and isinstance(previous_data.get("results"), dict):
+                    _hash_stable = (previous_data.get("results") or {}).get("source_snapshot_hash_stable") or (previous_data.get("results") or {}).get("source_snapshot_hash_v2")
+                if isinstance(_hash_stable, str) and _hash_stable:
+                    _hash = _hash_stable  # prefer stable hash
+            except Exception:
+                pass
+            # ============================================================
+
             if isinstance(_ref, str) and _ref.startswith("gsheet:"):
                 parts = _ref.split(":")
                 _ws_title = parts[1] if len(parts) > 1 and parts[1] else "Snapshots"
@@ -16501,6 +16567,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             except Exception:
                 pass
             _prev_hash = _prev_hash_stable or previous_data.get("source_snapshot_hash")
+            # PATCH FIX41I_FASTPATH_PREF (ADDITIVE): explicit preferred hash (stable/v2 first)
+            _prev_hash_pref = _prev_hash_stable or previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
+
             try:
                 if not _prev_hash and isinstance(previous_data.get("results"), dict):
                     _prev_hash = (previous_data.get("results") or {}).get("source_snapshot_hash")
@@ -16535,7 +16604,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["debug"]["fix35"]["source_snapshot_hash_current"] = _fix36_cur_hash
                     output["debug"]["fix35"]["source_snapshot_hash_current_alg"] = "fix37_stable_v2_preferred"
                 if isinstance(_prev_hash, str) and _prev_hash:
-                    output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+                    output["debug"]["fix35"]["source_snapshot_hash_previous"] = (_prev_hash_pref if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref") else _prev_hash)
                 # PATCH FIX37 (ADD): also expose stable-hash candidate if available
                 try:
                     if isinstance(_prev_hash_stable, str) and _prev_hash_stable:
@@ -16563,19 +16632,89 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             # Prefer stable/v2 previous hash if present
             _prev_hash_pref = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
 
+            # =====================================================================
+            # PATCH FIX42 (ADDITIVE): prefer "current" snapshot pool when provided
+            #
+            # Goal:
+            #   When hashes are unequal, rebuild should run on the SAME snapshot pool
+            #   that "new analysis" just produced, not on the stale baseline cache
+            #   embedded in the previous analysis payload.
+            #
+            # Where it comes from:
+            #   - web_context["current_baseline_sources_cache"]  (preferred)
+            #   - web_context["baseline_sources_cache_current"]
+            #   - web_context["current_source_results"]         (fallback alias)
+            #
+            # Policy (additive, fastpath-safe):
+            #   - If force_rebuild is asserted by UI/web_context, always use current pool.
+            #   - Else, only switch to current pool if its stable hash != previous hash.
+            #   - If hashes match, we keep existing behavior (but either pool is equivalent).
+            # =====================================================================
+            _fix42_used_current_pool = False
+            _fix42_reason = ""
+            _fix42_cur_pool_hash = None
+            try:
+                if isinstance(web_context, dict):
+                    _cur_pool = (
+                        web_context.get("current_baseline_sources_cache")
+                        or web_context.get("baseline_sources_cache_current")
+                        or web_context.get("current_source_results")
+                        or web_context.get("current_source_results_cache")
+                        or None
+                    )
+                    if isinstance(_cur_pool, list) and _cur_pool:
+                        _force = bool(
+                            web_context.get("force_rebuild")
+                            or web_context.get("forced_rebuild")
+                            or web_context.get("force_full_rebuild")
+                            or web_context.get("force_metric_rebuild")
+                        )
+                        try:
+                            _fix42_cur_pool_hash = _fix37_snapshot_hash_stable(_cur_pool)
+                        except Exception:
+                            _fix42_cur_pool_hash = None
+
+                        _prev_hash_for_compare = _prev_hash_pref if (isinstance(_prev_hash_pref, str) and _prev_hash_pref) else _prev_hash
+                        _hash_mismatch = bool(
+                            (isinstance(_prev_hash_for_compare, str) and _prev_hash_for_compare and isinstance(_fix42_cur_pool_hash, str) and _fix42_cur_pool_hash)
+                            and (_fix42_cur_pool_hash != _prev_hash_for_compare)
+                        )
+
+                        if _force or _hash_mismatch:
+                            baseline_sources_cache = _cur_pool
+                            snapshot_origin = (snapshot_origin or "analysis_cache") + "|fix42_current_pool"
+                            _fix42_used_current_pool = True
+                            _fix42_reason = "forced_rebuild" if _force else "hash_mismatch_use_current_pool"
+            except Exception:
+                pass
+
+            # Attach FIX42 diagnostics (non-breaking)
+            try:
+                if _fix42_used_current_pool:
+                    output["snapshot_origin"] = snapshot_origin
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix42", {})
+                    output["debug"]["fix42"]["used_current_pool"] = bool(_fix42_used_current_pool)
+                    output["debug"]["fix42"]["reason"] = _fix42_reason
+                    if isinstance(_fix42_cur_pool_hash, str) and _fix42_cur_pool_hash:
+                        output["debug"]["fix42"]["current_pool_hash_stable"] = _fix42_cur_pool_hash
+            except Exception:
+                pass
+            # =====================================================================
+
             if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
                 _fix31_authoritative_reuse = True
                 try:
                     output["rebuild_skipped"] = True
                     output["rebuild_skipped_reason"] = "fix31_sources_unchanged_reuse_prev_metrics"
                     output["source_snapshot_hash_current"] = _cur_hash
-                    output["source_snapshot_hash_previous"] = _prev_hash
+                    output["source_snapshot_hash_previous"] = (_prev_hash_cmp if " _prev_hash_cmp" in locals() else _prev_hash)
                     try:
                         if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
                             output["debug"]["fix35"]["fastpath_eligible"] = True
                             output["debug"]["fix35"]["fastpath_reason"] = "hash_match_and_prev_metrics_present"
                             output["debug"]["fix35"]["source_snapshot_hash_current"] = _cur_hash
-                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = (_prev_hash_pref if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref") else _prev_hash)
                             output["debug"]["fix35"]["current_metrics_origin"] = "reuse_processed_metrics_fastpath"
                     except Exception:
                         pass
@@ -20711,18 +20850,8 @@ def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
     }
 
 
-# =====================================================================
-# PATCH FIX41 (ADDITIVE): Normalize web_context and capture force_rebuild
-# Ensures the UI flag reaches the fastpath gate and is recorded in output.
-# =====================================================================
-if web_context is None or not isinstance(web_context, dict):
-    web_context = {}
-_fix41_force_rebuild_seen = False
-try:
-    _fix41_force_rebuild_seen = bool(web_context.get("force_rebuild"))
-except Exception:
-    _fix41_force_rebuild_seen = False
-# =====================================================================
+# PATCH FIX41G: removed misplaced top-level web_context normalization block (was causing NameError)
+
 
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
     """
@@ -20778,7 +20907,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             "cur_v1": cur_hashes.get("v1",""),
         }
         out_replay = _fix24_make_replay_output(prev_full, hashes)
-
         # =====================================================================
         # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to replay output
         # =====================================================================
@@ -20793,13 +20921,11 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 })
         except Exception:
             pass
-
         return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
     # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
     wc = {"scraped_meta": scraped_meta}
-
     # =====================================================================
     # PATCH FIX40 (ADDITIVE): Preserve caller flags (e.g., force_rebuild) into web_context
     # so downstream diff/rebuild logic can record provenance if needed.
@@ -20809,6 +20935,9 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             wc.update({k: v for k, v in web_context.items() if k != "scraped_meta"})
     except Exception:
         pass
+    # =====================================================================
+
+
 
     if callable(run_source_anchored_evolution_BASE):
         try:
@@ -20823,12 +20952,16 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     # =====================================================================
                     out["debug"]["fix40_force_rebuild"] = bool(_force_rebuild)
                     # =====================================================================
+# =====================================================================
+# =====================================================================
+# =====================================================================
+# =====================================================================
                     out["debug"]["prev_source_snapshot_hash_v2"] = prev_hashes.get("v2","")
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
                     out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
             return out
-        except Exception:
+        except Exception as e:
             # Fall through to original behavior if anything unexpected
             pass
 
@@ -20837,21 +20970,21 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     if callable(fn):
         try:
             out_changed = fn(prev_full, web_context=wc)
-# =====================================================================
-# PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to changed output
-# =====================================================================
-try:
-    if isinstance(out_changed, dict):
-        out_changed.setdefault("code_version", CODE_VERSION)
-        out_changed.setdefault("debug", {}).setdefault("fix41", {})
-        out_changed["debug"]["fix41"].update({
-            "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
-            "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)) or bool(_fix41_force_rebuild_seen),
-            "path": "changed_compute_source_anchored_diff",
-        })
-except Exception:
-    pass
-return out_changed
+            # =====================================================================
+            # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to changed output
+            # =====================================================================
+            try:
+                if isinstance(out_changed, dict):
+                    out_changed.setdefault("code_version", CODE_VERSION)
+                    out_changed.setdefault("debug", {}).setdefault("fix41", {})
+                    out_changed["debug"]["fix41"].update({
+                        "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
+                        "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)) or bool(_fix41_force_rebuild_seen),
+                        "path": "changed_compute_source_anchored_diff",
+                    })
+            except Exception:
+                pass
+            return out_changed
         except Exception:
             pass
 
