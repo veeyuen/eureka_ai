@@ -20770,7 +20770,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         _fix41_force_rebuild_honored = False
     # =====================================================================
 
-     if unchanged:
+    if unchanged:
         hashes = {
             "prev_v2": prev_hashes.get("v2",""),
             "cur_v2": cur_hashes.get("v2",""),
