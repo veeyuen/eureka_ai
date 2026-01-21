@@ -77,8 +77,19 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
+CODE_VERSION = "fix41y_evo_admission_align_rebuild_selected_fallback"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# =====================================================================
+# PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
+# - Purely a version label for debugging/traceability.
+# - Does NOT alter runtime logic.
+# =====================================================================
+#CODE_VERSION = "fix41t_evo_extra_url_injection_trace_replay"
+# =====================================================================
+# PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
+# =====================================================================
+#CODE_VERSION = "fix41u_evo_diag_prewire_replay_visibility"
+# =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
-CODE_VERSION = "fix41j_current_pool_override_safe.py"
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
 # PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
 # PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
@@ -88,6 +99,7 @@ CODE_VERSION = "fix41j_current_pool_override_safe.py"
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
 ENDSTATE_FINAL_VERSION = "v7_41_endstate_final_1"
+INJ_TRACE_PATCH_VERSION = "fix41q_inj_trace_v1_always_emit"
 # =====================================================================
 
 # =====================================================================
@@ -4695,6 +4707,401 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
         return []
 
 
+
+# =====================================================================
+# PATCH INJ_DIAG_HELPERS (ADDITIVE): Injected-URL diagnostics helpers
+# - Pure helpers (no control-flow changes)
+# - Used to trace injected extra URLs across: UI -> intake -> scrape -> snapshots -> hashing -> rebuild
+# =====================================================================
+def _inj_diag_make_run_id(prefix: str = "run") -> str:
+    """Short correlation id for a single analysis/evolution run."""
+    try:
+        import os, time, hashlib
+        seed = f"{prefix}|{time.time()}|{os.getpid()}|{os.urandom(8).hex()}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        try:
+            import random
+            return f"{prefix}_{random.randint(100000,999999)}"
+        except Exception:
+            return f"{prefix}_unknown"
+
+def _inj_diag_norm_url_list(extra_urls: Any) -> list:
+    """Normalize/dedupe URL list (conservative: only http/https)."""
+    out = []
+    try:
+        if extra_urls is None:
+            return []
+        items = extra_urls
+        if isinstance(items, str):
+            items = [u.strip() for u in items.splitlines()]
+        if not isinstance(items, (list, tuple, set)):
+            items = [str(items)]
+        seen = set()
+        for u in items:
+            uu = str(u or "").strip()
+            if not uu:
+                continue
+            if not (uu.startswith("http://") or uu.startswith("https://")):
+                continue
+            if uu in seen:
+                continue
+            seen.add(uu)
+            out.append(uu)
+    except Exception:
+        return []
+    return out
+
+def _inj_diag_set_hash(urls: list) -> str:
+    """Stable sha256 of sorted URL list (for compact logging)."""
+    try:
+        import hashlib
+        lst = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
+        lst = sorted(set(lst))
+        payload = "|".join(lst)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+def _inj_diag_hash_inputs_from_bsc(baseline_sources_cache: Any) -> list:
+    """Extract deterministic URL inputs used by snapshot hashing (v1/v2 both include URL)."""
+    urls = []
+    try:
+        if not isinstance(baseline_sources_cache, list):
+            return []
+        for sr in baseline_sources_cache:
+            if not isinstance(sr, dict):
+                continue
+            u = (sr.get("source_url") or sr.get("url") or "").strip()
+            if u:
+                urls.append(u)
+    except Exception:
+        return []
+    return sorted(set(urls))
+
+# =====================================================================
+# PATCH INJ_HASH_V1 (ADDITIVE): optional inclusion of injected URLs in snapshot hash inputs
+# Default behavior is OFF to avoid disrupting locked fastpath.
+#
+# When enabled, injected URLs that were persisted (per diag_injected_urls.persisted*)
+# but are missing from baseline_sources_cache will be added as *synthetic* source
+# records (url-only) so that:
+#   - source_snapshot_hash (v1/v2) reflects injected sources deterministically
+#   - evolution rebuild sees the same snapshot pool and hash identity via persistence
+#
+# Safety:
+#   - Does NOT modify fastpath logic.
+#   - Does NOT change metric selection (synthetic records have no extracted_numbers).
+#   - Only activates when INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH is True.
+# =====================================================================
+INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH = False  # ✅ default OFF (locked fastpath safe)
+CODE_VERSION_INJ_HASH_V1 = "fix41r_inj_hash_optional_include"  # additive version marker
+
+def _inj_hash_should_include() -> bool:
+    """Single switch for inclusion; additive-only. Supports env override."""
+    try:
+        import os
+        v = os.getenv("YUREEKA_INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH", "").strip().lower()
+        if v in ("1", "true", "yes", "y", "on"):
+            return True
+        if v in ("0", "false", "no", "n", "off"):
+            return False
+    except Exception:
+        pass
+    return bool(globals().get("INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH", False))
+
+# =====================================================================
+# PATCH INJ_HASH_POLICY_ALIGN_V1 (Additive, policy-aligned)
+# Goal:
+#   - Align injected URL "new data" identity semantics with baseline sources:
+#       If an injected URL is PERSISTED as a successful snapshot, it should
+#       participate in snapshot hash inputs by default (unless explicitly disabled).
+#   - Preserve existing safety switch INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH
+#     and its env override for emergency forcing.
+#
+# Controls:
+#   - Default behavior (policy-aligned): ON when persisted injected URLs exist.
+#   - Explicit disable: env YUREEKA_EXCLUDE_INJECTED_URLS_FROM_SNAPSHOT_HASH=1
+#   - Explicit force include: env YUREEKA_INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH=1
+#
+# Notes:
+#   - Fastpath logic is NOT modified.
+#   - This only affects hash identity input construction; metric selection remains unchanged.
+# =====================================================================
+INJECTED_URL_HASH_POLICY_ALIGN_WITH_BASELINE = True  # ✅ default ON (policy-aligned)
+
+def _inj_hash_policy_explicit_disable() -> bool:
+    try:
+        import os
+        v = os.getenv("YUREEKA_EXCLUDE_INJECTED_URLS_FROM_SNAPSHOT_HASH", "").strip().lower()
+        return v in ("1", "true", "yes", "y", "on")
+    except Exception:
+        return False
+
+def _inj_hash_policy_should_include(persisted_injected_urls) -> bool:
+    """Policy-aligned include decision for injected URLs in hash identity.
+
+    - If explicitly disabled via env, returns False.
+    - If explicitly forced via existing switch/env, returns True.
+    - Otherwise, when policy-align is enabled and persisted injected URLs exist, returns True.
+    - Else, falls back to legacy _inj_hash_should_include().
+    """
+    try:
+        if _inj_hash_policy_explicit_disable():
+            return False
+        # Respect existing forcing mechanism first
+        if _inj_hash_should_include():
+            return True
+        if bool(globals().get("INJECTED_URL_HASH_POLICY_ALIGN_WITH_BASELINE", True)) and (persisted_injected_urls or []):
+            return True
+    except Exception:
+        pass
+    return _inj_hash_should_include()
+
+def _inj_hash_add_synthetic_sources(
+    baseline_sources_cache: Any,
+    injected_persisted_urls: list,
+    now_iso: str = ""
+) -> tuple:
+    """
+    Return (bsc_augmented, added_urls, reasons_by_url) without mutating the original list.
+    Synthetic records are url-only, deterministic, and safe for selection logic.
+    """
+    reasons = {}
+    added = []
+    try:
+        bsc = list(baseline_sources_cache) if isinstance(baseline_sources_cache, list) else []
+        inj = _inj_diag_norm_url_list(injected_persisted_urls or [])
+        if not inj:
+            return (bsc, added, reasons)
+
+        existing = set(_inj_diag_hash_inputs_from_bsc(bsc))
+        for u in inj:
+            if u in existing:
+                reasons[u] = "present_in_bsc"
+                continue
+            # Add synthetic source record (no numbers) so hash includes the URL deterministically
+            added.append(u)
+            reasons[u] = "added_synthetic_for_hash"
+            bsc.append({
+                "url": u,
+                "source_url": u,
+                "status": "fetched",
+                "status_detail": "synthetic_injected_for_hash",
+                "numbers_found": 0,
+                "fetched_at": now_iso or "",
+                "fingerprint": "",
+                "extracted_numbers": [],
+                "__inj_synthetic": True,
+            })
+
+        # Keep deterministic ordering identical to existing conventions
+        bsc = sorted(bsc, key=lambda x: str((x or {}).get("url") or ""))
+        return (bsc, added, reasons)
+    except Exception:
+        try:
+            return (list(baseline_sources_cache) if isinstance(baseline_sources_cache, list) else [], [], {})
+        except Exception:
+            return ([], [], {})
+
+# =====================================================================
+# PATCH INJ_TRACE_V1_HELPERS (ADDITIVE): canonical injected-URL lifecycle trace builder
+# Objective:
+# - Emit ONE canonical diagnostic payload in a fixed location for every run:
+#     results.debug.inj_trace_v1  (analysis outputs)
+#     results.debug.inj_trace_v1  (evolution outputs; mirrored from output.debug)
+# - Purely additive; does NOT alter fastpath logic or selection control flow.
+# =====================================================================
+def _inj_trace_v1_build(
+    diag_injected_urls: dict,
+    hash_inputs: list,
+    stage: str = "analysis",
+    path: str = "",
+    rebuild_pool: list = None,
+    rebuild_selected: list = None,
+    hash_exclusion_reasons: dict = None,
+) -> dict:
+    try:
+        d = diag_injected_urls if isinstance(diag_injected_urls, dict) else {}
+        ui_raw = d.get("ui_raw") if isinstance(d.get("ui_raw"), (str, list)) else (d.get("extra_urls_ui_raw") or "")
+        ui_norm = _inj_diag_norm_url_list(d.get("ui_norm") or d.get("extra_urls_ui_norm") or d.get("extra_urls_normalized") or [])
+        intake_norm = _inj_diag_norm_url_list(d.get("intake_norm") or d.get("extra_urls_intake_norm") or d.get("extra_urls") or [])
+        admitted_norm = _inj_diag_norm_url_list(d.get("admitted") or d.get("extra_urls_admitted") or [])
+        persisted_norm = _inj_diag_norm_url_list(d.get("persisted") or d.get("persisted_norm") or [])
+
+        attempted = d.get("attempted") if isinstance(d.get("attempted"), list) else []
+        # Keep attempted minimal and stable
+        attempted_min = []
+        for a in attempted:
+            if not isinstance(a, dict):
+                continue
+            attempted_min.append({
+                "url": str(a.get("url") or ""),
+                "status": str(a.get("status") or a.get("fetch_status") or ""),
+                "reason": str(a.get("reason") or a.get("fail_reason") or ""),
+                "content_len": a.get("content_len"),
+            })
+
+        hash_inputs_norm = _inj_diag_norm_url_list(hash_inputs or [])
+        rebuild_pool_norm = _inj_diag_norm_url_list(rebuild_pool or [])
+        rebuild_selected_norm = _inj_diag_norm_url_list(rebuild_selected or [])
+
+        # Deterministic deltas (set-based; small lists)
+        def _delta(a, b):
+            try:
+                return sorted(list(set(a or []) - set(b or [])))[:100]
+            except Exception:
+                return []
+
+        deltas = {
+            "ui_minus_intake": _delta(ui_norm, intake_norm),
+            "intake_minus_admitted": _delta(intake_norm, admitted_norm),
+            "admitted_minus_attempted": _delta(admitted_norm, [x.get("url") for x in attempted_min if isinstance(x, dict)]),
+            "attempted_minus_persisted": _delta([x.get("url") for x in attempted_min if isinstance(x, dict)], persisted_norm),
+            "persisted_minus_hash_inputs": _delta(persisted_norm, hash_inputs_norm),
+            "hash_inputs_minus_rebuild_pool": _delta(hash_inputs_norm, rebuild_pool_norm) if rebuild_pool is not None else [],
+            "rebuild_pool_minus_selected": _delta(rebuild_pool_norm, rebuild_selected_norm) if rebuild_selected is not None else [],
+        }
+
+        return {
+            "run_id": str(d.get("run_id") or ""),
+            "stage": str(stage or ""),
+            "path": str(path or ""),
+            "ui_raw": ui_raw,
+            "ui_norm": ui_norm,
+            "intake_norm": intake_norm,
+            "admitted_norm": admitted_norm,
+            "attempted": attempted_min,
+            "persisted_norm": persisted_norm,
+            "hash_inputs_norm": hash_inputs_norm,
+            "rebuild_pool_norm": rebuild_pool_norm if rebuild_pool is not None else None,
+            "rebuild_selected_norm": rebuild_selected_norm if rebuild_selected is not None else None,
+            "counts": {
+                "ui_norm": int(len(ui_norm)),
+                "intake_norm": int(len(intake_norm)),
+                "admitted_norm": int(len(admitted_norm)),
+                "attempted": int(len(attempted_min)),
+                "persisted_norm": int(len(persisted_norm)),
+                "hash_inputs_norm": int(len(hash_inputs_norm)),
+                "rebuild_pool_norm": int(len(rebuild_pool_norm)) if rebuild_pool is not None else None,
+                "rebuild_selected_norm": int(len(rebuild_selected_norm)) if rebuild_selected is not None else None,
+            },
+            "set_hashes": {
+                "ui_norm": _inj_diag_set_hash(ui_norm),
+                "intake_norm": _inj_diag_set_hash(intake_norm),
+                "admitted_norm": _inj_diag_set_hash(admitted_norm),
+                "persisted_norm": _inj_diag_set_hash(persisted_norm),
+                "hash_inputs_norm": _inj_diag_set_hash(hash_inputs_norm),
+                "rebuild_pool_norm": _inj_diag_set_hash(rebuild_pool_norm) if rebuild_pool is not None else "",
+                "rebuild_selected_norm": _inj_diag_set_hash(rebuild_selected_norm) if rebuild_selected is not None else "",
+            },
+            "deltas": deltas,
+        }
+    except Exception:
+        return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
+# =====================================================================
+# PATCH INJ_TRACE_V1_ENRICH_FROM_ARTIFACTS (ADDITIVE)
+# Purpose:
+# - Populate inj_trace_v1 attempted/persisted fields from *real* artifacts when
+#   the upstream diag_injected_urls payload is partial (common in baseline/no-injection
+#   or fastpath replay scenarios).
+# - Pure diagnostics only: does NOT alter control flow, hashing, scraping, or selection.
+#
+# Artifacts supported:
+#   - baseline_sources_cache (BSC): list of per-url snapshot dicts
+#   - scraped_meta: dict keyed by url with status/status_detail/clean_text_len
+# =====================================================================
+
+def _inj_trace_v1_enrich_diag_from_bsc(diag: dict, baseline_sources_cache: list) -> dict:
+    """Add attempted/persisted evidence into diag_injected_urls from baseline_sources_cache."""
+    try:
+        d = diag if isinstance(diag, dict) else {}
+        bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
+        # If attempted already present, do not overwrite (avoid clobbering richer traces).
+        if not isinstance(d.get("attempted"), list) or not d.get("attempted"):
+            attempted = []
+            for row in bsc:
+                if not isinstance(row, dict):
+                    continue
+                u = str(row.get("url") or row.get("source_url") or "").strip()
+                if not u:
+                    continue
+                st = str(row.get("status") or row.get("fetch_status") or "").strip() or "unknown"
+                rs = str(row.get("status_detail") or row.get("fail_reason") or "").strip()
+                clen = row.get("clean_text_len") or row.get("content_len") or 0
+                try:
+                    clen_i = int(clen)
+                except Exception:
+                    clen_i = 0
+                attempted.append({"url": u, "status": st, "reason": rs, "content_len": clen_i})
+            if attempted:
+                d["attempted"] = attempted
+
+        # Persisted: if missing, derive from successful snapshot rows in BSC.
+        if not isinstance(d.get("persisted"), (list, str)) or not d.get("persisted"):
+            persisted = []
+            for row in bsc:
+                if not isinstance(row, dict):
+                    continue
+                u = str(row.get("url") or row.get("source_url") or "").strip()
+                if not u:
+                    continue
+                st = str(row.get("status") or row.get("fetch_status") or "").lower().strip()
+                if st in ("success", "ok", "fetched"):
+                    persisted.append(u)
+            if persisted:
+                d["persisted"] = _inj_diag_norm_url_list(persisted)
+
+        return d
+    except Exception:
+        return diag if isinstance(diag, dict) else {}
+
+def _inj_trace_v1_enrich_diag_from_scraped_meta(diag: dict, scraped_meta: dict, extra_urls: list) -> dict:
+    """Add attempted/persisted evidence into diag_injected_urls from scraped_meta (evolution-side)."""
+    try:
+        d = diag if isinstance(diag, dict) else {}
+        sm = scraped_meta if isinstance(scraped_meta, dict) else {}
+        xs = _inj_diag_norm_url_list(extra_urls or [])
+        if not xs:
+            return d
+
+        # attempted rows for injected urls
+        if not isinstance(d.get("attempted"), list) or not d.get("attempted"):
+            attempted = []
+            for u in xs:
+                m = sm.get(u) if isinstance(sm.get(u), dict) else {}
+                st = str(m.get("status") or m.get("fetch_status") or "").strip() or "unknown"
+                rs = str(m.get("status_detail") or m.get("fail_reason") or "").strip()
+                clen = m.get("clean_text_len") or m.get("content_len") or 0
+                try:
+                    clen_i = int(clen)
+                except Exception:
+                    clen_i = 0
+                attempted.append({"url": u, "status": st, "reason": rs, "content_len": clen_i})
+            d["attempted"] = attempted
+
+        # persisted success urls (only for injected)
+        if not isinstance(d.get("persisted"), (list, str)) or not d.get("persisted"):
+            persisted = []
+            for a in (d.get("attempted") or []):
+                if not isinstance(a, dict):
+                    continue
+                st = str(a.get("status") or "").lower().strip()
+                if st in ("success", "ok", "fetched"):
+                    u = str(a.get("url") or "").strip()
+                    if u:
+                        persisted.append(u)
+            d["persisted"] = _inj_diag_norm_url_list(persisted)
+
+        return d
+    except Exception:
+        return diag if isinstance(diag, dict) else {}
+# =====================================================================
+
+# =====================================================================
+
+# =====================================================================
+
 def scrape_url(url: str) -> Optional[str]:
     """
     Scrape webpage content.
@@ -4784,6 +5191,15 @@ def fetch_web_context(
     fallback_mode: bool = False,
     fallback_urls: list = None,
     existing_snapshots: Any = None,   # <-- ADDITIVE
+    # ============================================================
+    # PATCH FWC_EXTRA_URLS1 (ADDITIVE)
+    # ============================================================
+    extra_urls: Any = None,
+    # ============================================================
+    # PATCH INJ_DIAG_FWC_ARGS (ADDITIVE): correlation + UI raw
+    # ============================================================
+    diag_run_id: str = "",
+    diag_extra_urls_ui_raw: Any = None,
 ) -> dict:
 
     """
@@ -4933,6 +5349,77 @@ def fetch_web_context(
         n = 3
     n = max(1, min(12, n))
     admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
+
+    # ============================================================
+    # PATCH FWC_EXTRA_URLS2 (ADDITIVE)
+    # ============================================================
+    try:
+        _extras_in = extra_urls or []
+        _extras = []
+        if isinstance(_extras_in, str):
+            _extras_in = [u.strip() for u in _extras_in.splitlines()]
+        if isinstance(_extras_in, (list, tuple)):
+            for u in _extras_in:
+                u = str(u or "").strip()
+                if not u:
+                    continue
+                if not (u.startswith("http://") or u.startswith("https://")):
+                    continue
+                _extras.append(u)
+        _seen = set()
+        merged = []
+        for u in _extras + (admitted or []):
+            if u in _seen:
+                continue
+            _seen.add(u)
+            merged.append(u)
+        admitted = merged
+        out.setdefault("debug", {})
+        if isinstance(out.get("debug"), dict):
+            out["debug"].setdefault("fwc_extra_urls", {})
+            out["debug"]["fwc_extra_urls"]["extra_urls_count"] = int(len(_extras))
+            out["debug"]["fwc_extra_urls"]["admitted_count_after_merge"] = int(len(admitted or []))
+            out["debug"]["fwc_extra_urls"]["extra_urls"] = _extras[:20]
+    except Exception:
+        pass
+
+
+    # =====================================================================
+    # PATCH INJ_DIAG_FWC_STAGE (ADDITIVE): injected-URL stage checkpoints (A1-A3)
+    # Records: UI->intake->admitted, and later enriches with scrape outcomes.
+    # =====================================================================
+    try:
+        _diag_run = str(diag_run_id or "") or _inj_diag_make_run_id("analysis")
+        out["diag_run_id"] = out.get("diag_run_id") or _diag_run
+
+        _ui_raw = diag_extra_urls_ui_raw if diag_extra_urls_ui_raw is not None else extra_urls
+        _ui_norm = _inj_diag_norm_url_list(_ui_raw)
+        _intake_norm = list(_extras or []) if "_extras" in locals() and isinstance(_extras, list) else _inj_diag_norm_url_list(extra_urls)
+
+        out["diag_injected_urls"] = {
+            "run_id": _diag_run,
+            "ui_raw": _ui_raw if isinstance(_ui_raw, (str, list, tuple)) else str(_ui_raw or ""),
+            "ui_norm": _ui_norm,
+            "intake_norm": _intake_norm,
+            "admitted": list(admitted or []),
+            "attempted": [],
+            "persisted": [],
+            "hash_inputs": [],
+            "rebuild_pool": [],
+            "rebuild_selected": [],
+            "set_hashes": {
+                "ui_norm": _inj_diag_set_hash(_ui_norm),
+                "intake_norm": _inj_diag_set_hash(_intake_norm),
+                "admitted": _inj_diag_set_hash(list(admitted or [])),
+            },
+            "deltas": {
+                "ui_minus_intake": sorted(list(set(_ui_norm) - set(_intake_norm))),
+                "intake_minus_admitted": sorted(list(set(_intake_norm) - set(list(admitted or [])))),
+            },
+        }
+    except Exception:
+        pass
+    # =====================================================================
 
     out["sources"] = admitted
     out["web_sources"] = admitted
@@ -5101,6 +5588,42 @@ def fetch_web_context(
             except Exception:
                 pass
 
+
+    # =====================================================================
+    # PATCH INJ_DIAG_FWC_POSTSCRAPE (ADDITIVE): finalize scrape outcomes (A3)
+    # =====================================================================
+    try:
+        d = out.get("diag_injected_urls")
+        if isinstance(d, dict):
+            _inj = set(d.get("intake_norm") or [])
+            sm = out.get("scraped_meta") or {}
+            attempted = []
+            persisted = []
+            if isinstance(sm, dict):
+                for u in sorted(_inj):
+                    meta = sm.get(u) or {}
+                    status = (meta.get("status") or "")
+                    status_detail = (meta.get("status_detail") or "")
+                    content = meta.get("clean_text") or meta.get("content") or ""
+                    attempted.append({
+                        "url": u,
+                        "attempted": bool(u in (admitted or [])),
+                        "fetch_status": "success" if (str(status_detail).startswith("success") or status == "fetched") else ("failed" if meta else "skipped"),
+                        "fail_reason": (str(status_detail) or str(status) or "")[:80],
+                        "content_len": int(len(content) if isinstance(content, str) else 0),
+                        "numbers_found": int(meta.get("numbers_found") or 0),
+                    })
+                    if str(status_detail).startswith("success") or status == "fetched":
+                        persisted.append(u)
+            d["attempted"] = attempted
+            d["persisted"] = persisted
+            d.setdefault("set_hashes", {})
+            if isinstance(d["set_hashes"], dict):
+                d["set_hashes"]["persisted"] = _inj_diag_set_hash(persisted)
+    except Exception:
+        pass
+    # =====================================================================
+
     out["debug_counts"].update({
         "scraped_attempted": int(scraped_attempted),
         "scraped_ok_text": int(scraped_ok_text),
@@ -5119,6 +5642,88 @@ def fetch_web_context(
         pass
 
     # status summarization
+
+    # =====================================================================
+    # PATCH FWC_EXTRA_URLS_TRACE2 (ADDITIVE): trace how injected URLs were handled
+    # Why:
+    # - When scenario B "extra URLs" are provided, it can be unclear whether they:
+    #     (a) were normalized/deduped
+    #     (b) were admitted into the scrape list
+    #     (c) were successfully scraped
+    #     (d) actually entered the snapshot-hash pool used by analysis/evolution
+    # - This patch records a deterministic, non-invasive trace in web_context only.
+    # =====================================================================
+    try:
+        if not isinstance(out.get("debug_counts"), dict):
+            out["debug_counts"] = {}
+        _dbg_counts = out["debug_counts"]
+
+        _extra_trace = {
+            "extra_urls_requested": list(extra_urls or []) if isinstance(extra_urls, list) else [],
+            "extra_urls_normalized": list(_extras or []) if "_extras" in locals() and isinstance(_extras, list) else [],
+            "extra_urls_admitted": [],
+            "extra_urls_scraped": [],
+            "extra_urls_in_hash_pool": [],
+            "notes": [],
+        }
+
+        # Which extras actually made it into the final admitted URL list?
+        try:
+            _admitted_urls = []
+            if "admitted" in locals() and isinstance(admitted, list):
+                _admitted_urls = [u for u in admitted if isinstance(u, str) and u.strip()]
+            _extra_set = set(_extra_trace["extra_urls_normalized"])
+            _extra_trace["extra_urls_admitted"] = [u for u in _admitted_urls if u in _extra_set]
+        except Exception:
+            pass
+
+        # How did each extra URL scrape?
+        try:
+            sm = out.get("scraped_meta") or {}
+            if isinstance(sm, dict):
+                for u in _extra_trace["extra_urls_normalized"]:
+                    meta = sm.get(u) or {}
+                    if isinstance(meta, dict) and meta:
+                        content = meta.get("clean_text") or meta.get("content") or ""
+                        fp = meta.get("fingerprint")
+                        _extra_trace["extra_urls_scraped"].append({
+                            "url": u,
+                            "status": meta.get("status"),
+                            "status_detail": meta.get("status_detail"),
+                            "fingerprint": (fp[:16] if isinstance(fp, str) else fp),
+                            "numbers_found": meta.get("numbers_found"),
+                            "content_len": (len(content) if isinstance(content, str) else 0),
+                            "content_type": meta.get("content_type") or "",
+                        })
+        except Exception:
+            pass
+
+        # Approximate "hash pool" membership (non-invasive):
+        # we mark extras whose scrape produced a non-empty fingerprint + some text.
+        try:
+            sm = out.get("scraped_meta") or {}
+            if isinstance(sm, dict):
+                for row in (_extra_trace.get("extra_urls_scraped") or []):
+                    u = row.get("url")
+                    meta = sm.get(u) or {}
+                    content = meta.get("clean_text") or meta.get("content") or ""
+                    fp = meta.get("fingerprint")
+                    if isinstance(fp, str) and fp and isinstance(content, str) and len(content) >= 200:
+                        _extra_trace["extra_urls_in_hash_pool"].append(u)
+        except Exception:
+            pass
+
+        out["extra_urls_debug"] = _extra_trace
+        _dbg_counts["extra_urls_trace"] = {
+            "requested": len(_extra_trace.get("extra_urls_requested") or []),
+            "normalized": len(_extra_trace.get("extra_urls_normalized") or []),
+            "admitted": len(_extra_trace.get("extra_urls_admitted") or []),
+            "scraped": len(_extra_trace.get("extra_urls_scraped") or []),
+            "in_hash_pool": len(_extra_trace.get("extra_urls_in_hash_pool") or []),
+        }
+    except Exception:
+        pass
+    # =====================================================================
     if scraped_ok_text == 0:
         out["status"] = "failed"
         out["status_detail"] = "no_usable_text"
@@ -12545,10 +13150,134 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         )
         # -----------------------------------------------------------
 
+        # =====================================================================
+        # PATCH INJ_HASH_V1_APPLY (ADDITIVE): optionally include injected URLs in snapshot hash identity
+        # - Adds *synthetic* url-only source records for injected URLs that were
+        #   persisted (per diag) but are missing from baseline_sources_cache.
+        # - Default OFF; only activates when INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH is enabled.
+        # - Does NOT alter fastpath logic or metric selection (synthetic has no numbers).
+        # =====================================================================
+        _inj_hash_added = []
+        _inj_hash_reasons = {}
+        try:
+            _diag_local = {}
+            if isinstance(web_context, dict):
+                _diag_local = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
+            _persisted_for_hash = []
+            if isinstance(_diag_local, dict):
+                _persisted_for_hash = _inj_diag_norm_url_list(
+                    _diag_local.get("persisted_norm") or _diag_local.get("persisted") or []
+                )
+            _incl_inj_hash = _inj_hash_policy_should_include(_persisted_for_hash)
+            if _incl_inj_hash and _persisted_for_hash:
+                _bsc_aug, _inj_hash_added, _inj_hash_reasons = _inj_hash_add_synthetic_sources(
+                    baseline_sources_cache,
+                    _persisted_for_hash,
+                    now_iso=_now_iso(),
+                )
+                baseline_sources_cache = _bsc_aug
+        except Exception:
+            _inj_hash_added = []
+            _inj_hash_reasons = {}
+        # =====================================================================
+
         analysis["baseline_sources_cache"] = baseline_sources_cache
         analysis.setdefault("results", {})
         if isinstance(analysis["results"], dict):
-            analysis["results"]["baseline_sources_cache"] = baseline_sources_cache
+
+            # =====================================================================
+            # PATCH INJ_DIAG_ATTACH_SNAPSHOTS (ADDITIVE): propagate injected-URL trace into analysis
+            # - Captures persisted snapshot URLs + exact hash input URL set (A4-A5)
+            # - Does NOT alter any gating/selection logic.
+            # =====================================================================
+            try:
+                _diag = {}
+                if isinstance(web_context, dict):
+                    _diag = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
+
+                _inj_urls = []
+                if isinstance(_diag, dict):
+                    _inj_urls = _inj_diag_norm_url_list(
+                        _diag.get("intake_norm")
+                        or _diag.get("extra_urls_normalized")
+                        or _diag.get("extra_urls")
+                        or []
+                    )
+
+                _snap_urls = _inj_diag_hash_inputs_from_bsc(baseline_sources_cache)
+                _hash_inputs = _snap_urls
+
+                _h_v1 = ""
+                _h_v2 = ""
+                try:
+                    _h_v1 = compute_source_snapshot_hash(baseline_sources_cache)
+                except Exception:
+                    _h_v1 = ""
+                try:
+                    _h_v2 = compute_source_snapshot_hash_v2(baseline_sources_cache)
+                except Exception:
+                    _h_v2 = ""
+
+                analysis.setdefault("results", {})
+                if isinstance(analysis.get("results"), dict):
+                    analysis["results"].setdefault("debug", {})
+                    if isinstance(analysis["results"].get("debug"), dict):
+                        analysis["results"]["debug"].setdefault("inj_diag", {})
+                        analysis["results"]["debug"]["inj_diag"].update({
+                            "run_id": str((web_context or {}).get("diag_run_id") or _diag.get("run_id") or ""),
+                            "injected_urls": _inj_urls[:50],
+                            "snapshot_pool_urls_count": int(len(_snap_urls)),
+                            "snapshot_pool_urls_hash": _inj_diag_set_hash(_snap_urls),
+                            "hash_input_urls_count": int(len(_hash_inputs)),
+                            "hash_input_urls_hash": _inj_diag_set_hash(_hash_inputs),
+                            "injected_in_snapshot_pool": sorted(list(set(_inj_urls) & set(_snap_urls)))[:50],
+                            "injected_in_hash_inputs": sorted(list(set(_inj_urls) & set(_hash_inputs)))[:50],
+                            "computed_hash_v1": _h_v1,
+                            "computed_hash_v2": _h_v2,
+                        })
+
+
+                        # =====================================================================
+                        # PATCH INJ_TRACE_V1_EMIT_ANALYSIS (ADDITIVE): always emit canonical trace
+                        # Location: analysis.results.debug.inj_trace_v1
+                        # =====================================================================
+                        try:
+
+                            # =====================================================================
+                            # PATCH INJ_TRACE_V1_ENRICH_ANALYSIS_ARTIFACTS (ADDITIVE)
+                            # Ensure inj_trace_v1 shows attempted/persisted evidence even when
+                            # upstream diag_injected_urls is partial (e.g., baseline/no-injection).
+                            # Diagnostics only.
+                            # =====================================================================
+                            try:
+                                if isinstance(_diag, dict):
+                                    _diag = _inj_trace_v1_enrich_diag_from_bsc(_diag, baseline_sources_cache)
+                            except Exception:
+                                pass
+                            # =====================================================================
+
+                            _trace = _inj_trace_v1_build(
+                                diag_injected_urls=_diag if isinstance(_diag, dict) else {},
+                                hash_inputs=_hash_inputs,
+                                stage="analysis",
+                                path="analysis",
+                                rebuild_pool=None,
+                                rebuild_selected=None,
+                                hash_exclusion_reasons=(_inj_hash_reasons if isinstance(locals().get('_inj_hash_reasons'), dict) else {}),
+                            )
+                            analysis["results"]["debug"].setdefault("inj_trace_v1", {})
+                            # Do not overwrite if already present; only fill/merge
+                            if isinstance(analysis["results"]["debug"].get("inj_trace_v1"), dict):
+                                analysis["results"]["debug"]["inj_trace_v1"].update(_trace)
+                        except Exception:
+                            pass
+                        # =====================================================================
+
+            except Exception:
+                pass
+            # =====================================================================
+
+        analysis["results"]["baseline_sources_cache"] = baseline_sources_cache
 
 
     # -----------------------------
@@ -16037,6 +16766,86 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # ============================================================
 
     # =====================================================================
+    # PATCH FIX41U (ADDITIVE): Evolution-side injected-URL diag prewire + replay visibility
+    # Objective:
+    # - Ensure compute_source_anchored_diff can ALWAYS populate web_context.diag_injected_urls
+    #   even when the caller only supplies:
+    #     * web_context["extra_urls"]
+    #     * web_context["diag_extra_urls_ui_raw"]
+    #     * web_context["diag_run_id"]
+    # - Additionally, if the evolution UI did NOT supply extra_urls, record what the baseline
+    #   analysis run had (if any) as "replayed_from_analysis_norm" for diagnostics only.
+    # Safety:
+    # - Purely additive diagnostics. Does NOT alter fastpath logic or hashing inputs.
+    # =====================================================================
+    def _fix41u_extract_injected_from_prev(prev: dict) -> dict:
+        try:
+            if not isinstance(prev, dict):
+                return {}
+            cand_paths = [
+                ["results","debug","inj_trace_v1"],
+                ["primary_response","results","debug","inj_trace_v1"],
+                ["results","primary_response","results","debug","inj_trace_v1"],
+                ["debug","inj_trace_v1"],
+            ]
+            for p in cand_paths:
+                v = _get_nested(prev, p, None)
+                if isinstance(v, dict) and v:
+                    return v
+        except Exception:
+            pass
+        return {}
+
+    try:
+        if web_context is None or not isinstance(web_context, dict):
+            web_context = {}
+
+        # Pull what the caller provided (Evolution UI should pass these)
+        _fix41u_ui_raw = ""
+        try:
+            _fix41u_ui_raw = str(web_context.get("diag_extra_urls_ui_raw") or web_context.get("extra_urls_ui_raw") or "")
+        except Exception:
+            _fix41u_ui_raw = ""
+
+        _fix41u_extra_urls = []
+        try:
+            _fix41u_extra_urls = _inj_diag_norm_url_list(web_context.get("extra_urls") or [])
+        except Exception:
+            _fix41u_extra_urls = []
+
+        # If Evolution UI did not supply extras, capture what baseline analysis had (diagnostic only)
+        _fix41u_prev_trace = _fix41u_extract_injected_from_prev(previous_data)
+        _fix41u_replayed = []
+        try:
+            if not _fix41u_extra_urls and isinstance(_fix41u_prev_trace, dict):
+                _fix41u_replayed = _inj_diag_norm_url_list(_fix41u_prev_trace.get("ui_norm") or [])
+        except Exception:
+            _fix41u_replayed = []
+
+        # Ensure diag container exists
+        web_context.setdefault("diag_injected_urls", {})
+        if isinstance(web_context.get("diag_injected_urls"), dict):
+            _d = web_context["diag_injected_urls"]
+            # run_id continuity
+            try:
+                _d.setdefault("run_id", str(web_context.get("diag_run_id") or ""))
+            except Exception:
+                pass
+            # UI-provided inputs (preferred truth)
+            _d.setdefault("ui_raw", _fix41u_ui_raw)
+            _d.setdefault("ui_norm", list(_fix41u_extra_urls))
+            _d.setdefault("intake_norm", list(_fix41u_extra_urls))
+            # Replay visibility (diagnostic only; NOT used for hashing unless caller also provided extras)
+            if _fix41u_replayed:
+                _d.setdefault("replayed_from_analysis_norm", list(_fix41u_replayed))
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX41U
+    # =====================================================================
+
+
+    # =====================================================================
     # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
     # Why:
     # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
@@ -17007,6 +17816,149 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 output["debug"]["fix35"]["bad_current_trace_count"] = len(bad_traces)
     except Exception:
         pass
+
+    # =====================================================================
+    # PATCH INJ_TRACE_V1_EMIT_EVOLUTION (ADDITIVE): always emit canonical trace
+    # - Mirrors to output.results.debug.inj_trace_v1 for a fixed location across modes
+    # - Does NOT affect fastpath decisioning
+    # =====================================================================
+    try:
+        _wc_diag = {}
+        if isinstance(web_context, dict):
+            _wc_diag = web_context.get("diag_injected_urls") or {}
+        _hash_inputs = _inj_diag_hash_inputs_from_bsc(baseline_sources_cache)
+
+        # Determine path from existing fix35 origin stamp
+        _path = ""
+        try:
+            origin = ""
+            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                origin = str(output["debug"]["fix35"].get("current_metrics_origin") or "")
+            if "fastpath" in origin:
+                _path = "fastpath"
+            elif "rebuild" in origin:
+                _path = "rebuild"
+            else:
+                _path = "unknown"
+        except Exception:
+            _path = "unknown"
+
+        # Rebuild "selected" URLs: unique source_url from current metrics (if present)
+        _selected = []
+        try:
+            cm = output.get("current_metrics")
+            if isinstance(cm, dict):
+                for v in cm.values():
+                    if isinstance(v, dict):
+                        u = (v.get("source_url") or "").strip()
+                        if u:
+                            _selected.append(u)
+            _selected = sorted(set(_selected))
+        except Exception:
+            _selected = []
+
+        # For evolution, rebuild_pool is effectively the hash input URL universe available via snapshots
+        # =====================================================================
+        # PATCH INJ_HASH_V1_EVO (ADDITIVE): compute per-URL hash exclusion reasons in evolution
+        # - If injected URLs exist but are not in hash_inputs, we record the most likely reason:
+        #     * excluded_by_flag_default_off  (when inclusion switch is OFF)
+        #     * missing_from_hash_inputs      (when switch ON but still absent)
+        # =====================================================================
+        _evo_hash_reasons = {}
+        try:
+            _evo_persisted = []
+            if isinstance(_wc_diag, dict):
+                _evo_persisted = _inj_diag_norm_url_list(_wc_diag.get("persisted_norm") or _wc_diag.get("persisted") or [])
+            _evo_inj = _inj_diag_norm_url_list(
+                (_wc_diag.get("intake_norm") if isinstance(_wc_diag, dict) else []) or
+                (_wc_diag.get("ui_norm") if isinstance(_wc_diag, dict) else []) or
+                []
+            )
+            _evo_targets = _evo_persisted or _evo_inj
+            _hashset = set(_inj_diag_norm_url_list(_hash_inputs or []))
+            _incl = _inj_hash_policy_should_include(_evo_targets)
+            for u in _evo_targets:
+                if u in _hashset:
+                    _evo_hash_reasons[u] = "present_in_hash_inputs"
+                else:
+                    _evo_hash_reasons[u] = ("excluded_by_policy_disable" if _inj_hash_policy_explicit_disable() else ("excluded_by_legacy_switch_default_off" if not _incl else "missing_from_hash_inputs"))
+        except Exception:
+            _evo_hash_reasons = {}
+        # =====================================================================
+
+        # =====================================================================
+        # PATCH INJ_TRACE_V1_EVO_ADMISSION_ALIGN_V1 (ADDITIVE)
+        # Goal:
+        # - Evolution often bypasses fetch_web_context(), so "admitted" may be unset even
+        #   when URLs are actually in the current scrape/hash universe.
+        # - This patch makes inj_trace_v1 "admitted_norm" reflect the same practical
+        #   universe used for scraping/hashing (without changing any control flow).
+        #
+        # Policy (diagnostics only):
+        # - If diag.admitted is empty but hash_inputs are present, treat hash_inputs as
+        #   admitted for trace purposes.
+        # - Prefer any explicit FIX24 evo merge set if present (urls_after_merge_norm).
+        # =====================================================================
+        try:
+            if isinstance(_wc_diag, dict):
+                _ad = _inj_diag_norm_url_list(_wc_diag.get("admitted") or _wc_diag.get("extra_urls_admitted") or [])
+                if not _ad:
+                    _pref = []
+                    try:
+                        _pref = _inj_diag_norm_url_list(_wc_diag.get("urls_after_merge_norm") or [])
+                    except Exception:
+                        _pref = []
+                    if not _pref:
+                        _pref = _inj_diag_norm_url_list(_hash_inputs or [])
+                    if _pref:
+                        _wc_diag["admitted"] = list(_pref)
+                        _wc_diag.setdefault("admission_reason", "trace_fallback_to_hash_inputs_or_urls_after_merge")
+        except Exception:
+            pass
+        # =====================================================================
+
+        # =====================================================================
+        # PATCH INJ_TRACE_V1_EVO_REBUILD_SELECTED_FALLBACK_V1 (ADDITIVE)
+        # Goal:
+        # - In fastpath/replay or when current_metrics lacks source_url fields,
+        #   rebuild_selected_norm can be empty, creating misleading pool_minus_selected.
+        #
+        # Diagnostics-only fallback:
+        # - If rebuild_selected is empty but rebuild_pool/hash_inputs exists, treat
+        #   selected as the full pool for trace purposes.
+        # =====================================================================
+        try:
+            if (not _selected) and _hash_inputs:
+                _selected = list(_inj_diag_norm_url_list(_hash_inputs))
+                if isinstance(_wc_diag, dict):
+                    _wc_diag.setdefault("rebuild_selected_reason", "trace_fallback_to_hash_inputs_no_current_metric_sources")
+        except Exception:
+            pass
+        # =====================================================================
+
+        _trace = _inj_trace_v1_build(
+            diag_injected_urls=_wc_diag if isinstance(_wc_diag, dict) else {},
+            hash_inputs=_hash_inputs,
+            stage="evolution",
+            path=_path,
+            rebuild_pool=_hash_inputs,
+            rebuild_selected=_selected,
+            hash_exclusion_reasons=_evo_hash_reasons,
+        )
+
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["inj_trace_v1"] = _trace
+
+        # Fixed location mirror: results.debug.inj_trace_v1
+        output.setdefault("results", {})
+        if isinstance(output.get("results"), dict):
+            output["results"].setdefault("debug", {})
+            if isinstance(output["results"].get("debug"), dict):
+                output["results"]["debug"]["inj_trace_v1"] = _trace
+    except Exception:
+        pass
+    # =====================================================================
 
     return output
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
@@ -18616,6 +19568,23 @@ def render_dashboard(
             with st.expander("Collector debug counts"):
                 st.json(dbg)
 
+    # =====================================================================
+    # PATCH UI_EXTRA_URLS_TRACE2 (ADDITIVE): show injected extra-URL trace (if any)
+    # =====================================================================
+    try:
+        exdbg = {}
+        if isinstance(web_context, dict):
+            exdbg = web_context.get("extra_urls_debug") or {}
+            # Back-compat: allow nested placement under debug_counts
+            if (not exdbg) and isinstance(web_context.get("debug_counts"), dict):
+                exdbg = (web_context.get("debug_counts") or {}).get("extra_urls_debug") or {}
+        if isinstance(exdbg, dict) and exdbg:
+            with st.expander("Extra URLs trace (injected sources)"):
+                st.json(exdbg)
+    except Exception:
+        pass
+    # =====================================================================
+
     # Source reliability badges (if provided)
     if isinstance(source_reliability, list) and source_reliability:
         with st.expander("Source reliability"):
@@ -19035,6 +20004,35 @@ def main():
                 disabled=not SERPAPI_KEY
             )
 
+
+            # ============================================================
+
+            # PATCH UI_EXTRA_SOURCES_TAB1 (ADDITIVE)
+
+            # - Add extra URL injection UI directly to TAB 1 (New Analysis)
+
+            # - Does NOT alter behavior unless user supplies URLs
+
+            # ============================================================
+
+            extra_sources_text_tab1 = st.text_area(
+
+                "Extra source URLs (optional, one per line)",
+
+                placeholder="https://example.com/report\nhttps://another-source.com/page",
+
+                help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
+
+                height=90,
+
+                key="ui_extra_sources_tab1",
+
+            )
+
+            # ============================================================
+
+
+
         if st.button("🔍 Analyze", type="primary") and query:
             if len(query.strip()) < 5:
                 st.error("❌ Please enter a question with at least 5 characters")
@@ -19076,10 +20074,34 @@ def main():
                     except Exception:
                         pass
 
+                                        # ============================================================
+                    # PATCH UI_EXTRA_SOURCES2 (ADDITIVE): parse extra source URLs
+                    # ============================================================
+                    extra_urls = []
+                    try:
+                        for _l in str(extra_sources_text_tab1 or "").splitlines():
+                            _u = _l.strip()
+                            if not _u:
+                                continue
+                            if _u.startswith("http://") or _u.startswith("https://"):
+                                extra_urls.append(_u)
+                    except Exception:
+                        extra_urls = []
+
+
+                    # ============================================================
+                    # PATCH INJ_DIAG_TAB1_CALL (ADDITIVE): correlate UI extra-URL input into fetch_web_context diagnostics
+                    # ============================================================
+                    _analysis_run_id = _inj_diag_make_run_id("analysis")
+                    # ============================================================
+
                     web_context = fetch_web_context(
                         query,
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
+                        extra_urls=extra_urls,
+                        diag_run_id=_analysis_run_id,
+                        diag_extra_urls_ui_raw=(extra_sources_text_tab1 or ""),
                     )
                     # ----------------------------------------------------------------------
 
@@ -19300,6 +20322,16 @@ def main():
             ]
         )
 
+        # ============================================================
+        # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
+        # ============================================================
+        extra_sources_text = st.text_area(
+            "Extra source URLs (optional, one per line)",
+            placeholder="https://example.com/report\nhttps://another-source.com/page",
+            help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
+            height=110,
+        )
+
         compare_data = None
         if "another saved analysis" in compare_method:
             compare_options = [
@@ -19324,11 +20356,66 @@ def main():
                     return
 
                 with st.spinner("🧬 Running source-anchored evolution..."):
+
                     try:
-                        results = run_source_anchored_evolution(baseline_data, web_context={"force_rebuild": bool(force_rebuild)})  # PATCH FIX41 (ADD): pass force_rebuild flag explicitly  # PATCH FIX40 (ADD): pass force_rebuild flag
+
+
+                        # ============================================================
+
+                        # PATCH INJ_DIAG_EVO_UI (ADDITIVE): pass extra injected URLs + run_id into evolution
+
+                        # ============================================================
+
+                        _evo_run_id = _inj_diag_make_run_id("evo")
+
+                        _extra_urls_evo = []
+
+                        try:
+
+                            for _l in str(extra_sources_text or "").splitlines():
+
+                                _u = _l.strip()
+
+                                if not _u:
+
+                                    continue
+
+                                if _u.startswith("http://") or _u.startswith("https://"):
+
+                                    _extra_urls_evo.append(_u)
+
+                        except Exception:
+
+                            _extra_urls_evo = []
+
+
+                        results = run_source_anchored_evolution(
+
+                            baseline_data,
+
+                            web_context={
+
+                                "force_rebuild": bool(force_rebuild),
+
+                                "extra_urls": _extra_urls_evo,
+
+                                "diag_run_id": _evo_run_id,
+
+                                "diag_extra_urls_ui_raw": (extra_sources_text or ""),
+
+                            },
+
+                        )
+
+                        # ============================================================
+
+
                     except Exception as e:
+
                         st.error(f"❌ Evolution failed: {e}")
+
                         return
+
 
                 interpretation = ""
                 try:
@@ -20871,11 +21958,205 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     # Step 2: Build current scraped_meta by fetching the same URLs used previously
     urls = _fix24_extract_source_urls(prev_full)
+
+    # =====================================================================
+
+    # PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
+    # - Only active if caller provides web_context['extra_urls']
+    # - Does NOT affect default fastpath behavior.
+    # =====================================================================
+    _inj_diag_run_id = ""
+    _inj_extra_urls = []
+    try:
+        _inj_diag_run_id = str((web_context or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo")
+        _inj_extra_urls = _inj_diag_norm_url_list((web_context or {}).get("extra_urls") or [])
+    except Exception:
+        _inj_diag_run_id = _inj_diag_make_run_id("evo")
+        _inj_extra_urls = []
+
+    try:
+        if _inj_extra_urls:
+            _u_seen = set([str(u or "").strip() for u in (urls or []) if str(u or "").strip()])
+            for _u in _inj_extra_urls:
+                if _u not in _u_seen:
+                    _u_seen.add(_u)
+                    urls.append(_u)
+    except Exception:
+        pass
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH EVO_INJ_ADMISSION_TRACE_V1 (ADDITIVE): pinpoint where injected URLs are dropped
+    #
+    # Why:
+    # - When a URL appears in ui_norm/intake_norm but not in admitted_norm, we need
+    #   an explicit reason before we change any behavior.
+    #
+    # What this records (debug only):
+    # - Whether evolution is using fetch_web_context (it is not in FIX24 path)
+    # - The pre- and post-injection URL universe
+    # - Per-injected-URL admission decision + reason codes
+    #
+    # Safety:
+    # - Does NOT alter control flow, fastpath eligibility, scraping, hashing, or selection.
+    # =====================================================================
+    try:
+        _urls_prev_full = _fix24_extract_source_urls(prev_full)
+        _urls_prev_full_norm = _inj_diag_norm_url_list(_urls_prev_full or [])
+        _urls_after_merge_norm = _inj_diag_norm_url_list(urls or [])
+
+        _admission_decisions = {}
+        for _u in (_inj_extra_urls or []):
+            if _u in set(_urls_after_merge_norm):
+                _admission_decisions[_u] = {
+                    "decision": "admitted",
+                    "reason_code": "merged_into_urls_for_scrape",
+                }
+            else:
+                _admission_decisions[_u] = {
+                    "decision": "rejected",
+                    "reason_code": "not_present_in_urls_after_merge",
+                }
+
+        if isinstance(web_context, dict):
+            web_context.setdefault("debug", {})
+            if isinstance(web_context.get("debug"), dict):
+                web_context["debug"].setdefault("evo_injection_trace", {})
+                if isinstance(web_context["debug"].get("evo_injection_trace"), dict):
+                    web_context["debug"]["evo_injection_trace"].update({
+                        "uses_fetch_web_context": False,
+                        "urls_prev_full_count": int(len(_urls_prev_full_norm)),
+                        "urls_prev_full_set_hash": _inj_diag_set_hash(_urls_prev_full_norm),
+                        "urls_after_merge_count": int(len(_urls_after_merge_norm)),
+                        "urls_after_merge_set_hash": _inj_diag_set_hash(_urls_after_merge_norm),
+                        "inj_extra_urls_norm": list(_inj_extra_urls or []),
+                        "inj_merge_applied": bool(_inj_extra_urls),
+                        "inj_admission_decisions": _admission_decisions,
+                    })
+
+            # Also attach to diag_injected_urls for unified downstream reporting
+            web_context.setdefault("diag_injected_urls", {})
+            if isinstance(web_context.get("diag_injected_urls"), dict):
+                web_context["diag_injected_urls"].setdefault("admission_decisions", {})
+                if isinstance(web_context["diag_injected_urls"].get("admission_decisions"), dict):
+                    web_context["diag_injected_urls"]["admission_decisions"].update(_admission_decisions)
+                web_context["diag_injected_urls"].setdefault("urls_prev_full_norm", _urls_prev_full_norm)
+                web_context["diag_injected_urls"].setdefault("urls_after_merge_norm", _urls_after_merge_norm)
+    except Exception:
+        pass
+    # =====================================================================
+
+
     scraped_meta = _fix24_build_scraped_meta(urls)
 
     # Step 3: Normalize into baseline_sources_cache and hash
     cur_bsc = _fix24_baseline_sources_cache_from_scraped_meta(scraped_meta)
+
+    # =====================================================================
+    # PATCH EVO_INJECTED_URLS_AS_CURRENT_SOURCES_V1 (ADDITIVE):
+    # Policy + wiring alignment for Evolution UI injected URLs
+    #
+    # Goal:
+    # - Treat Evolution-tab injected URLs as part of the *current source universe*
+    #   for hash identity *when they fetch successfully*, consistent with baseline
+    #   sources (successful snapshots contribute to identity).
+    #
+    # Behavior (safe):
+    # - If an injected URL was provided (web_context['extra_urls']) and its scrape
+    #   status is success, it must appear in cur_bsc so that hash inputs can include it.
+    # - If success-but-missing occurs (unexpected), we add a synthetic url-only entry
+    #   tagged for hash identity (debug only; no numbers).
+    # - If fetch failed, we do NOT force hash mismatch (consistent with policy),
+    #   but we record explicit attempted status + reason into diagnostics.
+    #
+    # Safety:
+    # - Does NOT alter fastpath eligibility logic directly; it only ensures that
+    #   the identity inputs reflect the actual successfully fetched current sources.
+    # - Purely additive; never removes or refactors existing logic.
+    # =====================================================================
+    try:
+        _inj_sm = scraped_meta if isinstance(scraped_meta, dict) else {}
+        _inj_attempted_rows = []
+        _inj_success_urls = set()
+        for _u in (_inj_extra_urls or []):
+            _m = _inj_sm.get(_u) if isinstance(_inj_sm.get(_u), dict) else {}
+            _st = str(_m.get('status') or _m.get('fetch_status') or '')
+            _reason = str(_m.get('status_detail') or _m.get('fail_reason') or '')
+            _clen = _m.get('clean_text_len') or _m.get('content_len') or 0
+            _inj_attempted_rows.append({
+                'url': _u,
+                'status': _st or 'unknown',
+                'reason': _reason,
+                'content_len': int(_clen) if str(_clen).isdigit() else 0,
+            })
+            if (_st or '').lower() in ('success','ok','fetched'):
+                _inj_success_urls.add(_u)
+
+        # Ensure success injected urls are represented in cur_bsc (hash identity)
+        if _inj_success_urls and isinstance(cur_bsc, list):
+            _bsc_urls = set()
+            for _row in cur_bsc:
+                if isinstance(_row, dict):
+                    _bu = str(_row.get('url') or _row.get('source_url') or '').strip()
+                    if _bu:
+                        _bsc_urls.add(_bu)
+            _missing_success = sorted(list(_inj_success_urls - _bsc_urls))
+            for _u in _missing_success:
+                cur_bsc.append({
+                    'url': _u,
+                    'status': 'success',
+                    'status_detail': 'synthetic_success_missing_in_bsc',
+                    'clean_text': '',
+                    'clean_text_len': 0,
+                    'extracted_numbers': [],
+                    'numbers_found': 0,
+                    'fingerprint': 'synthetic_url_only_for_hash',
+                    'is_synthetic_for_hash': True,
+                })
+
+        # Write attempted status into web_context diagnostics for transparency
+        if isinstance(web_context, dict):
+            web_context.setdefault('diag_injected_urls', {})
+            if isinstance(web_context.get('diag_injected_urls'), dict):
+                web_context['diag_injected_urls'].setdefault('attempted', [])
+                # Only overwrite if empty to avoid clobbering richer traces
+                if not web_context['diag_injected_urls'].get('attempted'):
+                    web_context['diag_injected_urls']['attempted'] = _inj_attempted_rows
+                web_context['diag_injected_urls']['success_urls'] = sorted(list(_inj_success_urls))
+    except Exception:
+        pass
+    # =====================================================================
+
     cur_hashes = _fix24_compute_current_hashes(cur_bsc)
+
+    # =====================================================================
+
+    # PATCH INJ_DIAG_EVO_DEBUG (ADDITIVE): record injected URL lifecycle (B1)
+    # =====================================================================
+    try:
+        _hash_inputs = _inj_diag_hash_inputs_from_bsc(cur_bsc)
+        if isinstance(web_context, dict):
+            web_context.setdefault("diag_injected_urls", {})
+            if isinstance(web_context.get("diag_injected_urls"), dict):
+                web_context["diag_injected_urls"].update({
+                    "run_id": _inj_diag_run_id,
+                    "ui_raw": (web_context or {}).get("diag_extra_urls_ui_raw") or "",
+                    "ui_norm": _inj_extra_urls,
+                    "intake_norm": _inj_extra_urls,
+                    "admitted": list(urls or []),
+                    "hash_inputs": _hash_inputs,
+                    "injected_in_hash_inputs": sorted(list(set(_inj_extra_urls) & set(_hash_inputs))),
+                    "set_hashes": {
+                        "hash_inputs": _inj_diag_set_hash(_hash_inputs),
+                        "admitted": _inj_diag_set_hash(list(urls or [])),
+                    }
+                })
+    except Exception:
+        pass
+    # =====================================================================
+
+
 
     # Step 4: Compare (v2 preferred)
     equal_v2 = bool(prev_hashes.get("v2") and cur_hashes.get("v2") and prev_hashes["v2"] == cur_hashes["v2"])
@@ -20921,6 +22202,61 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 })
         except Exception:
             pass
+
+        # =====================================================================
+        # PATCH EVO_INJ_TRACE_REPLAY1 (ADDITIVE): emit inj_trace_v1 even on replay fastpath
+        # Why:
+        # - The FIX24 replay path returns early (skipping compute_source_anchored_diff),
+        #   which previously meant results.debug.inj_trace_v1 might be missing.
+        # - We need injected-URL lifecycle visibility even when hashes match (fastpath/replay)
+        #   to validate UI wiring and to explain why a mismatch did/did not occur.
+        # Safety:
+        # - Pure debug emission only; does NOT affect hash logic, scraping, or fastpath decisions.
+        # =====================================================================
+        try:
+            _wc = web_context if isinstance(web_context, dict) else {}
+            _diag = _wc.get("diag_injected_urls") if isinstance(_wc.get("diag_injected_urls"), dict) else {}
+
+            # =====================================================================
+            # PATCH INJ_TRACE_V1_ENRICH_EVOLUTION_REPLAY_ARTIFACTS (ADDITIVE)
+            # Populate attempted/persisted for injected URLs from scraped_meta/cur_bsc
+            # even when replay fastpath returns early.
+            # Also attach an explicit reason when injected URLs are present but not
+            # admitted/hashed due to replay semantics.
+            # =====================================================================
+            try:
+                if isinstance(_diag, dict):
+                    # Enrich from scraped_meta (injected only) and from BSC (all)
+                    _diag = _inj_trace_v1_enrich_diag_from_scraped_meta(_diag, scraped_meta, (_inj_extra_urls or []))
+                    _diag = _inj_trace_v1_enrich_diag_from_bsc(_diag, cur_bsc if isinstance(cur_bsc, list) else [])
+                    # Explain replay semantics when UI extras exist
+                    _ui_norm = _inj_diag_norm_url_list(_diag.get("ui_norm") or [])
+                    if _ui_norm:
+                        _diag.setdefault("admission_reason", "fastpath_replay_no_rebuild_no_admission")
+                        _diag.setdefault("injection_effective", False)
+            except Exception:
+                pass
+            # =====================================================================
+
+            _hash_inputs_replay = _inj_diag_hash_inputs_from_bsc(cur_bsc)
+            _trace_replay = _inj_trace_v1_build(
+                diag_injected_urls=_diag,
+                hash_inputs=_hash_inputs_replay,
+                stage="evolution",
+                path="fastpath_replay",
+                rebuild_pool=None,
+                rebuild_selected=None,
+            )
+            out_replay.setdefault("results", {})
+            if isinstance(out_replay.get("results"), dict):
+                out_replay["results"].setdefault("debug", {})
+                if isinstance(out_replay["results"].get("debug"), dict):
+                    out_replay["results"]["debug"]["inj_trace_v1"] = _trace_replay
+        except Exception:
+            pass
+        # =====================================================================
+        # END PATCH EVO_INJ_TRACE_REPLAY1
+        # =====================================================================
         return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
