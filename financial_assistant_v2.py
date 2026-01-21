@@ -77,7 +77,10 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2_fix31_authoritative_unchanged_fastpath"
+CODE_VERSION = "fix41_force_rebuild_honored.py"  # PATCH FIX41 (ADD): set CODE_VERSION to filename
+# PATCH FIX40 (ADD): prior CODE_VERSION preserved above
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "fix33_fixed_indent.py"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "v7_41_endstate_fix24_sheets_replay_scrape_unified_engine_fix27_strict_schema_gate_v2"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
@@ -1552,6 +1555,17 @@ def add_to_history(analysis: dict) -> bool:
                         try:
                             if _ssh_v2:
                                 analysis["results"]["source_snapshot_hash_v2"] = analysis["results"].get("source_snapshot_hash_v2") or _ssh_v2
+                                # =========================
+                                # PATCH FIX37 (ADD): stable snapshot hash alias for fastpath alignment
+                                # - Prefer v2 (stable) when present; fall back to legacy v1.
+                                # =========================
+                                try:
+                                    _ssh_stable = _ssh_v2 or _ssh
+                                    if _ssh_stable:
+                                        analysis["source_snapshot_hash_stable"] = analysis.get("source_snapshot_hash_stable") or _ssh_stable
+                                        analysis["results"]["source_snapshot_hash_stable"] = analysis["results"].get("source_snapshot_hash_stable") or _ssh_stable
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
 
@@ -2903,6 +2917,63 @@ def rebuild_metrics_from_snapshots_schema_only(
     """
     import re
 
+# =====================================================================
+    # =====================================================================
+    # PATCH FIX33 (ADDITIVE): enforce unit-required eligibility in schema-only rebuild
+    # Why:
+    #   - When anchors are not used (anchor_used:false), schema-only rebuild can still
+    #     select unit-less year tokens (e.g., 2024/2025) for currency/percent metrics.
+    #   - This patch hard-rejects candidates with no token-level unit evidence when
+    #     the schema (or canonical_key suffix) implies a unit is required.
+    #   - Also optionally emits compact debug metadata for top candidates/rejections.
+    # Determinism:
+    #   - Pure filtering + stable ordering; no refetch; no randomness.
+    # =====================================================================
+
+    def _fix33_schema_unit_required(spec_unit_family: str, spec_unit_tag: str, canonical_key: str) -> bool:
+        uf = str(spec_unit_family or "").strip().lower()
+        ut = str(spec_unit_tag or "").strip().lower()
+        ck = str(canonical_key or "").strip().lower()
+        if uf in {"currency", "percent", "rate", "ratio"}:
+            return True
+        if ut in {"%", "percent"}:
+            return True
+        # Canonical-key suffix conventions (backstop)
+        if ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio"):
+            return True
+        return False
+
+    def _fix33_candidate_has_unit_evidence(c: dict) -> bool:
+        if not isinstance(c, dict):
+            return False
+        # Any explicit unit/currency/% evidence is enough to qualify as "has unit".
+        if str(c.get("unit_tag") or "").strip():
+            return True
+        if str(c.get("unit_family") or "").strip():
+            return True
+        if str(c.get("base_unit") or "").strip():
+            return True
+        if str(c.get("unit") or "").strip():
+            return True
+        if str(c.get("currency_symbol") or c.get("currency") or "").strip():
+            return True
+        if bool(c.get("is_percent") or c.get("has_percent")):
+            return True
+        mk = str(c.get("measure_kind") or "").strip().lower()
+        if mk in {"money", "percent", "percentage", "rate", "ratio"}:
+            return True
+        toks = c.get("unit_tokens") or c.get("unit_evidence_tokens") or []
+        if isinstance(toks, (list, tuple)) and len(toks) > 0:
+            return True
+        return False
+
+    _fix33_dbg = False
+    try:
+        _fix33_dbg = bool((web_context or {}).get("debug_evolution") or ((prev_response or {}).get("debug") or {}).get("debug_evolution"))
+    except Exception:
+        _fix33_dbg = False
+
+
     # -------------------------
     # Resolve frozen schema (supports multiple storage locations)
     # -------------------------
@@ -2985,6 +3056,12 @@ def rebuild_metrics_from_snapshots_schema_only(
         # Score candidates by schema keyword hits, then filter by unit constraints if present.
         best = None
         best_key = None
+
+        # ============================================================
+        # PATCH FIX33 (ADDITIVE): per-metric debug collectors
+        # ============================================================
+        _fix33_top = []
+        _fix33_rej = {}
 
         for c in candidates:
             # PATCH F: strict candidate exclusion at scoring time
@@ -3135,6 +3212,41 @@ def rebuild_metrics_from_snapshots_schema_only(
                     if not (spec_unit_family and str(c.get("unit_family") or "").strip() == spec_unit_family):
                         continue
 
+            # =====================================================================
+            # PATCH FIX33 (ADDITIVE): hard-reject unit-less candidates when unit is required
+            # =====================================================================
+            try:
+                _req = _fix33_schema_unit_required(spec_unit_family, spec_unit_tag, canonical_key)
+                _has_unit_ev = _fix33_candidate_has_unit_evidence(c)
+                if _req and not _has_unit_ev:
+                    # Track rejection (debug)
+                    if _fix33_dbg:
+                        try:
+                            _fix33_rej["missing_unit_required"] = int(_fix33_rej.get("missing_unit_required", 0) or 0) + 1
+                        except Exception:
+                            pass
+                    continue
+
+                # Track top candidates (debug)
+                if _fix33_dbg:
+                    try:
+                        _fix33_top.append({
+                            "raw": c.get("raw"),
+                            "value_norm": c.get("value_norm"),
+                            "unit_tag": c.get("unit_tag"),
+                            "unit_family": c.get("unit_family"),
+                            "base_unit": c.get("base_unit") or c.get("unit"),
+                            "measure_kind": c.get("measure_kind"),
+                            "hits": hits,
+                            "has_unit_ev": bool(_has_unit_ev),
+                            "source_url": c.get("source_url"),
+                            "anchor_hash": c.get("anchor_hash"),
+                        })
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             # Deterministic tie-break:
             #   (-hits, then stable candidate identity tuple)
             tie = (-hits,) + _cand_sort_key(c)
@@ -3175,6 +3287,25 @@ def rebuild_metrics_from_snapshots_schema_only(
                 },
             },
         }
+
+# ============================================================
+        # ============================================================
+        # PATCH FIX33 (ADDITIVE): selection debug (top candidates + rejection counts)
+        # ============================================================
+        try:
+            if _fix33_dbg and isinstance(metric, dict):
+                try:
+                    _fix33_top_sorted = sorted(
+                        _fix33_top,
+                        key=lambda d: (-(int(d.get("hits") or 0)), str(d.get("value_norm") or ""), str(d.get("raw") or "")),
+                    )
+                except Exception:
+                    _fix33_top_sorted = _fix33_top
+                metric.setdefault("provenance", {})
+                metric["provenance"]["fix33_top_candidates"] = list(_fix33_top_sorted[:10])
+                metric["provenance"]["fix33_rejected_reason_counts"] = dict(_fix33_rej or {})
+        except Exception:
+            pass
 
         out[canonical_key] = metric
 
@@ -10488,6 +10619,19 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
     st.markdown("---")
 
     # Interpretation
+
+    # =====================================================================
+    # PATCH FIX39 (ADDITIVE): enforce unit-required gate at render time
+    # =====================================================================
+    try:
+        # best effort: use schema carried on diff (if any) else global latest schema
+        schema = getattr(diff, "metric_schema_frozen", None)
+        if not isinstance(schema, dict):
+            schema = {}
+        _fix39_sanitize_evolutiondiff_object(diff, schema)
+    except Exception:
+        pass
+
     st.subheader("📋 Interpretation")
     st.markdown(explanation.get('interpretation', 'No interpretation available'))
 
@@ -10968,10 +11112,15 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     out.setdefault("metric_changes", [])
     out.setdefault("source_results", [])
     out.setdefault("interpretation", "")
+    # =====================================================================
+    # PATCH FIX39 (ADDITIVE): sanitize evolution output before publish/render
+    # =====================================================================
+    try:
+        _fix39_sanitize_metric_change_rows(out)
+    except Exception:
+        pass
 
     return out
-
-
 # =========================================================
 # ROBUST EVOLUTION HELPERS (DETERMINISTIC)
 # =========================================================
@@ -15607,10 +15756,24 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
                     "value_norm": cand.get("value_norm"),
                     "context_snippet": cand.get("context_snippet") or cand.get("context") or "",
                     "candidate_id": cand.get("candidate_id") or a.get("candidate_id"),
+                    "fix36_origin": "anchor_mapping",  # PATCH FIX36 (ADD): per-metric provenance
                 })
                 current_metrics[ckey] = out_row
     except Exception:
         pass
+
+    # ============================================================
+    # PATCH FIX36 (ADDITIVE): set current_metrics_origin when anchor mapping populated any metrics
+    # ============================================================
+    try:
+        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+            if output["debug"]["fix35"].get("current_metrics_origin") in (None, "", "unknown"):
+                # If any current metric was filled via anchor mapping, stamp origin
+                if isinstance(current_metrics, dict) and any(isinstance(v, dict) and v.get("anchor_used") for v in current_metrics.values()):
+                    output["debug"]["fix35"]["current_metrics_origin"] = "anchor_mapping"
+    except Exception:
+        pass
+    # ============================================================
 
     # Rebuild fallback only if anchors didn't produce metrics
     if not isinstance(current_metrics, dict) or not current_metrics:
@@ -15618,6 +15781,13 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
             fn_rebuild = globals().get("rebuild_metrics_from_snapshots_schema_only") or globals().get("rebuild_metrics_from_snapshots")
             if callable(fn_rebuild):
                 current_metrics = fn_rebuild(prev_response, baseline_sources_cache, web_context=web_context)
+                # PATCH FIX36 (ADD): provenance for rebuild fallback
+                try:
+                    if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                        if output["debug"]["fix35"].get("current_metrics_origin") in (None, "", "unknown"):
+                            output["debug"]["fix35"]["current_metrics_origin"] = "schema_only_rebuild"
+                except Exception:
+                    pass
         except Exception:
             current_metrics = {}
 
@@ -15635,12 +15805,99 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     try:
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
+            # ============================================================
+            # PATCH FIX38 (ADDITIVE): ensure schema is wired into diff layer + emit lookup provenance
+            # - Some runs showed schema_unit_family=None in diff rows, preventing unit-required mismatch logic.
+            # - We attach metric_schema_frozen to prev_response if missing, and post-process diff rows
+            #   to populate schema_unit_family + schema_lookup_source.
+            # ============================================================
+            _fix38_schema = None
+            _fix38_schema_src = ""
+            try:
+                # Prefer schema already on prev_response
+                if isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen"), dict) and prev_response.get("metric_schema_frozen"):
+                    _fix38_schema = prev_response.get("metric_schema_frozen")
+                    _fix38_schema_src = "prev_response.metric_schema_frozen"
+                # Else try common containers on previous_data
+                elif isinstance(previous_data, dict):
+                    if isinstance(previous_data.get("metric_schema_frozen"), dict) and previous_data.get("metric_schema_frozen"):
+                        _fix38_schema = previous_data.get("metric_schema_frozen")
+                        _fix38_schema_src = "previous_data.metric_schema_frozen"
+                    elif isinstance(previous_data.get("primary_response"), dict) and isinstance(previous_data["primary_response"].get("metric_schema_frozen"), dict) and previous_data["primary_response"].get("metric_schema_frozen"):
+                        _fix38_schema = previous_data["primary_response"].get("metric_schema_frozen")
+                        _fix38_schema_src = "previous_data.primary_response.metric_schema_frozen"
+                # Attach if missing
+                if isinstance(_fix38_schema, dict) and _fix38_schema and isinstance(prev_response, dict):
+                    if not (isinstance(prev_response.get("metric_schema_frozen"), dict) and prev_response.get("metric_schema_frozen")):
+                        prev_response["metric_schema_frozen"] = _fix38_schema
+            except Exception:
+                pass
+
+            # Record schema wiring debug
+            try:
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("fix38", {})
+                    output["debug"]["fix38"]["schema_attached"] = bool(isinstance(_fix38_schema, dict) and _fix38_schema)
+                    output["debug"]["fix38"]["schema_source"] = _fix38_schema_src
+            except Exception:
+                pass
+
             cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
+
+            # ============================================================
+            # PATCH FIX38 (ADDITIVE): populate schema_unit_family on diff rows (if missing)
+            # ============================================================
+            try:
+                if isinstance(metric_changes, list) and metric_changes and isinstance(_fix38_schema, dict) and _fix38_schema:
+                    bad = {}
+                    for row in metric_changes:
+                        if not isinstance(row, dict):
+                            continue
+                        ckey = row.get("canonical_key") or row.get("canonical") or row.get("key") or ""
+                        if not ckey:
+                            continue
+                        if row.get("schema_unit_family") in (None, "", "None"):
+                            md = _fix38_schema.get(ckey) if isinstance(_fix38_schema.get(ckey), dict) else None
+                            uf = ""
+                            if isinstance(md, dict):
+                                uf = (md.get("unit_family") or md.get("unit") or "").strip()
+                            if uf:
+                                row["schema_unit_family"] = uf
+                                row["fix38_schema_lookup"] = _fix38_schema_src or "attached_schema"
+                        # Track any remaining year-like current with missing unit-family for diagnosis
+                        try:
+                            cv = row.get("cur_value_norm")
+                            cu = (row.get("cur_unit_cmp") or "").strip()
+                            if isinstance(cv, (int, float)) and 1900 <= float(cv) <= 2100 and not cu:
+                                bad[ckey] = {"cur_value_norm": cv, "cur_unit_cmp": cu, "schema_unit_family": row.get("schema_unit_family")}
+                        except Exception:
+                            pass
+                    if bad:
+                        output.setdefault("debug", {}).setdefault("fix38", {})["bad_year_currents_sample"] = dict(list(bad.items())[:10])
+            except Exception:
+                pass
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
         metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+
+    # ============================================================
+    # PATCH FIX36 (ADDITIVE): attach per-row provenance from current_metrics
+    # - Adds row['fix36_origin'] when available so we can see which path produced 'Current'
+    # ============================================================
+    try:
+        if isinstance(metric_changes, list) and isinstance(current_metrics, dict):
+            for r in metric_changes:
+                if not isinstance(r, dict):
+                    continue
+                ck = r.get("canonical_key") or r.get("canonical") or ""
+                if ck and isinstance(current_metrics.get(ck), dict):
+                    if current_metrics[ck].get("fix36_origin"):
+                        r["fix36_origin"] = current_metrics[ck].get("fix36_origin")
+    except Exception:
+        pass
+    # ============================================================
 
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
@@ -16011,6 +16268,26 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         "generated_at": _now(),
     }
 
+    # =====================================================================
+    # PATCH FIX35 (ADDITIVE): emit origin + hash debugging for process-of-elimination
+    # - Always stamp CODE_VERSION into output
+    # - Create output['debug'] container (non-breaking)
+    # - Track fastpath eligibility + reason in a deterministic way
+    # =====================================================================
+    try:
+        output["code_version"] = CODE_VERSION
+    except Exception:
+        pass
+    try:
+        if not isinstance(output.get("debug"), dict):
+            output["debug"] = {}
+        output["debug"].setdefault("fix35", {})
+        output["debug"]["fix35"]["current_metrics_origin"] = "unknown"
+        output["debug"]["fix35"]["fastpath_eligible"] = False
+        output["debug"]["fix35"]["fastpath_reason"] = ""
+    except Exception:
+        pass
+
     # Attach debug flags (rehydration + snapshot_debug)
     try:
         if _prev_rehydrated:
@@ -16187,24 +16464,131 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             payload = _fix31_stable_dumps(rows).encode("utf-8", errors="ignore")
             return _fix31_hashlib.sha256(payload).hexdigest()
 
+        # =========================
+        # PATCH FIX37 (ADD): stable snapshot hash for fastpath alignment
+        # - Use the SAME hash function as analysis (compute_source_snapshot_hash_v2) whenever possible.
+        # - Falls back to legacy compute_source_snapshot_hash, then to the reduced fingerprint.
+        # =========================
+        def _fix37_snapshot_hash_stable(bsc):
+            try:
+                if isinstance(bsc, list) and bsc:
+                    try:
+                        _h2 = compute_source_snapshot_hash_v2(bsc)
+                        if _h2:
+                            return str(_h2)
+                    except Exception:
+                        pass
+                    try:
+                        _h1 = compute_source_snapshot_hash(bsc)
+                        if _h1:
+                            return str(_h1)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return _fix31_snapshot_fingerprint(bsc)
+
         _prev_hash = None
+        _prev_hash_stable = None
         if isinstance(previous_data, dict):
-            _prev_hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
+            # =========================
+            # PATCH FIX37 (ADD): prefer stable hash keys when available
+            # =========================
+            _prev_hash_stable = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2")
+            try:
+                if not _prev_hash_stable and isinstance(previous_data.get("results"), dict):
+                    _prev_hash_stable = (previous_data.get("results") or {}).get("source_snapshot_hash_stable") or (previous_data.get("results") or {}).get("source_snapshot_hash_v2")
+            except Exception:
+                pass
+            _prev_hash = _prev_hash_stable or previous_data.get("source_snapshot_hash")
+            try:
+                if not _prev_hash and isinstance(previous_data.get("results"), dict):
+                    _prev_hash = (previous_data.get("results") or {}).get("source_snapshot_hash")
+            except Exception:
+                pass
+
+# PATCH FIX36 (ADDITIVE): populate explicit fastpath ineligibility reasons
+        # - Record current/previous hashes even on mismatch
+        # - Explain which prerequisite failed (no_prev_hash / no_prev_metrics / no_snapshots / hash_mismatch)
+        # ============================================================
+        _fix36_cur_hash = None
+        _fix36_reason = ""
+        try:
+            if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
+                _fix36_reason = "no_snapshots"
+            elif not (isinstance(prev_metrics, dict) and prev_metrics):
+                _fix36_reason = "no_prev_metrics"
+            else:
+                _fix36_cur_hash = _fix37_snapshot_hash_stable(baseline_sources_cache)
+                if not (isinstance(_prev_hash, str) and _prev_hash):
+                    _fix36_reason = "no_prev_hash"
+                elif _fix36_cur_hash != _prev_hash:
+                    _fix36_reason = "hash_mismatch"
+                else:
+                    _fix36_reason = "hash_match_and_prev_metrics_present"
+            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                # Preserve any earlier reason, but fill if empty
+                if not output["debug"]["fix35"].get("fastpath_reason"):
+                    output["debug"]["fix35"]["fastpath_reason"] = _fix36_reason
+                output["debug"]["fix35"]["fastpath_eligible"] = bool(_fix36_reason == "hash_match_and_prev_metrics_present")
+                if _fix36_cur_hash:
+                    output["debug"]["fix35"]["source_snapshot_hash_current"] = _fix36_cur_hash
+                    output["debug"]["fix35"]["source_snapshot_hash_current_alg"] = "fix37_stable_v2_preferred"
+                if isinstance(_prev_hash, str) and _prev_hash:
+                    output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+                # PATCH FIX37 (ADD): also expose stable-hash candidate if available
+                try:
+                    if isinstance(_prev_hash_stable, str) and _prev_hash_stable:
+                        output["debug"]["fix35"]["source_snapshot_hash_previous_stable"] = _prev_hash_stable
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # ============================================================
 
         # Only attempt fast-path if we have snapshots AND prior canonical metrics to reuse
         if isinstance(baseline_sources_cache, list) and baseline_sources_cache and isinstance(prev_metrics, dict) and prev_metrics:
-            _cur_hash = _fix31_snapshot_fingerprint(baseline_sources_cache)
-            if isinstance(_prev_hash, str) and _prev_hash and _cur_hash == _prev_hash:
+            # ============================================================
+            # PATCH FIX38 (ADDITIVE): align FIX31 authoritative reuse with FIX37 stable hash
+            # - Previously FIX31 compared a v1 fingerprint against prev source_snapshot_hash,
+            #   which could mismatch even when data was unchanged.
+            # - We now prefer the same stable/v2 hash used by analysis & FIX37 debug.
+            # ============================================================
+            _cur_hash_v1 = _fix31_snapshot_fingerprint(baseline_sources_cache)
+            try:
+                _cur_hash = _fix37_snapshot_hash_stable(baseline_sources_cache)
+            except Exception:
+                _cur_hash = _cur_hash_v1
+
+            # Prefer stable/v2 previous hash if present
+            _prev_hash_pref = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
+
+            if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
                 _fix31_authoritative_reuse = True
                 try:
                     output["rebuild_skipped"] = True
                     output["rebuild_skipped_reason"] = "fix31_sources_unchanged_reuse_prev_metrics"
                     output["source_snapshot_hash_current"] = _cur_hash
                     output["source_snapshot_hash_previous"] = _prev_hash
+                    try:
+                        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                            output["debug"]["fix35"]["fastpath_eligible"] = True
+                            output["debug"]["fix35"]["fastpath_reason"] = "hash_match_and_prev_metrics_present"
+                            output["debug"]["fix35"]["source_snapshot_hash_current"] = _cur_hash
+                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = _prev_hash
+                            output["debug"]["fix35"]["current_metrics_origin"] = "reuse_processed_metrics_fastpath"
+                    except Exception:
+                        pass
                 except Exception:
                     pass
     except Exception:
         _fix31_authoritative_reuse = False
+        try:
+            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                if not output["debug"]["fix35"].get("fastpath_reason"):
+                    output["debug"]["fix35"]["fastpath_reason"] = "fastpath_not_taken_or_exception"
+        except Exception:
+            pass
     # =====================================================================
 
     # Build a minimal current metrics dict from snapshots:
@@ -16368,6 +16752,122 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
+
+    # =====================================================================
+    # PATCH FIX35 (ADDITIVE): attach bad-current traces for unit-required metrics
+    # - If a diff row shows a year-like integer as current for a unit-required metric,
+    #   emit a compact trace: origin, schema unit_family, current fields, and top candidates.
+    # =====================================================================
+    try:
+        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+            bad_traces = {}
+            # Build a flattened candidate pool once (from snapshots only)
+            flat = []
+            for sr in baseline_sources_cache or []:
+                if isinstance(sr, dict):
+                    for c in (sr.get("extracted_numbers") or []):
+                        if isinstance(c, dict):
+                            flat.append(c)
+
+            def _is_yearlike(v):
+                try:
+                    iv = int(float(v))
+                    return 1900 <= iv <= 2100
+                except Exception:
+                    return False
+
+            def _schema_unit_required(md: dict, ckey: str = "") -> bool:
+                uf = ((md or {}).get("unit_family") or (md or {}).get("unit") or "").strip().lower()
+                if uf in {"currency", "percent", "rate", "ratio"}:
+                    return True
+                ck = (ckey or "").lower().strip()
+                return ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio")
+
+            def _cand_unit_evidence(c: dict) -> bool:
+                if not isinstance(c, dict):
+                    return False
+                if (c.get("unit_tag") or c.get("unit") or c.get("unit_norm") or c.get("unit_raw") or "").strip():
+                    return True
+                if (c.get("currency") or c.get("currency_symbol") or "").strip():
+                    return True
+                if c.get("is_percent") or c.get("has_percent"):
+                    return True
+                if (c.get("base_unit") or "").strip():
+                    return True
+                if (c.get("unit_family") or "").strip():
+                    return True
+                if isinstance(c.get("unit_tokens"), list) and c.get("unit_tokens"):
+                    return True
+                return False
+
+            schema = {}
+            try:
+                if isinstance(previous_data, dict):
+                    pr = previous_data.get("primary_response") if isinstance(previous_data.get("primary_response"), dict) else previous_data
+                    schema = (pr.get("metric_schema_frozen") or {}) if isinstance(pr, dict) else {}
+            except Exception:
+                schema = {}
+
+            for row in output.get("metric_changes") or []:
+                try:
+                    ckey = row.get("canonical_key") or row.get("canonical") or ""
+                    md = schema.get(ckey) if isinstance(schema, dict) else None
+                    if not _schema_unit_required(md or {}, ckey):
+                        continue
+
+                    cur_val = row.get("current_value_norm")
+                    cur_unit = (row.get("cur_unit_cmp") or row.get("current_unit") or "").strip()
+                    if cur_val is None:
+                        continue
+                    if not _is_yearlike(cur_val):
+                        continue
+                    if cur_unit:
+                        continue
+
+                    kws = []
+                    if isinstance(md, dict):
+                        kws = md.get("keywords") or md.get("keyword_hints") or []
+                    kws = [str(k).lower() for k in kws if str(k).strip()]
+
+                    def _hit_score(c):
+                        ctx = (c.get("context") or c.get("window") or c.get("context_window") or "").lower()
+                        score = 0
+                        for k in kws[:25]:
+                            if k and k in ctx:
+                                score += 1
+                        if _cand_unit_evidence(c):
+                            score += 5
+                        if _is_yearlike(c.get("value_norm")) and not _cand_unit_evidence(c):
+                            score -= 5
+                        return score
+
+                    top = sorted(flat, key=_hit_score, reverse=True)[:10]
+                    bad_traces[ckey or row.get("name") or "unknown_metric"] = {
+                        "current_value_norm": cur_val,
+                        "cur_unit_cmp": cur_unit,
+                        "schema_unit_family": (md or {}).get("unit_family") if isinstance(md, dict) else "",
+                        "origin": output["debug"]["fix35"].get("current_metrics_origin", "unknown"),
+                        "top_candidates": [
+                            {
+                                "raw": t.get("raw"),
+                                "value_norm": t.get("value_norm"),
+                                "unit_tag": t.get("unit_tag"),
+                                "unit_family": t.get("unit_family"),
+                                "base_unit": t.get("base_unit"),
+                                "has_unit_evidence": bool(_cand_unit_evidence(t)),
+                                "anchor_hash": t.get("anchor_hash"),
+                            }
+                            for t in top
+                        ],
+                    }
+                except Exception:
+                    continue
+
+            if bad_traces:
+                output["debug"]["fix35"]["bad_current_traces"] = bad_traces
+                output["debug"]["fix35"]["bad_current_trace_count"] = len(bad_traces)
+    except Exception:
+        pass
 
     return output
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
@@ -18194,6 +18694,168 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 # 10. MAIN APPLICATION
 # =========================================================
 
+# ==============================================================================
+# PATCH FIX39 (ADDITIVE): Final publish/render unit-required hard gate
+#
+# Why:
+# - Even if upstream selection is tightened, some paths (UI render, sheet publish,
+#   legacy mappings) can still surface unit-less year-like integers (e.g., 2024/2025)
+#   in the "Current" column for unit-required metrics (currency/percent/rate/ratio).
+# - FIX39 enforces the invariant at the last mile: right before rendering/publishing.
+#
+# Behavior:
+# - For each metric change row (dict-form) and each EvolutionDiff metric entry (object-form),
+#   if schema indicates unit required (via unit_family or canonical_key suffix) AND
+#   current value lacks token-level unit evidence, then:
+#     * blank out Current/new_raw
+#     * set unit_mismatch flag / change_type to "unit_mismatch" where possible
+# - Purely additive; does not refactor upstream pipelines.
+# ==============================================================================
+
+def _fix39_schema_unit_required(metric_def: dict, canonical_key: str = "") -> bool:
+    try:
+        uf = str((metric_def or {}).get("unit_family") or (metric_def or {}).get("unit") or "").strip().lower()
+        if uf in {"currency", "percent", "rate", "ratio"}:
+            return True
+    except Exception:
+        pass
+    ck = (canonical_key or "").strip().lower()
+    if ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio"):
+        return True
+    # unit_tag explicit
+    try:
+        ut = str((metric_def or {}).get("unit_tag") or "").strip()
+        if ut:
+            # if schema explicitly wants a unit token, treat as required
+            return True
+    except Exception:
+        pass
+    return False
+
+def _fix39_has_unit_evidence(metric_like: dict) -> bool:
+    """Token-level unit evidence check (tolerant across shapes)."""
+    try:
+        m = metric_like if isinstance(metric_like, dict) else {}
+        for k in ("unit", "unit_tag", "base_unit", "unit_family", "currency", "currency_symbol"):
+            if str(m.get(k) or "").strip():
+                return True
+        if bool(m.get("is_percent") or m.get("has_percent")):
+            return True
+        # Some rows store comparator field
+        if str(m.get("cur_unit_cmp") or "").strip():
+            return True
+        raw = str(m.get("raw") or m.get("value") or m.get("new_raw") or "")
+        if raw and any(sym in raw for sym in ("$", "€", "£", "¥", "%")):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _fix39_sanitize_metric_change_rows(results_dict: dict) -> None:
+    """Sanitize dict-based evolution results before publishing/rendering."""
+    if not isinstance(results_dict, dict):
+        return
+    try:
+        schema = results_dict.get("metric_schema_frozen") or results_dict.get("schema") or {}
+        metric_changes = None
+        # common nesting patterns
+        if isinstance(results_dict.get("results"), dict) and isinstance(results_dict["results"].get("metric_changes"), list):
+            metric_changes = results_dict["results"]["metric_changes"]
+        elif isinstance(results_dict.get("metric_changes"), list):
+            metric_changes = results_dict.get("metric_changes")
+
+        if not isinstance(metric_changes, list):
+            return
+
+        bad = []
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+            ck = row.get("canonical_key") or row.get("canonical") or row.get("key") or ""
+            md = {}
+            try:
+                if isinstance(schema, dict) and ck in schema:
+                    md = schema.get(ck) or {}
+            except Exception:
+                md = {}
+            if _fix39_schema_unit_required(md, ck):
+                # current fields may be in different keys
+                cur_like = {
+                    "unit": row.get("current_unit") or row.get("cur_unit") or row.get("unit") or "",
+                    "unit_tag": row.get("current_unit_tag") or row.get("unit_tag") or "",
+                    "unit_family": row.get("schema_unit_family") or "",
+                    "cur_unit_cmp": row.get("cur_unit_cmp") or "",
+                    "raw": row.get("current_value") or row.get("current_raw") or row.get("Current") or "",
+                    "new_raw": row.get("new_raw") or "",
+                    "currency_symbol": row.get("currency_symbol") or "",
+                    "is_percent": row.get("is_percent") or False,
+                }
+                if not _fix39_has_unit_evidence(cur_like):
+                    # invalidate
+                    row["unit_mismatch"] = True
+                    # prefer explicit fields if present
+                    for k in ("current_value", "current_raw", "new_raw", "Current"):
+                        if k in row:
+                            row[k] = ""
+                    if "current_value_norm" in row:
+                        row["current_value_norm"] = None
+                    if "cur_value_norm" in row:
+                        row["cur_value_norm"] = None
+                    # normalize change_type
+                    if row.get("change_type") not in ("unit_mismatch", "invalid_current"):
+                        row["change_type"] = "unit_mismatch"
+                    bad.append(str(ck))
+        # small debug marker
+        dbg = results_dict.setdefault("debug", {})
+        f39 = dbg.setdefault("fix39", {})
+        f39["invalidated_count"] = len(bad)
+        if bad:
+            f39["invalidated_keys_sample"] = bad[:20]
+    except Exception:
+        return
+
+def _fix39_sanitize_evolutiondiff_object(diff_obj, metric_schema_frozen: dict = None):
+    """Sanitize object-based EvolutionDiff (used by Streamlit renderer)."""
+    try:
+        schema = metric_schema_frozen or {}
+        mdiffs = getattr(diff_obj, "metric_diffs", None)
+        if not mdiffs:
+            return diff_obj
+        bad = []
+        for m in mdiffs:
+            try:
+                ck = getattr(m, "canonical_key", "") or getattr(m, "canonical", "") or ""
+                md = schema.get(ck) if isinstance(schema, dict) else {}
+                if _fix39_schema_unit_required(md or {}, ck):
+                    unit = getattr(m, "unit", "") or ""
+                    new_raw = getattr(m, "new_raw", None)
+                    # basic evidence check: unit or symbol in new_raw
+                    has_e = bool(str(unit).strip())
+                    if not has_e:
+                        s = str(new_raw or "")
+                        if any(sym in s for sym in ("$", "€", "£", "¥", "%")):
+                            has_e = True
+                    if not has_e:
+                        # invalidate
+                        try: setattr(m, "new_raw", "")
+                        except Exception: pass
+                        try: setattr(m, "new_value", None)
+                        except Exception: pass
+                        try: setattr(m, "change_type", "unit_mismatch")
+                        except Exception: pass
+                        bad.append(str(ck))
+            except Exception:
+                continue
+        try:
+            dbg = getattr(diff_obj, "debug", None)
+            if isinstance(dbg, dict):
+                dbg.setdefault("fix39", {})["invalidated_count"] = len(bad)
+        except Exception:
+            pass
+        return diff_obj
+    except Exception:
+        return diff_obj
+
 def main():
     st.set_page_config(
         page_title="Yureeka Market Report",
@@ -18460,6 +19122,21 @@ def main():
             else:
                 st.warning("⚠️ Using session storage")
 
+            # =====================================================================
+            # PATCH FIX40 (ADDITIVE): Scenario B control — Force rebuild toggle
+            # - Streamlit Cloud UI has no free-text question editing (dropdown-only).
+            # - This toggle lets you intentionally bypass the unchanged fastpath so you
+            #   can validate the rebuild path + FIX39 publish invariants.
+            # - Pure UI flag; no logic changes unless explicitly enabled.
+            # =====================================================================
+            force_rebuild = st.checkbox(
+                "🧪 Force rebuild (ignore snapshot fastpath)",
+                value=False,
+                key="fix41_force_rebuild_toggle",
+                help="Debug only: forces evolution to rebuild even if sources+data are unchanged."
+            )
+            # =====================================================================
+
         # ✅ FIX: your codebase uses get_history(), not load_history()
         history = get_history()
 
@@ -18509,7 +19186,7 @@ def main():
 
                 with st.spinner("🧬 Running source-anchored evolution..."):
                     try:
-                        results = run_source_anchored_evolution(baseline_data)
+                        results = run_source_anchored_evolution(baseline_data, web_context={"force_rebuild": bool(force_rebuild)})  # PATCH FIX41 (ADD): pass force_rebuild flag explicitly  # PATCH FIX40 (ADD): pass force_rebuild flag
                     except Exception as e:
                         st.error(f"❌ Evolution failed: {e}")
                         return
@@ -20034,6 +20711,19 @@ def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
     }
 
 
+# =====================================================================
+# PATCH FIX41 (ADDITIVE): Normalize web_context and capture force_rebuild
+# Ensures the UI flag reaches the fastpath gate and is recorded in output.
+# =====================================================================
+if web_context is None or not isinstance(web_context, dict):
+    web_context = {}
+_fix41_force_rebuild_seen = False
+try:
+    _fix41_force_rebuild_seen = bool(web_context.get("force_rebuild"))
+except Exception:
+    _fix41_force_rebuild_seen = False
+# =====================================================================
+
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
     """
     PATCH FIX24 (ADDITIVE): Evolution flow is:
@@ -20063,18 +20753,62 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     equal_v1 = bool(prev_hashes.get("v1") and cur_hashes.get("v1") and prev_hashes["v1"] == cur_hashes["v1"])
     unchanged = equal_v2 or (not prev_hashes.get("v2") and equal_v1)
 
-    if unchanged:
+    # =====================================================================
+    # PATCH FIX40 (ADDITIVE): Force rebuild override (Scenario B)
+    # If the UI (or caller) requests force_rebuild, we intentionally bypass
+    # the unchanged fastpath even if hashes match, to exercise rebuild logic.
+    # =====================================================================
+    _force_rebuild = False
+    try:
+        _force_rebuild = bool((web_context or {}).get("force_rebuild"))
+    except Exception:
+        _force_rebuild = False
+    if _force_rebuild:
+        unchanged = False
+        _fix41_force_rebuild_honored = True
+    else:
+        _fix41_force_rebuild_honored = False
+    # =====================================================================
+
+     if unchanged:
         hashes = {
             "prev_v2": prev_hashes.get("v2",""),
             "cur_v2": cur_hashes.get("v2",""),
             "prev_v1": prev_hashes.get("v1",""),
             "cur_v1": cur_hashes.get("v1",""),
         }
-        return _fix24_make_replay_output(prev_full, hashes)
+        out_replay = _fix24_make_replay_output(prev_full, hashes)
+
+        # =====================================================================
+        # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to replay output
+        # =====================================================================
+        try:
+            if isinstance(out_replay, dict):
+                out_replay.setdefault("code_version", CODE_VERSION)
+                out_replay.setdefault("debug", {}).setdefault("fix41", {})
+                out_replay["debug"]["fix41"].update({
+                    "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
+                    "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)),
+                    "path": "replay_unchanged",
+                })
+        except Exception:
+            pass
+
+        return out_replay
 
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
     # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
     wc = {"scraped_meta": scraped_meta}
+
+    # =====================================================================
+    # PATCH FIX40 (ADDITIVE): Preserve caller flags (e.g., force_rebuild) into web_context
+    # so downstream diff/rebuild logic can record provenance if needed.
+    # =====================================================================
+    try:
+        if isinstance(web_context, dict):
+            wc.update({k: v for k, v in web_context.items() if k != "scraped_meta"})
+    except Exception:
+        pass
 
     if callable(run_source_anchored_evolution_BASE):
         try:
@@ -20084,12 +20818,17 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 if isinstance(out["debug"], dict):
                     out["debug"]["fix24"] = True
                     out["debug"]["fix24_mode"] = "recompute_changed"
+                    # =====================================================================
+                    # PATCH FIX40 (ADDITIVE): record Scenario B override
+                    # =====================================================================
+                    out["debug"]["fix40_force_rebuild"] = bool(_force_rebuild)
+                    # =====================================================================
                     out["debug"]["prev_source_snapshot_hash_v2"] = prev_hashes.get("v2","")
                     out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
                     out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
                     out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
             return out
-        except Exception as e:
+        except Exception:
             # Fall through to original behavior if anything unexpected
             pass
 
@@ -20097,7 +20836,22 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     fn = globals().get("compute_source_anchored_diff")
     if callable(fn):
         try:
-            return fn(prev_full, web_context=wc)
+            out_changed = fn(prev_full, web_context=wc)
+# =====================================================================
+# PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to changed output
+# =====================================================================
+try:
+    if isinstance(out_changed, dict):
+        out_changed.setdefault("code_version", CODE_VERSION)
+        out_changed.setdefault("debug", {}).setdefault("fix41", {})
+        out_changed["debug"]["fix41"].update({
+            "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
+            "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)) or bool(_fix41_force_rebuild_seen),
+            "path": "changed_compute_source_anchored_diff",
+        })
+except Exception:
+    pass
+return out_changed
         except Exception:
             pass
 
@@ -20109,3 +20863,141 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         "metric_changes": [],
         "debug": {"fix24": True, "fix24_mode": "recompute_failed"},
     }
+
+
+# ==============================================================================
+# FIX32 (ADDITIVE): Unit-required hard gate in evolution diff rendering
+#
+# Problem:
+# - Evolution diff table can show unit-less / year-like integers (e.g. 2024, 2033, 1500)
+#   in the "Current" column for metrics whose schema requires currency/percent/rate/ratio.
+# - This happens when upstream selection or LLM delta yields a numeric candidate that lacks
+#   token-level unit evidence (unit_tag/unit_family/base_unit empty), and the diff layer
+#   currently treats it as a valid numeric current value.
+#
+# Target invariant:
+# - For any metric with unit_family in {currency, percent, rate, ratio} (or with a non-empty
+#   unit_tag/unit), a unit-less candidate must be treated as ineligible and must not be
+#   rendered as a valid "Current" value in the evolution table/output.
+#
+# Approach (purely additive):
+# - Preserve existing diff implementation as diff_metrics_by_name_FIX31_BASE.
+# - Override diff_metrics_by_name with a wrapper that post-processes each row:
+#     * if schema says unit is required AND current unit evidence is missing,
+#       then mark unit_mismatch=True and render current_value="N/A" (and cur_value_norm=None).
+# - No refactors; does not change upstream extraction/building logic, only prevents
+#   unit-less values from appearing as "valid" in evolution output.
+# ==============================================================================
+try:
+    diff_metrics_by_name_FIX31_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_FIX31_BASE = None  # type: ignore
+
+def _fix32_metric_requires_unit(metric_def: dict) -> bool:
+    """Return True if schema implies this metric requires unit evidence."""
+    try:
+        spec = metric_def if isinstance(metric_def, dict) else {}
+        uf = str(spec.get("unit_family") or "").strip().lower()
+        ut = str(spec.get("unit_tag") or spec.get("unit") or "").strip()
+        # Core families we treat as unit-required
+        if uf in ("currency", "percent", "rate", "ratio"):
+            return True
+        # If schema explicitly declares a unit tag/unit, treat as required (except year/time-ish)
+        if ut:
+            # Avoid requiring "year" units
+            blob = (uf + " " + ut + " " + str(spec.get("name") or "")).lower()
+            if "year" in blob or "time" in blob:
+                return False
+            return True
+    except Exception:
+        pass
+    return False
+
+def _fix32_has_token_unit_evidence(metric_row: dict) -> bool:
+    """
+    Token-level unit evidence heuristic:
+    - Prefer structured fields: base_unit/unit/unit_tag/unit_family
+    - Fall back to raw token containing '$' or '%' or currency code immediately adjacent.
+    Deterministic; does NOT attempt any NLP.
+    """
+    try:
+        m = metric_row if isinstance(metric_row, dict) else {}
+        for k in ("base_unit", "unit", "unit_tag", "unit_family"):
+            if str(m.get(k) or "").strip():
+                return True
+
+        raw = str(m.get("raw") or m.get("value") or "")
+        if not raw:
+            return False
+        r = raw.strip()
+        rl = r.lower()
+
+        # direct symbol evidence on the token
+        if any(sym in r for sym in ("$", "€", "£", "¥", "%")):
+            return True
+
+        # compact currency codes adjacent to the token
+        # NOTE: keep conservative (requires code in same token string)
+        if any(code in rl for code in ("usd", "sgd", "eur", "gbp", "aud", "cad", "jpy", "cny")):
+            return True
+
+    except Exception:
+        return False
+    return False
+
+def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
+    """
+    FIX32 wrapper: calls existing diff, then enforces the unit-required hard gate at render time.
+    """
+    if not callable(diff_metrics_by_name_FIX31_BASE):
+        # Fallback: nothing we can do
+        return ([], 0, 0, 0, 0)
+
+    metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_FIX31_BASE(prev_response, cur_response)
+
+    try:
+        if not isinstance(metric_changes, list):
+            return metric_changes, unchanged, increased, decreased, found
+
+        for row in metric_changes:
+            if not isinstance(row, dict):
+                continue
+
+            md = row.get("metric_definition") or {}
+            if not _fix32_metric_requires_unit(md):
+                continue
+
+            cur_unit_cmp = str(row.get("cur_unit_cmp") or "").strip()
+            # If diff already says mismatch, keep it; we only add the missing-unit mismatch
+            if cur_unit_cmp:
+                continue
+
+            # Determine whether the current-side metric row shows any unit evidence at all
+            # We use the current canonical row when present; else fall back to row fields.
+            cur_metrics = (cur_response or {}).get("primary_metrics_canonical") or {}
+            ck = row.get("canonical_key") or ""
+            cm = cur_metrics.get(ck) if isinstance(cur_metrics, dict) else None
+
+            has_ev = _fix32_has_token_unit_evidence(cm or {})
+            if not has_ev:
+                # Enforce: missing unit where required => mismatch + no current value rendered
+                row["unit_mismatch"] = True
+                row["cur_unit_cmp"] = ""
+                row["current_value"] = "N/A"
+                row["cur_value_norm"] = None
+
+                # Make the reason machine-detectable (non-breaking extra field)
+                row.setdefault("guardrail_reason", "unit_required_missing_current_unit")
+
+                # Re-classify change as unit_mismatch (keeps deterministic reporting)
+                row["change_type"] = "unit_mismatch"
+                row["change_pct"] = None
+
+    except Exception:
+        pass
+
+    return metric_changes, unchanged, increased, decreased, found
+
+# ==============================================================================
+# END FIX32
+# ==============================================================================
