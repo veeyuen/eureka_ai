@@ -79,9 +79,18 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v15"  # PATCH FIX41G (ADD): set CODE_VERSION to filename  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v30'  # PATCH FIX41F (ADD): set CODE_VERSION to filename
+# =====================================================================
+# PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
+# =====================================================================
+#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v21'
+
+# =====================================================================
+# PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
+# =====================================================================
+#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "fix41afc6_evo_fetch_injected_urls_when_delta_v1"
+#CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v30"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
@@ -14695,6 +14704,21 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 pass
 
         # 2) legacy parse path
+        # =================================================================
+        # PATCH V27_DISABLE_NUMERIC_INFERENCE_FOR_CURRENT (ADDITIVE)
+        # When canonical-for-render is active, do NOT infer/parse numbers from
+        # free-form raw strings for CURRENT-side metrics. We only trust
+        # schema-canonical value_norm emitted by the rebuild layer.
+        #
+        # Activation: cur_response['_disable_numeric_inference_v27'] == True
+        # Safety: render/diff-layer only. Does not touch fastpath/hashing/etc.
+        # =================================================================
+        try:
+            if isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
+                u = str(m.get("unit") or "").strip()
+                return None, u
+        except Exception:
+            pass
         u = str(m.get("unit") or "").strip()
         v = parse_num(m.get("value"), u)
         return v, u
@@ -14966,6 +14990,39 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 
             cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
 
+
+            # =====================================================================
+            # PATCH FIX2B_EVO_CURFIELDS_V1 (ADDITIVE): enrich evolution "Current" fields with unit + range (analysis semantics)
+            #
+            # Why:
+            # - Evolution dashboard / sheet sanitizer (_fix39_has_unit_evidence) may blank rows when "current_value"
+            #   lacks unit evidence even though the canonical metric has unit/value_norm.
+            # - Also ensure any attached value_range is rendered in schema units (no scaling here).
+            #
+            # Notes:
+            # - Purely additive: does not change change_pct logic (which uses value_norm via get_canonical_value_and_unit).
+            # - Does NOT re-scale value_norm; assumes value_norm is already schema-normalized (FIX16/PH2B semantics).
+            # =====================================================================
+            _cur_unit_tag = (cm.get("unit") or cm.get("unit_tag") or "").strip()
+            _cur_value_txt = "" if cur_raw is None else str(cur_raw).strip()
+            _cur_raw_display = _cur_value_txt
+            try:
+                if _cur_unit_tag and _cur_value_txt and (_cur_unit_tag not in _cur_value_txt):
+                    _cur_raw_display = f"{_cur_value_txt} {_cur_unit_tag}".strip()
+            except Exception:
+                pass
+
+            _cur_value_range = None
+            _cur_value_range_display = ""
+            try:
+                if isinstance(cm.get("value_range"), dict):
+                    _cur_value_range = dict(cm.get("value_range"))
+                    if _cur_unit_tag and ("min" in _cur_value_range) and ("max" in _cur_value_range):
+                        _cur_value_range_display = f"{_cur_value_range['min']:g}–{_cur_value_range['max']:g} {_cur_unit_tag}".strip()
+            except Exception:
+                pass
+            # =====================================================================
+
             # =========================================================================
             # PATCH D0 (ADDITIVE): anchor identity (do NOT force unchanged)
             # =========================================================================
@@ -15036,6 +15093,11 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 "name": display_name,
                 "previous_value": prev_raw,
                 "current_value": cur_raw,
+                "current_raw": _cur_raw_display,
+                "current_unit_tag": _cur_unit_tag,
+                "current_value_norm": cm.get("value_norm"),
+                "current_value_range": _cur_value_range,
+                "current_value_range_display": _cur_value_range_display,
                 "change_pct": change_pct,
                 "change_type": change_type,
                 "match_confidence": float(match_conf),
@@ -15234,6 +15296,21 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 pass
 
         # 2) legacy parse path
+        # =================================================================
+        # PATCH V27_DISABLE_NUMERIC_INFERENCE_FOR_CURRENT (ADDITIVE)
+        # When canonical-for-render is active, do NOT infer/parse numbers from
+        # free-form raw strings for CURRENT-side metrics. We only trust
+        # schema-canonical value_norm emitted by the rebuild layer.
+        #
+        # Activation: cur_response['_disable_numeric_inference_v27'] == True
+        # Safety: render/diff-layer only. Does not touch fastpath/hashing/etc.
+        # =================================================================
+        try:
+            if isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
+                u = str(m.get("unit") or "").strip()
+                return None, u
+        except Exception:
+            pass
         u = str(m.get("unit") or "").strip()
         v = parse_num(m.get("value"), u)
         return v, u
@@ -15806,6 +15883,21 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
                 pass
 
         # 2) legacy parse path
+        # =================================================================
+        # PATCH V27_DISABLE_NUMERIC_INFERENCE_FOR_CURRENT (ADDITIVE)
+        # When canonical-for-render is active, do NOT infer/parse numbers from
+        # free-form raw strings for CURRENT-side metrics. We only trust
+        # schema-canonical value_norm emitted by the rebuild layer.
+        #
+        # Activation: cur_response['_disable_numeric_inference_v27'] == True
+        # Safety: render/diff-layer only. Does not touch fastpath/hashing/etc.
+        # =================================================================
+        try:
+            if isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
+                u = str(m.get("unit") or "").strip()
+                return None, u
+        except Exception:
+            pass
         u = str(m.get("unit") or "").strip()
         v = parse_num(m.get("value"), u)
         return v, u
@@ -19320,17 +19412,1274 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
     # =====================================================================
-# Diff using existing diff helper if present
+
+    # =====================================================================
+    # PATCH V19_HARDWIRE_EVO_CANONICAL (ADDITIVE)
+    # Objective:
+    # - Ensure Evolution diff "current" side is built from the same canonical semantics as Analysis
+    #   by forcing a best-effort canonical rebuild for DISPLAY/DIFF, even when earlier logic
+    #   skipped due to authoritative reuse or pool-resolution drift.
+    # - Adds two minimal diagnostics:
+    #   (2) debug.fix41afc19 truth table (attempted/applied/skip_reason + keys_sample + pool_count)
+    #   (3) debug.evo_winner_trace_v1 for key EV metrics (winner provenance + top3 candidate glimpse)
+    # Safety:
+    # - Additive-only. Does not modify hashing inputs or snapshot attach. Affects only what diff renders.
+    # =====================================================================
+    _fix41afc19_attempted_v19 = False
+    _fix41afc19_skip_reason_v19 = ""
+    _fix41afc19_pool_count_v19 = 0
+    _fix41afc19_keys_sample_v19 = []
+    _fix41afc19_winner_trace_v19 = {}
+
+    try:
+        # Start with whatever earlier stage produced
+        current_metrics_for_display = locals().get("current_metrics") if isinstance(locals().get("current_metrics"), dict) else {}
+
+        # Force a display rebuild if earlier FIX41AFC19 did not apply or rebuilt_count==0
+        _already_applied = bool(locals().get("_fix41afc19_applied"))
+        _already_count = int(locals().get("_fix41afc19_rebuilt_count") or 0)
+
+        if (not _already_applied) or (_already_count <= 0):
+            _fix41afc19_attempted_v19 = True
+
+            # Resolve the best available snapshot pool (post-attach merged universe)
+            _pool = (
+                locals().get("baseline_sources_cache_current")
+                or (output.get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+                or (output.get("results", {}).get("baseline_sources_cache_current") if isinstance(output, dict) else None)
+                or locals().get("baseline_sources_cache")
+                or locals().get("baseline_sources_cache_prefetched")
+                or None
+            )
+
+            if _pool is None:
+                try:
+                    _cand_pools = []
+                    for _k, _v in (locals() or {}).items():
+                        if not isinstance(_k, str):
+                            continue
+                        if "baseline_sources_cache" in _k and isinstance(_v, list) and _v:
+                            _cand_pools.append((_k, _v))
+                    if _cand_pools:
+                        _cand_pools.sort(key=lambda kv: len(kv[1] or []), reverse=True)
+                        _pool = _cand_pools[0][1]
+                except Exception:
+                    _pool = None
+
+            if isinstance(_pool, list):
+                _fix41afc19_pool_count_v19 = len(_pool or [])
+
+            # Pick best available rebuild fn
+            _fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+            _fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+            if not callable(_fn):
+                _fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+                _fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+
+            if not callable(_fn):
+                _fix41afc19_skip_reason_v19 = "fn_missing"
+            elif _pool is None:
+                _fix41afc19_skip_reason_v19 = "pool_missing"
+            elif not isinstance(_pool, list) or not _pool:
+                _fix41afc19_skip_reason_v19 = "pool_empty"
+            else:
+                try:
+                    try:
+                        _rebuilt = _fn(prev_response, _pool, web_context=web_context)
+                    except TypeError:
+                        _rebuilt = _fn(prev_response, _pool)
+                except Exception as _e:
+                    _rebuilt = None
+                    _fix41afc19_skip_reason_v19 = "rebuild_exception:" + str(type(_e).__name__)
+
+                if isinstance(_rebuilt, dict) and _rebuilt:
+                    current_metrics_for_display = dict(_rebuilt)
+                    _fix41afc19_skip_reason_v19 = "applied_v19_display_rebuild:" + str(_fn_name)
+                    try:
+                        _fix41afc19_keys_sample_v19 = list(current_metrics_for_display.keys())[:10]
+                    except Exception:
+                        _fix41afc19_keys_sample_v19 = []
+                else:
+                    _fix41afc19_skip_reason_v19 = _fix41afc19_skip_reason_v19 or "rebuilt_empty_or_non_dict"
+
+        # Apply display override (used by diff below)
+        locals()["current_metrics"] = current_metrics_for_display  # keep variable name used by downstream diff
+        try:
+            _fix41afc19_keys_sample_v19 = _fix41afc19_keys_sample_v19 or (list(current_metrics_for_display.keys())[:10] if isinstance(current_metrics_for_display, dict) else [])
+        except Exception:
+            pass
+
+        # ---------------- Diagnostic (3): winner provenance trace for key EV metrics ----------------
+        # Heuristic: pick the known canonical keys if present, else infer from schema/keys.
+        _key_candidates = [
+            "units_sold_2024__unit_sales",
+            "market_share_2024__percent",
+            "projected_market_share_2026__percent",
+            "projected_market_share_2030__percent",
+            "yoy_growth_rate_2024__percent",
+            "cagr_2024__percent",
+        ]
+
+        try:
+            prev_canon = (prev_response or {}).get("primary_metrics_canonical") if isinstance(prev_response, dict) else {}
+            if not isinstance(prev_canon, dict):
+                prev_canon = {}
+
+            cur_canon = current_metrics_for_display if isinstance(current_metrics_for_display, dict) else {}
+
+            # Infer projected-share keys if the exact ones are not present
+            if isinstance(prev_canon, dict) and isinstance(cur_canon, dict):
+                all_keys = set(list(prev_canon.keys()) + list(cur_canon.keys()))
+                for k in sorted(all_keys):
+                    lk = k.lower()
+                    if ("project" in lk or "proj" in lk) and ("share" in lk or "market_share" in lk) and ("2026" in lk or "2030" in lk) and k not in _key_candidates:
+                        _key_candidates.append(k)
+
+            # Flatten snapshot candidates once (for top3 glimpse)
+            flat = []
+            try:
+                _pool_for_flat = locals().get("baseline_sources_cache") if isinstance(locals().get("baseline_sources_cache"), list) else []
+                for sr in _pool_for_flat or []:
+                    if isinstance(sr, dict):
+                        for c in (sr.get("extracted_numbers") or []):
+                            if isinstance(c, dict):
+                                flat.append(c)
+            except Exception:
+                flat = []
+
+            def _cand_has_unit_evidence(c: dict) -> bool:
+                try:
+                    if (c.get("unit_tag") or c.get("unit") or c.get("unit_norm") or c.get("unit_raw") or "").strip():
+                        return True
+                    if (c.get("currency") or c.get("currency_symbol") or "").strip():
+                        return True
+                    if c.get("is_percent") or c.get("has_percent"):
+                        return True
+                    if (c.get("base_unit") or "").strip():
+                        return True
+                    if (c.get("unit_family") or "").strip():
+                        return True
+                    if isinstance(c.get("unit_tokens"), list) and c.get("unit_tokens"):
+                        return True
+                except Exception:
+                    return False
+                return False
+
+            # Schema lookup (if available)
+            schema = {}
+            try:
+                if isinstance(previous_data, dict):
+                    pr = previous_data.get("primary_response") if isinstance(previous_data.get("primary_response"), dict) else previous_data
+                    schema = (pr.get("metric_schema_frozen") or {}) if isinstance(pr, dict) else {}
+            except Exception:
+                schema = {}
+
+            def _score_candidate_for_key(c: dict, ckey: str) -> int:
+                try:
+                    md = schema.get(ckey) if isinstance(schema, dict) else {}
+                    kws = []
+                    if isinstance(md, dict):
+                        kws = md.get("keywords") or md.get("keyword_hints") or []
+                    kws = [str(k).lower() for k in kws if str(k).strip()]
+                    ctx = (c.get("context") or c.get("window") or c.get("context_window") or "").lower()
+                    s = 0
+                    for k in kws[:25]:
+                        if k and k in ctx:
+                            s += 1
+                    if _cand_has_unit_evidence(c):
+                        s += 5
+                    # Prefer anchor-matching if both present
+                    try:
+                        if (c.get("anchor_hash") or "") and isinstance(md, dict) and (md.get("anchor_hash") or ""):
+                            if str(c.get("anchor_hash")) == str(md.get("anchor_hash")):
+                                s += 10
+                    except Exception:
+                        pass
+                    return int(s)
+                except Exception:
+                    return 0
+
+            # Build traces for up to 5 keys that exist in either prev/cur
+            _keys_for_trace = []
+            for k in _key_candidates:
+                if k in (prev_canon or {}) or k in (cur_canon or {}):
+                    _keys_for_trace.append(k)
+                if len(_keys_for_trace) >= 5:
+                    break
+            if not _keys_for_trace:
+                # fallback: first 5 keys from prev canonical
+                _keys_for_trace = list(prev_canon.keys())[:5]
+
+            for k in _keys_for_trace:
+                pv = (prev_canon.get(k) or {}) if isinstance(prev_canon, dict) else {}
+                cv = (cur_canon.get(k) or {}) if isinstance(cur_canon, dict) else {}
+
+                winner_src = "unknown"
+                if _fix41afc19_attempted_v19 and "applied_v19_display_rebuild" in (_fix41afc19_skip_reason_v19 or ""):
+                    winner_src = "analysis_canonical_rebuild_v19"
+                elif bool(locals().get("_fix41afc19_applied")):
+                    winner_src = "analysis_canonical_rebuild"
+                else:
+                    winner_src = "fallback_snapshot_selector"
+
+                # Top3 glimpse from flat pool
+                top3 = []
+                try:
+                    scored = sorted(flat, key=lambda c: _score_candidate_for_key(c, k), reverse=True)[:3]
+                    for t in scored:
+                        top3.append({
+                            "raw": t.get("raw"),
+                            "value_norm": t.get("value_norm"),
+                            "unit_tag": t.get("unit_tag") or t.get("unit") or "",
+                            "has_unit_evidence": bool(_cand_has_unit_evidence(t)),
+                            "anchor_hash": t.get("anchor_hash"),
+                        })
+                except Exception:
+                    top3 = []
+
+                _fix41afc19_winner_trace_v19[k] = {
+                    "winner_source": winner_src,
+                    "prev_value_norm": pv.get("value_norm"),
+                    "prev_unit": pv.get("unit") or pv.get("unit_tag") or "",
+                    "cur_value_norm": cv.get("value_norm"),
+                    "cur_unit": cv.get("unit") or cv.get("unit_tag") or "",
+                    "cur_has_unit_evidence": bool((cv.get("unit") or cv.get("unit_tag") or "").strip()),
+                    "top3_candidates_glimpse": top3,
+                }
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    # ---------------- Diagnostic (2): FIX41AFC19 truth table ----------------
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"].setdefault("fix41afc19", {})
+            output["debug"]["fix41afc19"]["attempted"] = bool(_fix41afc19_attempted_v19)
+            # Keep the pre-existing 'applied' field as-is, but add applied_v19_display_override
+            output["debug"]["fix41afc19"]["applied_v19_display_override"] = bool(_fix41afc19_attempted_v19 and ("applied_v19_display_rebuild" in (_fix41afc19_skip_reason_v19 or "")))
+            # Never allow blank reason: prefer v19 skip_reason when earlier reason is empty
+            _prev_reason = str(output["debug"]["fix41afc19"].get("reason") or "")
+            if (not _prev_reason.strip()) and (_fix41afc19_skip_reason_v19 or "").strip():
+                output["debug"]["fix41afc19"]["reason"] = str(_fix41afc19_skip_reason_v19)
+            output["debug"]["fix41afc19"]["skip_reason_v19"] = str(_fix41afc19_skip_reason_v19 or "")
+            output["debug"]["fix41afc19"]["pool_count_v19"] = int(_fix41afc19_pool_count_v19 or 0)
+            output["debug"]["fix41afc19"]["rebuilt_keys_sample_v19"] = list(_fix41afc19_keys_sample_v19 or [])
+            if _fix41afc19_winner_trace_v19:
+                output["debug"]["evo_winner_trace_v1"] = _fix41afc19_winner_trace_v19
+    except Exception:
+        pass
+    # =====================================================================
+    # =====================================================================
+    # PATCH V20_CANONICAL_FOR_RENDER (ADDITIVE): make Evolution dashboard derive
+    # "Current" from a canonical-for-render payload (analysis-aligned) WITHOUT
+    # touching fastpath/hashing/snapshot-attach.
+    #
+    # Why:
+    # - Evolution UI renders from diff rows (metric_changes), not analysis key-metrics.
+    # - If diff rows source "Current" from raw extracted pools, unitless survivors
+    #   (e.g., 170, 2) can win.
+    # - We compute a late, render-only canonical dict from the frozen snapshot pool
+    #   using the same rebuild semantics as analysis (best effort), then force the
+    #   diff + row hydration to use it.
+    #
+    # Safety:
+    # - Purely post-snapshot, post-hash: affects ONLY dashboard/diff rendering.
+    # - Does NOT alter source selection, hashing inputs, injection lifecycle, fastpath.
+    #
+    # Diagnostics:
+    # - output.debug.canonical_for_render_v1
+    # - output.debug.canonical_for_render_row_audit_v1
+    # =====================================================================
+    _canonical_for_render_applied = False
+    _canonical_for_render_reason = ""
+    _canonical_for_render_fn = ""
+    _canonical_for_render_count = 0
+    _canonical_for_render_keys_sample = []
+    _canonical_for_render_replaced_current_metrics = False
+
+    canonical_for_render = {}
+    try:
+        # Default: use whatever current_metrics we already have
+        canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
+        # =====================================================================
+        # PATCH V30_CANONICAL_FOR_RENDER_SEED_DISABLE (ADDITIVE)
+        # Goal:
+        # - Stop seeding canonical_for_render from current_metrics because current_metrics may already
+        #   contain year-like / unitless / junk winners (e.g., "2.0 B", "-6441").
+        # - Force the downstream rebuild path (which is intended to be analysis-aligned) to run,
+        #   while keeping fastpath/hashing/injection/snapshot attach untouched.
+        #
+        # Mechanism:
+        # - If prev_response carries a frozen schema, disable the seed by default.
+        # - Allow opt-out via env var EVO_CANONICAL_FOR_RENDER_ALLOW_SEED=1.
+        # - Emit a small trace later via _canonical_for_render_reason tag.
+        # =====================================================================
+        try:
+            _allow_seed = str(os.getenv("EVO_CANONICAL_FOR_RENDER_ALLOW_SEED", "") or "").strip() in ("1", "true", "True", "yes", "YES")
+            _has_schema = isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen") or {}, dict) and bool(prev_response.get("metric_schema_frozen"))
+            if _has_schema and not _allow_seed:
+                canonical_for_render = {}
+                _canonical_for_render_reason = "v30_seed_disabled_force_rebuild"
+        except Exception:
+            pass
+
+        # PATCH V21_CANONICAL_FOR_RENDER_SUSPICION (ADDITIVE):
+        # Even when current_metrics has "enough" keys, it can still be junk (year-like/unitless winners).
+        # Detect suspicious existing canonical dict and force a render-only rebuild in that case.
+        def _v21_yearlike(x):
+            try:
+                if x is None:
+                    return False
+                fx = float(x)
+                if abs(fx - round(fx)) < 1e-9:
+                    ix = int(round(fx))
+                    return 1900 <= ix <= 2105
+                return False
+            except Exception:
+                return False
+
+        def _v21_metric_suspicious(m):
+            try:
+                if not isinstance(m, dict):
+                    return True
+                u = (m.get("unit") or m.get("unit_tag") or "").strip()
+                vn = m.get("value_norm")
+                if (not u) and (_v21_yearlike(vn) or vn is None):
+                    return True
+                return False
+            except Exception:
+                return True
+
+        _suspicious_existing = False
+        try:
+            if isinstance(canonical_for_render, dict) and canonical_for_render:
+                _keys_sample_chk = list(sorted(list(canonical_for_render.keys())))[:25]
+                _sus = 0
+                _tot = 0
+                for _k in _keys_sample_chk:
+                    _tot += 1
+                    if _v21_metric_suspicious(canonical_for_render.get(_k)):
+                        _sus += 1
+                if _tot > 0:
+                    _suspicious_existing = (_sus / float(_tot)) >= 0.30
+        except Exception:
+            _suspicious_existing = False
+
+        # Best-effort: rebuild canonical-for-render from frozen snapshots using analysis-aligned builder.
+        # Apply when current canonical is missing/suspiciously small.
+        _need_render_rebuild = (not isinstance(canonical_for_render, dict)) or (len(canonical_for_render) < 3) or bool(_suspicious_existing)
+        if _need_render_rebuild and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            # Resolve schema/anchors/canon from prev_response (analysis baseline)
+            _schema = {}
+            _anchors = {}
+            _prev_canon = {}
+            try:
+                if isinstance(prev_response, dict):
+                    _schema = prev_response.get("metric_schema_frozen") or {}
+                    _anchors = prev_response.get("metric_anchors") or {}
+                    _prev_canon = prev_response.get("primary_metrics_canonical") or {}
+            except Exception:
+                _schema, _anchors, _prev_canon = {}, {}, {}
+
+            # Choose the best available analysis-aligned rebuild function
+            _fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+            if callable(_fn):
+                try:
+                    canonical_for_render = _fn(baseline_sources_cache, _schema, _anchors, _prev_canon)
+                    _canonical_for_render_fn = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+                except Exception:
+                    canonical_for_render = {}
+            if (not canonical_for_render) and callable(globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")):
+                try:
+                    _fn2 = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")
+                    canonical_for_render = _fn2(baseline_sources_cache, _schema, _anchors, _prev_canon)
+                    _canonical_for_render_fn = "rebuild_metrics_from_snapshots_with_anchors_fix16"
+                except Exception:
+                    canonical_for_render = {}
+            if (not canonical_for_render) and callable(globals().get("rebuild_metrics_from_snapshots_schema_only")):
+                try:
+                    _fn3 = globals().get("rebuild_metrics_from_snapshots_schema_only")
+                    canonical_for_render = _fn3(baseline_sources_cache, _schema)
+                    _canonical_for_render_fn = "rebuild_metrics_from_snapshots_schema_only"
+                except Exception:
+                    canonical_for_render = {}
+
+            if isinstance(canonical_for_render, dict) and canonical_for_render:
+                _canonical_for_render_applied = True
+                _canonical_for_render_reason = "applied_render_only_rebuild" if not bool(_suspicious_existing) else "applied_render_only_rebuild_forced_suspicious"
+                _canonical_for_render_count = int(len(canonical_for_render))
+                _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12]
+                _canonical_for_render_replaced_current_metrics = True
+                # PATCH V22_CANONICAL_FOR_RENDER_FN_GUARD (ADDITIVE): ensure fn label is never empty when rebuild succeeded
+                try:
+                    if not str(_canonical_for_render_fn or "").strip():
+                        _canonical_for_render_fn = "unknown_rebuild_fn"
+                except Exception:
+                    pass
+            else:
+                _canonical_for_render_reason = "render_rebuild_failed_or_empty"
+        else:
+            _canonical_for_render_reason = "used_existing_current_metrics" if not bool(_suspicious_existing) else "forced_render_rebuild_due_to_suspicious_existing_failed"
+            _canonical_for_render_count = int(len(canonical_for_render)) if isinstance(canonical_for_render, dict) else 0
+            _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12] if isinstance(canonical_for_render, dict) else []
+    except Exception:
+        canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
+        _canonical_for_render_reason = "exception_fallback_existing"
+
+
+    # =====================================================================
+    # PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER (ADDITIVE)
+    # Problem observed:
+    # - canonical_for_render rebuild may select junk numbers from the frozen pool
+    #   (e.g., GlobeNewswire footer "2B" or email fragments "-6441") when anchors
+    #   are not strictly enforced.
+    #
+    # Fix:
+    # - If prev_response provides metric_anchors for a canonical_key, forcibly
+    #   resolve the exact anchored candidate from baseline_sources_cache by matching
+    #   anchor_hash and use that to populate canonical_for_render for that key.
+    #
+    # Scope / Safety:
+    # - Render-only: affects ONLY canonical_for_render (dashboard "Current")
+    # - Does NOT touch hashing, fastpath, injection lifecycle, or snapshot attach.
+    #
+    # Diagnostics:
+    # - output.debug.canonical_for_render_anchor_enforce_v28 (summary)
+    # - per-metric cm["diag"]["v28_anchor_enforced"] (when applied)
+    # =====================================================================
+    _v28_anchor_enforce = {
+        "attempted": False,
+        "schema_keys": 0,
+        "anchors_keys": 0,
+        "hits": 0,
+        "misses": 0,
+        "hit_keys_sample": [],
+        "miss_keys_sample": [],
+        "note": "render-only anchor enforcement by anchor_hash against frozen extracted_numbers pool",
+    }
+
+    def _v28_iter_numbers_from_sources_cache(_sources_cache):
+        try:
+            for _src in (_sources_cache or []):
+                if not isinstance(_src, dict):
+                    continue
+                _url = _src.get("url") or _src.get("source_url") or ""
+                nums = _src.get("extracted_numbers") or []
+                if isinstance(nums, list):
+                    for _n in nums:
+                        if isinstance(_n, dict):
+                            yield _url, _n
+        except Exception:
+            return
+
+    def _v28_pick_by_anchor_hash(_sources_cache, _anchor_hash: str):
+        try:
+            ah = str(_anchor_hash or "").strip()
+            if not ah or ah == "None":
+                return None
+            for _url, _n in _v28_iter_numbers_from_sources_cache(_sources_cache):
+                try:
+                    if str(_n.get("anchor_hash") or "").strip() == ah:
+                        out = dict(_n)
+                        if _url and (not out.get("source_url")):
+                            out["source_url"] = _url
+                        return out
+                except Exception:
+                    continue
+            return None
+        except Exception:
+            return None
+
+    def _v28_schema_unit_label(_schema_row: dict) -> str:
+        try:
+            if not isinstance(_schema_row, dict):
+                return ""
+            # Prefer schema unit_tag (human-friendly) then unit
+            u = (_schema_row.get("unit_tag") or _schema_row.get("unit") or "").strip()
+            # Small convenience mapping
+            if u == "M":
+                return "million units"
+            if u == "B":
+                return "billion"
+            return u
+        except Exception:
+            return ""
+
+    try:
+        if isinstance(canonical_for_render, dict) and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            _v28_anchor_enforce["attempted"] = True
+            _schema = {}
+            _anchors = {}
+            try:
+                if isinstance(prev_response, dict):
+                    _schema = prev_response.get("metric_schema_frozen") or {}
+                    _anchors = prev_response.get("metric_anchors") or {}
+            except Exception:
+                _schema, _anchors = {}, {}
+            _v28_anchor_enforce["schema_keys"] = int(len(_schema)) if isinstance(_schema, dict) else 0
+            _v28_anchor_enforce["anchors_keys"] = int(len(_anchors)) if isinstance(_anchors, dict) else 0
+
+            if isinstance(_anchors, dict) and _anchors:
+                for _ckey, _ainfo in list(_anchors.items()):
+                    try:
+                        if not _ckey:
+                            continue
+                        if not isinstance(_ainfo, dict):
+                            continue
+                        _ah = _ainfo.get("anchor_hash") or _ainfo.get("anchor") or ""
+                        if not str(_ah or "").strip() or str(_ah) == "None":
+                            continue
+
+                        cand = _v28_pick_by_anchor_hash(baseline_sources_cache, _ah)
+                        if not isinstance(cand, dict):
+                            _v28_anchor_enforce["misses"] += 1
+                            if len(_v28_anchor_enforce["miss_keys_sample"]) < 12:
+                                _v28_anchor_enforce["miss_keys_sample"].append(str(_ckey))
+                            continue
+
+                        # Build minimal schema-aligned canonical metric
+                        srow = _schema.get(_ckey) if isinstance(_schema, dict) else None
+                        unit_lbl = _v28_schema_unit_label(srow if isinstance(srow, dict) else {})
+                        vnorm = cand.get("value_norm")
+                        if vnorm is None:
+                            vnorm = cand.get("value")
+                        raw = (cand.get("raw") or "").strip()
+                        if not raw:
+                            try:
+                                if vnorm is not None and unit_lbl:
+                                    raw = f"{vnorm} {unit_lbl}".strip()
+                                elif vnorm is not None:
+                                    raw = str(vnorm)
+                            except Exception:
+                                raw = ""
+
+                        cm = canonical_for_render.get(_ckey) if isinstance(canonical_for_render, dict) else None
+                        if not isinstance(cm, dict):
+                            cm = {}
+                        cm["value_norm"] = vnorm
+                        cm["unit"] = unit_lbl
+                        cm["unit_tag"] = unit_lbl
+                        if raw:
+                            cm["raw"] = raw
+                        # Provide evidence and source hint
+                        cm["source_url"] = cand.get("source_url") or cand.get("url") or _ainfo.get("source_url") or ""
+                        cm["context_snippet"] = cand.get("context_snippet") or cand.get("context") or _ainfo.get("context_snippet") or ""
+                        cm["evidence"] = [cand]
+                        cm.setdefault("diag", {})
+                        if isinstance(cm.get("diag"), dict):
+                            cm["diag"]["v28_anchor_enforced"] = True
+                            cm["diag"]["v28_anchor_hash"] = str(_ah)
+                            cm["diag"]["v28_anchor_candidate_raw"] = cand.get("raw")
+                            cm["diag"]["v28_anchor_candidate_unit"] = cand.get("unit") or cand.get("unit_tag") or ""
+                            cm["diag"]["v28_anchor_candidate_value_norm"] = cand.get("value_norm")
+
+                        canonical_for_render[_ckey] = cm
+                        _v28_anchor_enforce["hits"] += 1
+                        if len(_v28_anchor_enforce["hit_keys_sample"]) < 12:
+                            _v28_anchor_enforce["hit_keys_sample"].append(str(_ckey))
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["canonical_for_render_anchor_enforce_v28"] = _v28_anchor_enforce
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER
+    # =====================================================================
+
+    # =====================================================================
+    # PATCH V29_CANONICAL_FOR_RENDER_SCHEMA_GATE_AND_JUNK_REJECT (ADDITIVE)
+    # =====================================================================
+    # Problem:
+    # - canonical_for_render can still select "junk" numerics (e.g., footer phone
+    #   fragments like -6441 or marketing magnitudes like 2B) as Current, because
+    #   the frozen extracted_numbers pool is noisy and some late selection paths
+    #   lack strict schema gating.
+    #
+    # Fix (render-only):
+    # - Apply a strict schema-compatibility gate for canonical_for_render values.
+    # - Hard-reject phone/contact/email/footer-like contexts.
+    # - If the existing canonical_for_render metric is suspicious (unitless for
+    #   unit-required dimensions, or unit-incompatible like "B" for percent),
+    #   attempt to replace it with the best compatible candidate from the frozen
+    #   extracted_numbers pool.
+    #
+    # Safety:
+    # - Render-only: affects ONLY canonical_for_render (dashboard Current).
+    # - Does NOT touch fastpath replay, hashing universe, injection lifecycle,
+    #   snapshot attach, or extraction.
+    #
+    # Diagnostics:
+    # - output.debug.canonical_for_render_schema_gate_v29 (summary)
+    # - per-metric cm["diag"]["v29_schema_gate_*"] flags (when applied)
+    # =====================================================================
+    _v29_schema_gate = {
+        "attempted": False,
+        "canonical_keys": 0,
+        "suspicious": 0,
+        "replaced": 0,
+        "kept": 0,
+        "candidates_checked": 0,
+        "replaced_keys_sample": [],
+        "suspicious_keys_sample": [],
+        "note": "render-only schema gate + junk reject on canonical_for_render",
+    }
+
+    def _v29_s(_x):
+        try:
+            return str(_x or "")
+        except Exception:
+            return ""
+
+    def _v29_lower(_x):
+        try:
+            return _v29_s(_x).lower()
+        except Exception:
+            return ""
+
+    def _v29_get_text_blob(*parts):
+        try:
+            out = []
+            for p in parts:
+                if not p:
+                    continue
+                if isinstance(p, (list, tuple)):
+                    out.extend([_v29_s(z) for z in p if z])
+                else:
+                    out.append(_v29_s(p))
+            return " ".join([z for z in out if z]).strip()
+        except Exception:
+            return ""
+
+    def _v29_phoneish(text):
+        # Catch common phone patterns including "+1-888-600-6441" and fragments.
+        try:
+            import re
+            t = _v29_s(text)
+            if not t:
+                return False
+            if re.search(r"\+\d[\d\-\s]{7,}\d", t):
+                return True
+            if re.search(r"\b\d{3}[-\s]\d{3}[-\s]\d{4}\b", t):
+                return True
+            if re.search(r"\bext\.?\s*\d+\b", t, re.I):
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _v29_junk_context(text):
+        try:
+            t = _v29_lower(text)
+            if not t:
+                return False
+            junk_terms = [
+                "contact", "email", "phone", "tel", "telephone", "fax", "call us",
+                "press release", "copyright", "all rights reserved", "subscribe",
+                "unsubscribe", "privacy policy", "terms of use", "cookie", "newsletter",
+                "about us", "follow us", "for media", "media contact"
+            ]
+            if any(w in t for w in junk_terms):
+                return True
+            if _v29_phoneish(text):
+                return True
+            # Many PR footers include an email address
+            if "@" in t and "." in t:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _v29_unit_str(obj):
+        try:
+            if isinstance(obj, dict):
+                return _v29_s(obj.get("unit") or obj.get("unit_tag") or obj.get("unit_cmp") or obj.get("cur_unit_cmp") or "")
+            return ""
+        except Exception:
+            return ""
+
+    def _v29_value_norm(obj):
+        try:
+            if isinstance(obj, dict):
+                v = obj.get("value_norm")
+                if v is None:
+                    v = obj.get("cur_value_norm")
+                if v is None:
+                    v = obj.get("value")
+                return v
+            return None
+        except Exception:
+            return None
+
+    def _v29_has_unit_evidence(obj):
+        try:
+            # Conservative: unit evidence if unit string non-empty OR raw contains %/$/€ etc.
+            if not isinstance(obj, dict):
+                return False
+            u = _v29_unit_str(obj).strip()
+            if u:
+                return True
+            raw = _v29_s(obj.get("raw") or "")
+            if "%" in raw or "$" in raw or "€" in raw or "£" in raw:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _v29_expected_dimension(schema_row):
+        try:
+            if isinstance(schema_row, dict):
+                # Prefer FIX16 helper if present
+                if "_fix16_expected_dimension" in globals():
+                    return _fix16_expected_dimension(schema_row)
+                return schema_row.get("dimension") or schema_row.get("unit_family") or ""
+            return ""
+        except Exception:
+            return ""
+
+    def _v29_schema_requires_unit(schema_row):
+        try:
+            dim = _v29_lower(_v29_expected_dimension(schema_row))
+            if dim in ("currency", "percent", "rate", "ratio"):
+                return True
+            uf = _v29_lower(_v29_s(schema_row.get("unit_family") if isinstance(schema_row, dict) else ""))
+            if uf in ("currency", "percent", "rate", "ratio"):
+                return True
+            # unit_sales / unit counts should have some "unit-ness"
+            if "unit" in dim or "unit" in uf:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _v29_unit_compatible(schema_row, cand_obj):
+        try:
+            if isinstance(schema_row, dict) and isinstance(cand_obj, dict):
+                if "_fix16_unit_compatible" in globals():
+                    return bool(_fix16_unit_compatible(schema_row, cand_obj))
+            # fallback heuristic
+            dim = _v29_lower(_v29_expected_dimension(schema_row))
+            u = _v29_lower(_v29_unit_str(cand_obj))
+            raw = _v29_lower(_v29_s(cand_obj.get("raw") or ""))
+            if dim == "percent":
+                return ("%"
+                        in u) or ("percent" in u) or ("%" in raw)
+            if dim == "currency":
+                return any(sym in raw for sym in ["$", "€", "£"]) or ("usd" in u) or ("eur" in u) or ("sgd" in u) or ("currency" in u)
+            if "unit" in dim:
+                # must not be percent/currency-like
+                if "%" in raw or "%" in u:
+                    return False
+                if any(sym in raw for sym in ["$", "€", "£"]):
+                    return False
+                # prefer explicit unit words
+                if "unit" in u or "vehicle" in u or "car" in u or "sales" in u:
+                    return True
+                # allow million/billion with implied units only if raw/context says units/sales
+                ctx = _v29_lower(_v29_get_text_blob(cand_obj.get("context_snippet"), cand_obj.get("context")))
+                if ("unit" in ctx) or ("sales" in ctx) or ("vehicle" in ctx):
+                    return True
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _v29_is_suspicious_current(schema_row, cm):
+        try:
+            if not isinstance(cm, dict):
+                return True
+            dim = _v29_lower(_v29_expected_dimension(schema_row))
+            requires_unit = _v29_schema_requires_unit(schema_row)
+            u = _v29_lower(_v29_unit_str(cm))
+            v = _v29_value_norm(cm)
+            blob = _v29_get_text_blob(cm.get("raw"), cm.get("context_snippet"), cm.get("source_url"))
+            if _v29_junk_context(blob):
+                return True
+            if requires_unit and not _v29_has_unit_evidence(cm):
+                return True
+            # Percent metrics must not carry magnitude units like B/M
+            if dim == "percent" and ("b" in u or "m" in u) and "%" not in u:
+                return True
+            if dim == "percent" and isinstance(v, (int, float)) and abs(float(v)) > 1000:
+                return True
+            # Unit sales must not be negative (phone fragments, ids)
+            if "unit" in dim and isinstance(v, (int, float)) and float(v) < 0:
+                return True
+            return not _v29_unit_compatible(schema_row, cm)
+        except Exception:
+            return True
+
+    def _v29_keywords(schema_row):
+        try:
+            import re
+            if not isinstance(schema_row, dict):
+                return []
+            nm = _v29_lower(schema_row.get("name") or schema_row.get("label") or schema_row.get("display_name") or "")
+            toks = [t for t in re.split(r"[^a-z0-9]+", nm) if t and len(t) >= 4]
+            # prune common filler
+            bad = set(["global", "projected", "market", "share", "sales", "volume", "units", "unit", "year"])
+            toks = [t for t in toks if t not in bad]
+            return toks[:10]
+        except Exception:
+            return []
+
+    def _v29_score_candidate(schema_row, cand_obj):
+        try:
+            score = 0
+            u = _v29_lower(_v29_unit_str(cand_obj))
+            raw = _v29_lower(_v29_s(cand_obj.get("raw") or ""))
+            ctx = _v29_lower(_v29_get_text_blob(cand_obj.get("context_snippet"), cand_obj.get("context")))
+            dim = _v29_lower(_v29_expected_dimension(schema_row))
+            if dim == "percent":
+                if "%" in raw or "%" in u or "percent" in u:
+                    score += 5
+                if "b" in u or "m" in u:
+                    score -= 4
+            if "unit" in dim:
+                if "unit" in ctx or "sales" in ctx or "vehicle" in ctx:
+                    score += 3
+                if "%" in raw or "$" in raw:
+                    score -= 3
+            if not _v29_junk_context(ctx + " " + raw):
+                score += 1
+            for kw in _v29_keywords(schema_row):
+                if kw and kw in ctx:
+                    score += 1
+            return score
+        except Exception:
+            return 0
+
+    try:
+        if isinstance(canonical_for_render, dict) and isinstance(prev_response, dict) and isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            _v29_schema_gate["attempted"] = True
+            _schema = prev_response.get("metric_schema_frozen") or {}
+            _v29_schema_gate["canonical_keys"] = int(len(canonical_for_render)) if isinstance(canonical_for_render, dict) else 0
+
+            for _ckey, _cm in list(canonical_for_render.items()):
+                try:
+                    if not _ckey:
+                        continue
+                    srow = _schema.get(_ckey) if isinstance(_schema, dict) else None
+                    if not isinstance(srow, dict):
+                        # without schema, we cannot safely gate; keep
+                        _v29_schema_gate["kept"] += 1
+                        continue
+
+                    if _v29_is_suspicious_current(srow, _cm):
+                        _v29_schema_gate["suspicious"] += 1
+                        if len(_v29_schema_gate["suspicious_keys_sample"]) < 12:
+                            _v29_schema_gate["suspicious_keys_sample"].append(str(_ckey))
+
+                        best = None
+                        best_score = -10**9
+                        # search frozen pool for compatible candidates
+                        for cand in _v28_iter_numbers_from_sources_cache(baseline_sources_cache):
+                            _v29_schema_gate["candidates_checked"] += 1
+                            if not isinstance(cand, dict):
+                                continue
+                            blob = _v29_get_text_blob(cand.get("raw"), cand.get("context_snippet"), cand.get("context"), cand.get("source_url") or cand.get("url"))
+                            if _v29_junk_context(blob):
+                                continue
+                            # normalize candidate
+                            cobj = dict(cand)
+                            # ensure value_norm present if possible
+                            if cobj.get("value_norm") is None and cobj.get("value") is not None:
+                                cobj["value_norm"] = cobj.get("value")
+                            if not _v29_unit_compatible(srow, cobj):
+                                continue
+                            if _v29_schema_requires_unit(srow) and not _v29_has_unit_evidence(cobj):
+                                continue
+                            sc = _v29_score_candidate(srow, cobj)
+                            if sc > best_score:
+                                best_score = sc
+                                best = cobj
+                        if isinstance(best, dict):
+                            prior_v = _v29_value_norm(_cm if isinstance(_cm, dict) else {})
+                            prior_u = _v29_unit_str(_cm if isinstance(_cm, dict) else {})
+                            # overwrite with best candidate
+                            if not isinstance(_cm, dict):
+                                _cm = {}
+                            _cm["value_norm"] = best.get("value_norm")
+                            _cm["unit"] = _v28_schema_unit_label(srow) or (_v29_unit_str(best) or _v28_schema_unit_label(srow))
+                            _cm["unit_tag"] = _cm.get("unit")
+                            if best.get("raw"):
+                                _cm["raw"] = best.get("raw")
+                            _cm["source_url"] = best.get("source_url") or best.get("url") or _cm.get("source_url") or ""
+                            _cm["context_snippet"] = best.get("context_snippet") or best.get("context") or _cm.get("context_snippet") or ""
+                            _cm["evidence"] = [best]
+                            _cm.setdefault("diag", {})
+                            if isinstance(_cm.get("diag"), dict):
+                                _cm["diag"]["v29_schema_gate_replaced"] = True
+                                _cm["diag"]["v29_schema_gate_prior_value_norm"] = prior_v
+                                _cm["diag"]["v29_schema_gate_prior_unit"] = prior_u
+                                _cm["diag"]["v29_schema_gate_best_score"] = best_score
+                                _cm["diag"]["v29_schema_gate_best_raw"] = best.get("raw")
+                                _cm["diag"]["v29_schema_gate_best_unit"] = best.get("unit") or best.get("unit_tag") or ""
+                            canonical_for_render[_ckey] = _cm
+                            _v29_schema_gate["replaced"] += 1
+                            if len(_v29_schema_gate["replaced_keys_sample"]) < 12:
+                                _v29_schema_gate["replaced_keys_sample"].append(str(_ckey))
+                        else:
+                            _v29_schema_gate["kept"] += 1
+                    else:
+                        _v29_schema_gate["kept"] += 1
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    try:
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["canonical_for_render_schema_gate_v29"] = _v29_schema_gate
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V29_CANONICAL_FOR_RENDER_SCHEMA_GATE_AND_JUNK_REJECT
+    # =====================================================================
+
+
+# PATCH V22_CANONICAL_FOR_RENDER_NORMALIZE (ADDITIVE): normalize canonical_for_render metric dicts so that
+    # downstream row hydration does not overwrite Current with blanks when the rebuilt dict uses alternate fields.
+    # - Derives value_norm/unit/raw from common alternate keys and evidence entries.
+    # - Purely render-layer enrichment; does NOT alter selection/hashing.
+    def _v22_extract_numeric(v):
+        try:
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            s = str(v).strip()
+            if not s:
+                return None
+            # strip commas
+            s2 = s.replace(",", "")
+            return float(s2)
+        except Exception:
+            return None
+
+    def _v22_norm_metric(cm: dict) -> dict:
+        try:
+            if not isinstance(cm, dict):
+                return cm
+            # value_norm
+            vn = cm.get("value_norm")
+            if vn is None:
+                for k in ("value", "value_num", "value_float", "norm_value", "canonical_value_norm"):
+                    if k in cm and cm.get(k) is not None:
+                        vn = cm.get(k)
+                        break
+            # evidence-derived
+            if vn is None and isinstance(cm.get("evidence"), list) and cm.get("evidence"):
+                try:
+                    ev0 = cm.get("evidence")[0]
+                    if isinstance(ev0, dict):
+                        vn = ev0.get("value_norm") if ev0.get("value_norm") is not None else ev0.get("value")
+                except Exception:
+                    pass
+            vn_f = _v22_extract_numeric(vn)
+            if vn_f is not None:
+                cm["value_norm"] = vn_f
+
+            # unit
+            unit = (cm.get("unit") or cm.get("unit_tag") or cm.get("unit_label") or "").strip()
+            if (not unit) and isinstance(cm.get("evidence"), list) and cm.get("evidence"):
+                try:
+                    ev0 = cm.get("evidence")[0]
+                    if isinstance(ev0, dict):
+                        unit = (ev0.get("unit") or ev0.get("unit_tag") or "").strip()
+                except Exception:
+                    pass
+            if unit:
+                cm["unit"] = unit
+
+            # raw/display
+            raw = (cm.get("raw") or cm.get("value_raw") or cm.get("raw_value") or cm.get("display") or "").strip()
+            if not raw:
+                try:
+                    if cm.get("value_norm") is not None and (cm.get("unit") or ""):
+                        raw = f"{cm.get('value_norm')} {cm.get('unit')}".strip()
+                    elif cm.get("value_norm") is not None:
+                        raw = str(cm.get("value_norm"))
+                except Exception:
+                    raw = ""
+            if raw:
+                cm["raw"] = raw
+            cm.setdefault("diag", {})
+            if isinstance(cm.get("diag"), dict):
+                cm["diag"].setdefault("v22_norm", True)
+            return cm
+        except Exception:
+            return cm
+
+    try:
+        if isinstance(canonical_for_render, dict) and canonical_for_render:
+            for _k, _m in list(canonical_for_render.items()):
+                if isinstance(_m, dict):
+                    canonical_for_render[_k] = _v22_norm_metric(_m)
+    except Exception:
+        pass
+
+
+    # =====================================================================
+    # PATCH V30_STRICT_SCHEMA_UNIT_GATE (ADDITIVE)
+    # Goal:
+    # - Apply an analysis-like schema/unit compatibility gate at render-time.
+    # - Explicitly reject obviously incompatible unit evidence (e.g. "2.0 B" for a % metric,
+    #   or unitless negatives like "-6441" for a unit_sales metric).
+    #
+    # Notes:
+    # - Render-only: does not affect extraction, snapshot attach, hashing, or fastpath replay.
+    # - Best-effort: only runs if FIX16 helpers are present.
+    # =====================================================================
+    _v30_strict_gate = {"attempted": False, "dropped": 0, "dropped_keys_sample": []}
+    try:
+        _v30_strict_gate["attempted"] = True
+        _schema = {}
+        try:
+            if isinstance(prev_response, dict):
+                _schema = prev_response.get("metric_schema_frozen") or {}
+        except Exception:
+            _schema = {}
+
+        _fix16_exp = globals().get("_fix16_expected_dimension")
+        _fix16_comp = globals().get("_fix16_unit_compatible")
+        _fix16_has_unit = globals().get("_fix16_candidate_has_any_unit")
+        if callable(_fix16_exp) and callable(_fix16_comp) and isinstance(_schema, dict) and _schema:
+            _dropped = []
+            for _ck, _m in list((canonical_for_render or {}).items()):
+                if not isinstance(_m, dict):
+                    continue
+                _defn = _schema.get(_ck) or {}
+                try:
+                    _expected = _fix16_exp(_defn)
+                except Exception:
+                    _expected = None
+
+                # pull unit evidence in the same style analysis expects
+                _unit_tag = str(_m.get("unit_tag") or _m.get("unit") or "").strip()
+                _raw = str(_m.get("raw") or _m.get("raw_value") or "").strip()
+                _has_any = False
+                try:
+                    if callable(_fix16_has_unit):
+                        _has_any = bool(_fix16_has_unit(_m))
+                except Exception:
+                    _has_any = bool(_unit_tag) or ("% " in (_raw + " ") or "$" in _raw)
+
+                _ok = True
+                try:
+                    _ok = bool(_fix16_comp(_expected, _unit_tag, _has_any))
+                except Exception:
+                    _ok = True
+
+                if not _ok:
+                    _dropped.append(_ck)
+                    try:
+                        canonical_for_render.pop(_ck, None)
+                    except Exception:
+                        pass
+
+            _v30_strict_gate["dropped"] = len(_dropped)
+            _v30_strict_gate["dropped_keys_sample"] = list(_dropped[:12])
+    except Exception:
+        pass
+
+    # Diff using existing diff helper if present, but FORCE cur_response to canonical-for-render.
     metric_changes = []
     try:
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
-            cur_resp_for_diff = {"primary_metrics_canonical": current_metrics}
+            cur_resp_for_diff = {"primary_metrics_canonical": canonical_for_render}
+            # =====================================================================
+            # PATCH V27_DISABLE_NUMERIC_INFERENCE_FLAG (ADDITIVE)
+            # Signal to diff layer: when canonical-for-render is active, do NOT
+            # infer/parse numeric values for CURRENT from free-form strings.
+            # =====================================================================
+            try:
+                cur_resp_for_diff["_disable_numeric_inference_v27"] = True
+            except Exception:
+                pass
+            # =====================================================================
+            # END PATCH V27_DISABLE_NUMERIC_INFERENCE_FLAG
+            # =====================================================================
+            # =====================================================================
+            # PATCH V24_STRICT_CKEY_FLAG (ADDITIVE)
+            # When using canonical-for-render, force strict canonical_key identity matching in diff layer.
+            # This prevents cross-metric substitution (e.g., 2.0 B / 170.0 / year values) from fallback matchers.
+            # =====================================================================
+            try:
+                cur_resp_for_diff["_ph2b_strict_ckey_v24"] = True
+            except Exception:
+                pass
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
         else:
             metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
     except Exception:
         metric_changes, unchanged, increased, decreased, found = ([], 0, 0, 0, 0)
+
+    # Post-process diff rows: ensure "Current" fields are derived from canonical-for-render.
+    _row_audit = {
+        "rows_total": int(len(metric_changes or [])),
+        "rows_hydrated": 0,
+        "rows_missing_canonical": 0,
+        "rows_skipped_missing_fields": 0,
+        "rows_with_prior_current_overridden": 0,
+    }
+    try:
+        if isinstance(metric_changes, list) and isinstance(canonical_for_render, dict):
+            for row in metric_changes:
+                if not isinstance(row, dict):
+                    continue
+                ckey = row.get("canonical_key") or row.get("canonical") or row.get("canonical_id") or ""
+                if not ckey:
+                    continue
+                cm = canonical_for_render.get(ckey)
+                if not isinstance(cm, dict):
+                    _row_audit["rows_missing_canonical"] += 1
+                    continue
+
+                # PATCH V22_ROW_HYDRATE_GUARD (ADDITIVE): only override if canonical metric has usable fields
+                # Prevents overwriting a previously non-empty current with blanks when canon metric is sparse.
+                _cm_vn = cm.get("value_norm")
+                _cm_unit = (cm.get("unit") or cm.get("unit_tag") or "").strip()
+                _cm_raw = (cm.get("raw") or cm.get("value_raw") or cm.get("raw_value") or "").strip()
+                if _cm_vn is None and (not _cm_raw):
+                    # no usable canonical payload to hydrate from
+                    _row_audit["rows_skipped_missing_fields"] += 1
+                    row.setdefault("diag", {})
+                    if isinstance(row.get("diag"), dict):
+                        row["diag"].setdefault("canonical_for_render_v1", {})
+                        row["diag"]["canonical_for_render_v1"]["applied"] = False
+                        row["diag"]["canonical_for_render_v1"]["reason"] = "skipped_missing_canonical_fields"
+                        row["diag"]["canonical_for_render_v1"]["fn"] = _canonical_for_render_fn
+                    continue
+
+                # Capture prior values for audit if we are overriding
+                prior = {
+                    "current_value": row.get("current_value"),
+                    "current_value_norm": row.get("current_value_norm"),
+                    "cur_value_norm": row.get("cur_value_norm"),
+                    "cur_unit_cmp": row.get("cur_unit_cmp"),
+                    "current_unit": row.get("current_unit"),
+                }
+
+                # Hydrate from canonical metric
+                vnorm = cm.get("value_norm")
+                unit = (cm.get("unit") or cm.get("unit_tag") or "").strip()
+                raw = (cm.get("raw") or cm.get("value_raw") or cm.get("raw_value") or "").strip()
+                if not raw:
+                    # Build a lightweight display string when raw isn't available
+                    try:
+                        if vnorm is not None and unit:
+                            raw = f"{vnorm} {unit}".strip()
+                        elif vnorm is not None:
+                            raw = str(vnorm)
+                    except Exception:
+                        raw = row.get("current_value") or ""
+
+                # Apply canonical-for-render to diff row
+                row["current_value_norm"] = vnorm
+                row["cur_value_norm"] = vnorm
+                row["current_unit"] = unit
+                row["cur_unit_cmp"] = unit
+                row["current_value"] = raw
+
+                # PATCH V22_CLEAR_UNIT_MISMATCH_ON_CANON (ADDITIVE): if canonical-for-render provides
+                # a schema-aligned unit+value, clear any prior unit_mismatch that came from raw/fallback.
+                try:
+                    if (vnorm is not None) and str(unit or "").strip():
+                        if row.get("unit_mismatch") is True:
+                            row["unit_mismatch"] = False
+                        if row.get("change_type") in ("unit_mismatch", "invalid_current"):
+                            pv = row.get("previous_value")
+                            pvf = _v22_extract_numeric(pv)
+                            cvf = _v22_extract_numeric(vnorm)
+                            if pvf is not None and cvf is not None:
+                                if abs(cvf - pvf) < 1e-9:
+                                    row["change_type"] = "unchanged"
+                                elif cvf > pvf:
+                                    row["change_type"] = "increased"
+                                else:
+                                    row["change_type"] = "decreased"
+                except Exception:
+                    pass
+
+                # Range fields (if present in canonical)
+                if isinstance(cm.get("value_range"), dict):
+                    row["current_value_range"] = cm.get("value_range")
+                if (cm.get("value_range_display") or "").strip():
+                    row["current_value_range_display"] = cm.get("value_range_display")
+
+                # Audit stamp
+                row.setdefault("diag", {})
+                if isinstance(row.get("diag"), dict):
+                    row["diag"].setdefault("canonical_for_render_v1", {})
+                    row["diag"]["canonical_for_render_v1"]["applied"] = True
+                    row["diag"]["canonical_for_render_v1"]["fn"] = _canonical_for_render_fn
+                    row["diag"]["canonical_for_render_v1"]["reason"] = _canonical_for_render_reason
+                    row["diag"]["canonical_for_render_v1"]["prior_current"] = prior
+
+                # =====================================================================
+                # PATCH V26_LOCK_CANONICAL_CURRENT_FIELDS (ADDITIVE)
+                # Goal: Once a row is hydrated from canonical-for-render, lock the "Current" fields
+                #       so later post-processing (heuristics/sanitizers) cannot overwrite them.
+                # This is render-only and does NOT affect hashing/fastpath/snapshot attach.
+                # =====================================================================
+                try:
+                    row["_lock_current_v26"] = True
+                    # ensure nested dict exists
+                    row.setdefault("diag", {})
+                    if isinstance(row.get("diag"), dict):
+                        row["diag"].setdefault("canonical_for_render_v1", {})
+                        if isinstance(row["diag"].get("canonical_for_render_v1"), dict):
+                            row["diag"]["canonical_for_render_v1"]["locked_current_v26"] = {
+                                "current_value": row.get("current_value"),
+                                "current_value_norm": row.get("current_value_norm"),
+                                "cur_value_norm": row.get("cur_value_norm"),
+                                "cur_unit_cmp": row.get("cur_unit_cmp"),
+                                "current_unit": row.get("current_unit"),
+                                "current_value_range": row.get("current_value_range"),
+                                "current_value_range_display": row.get("current_value_range_display"),
+                            }
+                except Exception:
+                    pass
+                # =====================================================================
+                # END PATCH V26_LOCK_CANONICAL_CURRENT_FIELDS
+                # =====================================================================
+
+
+
+
+                # Determine if we actually changed the row
+                if prior.get("cur_value_norm") != vnorm or str(prior.get("cur_unit_cmp") or "") != unit or str(prior.get("current_value") or "") != raw:
+                    _row_audit["rows_with_prior_current_overridden"] += 1
+                _row_audit["rows_hydrated"] += 1
+    except Exception:
+        pass
+
+    # Attach diagnostics for auditability
+    try:
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["canonical_for_render_v1"] = {
+                "applied": bool(_canonical_for_render_applied),
+                "reason": str(_canonical_for_render_reason or ""),
+                "fn": str(_canonical_for_render_fn or ""),
+                "rebuilt_count": int(_canonical_for_render_count or 0),
+                "keys_sample": list(_canonical_for_render_keys_sample or []),
+                "replaced_current_metrics_for_render": bool(_canonical_for_render_replaced_current_metrics),
+            }
+            output["debug"]["canonical_for_render_row_audit_v1"] = _row_audit
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V20_CANONICAL_FOR_RENDER
+    # =====================================================================
 
     output["metric_changes"] = metric_changes or []
     output["summary"]["total_metrics"] = len(output["metric_changes"])
@@ -19706,6 +21055,105 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
     # =====================================================================
+
+
+    # =====================================================================
+    # PATCH FIX41AFC19_V25 (ADDITIVE): Dashboard "Current" source audit + row sample
+    #
+    # Why:
+    # - Conclusively identify which structure the Evolution dashboard reads for
+    #   the "Current" column, and whether upstream patches are modifying that
+    #   exact structure.
+    #
+    # What:
+    # - Emit a compact debug payload that:
+    #     * states the dashboard read-path ("results.metric_changes[].current_value")
+    #     * samples the first N metric_changes rows (canonical_key, current_value, unit hints, diag keys)
+    # - Purely additive: no selection, hashing, or fastpath behavior changes.
+    # =====================================================================
+    try:
+        if isinstance(output, dict):
+            _dbg = output.get("debug") if isinstance(output.get("debug"), dict) else {}
+            if not isinstance(_dbg, dict):
+                _dbg = {}
+            rows = output.get("metric_changes") or []
+            _sample = []
+            if isinstance(rows, list):
+                for _r in rows[:25]:
+                    if not isinstance(_r, dict):
+                        continue
+                    _diag = _r.get("diag") if isinstance(_r.get("diag"), dict) else {}
+                    _sample.append({
+                        "canonical_key": _r.get("canonical_key"),
+                        "name": _r.get("metric") or _r.get("name"),
+                        "current_value": _r.get("current_value"),
+                        "current_value_norm": (_r.get("current_value_norm") if _r.get("current_value_norm") is not None else _r.get("cur_value_norm")),
+                        "cur_unit_cmp": (_r.get("cur_unit_cmp") if _r.get("cur_unit_cmp") is not None else _r.get("current_unit")),
+                        "anchor_used": _r.get("anchor_used"),
+                        "unit_mismatch": _r.get("unit_mismatch"),
+                        "diag_keys": (list(_diag.keys()) if isinstance(_diag, dict) else []),
+                    })
+            _dbg["dashboard_current_source_v25"] = {
+                "dashboard_reads": "results.metric_changes[].current_value",
+                "rows_sample_n": len(_sample),
+                "rows_sample": _sample,
+            }
+            _dbg["canonical_for_render_present_v25"] = bool(_dbg.get("canonical_for_render_v1"))
+            output["debug"] = _dbg
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH FIX41AFC19_V25
+    # =====================================================================
+
+
+    # =====================================================================
+    # PATCH V26_RESTORE_LOCKED_CURRENT_FIELDS (ADDITIVE)
+    # If any later code overwrote current_* fields, restore the locked canonical-for-render
+    # fields right before returning the evolution output.
+    # =====================================================================
+    try:
+        _lock_dbg = {"rows_total": 0, "rows_locked": 0, "rows_restored": 0, "rows_missing_lock": 0, "restored_keys_sample": []}
+        for _r in (output.get("metric_changes") or []):
+            if not isinstance(_r, dict):
+                continue
+            _lock_dbg["rows_total"] += 1
+            if not _r.get("_lock_current_v26"):
+                continue
+            _lock_dbg["rows_locked"] += 1
+            _d = _r.get("diag") if isinstance(_r.get("diag"), dict) else {}
+            _lc = None
+            try:
+                if isinstance(_d, dict):
+                    _cfr = _d.get("canonical_for_render_v1") if isinstance(_d.get("canonical_for_render_v1"), dict) else {}
+                    _lc = _cfr.get("locked_current_v26") if isinstance(_cfr, dict) else None
+            except Exception:
+                _lc = None
+            if not isinstance(_lc, dict):
+                _lock_dbg["rows_missing_lock"] += 1
+                continue
+            # If current fields differ from locked, restore
+            _changed = False
+            for _k in ("current_value", "current_value_norm", "cur_value_norm", "cur_unit_cmp", "current_unit",
+                       "current_value_range", "current_value_range_display"):
+                if _k in _lc:
+                    if _r.get(_k) != _lc.get(_k):
+                        _r[_k] = _lc.get(_k)
+                        _changed = True
+            if _changed:
+                _lock_dbg["rows_restored"] += 1
+                ck = _r.get("canonical_key") or _r.get("canonical") or ""
+                if ck and len(_lock_dbg["restored_keys_sample"]) < 20:
+                    _lock_dbg["restored_keys_sample"].append(str(ck))
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["lock_current_v26"] = _lock_dbg
+    except Exception:
+        pass
+    # =====================================================================
+    # END PATCH V26_RESTORE_LOCKED_CURRENT_FIELDS
+    # =====================================================================
+
 
     return output
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
@@ -23176,6 +24624,79 @@ def _analysis_canonical_final_selector_v1(
                     pass
 
                 # =====================================================================
+                # PATCH FIX2B_SCALE_EV_V2 (2026-01-10)
+                # Purpose: Fix broken scale/countish gating where earlier patch strings were truncated
+                #          (e.g., "milli..." / "uni...") and therefore never matched.
+                #          Enforce: if schema implies scaled magnitude (million/billion/etc.), unit evidence
+                #          must exist in the candidate (unit_tag/unit_cmp/raw/context), else hard-block.
+                # Safety: additive-only; does not change fastpath/hashing/injection/snapshot attach.
+                # =====================================================================
+                try:
+                    _spec_nm2 = str(spec.get("name") or spec.get("label") or "").lower()
+                    _spec_ut2 = str(_spec_ut or "").lower()
+
+                    def _ph2b_has_scale_token(_s: str) -> bool:
+                        try:
+                            _s = str(_s or "").lower()
+                        except Exception:
+                            _s = ""
+                        if not _s:
+                            return False
+                        toks = [
+                            "million", "mn", "m", "millions",
+                            "billion", "bn", "b", "billions",
+                            "trillion", "tn", "t", "trillions",
+                            "thousand", "k", "000",
+                        ]
+                        # require word-boundary-ish for single-letter tokens
+                        if "million" in _s or "millions" in _s or "billion" in _s or "billions" in _s or "trillion" in _s or "trillions" in _s or "thousand" in _s:
+                            return True
+                        import re as _re2
+                        if _re2.search(r"\b(mn|bn|tn|k)\b", _s):
+                            return True
+                        # "m" / "b" / "t" are too ambiguous; only accept when adjacent to "usd/units/sales" etc.
+                        if _re2.search(r"\b(m|b|t)\b", _s) and _re2.search(r"(units?|sales|deliveries|shipments|vehicles|usd|eur|sgd|gbp|jpy|cny|aud|cad)", _s):
+                            return True
+                        return False
+
+                    def _ph2b_has_unit_evidence_candidate(_c: dict) -> bool:
+                        if not isinstance(_c, dict):
+                            return False
+                        if str(_c.get("unit_tag") or "").strip():
+                            return True
+                        if str(_c.get("unit_cmp") or "").strip():
+                            return True
+                        if str(_c.get("unit_family") or "").strip():
+                            return True
+                        # raw/context tokens
+                        if _ph2b_has_scale_token(_c.get("raw")):
+                            return True
+                        if _ph2b_has_scale_token(_c.get("context_snippet") or _c.get("context")):
+                            return True
+                        return False
+
+                    _schema_scaled = _ph2b_has_scale_token(_spec_ut2)
+                    # If schema is scaled, we hard-require candidate unit evidence regardless of name.
+                    if _spec_family == "magnitude" and _schema_scaled and (not _ph2b_has_unit_evidence_candidate(c0)):
+                        meta["blocked_reason"] = "unit_evidence_missing_hard_block"
+                        continue
+
+                    # Extra guard: suppress obvious document-structure numbers (pages/figures) when schema is scaled.
+                    try:
+                        if _spec_family == "magnitude" and _schema_scaled:
+                            _ctx = str((c0 or {}).get("context_snippet") or (c0 or {}).get("context") or "").lower()
+                            if ("pages" in _ctx) or ("figures" in _ctx) or ("page " in _ctx):
+                                # treat as ineligible rather than junking globally
+                                continue
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                # =====================================================================
+                # PATCH FIX2B_SCALE_EV_V2 END
+                # =====================================================================
+
+                # =====================================================================
                 # PATCH FIX2B_SCALE_EV_V1 (ADDITIVE): require *scale* evidence for scaled magnitude schemas
                 # Why:
                 # - Earlier gating treated inferred unit_family='magnitude' as "unit evidence", allowing unitless
@@ -25284,6 +26805,11 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
 
     metric_changes, unchanged, increased, decreased, found = diff_metrics_by_name_FIX31_BASE(prev_response, cur_response)
 
+    # =====================================================================
+    # PATCH FIX2B_EVO_CURFIELDS_V2 (ADDITIVE): disabled due to indentation corruption; FIX2B_EVO_CURFIELDS_V1 handles canonical-first enrichment
+    # =====================================================================
+
+
     try:
         if not isinstance(metric_changes, list):
             return metric_changes, unchanged, increased, decreased, found
@@ -25330,3 +26856,349 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
 # ==============================================================================
 # END FIX32
 # ==============================================================================
+# =====================================================================
+# PATCH V23_CANONICAL_FOR_RENDER_FORCE_CLEAR (ADDITIVE)
+# Goal: When the current evolution canonical dict is "present but junk" (year-like / unitless winners),
+# force the canonical-for-render rebuild path to actually run.
+#
+# Root cause (observed in v22 outputs):
+# - canonical_for_render is initially assigned from current_metrics (non-empty)
+# - _need_render_rebuild can become True due to suspiciousness
+# - BUT rebuild attempts are guarded by `if (not canonical_for_render)` so they never execute
+#   when canonical_for_render is already non-empty.
+#
+# Fix (render-only):
+# - Wrap diff_metrics_by_name so that when we detect a suspicious current canonical dict,
+#   we pass an empty current canonical map into the base diff function.
+# - This triggers the existing v21/v22 rebuild ladder to actually run.
+# - Fully auditable: adds diag markers at row-level and (optionally) at top-level.
+# =====================================================================
+try:
+    diff_metrics_by_name_FIX32_V22_BASE
+except Exception:
+    diff_metrics_by_name_FIX32_V22_BASE = None
+
+try:
+    diff_metrics_by_name_FIX31_BASE
+except Exception:
+    diff_metrics_by_name_FIX31_BASE = None
+
+
+def _ph2b_v23_yearlike(_x):
+    try:
+        if _x is None:
+            return False
+        fx = float(_x)
+        if abs(fx - round(fx)) < 1e-9:
+            ix = int(round(fx))
+            return 1900 <= ix <= 2105
+        return False
+    except Exception:
+        return False
+
+
+def _ph2b_v23_metric_suspicious(_m):
+    try:
+        if not isinstance(_m, dict):
+            return True
+        u = (str(_m.get('unit') or _m.get('unit_tag') or '').strip())
+        vn = _m.get('value_norm')
+        # Most problematic pattern: unitless + yearlike/None
+        if (not u) and (_ph2b_v23_yearlike(vn) or vn is None):
+            return True
+        # Also treat empty raw+unit as suspicious when vn is present but unitless
+        raw = (str(_m.get('raw') or '').strip())
+        if vn is not None and (not u) and (not raw):
+            return True
+        return False
+    except Exception:
+        return True
+
+
+def _ph2b_v23_current_metrics_suspicious(_cm_map):
+    try:
+        if not isinstance(_cm_map, dict) or not _cm_map:
+            return True
+        ks = list(sorted(list(_cm_map.keys())))[:25]
+        if not ks:
+            return True
+        sus = 0
+        tot = 0
+        for k in ks:
+            tot += 1
+            if _ph2b_v23_metric_suspicious(_cm_map.get(k)):
+                sus += 1
+        if tot <= 0:
+            return True
+        return (sus / float(tot)) >= 0.30
+    except Exception:
+        return False
+
+
+def diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR(prev_response, cur_response, *args, **kwargs):
+    """Wrapper around the existing diff implementation to force render-only rebuild when current canonical is suspicious."""
+    if not callable(diff_metrics_by_name_FIX31_BASE):
+        # If we can't find the base function, fall back to any existing diff impl
+        if callable(diff_metrics_by_name_FIX32_V22_BASE):
+            return diff_metrics_by_name_FIX32_V22_BASE(prev_response, cur_response, *args, **kwargs)
+        return []
+
+    _cur = cur_response
+    _forced_clear = False
+    _sus = False
+    try:
+        cm = None
+        if isinstance(cur_response, dict):
+            cm = cur_response.get('primary_metrics_canonical')
+        _sus = bool(_ph2b_v23_current_metrics_suspicious(cm))
+        if _sus:
+            _forced_clear = True
+            # Shallow-copy cur_response and clear primary_metrics_canonical only.
+            _cur = dict(cur_response) if isinstance(cur_response, dict) else cur_response
+            if isinstance(_cur, dict):
+                # Preserve original for audit
+                _cur.setdefault('diag', {})
+                if isinstance(_cur.get('diag'), dict):
+                    _cur['diag'].setdefault('ph2b_v23_force_clear_current_metrics', True)
+                    try:
+                        _cur['diag'].setdefault('ph2b_v23_force_clear_reason', 'suspicious_current_metrics_triggered_render_rebuild')
+                    except Exception:
+                        pass
+                # Force empty so v21/v22 rebuild ladder actually runs
+                _cur['primary_metrics_canonical'] = {}
+    except Exception:
+        _cur = cur_response
+        _forced_clear = False
+
+    rows = diff_metrics_by_name_FIX31_BASE(prev_response, _cur, *args, **kwargs)
+
+    # PATCH V23_ROW_DIAG (ADDITIVE): mark every returned row so we can confirm v23 wrapper ran
+    try:
+        if _forced_clear and isinstance(rows, list):
+            for r in rows:
+                if isinstance(r, dict):
+                    r.setdefault('diag', {})
+                    if isinstance(r.get('diag'), dict):
+                        r['diag'].setdefault('ph2b_v23_force_clear_applied', True)
+                        r['diag'].setdefault('ph2b_v23_force_clear_suspicious', bool(_sus))
+    except Exception:
+        pass
+
+    return rows
+
+
+# PATCH V23_WIRE (ADDITIVE): Replace the public diff entrypoint used by evolution with the v23 wrapper.
+try:
+    if callable(diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR):
+        diff_metrics_by_name = diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR
+except Exception:
+    pass
+
+# PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'
+except Exception:
+    pass
+
+
+
+# =====================================================================
+# PATCH V24_STRICT_CANONICAL_KEY_MATCH (ADDITIVE)
+# Goal: When canonical-for-render is active, enforce strict canonical_key identity for current-side lookup.
+# This blocks all name/heuristic fallback matching that can substitute unrelated canon metrics (e.g., 2.0 B, 170.0, 2030.0).
+#
+# Activation: cur_response contains _ph2b_strict_ckey_v24 == True.
+#
+# Safety: render/diff-layer only. Does not touch fastpath/hashing/injection/snapshot attach.
+# =====================================================================
+try:
+    diff_metrics_by_name_V24_BASE = diff_metrics_by_name  # type: ignore
+except Exception:
+    diff_metrics_by_name_V24_BASE = None  # type: ignore
+
+def _v24_num(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip()
+        if not s:
+            return None
+        # remove common commas
+        s = s.replace(",", "")
+        return float(s)
+    except Exception:
+        return None
+
+def diff_metrics_by_name_FIX34_V24_STRICT(prev_response: dict, cur_response: dict):
+    """Strict diff: current metric is looked up ONLY by canonical_key when v24 strict flag is set."""
+    # If not in strict mode, fall back to existing diff implementation.
+    try:
+        if not (isinstance(cur_response, dict) and cur_response.get("_ph2b_strict_ckey_v24")):
+            if callable(diff_metrics_by_name_V24_BASE):
+                return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
+            return ([], 0, 0, 0, 0)
+    except Exception:
+        if callable(diff_metrics_by_name_V24_BASE):
+            return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
+        return ([], 0, 0, 0, 0)
+
+    prev_can = (prev_response or {}).get("primary_metrics_canonical") or {}
+    cur_can = (cur_response or {}).get("primary_metrics_canonical") or {}
+
+    metric_changes = []
+    unchanged = increased = decreased = found = 0
+
+    try:
+        if not isinstance(prev_can, dict):
+            prev_can = {}
+        if not isinstance(cur_can, dict):
+            cur_can = {}
+
+        # Use prev keys as the authoritative set for diffing (matches Analysis behavior).
+        for ckey in prev_can.keys():
+            pm = prev_can.get(ckey) if isinstance(prev_can.get(ckey), dict) else (prev_can.get(ckey) or {})
+            cm = cur_can.get(ckey) if isinstance(cur_can.get(ckey), dict) else (cur_can.get(ckey) or None)
+
+            row = {
+                "canonical_key": ckey,
+                "metric_name": (pm.get("name") if isinstance(pm, dict) else "") or ckey,
+                "previous_value": (pm.get("value_norm") if isinstance(pm, dict) else None),
+                "current_value": None,
+                "prev_unit_cmp": (pm.get("unit") if isinstance(pm, dict) else "") or "",
+                "cur_unit_cmp": "",
+                "prev_value_norm": (pm.get("value_norm") if isinstance(pm, dict) else None),
+                "cur_value_norm": None,
+                "unit_mismatch": False,
+                "change_type": "not_found",
+                "confidence": pm.get("confidence") if isinstance(pm, dict) else None,
+                "metric_definition": pm.get("metric_definition") if isinstance(pm, dict) else None,
+            }
+
+            if isinstance(cm, dict) and cm:
+                found += 1
+                cvn = cm.get("value_norm")
+                cunit = (cm.get("unit") or cm.get("unit_tag") or "").strip()
+                craw = (cm.get("raw") or "").strip()
+                if not craw:
+                    try:
+                        if cvn is not None and cunit:
+                            craw = f"{cvn} {cunit}".strip()
+                        elif cvn is not None:
+                            craw = str(cvn)
+                    except Exception:
+                        craw = ""
+                row["current_value"] = craw
+                row["cur_value_norm"] = cvn
+                row["current_value_norm"] = cvn
+                row["cur_unit_cmp"] = cunit
+                row["current_unit"] = cunit
+
+                pv = _v24_num(row.get("previous_value"))
+                cv = _v24_num(cvn)
+                if pv is not None and cv is not None:
+                    if abs(cv - pv) < 1e-9:
+                        row["change_type"] = "unchanged"
+                        unchanged += 1
+                    elif cv > pv:
+                        row["change_type"] = "increased"
+                        increased += 1
+                    else:
+                        row["change_type"] = "decreased"
+                        decreased += 1
+                else:
+                    # We found a row but cannot compare numerically
+                    row["change_type"] = "found"
+
+                # Attach v24 audit
+                row.setdefault("diag", {})
+                if isinstance(row.get("diag"), dict):
+                    row["diag"].setdefault("canonical_key_strict_v1", {})
+                    row["diag"]["canonical_key_strict_v1"]["enabled"] = True
+                    row["diag"]["canonical_key_strict_v1"]["used_key"] = ckey
+                    row["diag"]["canonical_key_strict_v1"]["fallback_blocked"] = True
+            else:
+                # Not found: keep blank. Still attach audit.
+                row.setdefault("diag", {})
+                if isinstance(row.get("diag"), dict):
+                    row["diag"].setdefault("canonical_key_strict_v1", {})
+                    row["diag"]["canonical_key_strict_v1"]["enabled"] = True
+                    row["diag"]["canonical_key_strict_v1"]["used_key"] = ckey
+                    row["diag"]["canonical_key_strict_v1"]["fallback_blocked"] = True
+                    row["diag"]["canonical_key_strict_v1"]["not_found"] = True
+
+            metric_changes.append(row)
+
+    except Exception:
+        # On failure, revert to existing diff
+        if callable(diff_metrics_by_name_V24_BASE):
+            return diff_metrics_by_name_V24_BASE(prev_response, cur_response)
+        return ([], 0, 0, 0, 0)
+
+    return metric_changes, unchanged, increased, decreased, found
+
+# PATCH V24_WIRE (ADDITIVE): override diff_metrics_by_name entrypoint with v24 strict-aware wrapper.
+try:
+    if callable(diff_metrics_by_name_FIX34_V24_STRICT):
+        diff_metrics_by_name = diff_metrics_by_name_FIX34_V24_STRICT  # type: ignore
+except Exception:
+    pass
+
+# PATCH V24_VERSION_BUMP (ADDITIVE)
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v24'
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
+# =====================================================================
+try:
+    CODE_VERSION = "fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v25"
+except Exception:
+    pass
+# =====================================================================
+# END PATCH FIX41AFC19_V25
+# =====================================================================
+
+
+# =====================================================================
+# PATCH CODE_VERSION_V26 (ADDITIVE)
+# =====================================================================
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v26'
+# =====================================================================
+# END PATCH CODE_VERSION_V26
+# =====================================================================
+
+# =====================================================================
+# PATCH V27_VERSION_BUMP (ADDITIVE)
+# =====================================================================
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v27'
+except Exception:
+    pass
+# =====================================================================
+# END PATCH V27_VERSION_BUMP
+# =====================================================================
+
+# =====================================================================
+# PATCH V28_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
+# =====================================================================
+try:
+    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v28'
+except Exception:
+    pass
+# =====================================================================
+# END PATCH V28_VERSION_BUMP
+# =====================================================================
+
+
+# =====================================================================
+# PATCH V29_CODE_VERSION_BUMP (ADDITIVE)
+# =====================================================================
+CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v29'
+# =====================================================================
+# END PATCH V29_CODE_VERSION_BUMP
+# =====================================================================
