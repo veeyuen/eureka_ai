@@ -87,8 +87,8 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "REFACTOR07"
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR07"
+CODE_VERSION = "REFACTOR08"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR08"
 def _yureeka_get_code_version():
     try:
         v = globals().get("_YUREEKA_CODE_VERSION_LOCK") or globals().get("CODE_VERSION") or ""
@@ -155,7 +155,7 @@ try:
             break
     if not _already:
         PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR04",
+            "patch_id": "REFACTOR08",
             "date": "2026-01-21",
             "summary": "Fix false unit_mismatch caused by context_snippet percent leakage; enrich schema-anchored rebuilt PMC with unit_tag/unit_family/multiplier_to_base; tighten unit-family evidence checks to prefer token/raw evidence over broad context for magnitude keys; update refactor harness labels to REFACTOR04.",
             "files": ["REFACTOR04_full_codebase_streamlit_safe.py"],
@@ -218,6 +218,31 @@ try:
 except Exception:
     pass
 
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR08
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR08":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR08",
+            "date": "2026-01-22",
+            "summary": "Enhance refactor regression harness with consistent REFACTOR08 labels/versioning, dynamic authoritative diff binding expectation, and summary consistency checks (rows_total/partition/found/not_found/key_overlap). Update FINAL BINDINGS tag and locked CODE_VERSION to REFACTOR08.",
+            "files": ["REFACTOR08_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR07"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # ============================================================
 try:
@@ -49299,7 +49324,7 @@ def _refactor02_run_harness_v2():
         pass
 
     report = {
-        "patch_id": "REFACTOR04",
+        "patch_id": "REFACTOR08",
         "code_version": _yureeka_get_code_version(),
         "run_ts_utc": _refactor01__safe_now_iso(),
         "config": {
@@ -49331,7 +49356,8 @@ def _refactor02_run_harness_v2():
         _auth = getattr(globals().get("diff_metrics_by_name"), "__YUREEKA_AUTHORITATIVE_BINDING__", None)
     except Exception:
         _auth = None
-    ok_all = _assert("binding.diff_metrics_by_name_authoritative", (_auth == "REFACTOR06"), f"auth={_auth}") and ok_all
+    expected_auth = str(globals().get("_YUREEKA_FINAL_BINDINGS_VERSION") or _yureeka_get_code_version() or "REFACTOR08")
+    ok_all = _assert("binding.diff_metrics_by_name_authoritative", (_auth == expected_auth), f"auth={_auth} expected={expected_auth}") and ok_all
     try:
         _obj = globals().get("diff_metrics_by_name")
         _auth_obj = globals().get("_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE")
@@ -49531,14 +49557,14 @@ def _refactor02_run_harness_v2():
             os.makedirs(_dir, exist_ok=True)
         except Exception:
             _dir = os.getcwd()
-        fname = f"refactor_harness_report_REFACTOR07_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fname = f"refactor_harness_report_REFACTOR08_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
         fpath = os.path.join(_dir, fname)
         try:
             with open(fpath, "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-        print("[REFACTOR07] Harness FAILED during analysis stage. Report:", fpath)
+        print("[REFACTOR08] Harness FAILED during analysis stage. Report:", fpath)
         return False
 
     # ---- run evolution
@@ -49580,6 +49606,35 @@ def _refactor02_run_harness_v2():
             "metric_changes_v2_rows": int(len(rows)),
             "diff_panel_v2_summary": summary,
         }
+
+
+        # ---- REFACTOR08 invariants: diff_panel_v2_summary consistency (if present)
+        try:
+            if rows_total is not None:
+                ok_all = _assert("diff.summary_rows_total_matches_len", int(rows_total) == int(len(rows)), f"rows_total={rows_total} len(rows)={len(rows)}") and ok_all
+            if (both_count is not None) and (prev_only is not None) and (cur_only is not None) and (rows_total is not None):
+                ok_all = _assert("diff.summary_partition_counts_match_total", (int(both_count) + int(prev_only) + int(cur_only)) == int(rows_total), f"both={both_count} prev_only={prev_only} cur_only={cur_only} rows_total={rows_total}") and ok_all
+
+            _found = summary.get("found")
+            _not_found = summary.get("not_found")
+            if _found is not None:
+                ok_all = _assert("diff.summary_found_gt_0", int(_found) > 0, f"found={_found}") and ok_all
+            if _not_found is not None:
+                ok_all = _assert("diff.summary_not_found_eq_0", int(_not_found) == 0, f"not_found={_not_found}") and ok_all
+
+            kov = dbg.get("key_overlap_v1")
+            if isinstance(kov, dict):
+                _pc = kov.get("prev_count")
+                _cc = kov.get("cur_count")
+                _oc = kov.get("overlap_count")
+                if _pc is not None:
+                    ok_all = _assert("diff.key_overlap_prev_count_gt_0", int(_pc) > 0, f"prev_count={_pc}") and ok_all
+                if _cc is not None:
+                    ok_all = _assert("diff.key_overlap_cur_count_gt_0", int(_cc) > 0, f"cur_count={_cc}") and ok_all
+                if (_pc is not None) and (_cc is not None) and (_oc is not None):
+                    ok_all = _assert("diff.key_overlap_overlap_leq_min", int(_oc) <= min(int(_pc), int(_cc)), f"prev={_pc} cur={_cc} overlap={_oc}") and ok_all
+        except Exception:
+            ok_all = _assert("diff.summary_consistency_checks", False, "exception") and ok_all
 
         # ---- REFACTOR07 invariant: evolution code_version matches runtime lock
         try:
@@ -49698,11 +49753,11 @@ def _refactor02_run_harness_v2():
             os.makedirs(_dir, exist_ok=True)
         except Exception:
             _dir = os.getcwd()
-        fname = f"refactor_harness_report_REFACTOR07_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fname = f"refactor_harness_report_REFACTOR08_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
         fpath = os.path.join(_dir, fname)
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"[REFACTOR07] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
+        print(f"[REFACTOR08] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
     except Exception:
         pass
 
@@ -49710,7 +49765,7 @@ def _refactor02_run_harness_v2():
 
 
 # ============================================================
-# REFACTOR06: FINAL BINDINGS (AUTHORITATIVE)
+# REFACTOR08: FINAL BINDINGS (AUTHORITATIVE)
 #
 # Purpose:
 #   - Eliminate "edited the wrong function" risk by ensuring a single,
@@ -49722,7 +49777,7 @@ def _refactor02_run_harness_v2():
 #     but are overridden here.
 # ============================================================
 try:
-    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR07"
+    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR08"
     globals()["_YUREEKA_FINAL_BINDINGS_VERSION"] = _YUREEKA_FINAL_BINDINGS_VERSION
 except Exception:
     pass
@@ -49732,7 +49787,7 @@ try:
     _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE = globals().get("diff_metrics_by_name")
     if callable(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE):
         try:
-            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR07")
+            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR08")
         except Exception:
             pass
         diff_metrics_by_name = _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE  # type: ignore
@@ -49743,15 +49798,15 @@ except Exception:
 
 # --- Final CODE_VERSION override (refactor sequence)
 try:
-    CODE_VERSION = "REFACTOR07"
+    CODE_VERSION = "REFACTOR08"
     globals()["CODE_VERSION"] = CODE_VERSION
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "REFACTOR07"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "REFACTOR08"
 except Exception:
     pass
 
 
 # ============================================================
-# REFACTOR06: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
+# REFACTOR08: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
 # ============================================================
 try:
     if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
