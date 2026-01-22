@@ -87,7 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "REFACTOR10"
+CODE_VERSION = "REFACTOR11"
 _YUREEKA_CODE_VERSION_LOCK = "REFACTOR10"
 def _yureeka_get_code_version():
     try:
@@ -22897,6 +22897,49 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 
     total = max(1, len(output["metric_changes"]))
     output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
+
+    # ============================================================
+    # REFACTOR11 (ADD): Recompute evolution summary counters from final rows
+    #
+    # Motivation:
+    # - Legacy counters (increased/decreased/unchanged) can be stale when the
+    #   diff row list is post-processed or swapped to the canonical-first join.
+    # - The UI and JSON should reflect what is actually in output["metric_changes"].
+    # ============================================================
+    try:
+        _rf11_counts = {"increased": 0, "decreased": 0, "unchanged": 0, "added": 0, "removed": 0}
+        for _r in (output.get("metric_changes") or []):
+            if not isinstance(_r, dict):
+                continue
+            _ct = str(_r.get("change_type") or _r.get("baseline_change_type") or "").strip().lower()
+            if _ct in _rf11_counts:
+                _rf11_counts[_ct] += 1
+
+        if not isinstance(output.get("summary"), dict):
+            output["summary"] = {}
+        _rf11_total = int(len(output.get("metric_changes") or []))
+        output["summary"]["total_metrics"] = _rf11_total
+        output["summary"]["metrics_found"] = _rf11_total
+        output["summary"]["metrics_increased"] = int(_rf11_counts["increased"])
+        output["summary"]["metrics_decreased"] = int(_rf11_counts["decreased"])
+        output["summary"]["metrics_unchanged"] = int(_rf11_counts["unchanged"])
+        # Extra (non-breaking) counters for more faithful reporting
+        output["summary"]["metrics_added"] = int(_rf11_counts["added"])
+        output["summary"]["metrics_removed"] = int(_rf11_counts["removed"])
+
+        _rf11_den = max(1, _rf11_total)
+        output["stability_score"] = (float(output["summary"]["metrics_unchanged"]) / float(_rf11_den)) * 100.0
+
+        if not isinstance(output.get("debug"), dict):
+            output["debug"] = {}
+        output["debug"]["refactor11_summary_recompute_v1"] = {
+            "counts": dict(_rf11_counts),
+            "total_rows": int(_rf11_total),
+            "stability_den": int(_rf11_den),
+        }
+    except Exception:
+        pass
+
 
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
@@ -49759,7 +49802,7 @@ def _refactor02_run_harness_v2():
         fpath = os.path.join(_dir, fname)
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"[REFACTOR10] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
+        print(f"[REFACTOR11] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
     except Exception:
         pass
 
@@ -49771,6 +49814,32 @@ def _refactor02_run_harness_v2():
 
 
 # ============================================================
+
+
+# PATCH TRACKER V1 (ADD): REFACTOR11
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    try:
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR11":
+                _already = True
+                break
+    except Exception:
+        _already = False
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR11",
+            "date": "2026-01-23",
+            "summary": "Fix evolution JSON/UI counters: recompute summary (increased/decreased/unchanged/added) from final metric_changes rows; recompute stability_score accordingly; bump final binding/version locks to REFACTOR11 for hygiene.",
+            "files": ["REFACTOR11_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR10"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # PATCH TRACKER V1 (ADD): REFACTOR10
 try:
@@ -49861,7 +49930,7 @@ def _refactor09_diff_metrics_by_name(prev_response: dict, cur_response: dict):
     return ([], [], [], [], False)
 
 
-# REFACTOR10: FINAL BINDINGS (AUTHORITATIVE)
+# REFACTOR11: FINAL BINDINGS (AUTHORITATIVE)
 #
 # Purpose:
 #   - Eliminate "edited the wrong function" risk by ensuring a single,
@@ -49874,7 +49943,7 @@ def _refactor09_diff_metrics_by_name(prev_response: dict, cur_response: dict):
 #     but are overridden here.
 # ============================================================
 try:
-    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR10"
+    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR11"
     globals()["_YUREEKA_FINAL_BINDINGS_VERSION"] = _YUREEKA_FINAL_BINDINGS_VERSION
 except Exception:
     pass
@@ -49884,7 +49953,7 @@ try:
     _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE = globals().get("_refactor09_diff_metrics_by_name")
     if callable(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE):
         try:
-            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR10")
+            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR11")
         except Exception:
             pass
         diff_metrics_by_name = _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE  # type: ignore
@@ -49895,14 +49964,14 @@ except Exception:
 
 # --- Final CODE_VERSION override (refactor sequence)
 try:
-    CODE_VERSION = "REFACTOR10"
+    CODE_VERSION = "REFACTOR11"
     globals()["CODE_VERSION"] = CODE_VERSION
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "REFACTOR10"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "REFACTOR11"
 except Exception:
     pass
 
 # ============================================================
-# REFACTOR10: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
+# REFACTOR11: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
 # ============================================================
 try:
     if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
