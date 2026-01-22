@@ -87,8 +87,8 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "REFACTOR08"
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR08"
+CODE_VERSION = "REFACTOR10"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR10"
 def _yureeka_get_code_version():
     try:
         v = globals().get("_YUREEKA_CODE_VERSION_LOCK") or globals().get("CODE_VERSION") or ""
@@ -155,7 +155,7 @@ try:
             break
     if not _already:
         PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR09",
+            "patch_id": "REFACTOR10",
             "date": "2026-01-21",
             "summary": "Fix false unit_mismatch caused by context_snippet percent leakage; enrich schema-anchored rebuilt PMC with unit_tag/unit_family/multiplier_to_base; tighten unit-family evidence checks to prefer token/raw evidence over broad context for magnitude keys; update refactor harness labels to REFACTOR04.",
             "files": ["REFACTOR04_full_codebase_streamlit_safe.py"],
@@ -18450,7 +18450,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # =========================
     # VERSION STAMP (ADDITIVE)
     # =========================
-    analysis.setdefault("code_version", CODE_VERSION)
+    analysis.setdefault("code_version", _yureeka_get_code_version())
     # =========================
 
 
@@ -25301,6 +25301,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             "code_version": _yureeka_get_code_version(),
             "final_bindings_version": str(globals().get("_YUREEKA_FINAL_BINDINGS_VERSION") or ""),
             "diff_metrics_by_name_authoritative": str(getattr(globals().get("diff_metrics_by_name"), "__YUREEKA_AUTHORITATIVE_BINDING__", "") or ""),
+            "diff_metrics_by_name_name": str(getattr(globals().get("diff_metrics_by_name"), "__name__", "") or ""),
+            "diff_metrics_by_name_qualname": str(getattr(globals().get("diff_metrics_by_name"), "__qualname__", "") or ""),
         }
     except Exception:
         pass
@@ -36627,7 +36629,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         # =====================================================================
         try:
             if isinstance(out_replay, dict):
-                out_replay.setdefault("code_version", CODE_VERSION)
+                out_replay.setdefault("code_version", _yureeka_get_code_version())
                 out_replay.setdefault("debug", {}).setdefault("fix41", {})
                 out_replay["debug"]["fix41"].update({
                     "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
@@ -36752,7 +36754,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             # =====================================================================
             try:
                 if isinstance(out_changed, dict):
-                    out_changed.setdefault("code_version", CODE_VERSION)
+                    out_changed.setdefault("code_version", _yureeka_get_code_version())
                     out_changed.setdefault("debug", {}).setdefault("fix41", {})
                     out_changed["debug"]["fix41"].update({
                         "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
@@ -49356,7 +49358,7 @@ def _refactor02_run_harness_v2():
         _auth = getattr(globals().get("diff_metrics_by_name"), "__YUREEKA_AUTHORITATIVE_BINDING__", None)
     except Exception:
         _auth = None
-    expected_auth = str(globals().get("_YUREEKA_FINAL_BINDINGS_VERSION") or _yureeka_get_code_version() or "REFACTOR08")
+    expected_auth = str(_yureeka_get_code_version() or "")
     ok_all = _assert("binding.diff_metrics_by_name_authoritative", (_auth == expected_auth), f"auth={_auth} expected={expected_auth}") and ok_all
     try:
         _obj = globals().get("diff_metrics_by_name")
@@ -49564,7 +49566,7 @@ def _refactor02_run_harness_v2():
                 json.dump(report, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-        print("[REFACTOR09] Harness FAILED during analysis stage. Report:", fpath)
+        print("[REFACTOR10] Harness FAILED during analysis stage. Report:", fpath)
         return False
 
     # ---- run evolution
@@ -49757,7 +49759,7 @@ def _refactor02_run_harness_v2():
         fpath = os.path.join(_dir, fname)
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"[REFACTOR09] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
+        print(f"[REFACTOR10] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
     except Exception:
         pass
 
@@ -49769,6 +49771,32 @@ def _refactor02_run_harness_v2():
 
 
 # ============================================================
+
+# PATCH TRACKER V1 (ADD): REFACTOR10
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    try:
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR10":
+                _already = True
+                break
+    except Exception:
+        _already = False
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR10",
+            "date": "2026-01-22",
+            "summary": "Fix refactor versioning + binding hygiene: set CODE_VERSION/_YUREEKA_CODE_VERSION_LOCK to REFACTOR10; make binding_manifest_v1 report diff function name/qualname; tighten harness binding expectation to _yureeka_get_code_version(); update final bindings tag to REFACTOR10.",
+            "files": ["REFACTOR10_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR09"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): REFACTOR09
 # ============================================================
 try:
@@ -49811,7 +49839,7 @@ except Exception:
     _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY = None
 
 def _refactor09_diff_metrics_by_name(prev_response: dict, cur_response: dict):
-    """Authoritative diff entrypoint (REFACTOR09).
+    """Authoritative diff entrypoint (REFACTOR10).
 
     Delegates to the legacy diff implementation captured at load time, so behavior
     remains unchanged while we consolidate/remove duplicates safely.
@@ -49833,7 +49861,7 @@ def _refactor09_diff_metrics_by_name(prev_response: dict, cur_response: dict):
     return ([], [], [], [], False)
 
 
-# REFACTOR09: FINAL BINDINGS (AUTHORITATIVE)
+# REFACTOR10: FINAL BINDINGS (AUTHORITATIVE)
 #
 # Purpose:
 #   - Eliminate "edited the wrong function" risk by ensuring a single,
@@ -49846,7 +49874,7 @@ def _refactor09_diff_metrics_by_name(prev_response: dict, cur_response: dict):
 #     but are overridden here.
 # ============================================================
 try:
-    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR09"
+    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR10"
     globals()["_YUREEKA_FINAL_BINDINGS_VERSION"] = _YUREEKA_FINAL_BINDINGS_VERSION
 except Exception:
     pass
@@ -49856,7 +49884,7 @@ try:
     _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE = globals().get("_refactor09_diff_metrics_by_name")
     if callable(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE):
         try:
-            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR09")
+            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR10")
         except Exception:
             pass
         diff_metrics_by_name = _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE  # type: ignore
@@ -49867,14 +49895,14 @@ except Exception:
 
 # --- Final CODE_VERSION override (refactor sequence)
 try:
-    CODE_VERSION = "REFACTOR09"
+    CODE_VERSION = "REFACTOR10"
     globals()["CODE_VERSION"] = CODE_VERSION
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "REFACTOR09"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "REFACTOR10"
 except Exception:
     pass
 
 # ============================================================
-# REFACTOR09: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
+# REFACTOR10: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
 # ============================================================
 try:
     if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
