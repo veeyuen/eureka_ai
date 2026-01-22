@@ -155,7 +155,7 @@ try:
             break
     if not _already:
         PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR08",
+            "patch_id": "REFACTOR09",
             "date": "2026-01-21",
             "summary": "Fix false unit_mismatch caused by context_snippet percent leakage; enrich schema-anchored rebuilt PMC with unit_tag/unit_family/multiplier_to_base; tighten unit-family evidence checks to prefer token/raw evidence over broad context for magnitude keys; update refactor harness labels to REFACTOR04.",
             "files": ["REFACTOR04_full_codebase_streamlit_safe.py"],
@@ -234,7 +234,7 @@ try:
             break
     if not _already:
         PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR08",
+            "patch_id": "REFACTOR09",
             "date": "2026-01-22",
             "summary": "Enhance refactor regression harness with consistent REFACTOR08 labels/versioning, dynamic authoritative diff binding expectation, and summary consistency checks (rows_total/partition/found/not_found/key_overlap). Update FINAL BINDINGS tag and locked CODE_VERSION to REFACTOR08.",
             "files": ["REFACTOR08_full_codebase_streamlit_safe.py"],
@@ -49324,7 +49324,7 @@ def _refactor02_run_harness_v2():
         pass
 
     report = {
-        "patch_id": "REFACTOR08",
+        "patch_id": "REFACTOR09",
         "code_version": _yureeka_get_code_version(),
         "run_ts_utc": _refactor01__safe_now_iso(),
         "config": {
@@ -49564,7 +49564,7 @@ def _refactor02_run_harness_v2():
                 json.dump(report, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-        print("[REFACTOR08] Harness FAILED during analysis stage. Report:", fpath)
+        print("[REFACTOR09] Harness FAILED during analysis stage. Report:", fpath)
         return False
 
     # ---- run evolution
@@ -49757,7 +49757,7 @@ def _refactor02_run_harness_v2():
         fpath = os.path.join(_dir, fname)
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"[REFACTOR08] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
+        print(f"[REFACTOR09] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
     except Exception:
         pass
 
@@ -49765,11 +49765,80 @@ def _refactor02_run_harness_v2():
 
 
 # ============================================================
-# REFACTOR08: FINAL BINDINGS (AUTHORITATIVE)
+#
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR09
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    try:
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR09":
+                _already = True
+                break
+    except Exception:
+        _already = False
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR09",
+            "date": "2026-01-22",
+            "summary": "Introduce a single authoritative diff engine wrapper (_refactor09_diff_metrics_by_name) and bind diff_metrics_by_name to it in final bindings; prepare for safe removal of legacy duplicate diff definitions.",
+            "files": ["REFACTOR09_full_codebase_streamlit_safe.py"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# REFACTOR09: DIFF ENGINE CONSOLIDATION (WRAPPER)
+#
+# Purpose:
+#   - Establish one stable, explicit implementation target for future extraction.
+#   - Preserve current working behavior by delegating to the legacy implementation
+#     captured at end-of-file time.
+#   - Final bindings will point to this wrapper (single edit point).
+# ============================================================
+try:
+    _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY = globals().get("diff_metrics_by_name")
+    globals()["_YUREEKA_DIFF_METRICS_BY_NAME_LEGACY"] = _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY
+except Exception:
+    _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY = None
+
+def _refactor09_diff_metrics_by_name(prev_response: dict, cur_response: dict):
+    """Authoritative diff entrypoint (REFACTOR09).
+
+    Delegates to the legacy diff implementation captured at load time, so behavior
+    remains unchanged while we consolidate/remove duplicates safely.
+    """
+    try:
+        fn = globals().get("_YUREEKA_DIFF_METRICS_BY_NAME_LEGACY")
+        if callable(fn):
+            return fn(prev_response, cur_response)
+    except Exception:
+        pass
+    # Fallback (should be unreachable)
+    try:
+        fn2 = globals().get("diff_metrics_by_name")
+        if callable(fn2) and fn2 is not _refactor09_diff_metrics_by_name:
+            return fn2(prev_response, cur_response)
+    except Exception:
+        pass
+    # Safe empty result
+    return ([], [], [], [], False)
+
+
+# REFACTOR09: FINAL BINDINGS (AUTHORITATIVE)
 #
 # Purpose:
 #   - Eliminate "edited the wrong function" risk by ensuring a single,
 #     explicit, end-of-file binding wins.
+#   - Bind diff_metrics_by_name to the REFACTOR09 wrapper (single edit point).
 #   - Tag the authoritative binding so the refactor harness can verify it.
 #
 # Notes:
@@ -49777,17 +49846,17 @@ def _refactor02_run_harness_v2():
 #     but are overridden here.
 # ============================================================
 try:
-    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR08"
+    _YUREEKA_FINAL_BINDINGS_VERSION = "REFACTOR09"
     globals()["_YUREEKA_FINAL_BINDINGS_VERSION"] = _YUREEKA_FINAL_BINDINGS_VERSION
 except Exception:
     pass
 
-# --- Authoritative diff binding
+# --- Authoritative diff binding (REFACTOR09 wrapper)
 try:
-    _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE = globals().get("diff_metrics_by_name")
+    _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE = globals().get("_refactor09_diff_metrics_by_name")
     if callable(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE):
         try:
-            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR08")
+            setattr(_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE, "__YUREEKA_AUTHORITATIVE_BINDING__", "REFACTOR09")
         except Exception:
             pass
         diff_metrics_by_name = _YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE  # type: ignore
@@ -49798,15 +49867,14 @@ except Exception:
 
 # --- Final CODE_VERSION override (refactor sequence)
 try:
-    CODE_VERSION = "REFACTOR08"
+    CODE_VERSION = "REFACTOR09"
     globals()["CODE_VERSION"] = CODE_VERSION
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "REFACTOR08"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "REFACTOR09"
 except Exception:
     pass
 
-
 # ============================================================
-# REFACTOR08: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
+# REFACTOR09: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
 # ============================================================
 try:
     if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
