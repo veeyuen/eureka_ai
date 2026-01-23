@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR14"
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR15'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -109,14 +109,54 @@ def _yureeka_lock_version_globals_v1():
         pass
 
 def _yureeka_ensure_final_bindings_v1():
-    """Ensure FINAL BINDINGS tags are always present and consistent with the version lock."""
+    """Ensure FINAL BINDINGS tags are always present and consistent with the version lock.
+
+    REFACTOR15: resolves the active diff function deterministically so diagnostics can't
+    silently report an empty binding manifest, and so evolution can always compute diffs.
+    """
     try:
         v = _yureeka_get_code_version()
         globals()["_YUREEKA_FINAL_BINDINGS_VERSION"] = v
     except Exception:
         pass
+
+    # Resolve active diff entrypoint (last-wins, but never None if a known candidate exists)
+    fn = None
+    bound_from = ""
     try:
         fn = globals().get("diff_metrics_by_name")
+    except Exception:
+        fn = None
+
+    if not callable(fn):
+        for _cand_name in [
+            "_refactor09_diff_metrics_by_name",
+            "diff_metrics_by_name_FIX41_V34C_UNWRAP",
+            "diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN",
+            "diff_metrics_by_name_FIX40_V32_PREFER_PMC",
+            "diff_metrics_by_name_FIX34_V24_STRICT",
+            "diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR",
+            "diff_metrics_by_name_FIX2D34",
+        ]:
+            try:
+                _cand = globals().get(_cand_name)
+            except Exception:
+                _cand = None
+            if callable(_cand):
+                fn = _cand
+                bound_from = _cand_name
+                try:
+                    globals()["diff_metrics_by_name"] = fn
+                except Exception:
+                    pass
+                break
+
+    try:
+        globals()["_YUREEKA_DIFF_METRICS_BY_NAME_BOUND_FROM"] = bound_from
+    except Exception:
+        pass
+
+    try:
         if callable(fn):
             try:
                 setattr(fn, "__YUREEKA_AUTHORITATIVE_BINDING__", _yureeka_get_code_version())
@@ -126,6 +166,7 @@ def _yureeka_ensure_final_bindings_v1():
         pass
 
 # assert globals early for debugging (safe no-op)
+
 _yureeka_lock_version_globals_v1()
 _yureeka_ensure_final_bindings_v1()
 
@@ -25558,6 +25599,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             "diff_metrics_by_name_qualname": str(getattr(_fn, "__qualname__", "") or ""),
             "diff_metrics_by_name_module": str(getattr(_fn, "__module__", "") or ""),
             "diff_metrics_by_name_id": str(id(_fn)) if _fn is not None else "",
+            "diff_metrics_by_name_bound_from": str(globals().get("_YUREEKA_DIFF_METRICS_BY_NAME_BOUND_FROM") or ""),
         }
     except Exception:
         pass
@@ -27247,6 +27289,36 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     try:
         # Default: use whatever current_metrics we already have
         canonical_for_render = current_metrics if isinstance(current_metrics, dict) else {}
+        # REFACTOR15: if refactors nested the current PMC under output['results'], recover it so diffing can't go empty.
+        if (not isinstance(canonical_for_render, dict)) or (isinstance(canonical_for_render, dict) and not canonical_for_render):
+            try:
+                if isinstance(output.get("primary_metrics_canonical"), dict) and output.get("primary_metrics_canonical"):
+                    canonical_for_render = output.get("primary_metrics_canonical")
+            except Exception:
+                pass
+        if (not isinstance(canonical_for_render, dict)) or (isinstance(canonical_for_render, dict) and not canonical_for_render):
+            try:
+                _pr = output.get("primary_response") if isinstance(output.get("primary_response"), dict) else None
+                if isinstance(_pr, dict) and isinstance(_pr.get("primary_metrics_canonical"), dict) and _pr.get("primary_metrics_canonical"):
+                    canonical_for_render = _pr.get("primary_metrics_canonical")
+            except Exception:
+                pass
+        if (not isinstance(canonical_for_render, dict)) or (isinstance(canonical_for_render, dict) and not canonical_for_render):
+            try:
+                _r = output.get("results") if isinstance(output.get("results"), dict) else None
+                if isinstance(_r, dict) and isinstance(_r.get("primary_metrics_canonical"), dict) and _r.get("primary_metrics_canonical"):
+                    canonical_for_render = _r.get("primary_metrics_canonical")
+            except Exception:
+                pass
+        # Also publish for downstream consumers (UI + v2 diff builder)
+        try:
+            if isinstance(canonical_for_render, dict):
+                output["primary_metrics_canonical"] = canonical_for_render
+                if isinstance(output.get("primary_response"), dict):
+                    output["primary_response"]["primary_metrics_canonical"] = canonical_for_render
+        except Exception:
+            pass
+
         # =====================================================================
         # PATCH V30_CANONICAL_FOR_RENDER_SEED_DISABLE (ADDITIVE)
         # Goal:
@@ -28104,6 +28176,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     # Diff using existing diff helper if present, but FORCE cur_response to canonical-for-render.
     metric_changes = []
+    cur_resp_for_diff = None
     try:
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
@@ -50133,6 +50206,34 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR15
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    try:
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR15":
+                _already = True
+                break
+    except Exception:
+        _already = False
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR15",
+            "date": "2026-01-23",
+            "summary": "Restore diffing after REFACTOR14: harden diff_metrics_by_name resolution in FINAL BINDINGS, eliminate V2 UnboundLocalError (cur_resp_for_diff), and add safe fallback extraction for canonical_for_render/current PMC when nested under output['results'].",
+            "files": ["REFACTOR15_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR14"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 
 # PATCH TRACKER V1 (ADD): REFACTOR12
