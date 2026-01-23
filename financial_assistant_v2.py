@@ -261,6 +261,30 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
 # ============================================================
 
 # ============================================================
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR23
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR23":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR23",
+            "date": "2026-01-23",
+            "summary": "Unit consistency hardening: carry currency_code through candidate canonicalization & schema-only rebuild; include currency_code in diff unit_cmp token for currency metrics (detect USD vs EUR rather than silently comparing); and fix a small anchor-rebuild NameError to keep anchor path safe.",
+            "files": ["REFACTOR23_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR22"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): REFACTOR22
 # ============================================================
 try:
@@ -277,7 +301,7 @@ try:
             "patch_id": "REFACTOR22",
             "date": "2026-01-23",
             "summary": "Fix unit-family noise for yearlike tokens: normalize_unit_family() no longer infers percent/currency/magnitude from surrounding context when unit_tag is empty and raw token is a plain 4-digit year (1900–2100). This reduces unit inconsistencies in baseline_sources_cache and prevents misleading 'percent_tag' traces on year/range endpoints, without changing canonical binding or diff behavior.",
-            "files": ["REFACTOR22_full_codebase_streamlit_safe.py"],
+            "files": ["REFACTOR23_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR21"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
@@ -4397,6 +4421,48 @@ def normalize_unit_family(unit_tag: str, ctx: str = "", raw: str = "") -> str:
         # for phrases like "million units" that also mention "market".
 
     return fam
+def infer_currency_code_from_text_v1(text: str) -> str:
+    """
+    Best-effort, deterministic currency code inference from raw/context strings.
+    Returns an ISO-ish code (e.g., USD/EUR/GBP/JPY/SGD/AUD/CAD/HKD/CNY/KRW/INR) or "".
+    """
+    try:
+        s = (text or "").strip().lower()
+        if not s:
+            return ""
+        # Explicit codes first
+        for code in ("usd","eur","gbp","jpy","cny","rmb","aud","cad","sgd","hkd","krw","inr","chf","sek","nok","dkk","nzd"):
+            if re.search(r"\b" + re.escape(code) + r"\b", s):
+                return "CNY" if code == "rmb" else code.upper()
+        # Prefixed symbols
+        if "us$" in s or "u.s.$" in s:
+            return "USD"
+        if "s$" in s:
+            return "SGD"
+        if "a$" in s:
+            return "AUD"
+        if "c$" in s:
+            return "CAD"
+        if "hk$" in s:
+            return "HKD"
+        # Unicode currency symbols
+        if "€" in s:
+            return "EUR"
+        if "£" in s:
+            return "GBP"
+        if "¥" in s:
+            return "JPY"
+        if "₹" in s:
+            return "INR"
+        if "₩" in s:
+            return "KRW"
+        # Plain "$" is ambiguous; assume USD only if US markers exist; otherwise leave blank.
+        if "$" in s and ("united states" in s or "u.s." in s or " us " in s or " usa" in s):
+            return "USD"
+    except Exception:
+        pass
+    return ""
+
 
 
 
@@ -4572,7 +4638,16 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             candidate["unit_family"] = fam
             unit_family_backfilled = True
 
-    # currency kind correction (only when evidence exists)
+    # REFACTOR23: infer/carry currency_code for currency candidates (used later for unit comparability)
+try:
+    if fam == "currency" and not str(candidate.get("currency_code") or "").strip():
+        _cc = infer_currency_code_from_text_v1((raw_s or "") + " " + (ctx_s or ""))
+        if _cc:
+            candidate["currency_code"] = _cc
+except Exception:
+    pass
+
+# currency kind correction (only when evidence exists)
     measure_kind_corrected = False
     measure_assoc_corrected = False
     classifier_reason = ""
@@ -6533,6 +6608,7 @@ def rebuild_metrics_from_snapshots_schema_only(
             "unit": best.get("unit") or spec.get("unit") or "",
             "unit_tag": best.get("unit_tag") or spec.get("unit_tag") or "",
             "unit_family": best.get("unit_family") or spec.get("unit_family") or "",
+            "currency_code": best.get("currency_code") or "",
             "base_unit": best.get("base_unit") or best.get("unit_tag") or spec.get("unit_tag") or "",
             "multiplier_to_base": best.get("multiplier_to_base") if best.get("multiplier_to_base") is not None else 1.0,
             "value_norm": best.get("value_norm") if best.get("value_norm") is not None else best.get("value"),
@@ -6697,8 +6773,8 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
         best = _pick_best_candidate(
             same,
             expected_dim=expected_dim,
-            expected_unit_family=str((schema.get(ckey) or {}).get("unit_family") or ""),
-            expected_base_unit=str((schema.get(ckey) or {}).get("base_unit") or ""),
+            expected_unit_family=str(((sch or {}).get("unit_family") or "")),
+            expected_base_unit=str(((sch or {}).get("base_unit") or "")),
         )
         if not best:
             continue
@@ -6732,6 +6808,7 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
             "unit_tag": best.get("unit_tag") or (best.get("unit") or ""),
             "base_unit": best.get("base_unit") or "",
             "unit_family": best.get("unit_family") or (expected_dim or _fix27_expected_kind(canonical_key, sch) or ""),
+            "currency_code": best.get("currency_code") or "",
             "multiplier_to_base": best.get("multiplier_to_base"),
 
             "source_url": best.get("source_url") or "",
@@ -19662,6 +19739,13 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
             try:
                 v = float(m.get("value_norm"))
                 u = str(m.get("base_unit") or m.get("unit") or "").strip()
+        try:
+            if str(m.get("unit_family") or "").strip().lower() == "currency":
+                _cc = str(m.get("currency_code") or "").strip().upper()
+                if _cc:
+                    u = f"{_cc}:{u}" if u else _cc
+        except Exception:
+            pass
                 return v, u
             except Exception:
                 pass
