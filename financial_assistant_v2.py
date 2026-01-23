@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR12"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR13"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -15854,6 +15854,170 @@ def _normalize_number_to_parse_base(value: float, unit: str) -> float:
         return value
     return value
 
+
+def _refactor13_get_metric_change_rows_v1(out: dict):
+    """
+    Prefer V2 rows if available; fallback to legacy metric_changes.
+    Returned list is safe (always list).
+    """
+    try:
+        if isinstance(out, dict):
+            rows = out.get("metric_changes_v2")
+            if isinstance(rows, list) and rows:
+                return rows
+            rows = out.get("metric_changes")
+            if isinstance(rows, list):
+                return rows
+    except Exception:
+        pass
+    return []
+
+
+def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
+    """
+    REFACTOR13: Make results.summary + stability_score reflect canonical-first diff rows.
+
+    - summary.metrics_increased / decreased / unchanged are derived from change_type.
+    - stability_score is computed from comparable rows:
+        1) discrete score: unchanged + 0.5 * small_change(<10%)/N
+        2) fallback when discrete would be 0: max(0, 100 - mean_abs_pct_change)
+    """
+    if not isinstance(out, dict):
+        return
+
+    rows = _refactor13_get_metric_change_rows_v1(out)
+
+    # Count change types
+    increased = decreased = unchanged = added = removed = 0
+    for r in rows:
+        try:
+            ct = (r.get("change_type") if isinstance(r, dict) else None) or ""
+            if ct == "increased":
+                increased += 1
+            elif ct == "decreased":
+                decreased += 1
+            elif ct == "unchanged":
+                unchanged += 1
+            elif ct == "added":
+                added += 1
+            elif ct == "removed":
+                removed += 1
+        except Exception:
+            pass
+
+    total = len(rows)
+
+    # Update summary (authoritative for UI)
+    try:
+        s = out.setdefault("summary", {})
+        if isinstance(s, dict):
+            s["total_metrics"] = total
+            # In our canonical-first world, "found" = row count (includes added/removed)
+            s["metrics_found"] = total
+            s["metrics_increased"] = increased
+            s["metrics_decreased"] = decreased
+            s["metrics_unchanged"] = unchanged
+            # Preserve backward compatibility: do not remove existing keys
+            s.setdefault("metrics_added", added)
+            s.setdefault("metrics_removed", removed)
+    except Exception:
+        pass
+
+    # Compute stability from comparable rows
+    comparable = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        ct = r.get("change_type")
+        if ct not in ("increased", "decreased", "unchanged"):
+            continue
+        # Prefer explicit comparability signal
+        if r.get("baseline_is_comparable") is False:
+            continue
+        if r.get("unit_mismatch") is True:
+            continue
+        # Require numeric pct (or at least numeric norms)
+        cp = r.get("change_pct")
+        if isinstance(cp, (int, float)):
+            comparable.append(float(cp))
+        else:
+            # fallback if norms are numeric: compute pct safely
+            pv = r.get("prev_value_norm")
+            cv = r.get("cur_value_norm")
+            try:
+                if isinstance(pv, (int, float)) and isinstance(cv, (int, float)) and abs(float(pv)) > 1e-12:
+                    comparable.append(((float(cv) - float(pv)) / float(pv)) * 100.0)
+            except Exception:
+                pass
+
+    stability = 100.0
+    method = "no_comparable_rows"
+    n = len(comparable)
+
+    if n > 0:
+        # Discrete stability similar to legacy compute_stability_score metric component
+        stable = unchanged  # unchanged count across all rows is OK (V2 uses same change_type)
+        small = 0
+        abs_vals = []
+        for cp in comparable:
+            try:
+                a = abs(float(cp))
+                abs_vals.append(a)
+                if a < 10.0:
+                    small += 1
+            except Exception:
+                pass
+
+        discrete = ((stable + (small * 0.5)) / max(1, n)) * 100.0
+        if discrete > 0.0:
+            stability = discrete
+            method = "discrete_unchanged_smallchange"
+        else:
+            # Graded fallback: 100 - mean(abs % change), clamped
+            if abs_vals:
+                mean_abs = sum(abs_vals) / float(len(abs_vals))
+                stability = max(0.0, 100.0 - min(100.0, mean_abs))
+                method = "graded_mean_abs_pct"
+            else:
+                stability = 0.0
+                method = "no_pct_values"
+
+    try:
+        out["stability_score"] = round(float(stability), 1)
+    except Exception:
+        pass
+
+    # Mirror into diff_panel_v2_summary for auditability
+    try:
+        dbg = out.setdefault("debug", {})
+        if isinstance(dbg, dict):
+            v2s = dbg.get("diff_panel_v2_summary")
+            if isinstance(v2s, dict):
+                v2s.setdefault("metrics_increased", increased)
+                v2s.setdefault("metrics_decreased", decreased)
+                v2s.setdefault("metrics_unchanged", unchanged)
+                v2s.setdefault("metrics_added", added)
+                v2s.setdefault("metrics_removed", removed)
+                v2s.setdefault("stability_score_v1", round(float(stability), 1))
+                v2s.setdefault("stability_method_v1", method)
+                v2s.setdefault("stability_comparable_n_v1", n)
+
+            dbg["refactor13_summary_stability_v1"] = {
+                "rows_total": total,
+                "comparable_n": n,
+                "metrics_increased": increased,
+                "metrics_decreased": decreased,
+                "metrics_unchanged": unchanged,
+                "metrics_added": added,
+                "metrics_removed": removed,
+                "stability_score": round(float(stability), 1),
+                "stability_method": method,
+            }
+    except Exception:
+        pass
+
+
+
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
     """
     Backward-compatible entrypoint used by the Streamlit Evolution UI.
@@ -15927,6 +16091,16 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
 
     _fix2d20_trace_year_like_commits(out, stage='evolution', callsite='run_source_anchored_evolution_base')
+
+    # =====================================================================
+    # REFACTOR13 (ADDITIVE): recompute summary + stability from canonical-first diff rows
+    # Ensures results.summary and stability_score reflect metric_changes_v2 (or legacy metric_changes).
+    # =====================================================================
+    try:
+        _refactor13_recompute_summary_and_stability_v1(out)
+    except Exception:
+        pass
+
 
 
     return out
@@ -49899,6 +50073,31 @@ except Exception:
     pass
 
 
+
+# PATCH TRACKER V1 (ADD): REFACTOR13
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    try:
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR13":
+                _already = True
+                break
+    except Exception:
+        _already = False
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR13",
+            "date": "2026-01-23",
+            "summary": "Summary/stability correctness: recompute evolution results.summary and stability_score from canonical-first diff rows (metric_changes_v2/metric_changes). Add graded stability fallback (100 - mean abs % change) when discrete unchanged/small-change scoring would yield 0, and mirror counts into diff_panel_v2_summary for auditability.",
+            "files": ["REFACTOR13_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR12"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # PATCH TRACKER V1 (ADD): REFACTOR12
 try:
