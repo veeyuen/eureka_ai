@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR13"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR14"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -19964,7 +19964,7 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
 # and define the patched version below.
 # =====================================================================
 
-def diff_metrics_by_name(prev_response: dict, cur_response: dict):
+def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict):
     """
     Canonical-first diff with:
       - HARD STOP when prev canonical_key is missing in current (no name fallback)
@@ -20548,12 +20548,12 @@ def diff_metrics_by_name(prev_response: dict, cur_response: dict):
 # - No behavior change unless this upgraded function is called.
 # =====================================================================
 try:
-    diff_metrics_by_name_LEGACY = diff_metrics_by_name  # type: ignore
+    diff_metrics_by_name_LEGACY = _yureeka_diff_metrics_by_name_wrap1  # type: ignore
 except Exception:
     pass
     diff_metrics_by_name_LEGACY = None
 
-def diff_metrics_by_name(prev_response: dict, cur_response: dict):
+def _yureeka_diff_metrics_by_name_fix31(prev_response: dict, cur_response: dict):
     """
     Canonical-first diff with:
       - HARD STOP when prev canonical_key is missing in current (no name fallback)
@@ -37070,7 +37070,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 #   unit-less values from appearing as "valid" in evolution output.
 # ==============================================================================
 try:
-    diff_metrics_by_name_FIX31_BASE = diff_metrics_by_name  # type: ignore
+    diff_metrics_by_name_FIX31_BASE = _yureeka_diff_metrics_by_name_fix31  # type: ignore
 except Exception:
     pass
     diff_metrics_by_name_FIX31_BASE = None  # type: ignore
@@ -37126,7 +37126,7 @@ def _fix32_has_token_unit_evidence(metric_row: dict) -> bool:
         return False
     return False
 
-def diff_metrics_by_name(prev_response: dict, cur_response: dict):  # noqa: F811
+def _yureeka_diff_metrics_by_name_v24(prev_response: dict, cur_response: dict):
     """
     FIX32 wrapper: calls existing diff, then enforces the unit-required hard gate at render time.
     """
@@ -37341,8 +37341,17 @@ except Exception:
 #
 # Safety: render/diff-layer only. Does not touch fastpath/hashing/injection/snapshot attach.
 # =====================================================================
+
+# ==============================================================================
+# DIFF ENGINE CONSOLIDATION (REFACTOR14): single public diff entrypoint
+# - Previous override chain has been renamed into *_wrap1 / *_fix31 / *_v24 impls.
+# - Public diff_metrics_by_name is now a stable wrapper around the v24 impl.
+# ==============================================================================
+def diff_metrics_by_name(prev_response: dict, cur_response: dict):
+    return _yureeka_diff_metrics_by_name_v24(prev_response, cur_response)
+
 try:
-    diff_metrics_by_name_V24_BASE = diff_metrics_by_name  # type: ignore
+    diff_metrics_by_name_V24_BASE = _yureeka_diff_metrics_by_name_v24  # type: ignore
 except Exception:
     pass
     diff_metrics_by_name_V24_BASE = None  # type: ignore
@@ -50098,6 +50107,33 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+# PATCH TRACKER V1 (ADD): REFACTOR14
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    try:
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR14":
+                _already = True
+                break
+    except Exception:
+        _already = False
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR14",
+            "date": "2026-01-23",
+            "summary": "Diff engine consolidation: eliminate diff_metrics_by_name override chain by renaming legacy impls and introducing a single public wrapper entrypoint. Preserve legacy/fix31/v24 impls under stable names; update base capture vars and keep binding manifest stable/streamlit-safe.",
+            "files": ["REFACTOR14_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR13"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 # PATCH TRACKER V1 (ADD): REFACTOR12
 try:
