@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR22'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR24'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -262,6 +262,31 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
 
 # ============================================================
 # ============================================================
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR24
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR24":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR24",
+            "date": "2026-01-23",
+            "summary": "Fix REFACTOR23 syntax regression (mis-indented try block) and make currency-aware unit_cmp construction consistent across all get_canonical_value_and_unit() definitions (USD:B, EUR:B, etc.) so cross-currency deltas are vetoed deterministically.",
+            "files": ["REFACTOR24_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR23"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): REFACTOR23
 # ============================================================
 try:
@@ -4638,16 +4663,16 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             candidate["unit_family"] = fam
             unit_family_backfilled = True
 
-    # REFACTOR23: infer/carry currency_code for currency candidates (used later for unit comparability)
-try:
-    if fam == "currency" and not str(candidate.get("currency_code") or "").strip():
-        _cc = infer_currency_code_from_text_v1((raw_s or "") + " " + (ctx_s or ""))
-        if _cc:
-            candidate["currency_code"] = _cc
-except Exception:
-    pass
+    # REFACTOR24: infer/carry currency_code for currency candidates (used later for unit comparability)
+    try:
+        if fam == "currency" and not str(candidate.get("currency_code") or "").strip():
+            _cc = infer_currency_code_from_text_v1((raw_s or "") + " " + (ctx_s or ""))
+            if _cc:
+                candidate["currency_code"] = _cc
+    except Exception:
+        pass
 
-# currency kind correction (only when evidence exists)
+    # currency kind correction (only when evidence exists)
     measure_kind_corrected = False
     measure_assoc_corrected = False
     classifier_reason = ""
@@ -19739,13 +19764,13 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
             try:
                 v = float(m.get("value_norm"))
                 u = str(m.get("base_unit") or m.get("unit") or "").strip()
-        try:
-            if str(m.get("unit_family") or "").strip().lower() == "currency":
-                _cc = str(m.get("currency_code") or "").strip().upper()
-                if _cc:
-                    u = f"{_cc}:{u}" if u else _cc
-        except Exception:
-            pass
+                try:
+                    if str(m.get("unit_family") or "").strip().lower() == "currency":
+                        _cc = str(m.get("currency_code") or "").strip().upper()
+                        if _cc:
+                            u = f"{_cc}:{u}" if u else _cc
+                except Exception:
+                    pass
                 return v, u
             except Exception:
                 pass
@@ -20434,6 +20459,13 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
             try:
                 v = float(m.get("value_norm"))
                 u = str(m.get("base_unit") or m.get("unit") or "").strip()
+                try:
+                    if str(m.get("unit_family") or "").strip().lower() == "currency":
+                        _cc = str(m.get("currency_code") or "").strip().upper()
+                        if _cc:
+                            u = f"{_cc}:{u}" if u else _cc
+                except Exception:
+                    pass
                 return v, u
             except Exception:
                 pass
@@ -21023,6 +21055,13 @@ def _yureeka_diff_metrics_by_name_fix31(prev_response: dict, cur_response: dict)
             try:
                 v = float(m.get("value_norm"))
                 u = str(m.get("base_unit") or m.get("unit") or "").strip()
+                try:
+                    if str(m.get("unit_family") or "").strip().lower() == "currency":
+                        _cc = str(m.get("currency_code") or "").strip().upper()
+                        if _cc:
+                            u = f"{_cc}:{u}" if u else _cc
+                except Exception:
+                    pass
                 return v, u
             except Exception:
                 pass
