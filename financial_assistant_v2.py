@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR21'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR22'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -212,7 +212,7 @@ _yureeka_lock_version_globals_v1()
 _yureeka_ensure_final_bindings_v1()
 
 
-_YUREEKA_DEBUG_PLAYBOOK_MD_V1 = """## Debug Playbook (REFACTOR19)
+_YUREEKA_DEBUG_PLAYBOOK_MD_V1 = """## Debug Playbook (REFACTOR22)
 
 This file is **single-file Streamlit-safe** and is intentionally refactored in small, testable steps.
 The refactor harness (when enabled) is the authority for “did we preserve behavior?”.
@@ -259,6 +259,32 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
 # ============================================================
 # ============================================================
 # ============================================================
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR22
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR22":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR22",
+            "date": "2026-01-23",
+            "summary": "Fix unit-family noise for yearlike tokens: normalize_unit_family() no longer infers percent/currency/magnitude from surrounding context when unit_tag is empty and raw token is a plain 4-digit year (1900–2100). This reduces unit inconsistencies in baseline_sources_cache and prevents misleading 'percent_tag' traces on year/range endpoints, without changing canonical binding or diff behavior.",
+            "files": ["REFACTOR22_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR21"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
 # PATCH TRACKER V1 (ADD): REFACTOR21
 # ============================================================
 try:
@@ -4307,6 +4333,23 @@ def normalize_unit_family(unit_tag: str, ctx: str = "", raw: str = "") -> str:
     """
     ut = (unit_tag or "").strip()
     fam = unit_family(ut)
+
+    # REFACTOR22: Do not infer unit family from surrounding context for plain yearlike tokens
+    # when unit_tag is missing. Year/range endpoints (e.g., '2026–2040') commonly sit next to
+    # '%' or currency symbols and can be mis-typed as percent/currency, creating noisy
+    # unit inconsistencies in baseline_sources_cache. This is behavior-preserving for binding,
+    # since yearlike tokens are not legitimate metric values for __percent/__currency keys.
+    if fam == "" and ut == "":
+        try:
+            import re as _re
+            _rs = (raw or "").strip()
+            if _re.fullmatch(r"(19|20)\d{2}", _rs or ""):
+                # Only allow inference if the raw token itself contains explicit unit evidence.
+                if not _re.search(r"[%$€£¥]", _rs):
+                    return ""
+        except Exception:
+            pass
+
 
     # PATCH FIX2D2K: infer family from context when unit_tag is missing
     if fam == "" and ut == "":
