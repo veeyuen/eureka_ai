@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR19'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR20'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -252,6 +252,33 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
 # ============================================================
 # ============================================================
 # ============================================================
+
+# ============================================================
+# ============================================================
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR20
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR20":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR20",
+            "date": "2026-01-23",
+            "summary": "Fix false currency evidence hits caused by substring matches (e.g., 'eur'/'euro' inside 'Europe'). Introduce boundary-aware currency detection helper and use it in infer_unit_tag_from_context() and normalize_unit_family(), preventing 'million units' candidates from being misclassified as currency in Europe contexts.",
+            "files": ["REFACTOR20_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR19"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): REFACTOR19
 # ============================================================
 try:
@@ -4174,6 +4201,39 @@ def unit_family(unit_tag: str) -> str:
 # =========================
 import re as _re_fix2d2k
 
+# =========================
+# REFACTOR20 (BUGFIX): boundary-aware currency evidence detector
+# - Prevent false positives like 'eur'/'euro' inside 'Europe' from upgrading unit_family to currency.
+# - Treat currency codes/words as tokens (word-boundary), while allowing symbol markers ($, €, £, ¥).
+# =========================
+def _yureeka_has_currency_evidence_v1(text: str) -> bool:
+    try:
+        t = (text or "").lower()
+    except Exception:
+        t = str(text or "")
+        t = t.lower()
+
+    # strong symbol markers
+    if any(sym in t for sym in ("$", "€", "£", "¥")):
+        return True
+
+    # common composite tokens
+    if "us$" in t or "s$" in t:
+        return True
+
+    # currency codes as tokens (avoid substrings inside other words)
+    try:
+        if _re_fix2d2k.search(r"\b(usd|sgd|eur|gbp|jpy|cny|rmb|aud|cad|inr|krw|chf|hkd|nzd)\b", t):
+            return True
+        if _re_fix2d2k.search(r"\b(dollar|dollars|euro|euros|pound|pounds|yen|yuan|rupee|rupees)\b", t):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+
 def infer_unit_tag_from_context(ctx: str, raw: str = ""):
     """Return (unit_tag, unit_family, matched_phrase, excerpt)."""
     c = (ctx or "")
@@ -4185,7 +4245,7 @@ def infer_unit_tag_from_context(ctx: str, raw: str = ""):
         return "%", "percent", "percent/market_share", (c[:160] if c else r[:160])
 
     # currency signals
-    if any(x in cl for x in ["$", "us$", "usd", "eur", "€", "gbp", "£", "jpy", "¥", "cny", "rmb", "aud", "cad", "sgd", "inr", "krw"]):
+    if _yureeka_has_currency_evidence_v1(cl):
         return "USD", "currency", "currency_marker", (c[:160] if c else r[:160])
     if any(k in cl for k in ["revenue", "market size", "market value", "valuation", "valued", "worth", "price"]):
         # keyword-only currency is weaker; require a magnitude word to reduce false positives
@@ -4255,34 +4315,8 @@ def normalize_unit_family(unit_tag: str, ctx: str = "", raw: str = "") -> str:
         has_unit_evidence = any(u in c for u in unit_evidence)
 
         # Explicit currency markers only (symbols/codes/words)
-        currency_markers = [
-            "$",
-            "us$",
-            "usd",
-            "sgd",
-            "s$",
-            "eur",
-            "€",
-            "gbp",
-            "£",
-            "jpy",
-            "¥",
-            "cny",
-            "rmb",
-            "aud",
-            "cad",
-            "inr",
-            "krw",
-            "dollar",
-            "dollars",
-            "euro",
-            "euros",
-            "pound",
-            "pounds",
-            "yen",
-            "yuan",
-        ]
-        has_currency_markers = any(x in c for x in currency_markers)
+        # REFACTOR20: boundary-aware currency detection (avoid "Europe" → "euro" false positives)
+        has_currency_markers = _yureeka_has_currency_evidence_v1(c)
 
         if has_unit_evidence and not has_currency_markers:
             return "magnitude"
