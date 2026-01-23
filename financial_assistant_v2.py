@@ -90,14 +90,14 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR15'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR16'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
     except Exception:
-        return "REFACTOR12"
+        return "REFACTOR16"
 
 def _yureeka_lock_version_globals_v1():
     """Re-assert global version vars for observability (does not affect the frozen getter)."""
@@ -130,6 +130,9 @@ def _yureeka_ensure_final_bindings_v1():
 
     if not callable(fn):
         for _cand_name in [
+            "_yureeka_diff_metrics_by_name_v24",
+            "diff_metrics_by_name_V24_BASE",
+            "diff_metrics_by_name",
             "_refactor09_diff_metrics_by_name",
             "diff_metrics_by_name_FIX41_V34C_UNWRAP",
             "diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN",
@@ -169,6 +172,31 @@ def _yureeka_ensure_final_bindings_v1():
 
 _yureeka_lock_version_globals_v1()
 _yureeka_ensure_final_bindings_v1()
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR16
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR16":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR16",
+            "date": "2026-01-23",
+            "summary": "Hard-lock CODE_VERSION to REFACTOR16 across legacy override sites; expand FINAL BINDINGS candidate set to include _yureeka_diff_metrics_by_name_v24; make binding_manifest_v1 resolve/report the actual diff entrypoint even when Streamlit executes before later diff wrapper defs.",
+            "files": ["REFACTOR16_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR15"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): REFACTOR01
@@ -25590,7 +25618,42 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         _yureeka_ensure_final_bindings_v1()
         if not isinstance(output.get("debug"), dict):
             output["debug"] = {}
-        _fn = globals().get("diff_metrics_by_name")
+        _fn = None
+        _bf = ""
+        try:
+            _fn = globals().get("diff_metrics_by_name")
+        except Exception:
+            _fn = None
+        if not callable(_fn):
+            for _cand_name in [
+                "diff_metrics_by_name",
+                "_yureeka_diff_metrics_by_name_v24",
+                "diff_metrics_by_name_V24_BASE",
+                "_refactor09_diff_metrics_by_name",
+                "diff_metrics_by_name_FIX41_V34C_UNWRAP",
+                "diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN",
+                "diff_metrics_by_name_FIX40_V32_PREFER_PMC",
+                "diff_metrics_by_name_FIX34_V24_STRICT",
+                "diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR",
+                "diff_metrics_by_name_FIX2D34",
+            ]:
+                try:
+                    _cand = globals().get(_cand_name)
+                except Exception:
+                    _cand = None
+                if callable(_cand):
+                    _fn = _cand
+                    _bf = _cand_name
+                    try:
+                        globals()["diff_metrics_by_name"] = _cand
+                    except Exception:
+                        pass
+                    break
+        try:
+            if _bf:
+                globals()["_YUREEKA_DIFF_METRICS_BY_NAME_BOUND_FROM"] = _bf
+        except Exception:
+            pass
         output["debug"]["binding_manifest_v1"] = {
             "code_version": _yureeka_get_code_version(),
             "final_bindings_version": str(globals().get("_YUREEKA_FINAL_BINDINGS_VERSION") or ""),
@@ -37399,7 +37462,7 @@ except Exception:
 
 # PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -37563,7 +37626,7 @@ except Exception:
 
 # PATCH V24_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v24'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -37572,7 +37635,7 @@ except Exception:
 # PATCH FIX41AFC19_V25 (ADDITIVE): CODE_VERSION bump (audit)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 # =====================================================================
@@ -37583,7 +37646,7 @@ except Exception:
 # =====================================================================
 # PATCH CODE_VERSION_V26 (ADDITIVE)
 # =====================================================================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v26'
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =====================================================================
 # END PATCH CODE_VERSION_V26
 # =====================================================================
@@ -37592,7 +37655,7 @@ CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v
 # PATCH V27_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v27'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 # =====================================================================
@@ -37603,7 +37666,7 @@ except Exception:
 # PATCH V28_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v28'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 # =====================================================================
@@ -37614,7 +37677,7 @@ except Exception:
 # =====================================================================
 # PATCH V29_CODE_VERSION_BUMP (ADDITIVE)
 # =====================================================================
-CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v29'
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =====================================================================
 # END PATCH V29_CODE_VERSION_BUMP
 # =====================================================================
@@ -37794,7 +37857,7 @@ except Exception:
 
 # PATCH V32_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v32'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -38052,7 +38115,7 @@ except Exception:
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -38100,7 +38163,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, sn
 
 # PATCH V34_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -38234,7 +38297,7 @@ except Exception:
 
 # PATCH V34C_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34c'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -38247,7 +38310,7 @@ except Exception:
 # PATCH V34F_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v34f'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -40285,9 +40348,9 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
 
 # Bump code version (best-effort, render-layer only)
 try:
-    CODE_VERSION = str(globals().get("CODE_VERSION") or "")
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     if "fix2j" not in CODE_VERSION.lower():
-        CODE_VERSION = "FIX2D44"
+        CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -40317,9 +40380,9 @@ except Exception:
 try:
     _CV = str(globals().get('CODE_VERSION') or '')
     if _CV and 'fix2k' not in _CV:
-        CODE_VERSION = f"{_CV}_fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only"
+        CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     elif not _CV:
-        CODE_VERSION = 'fix2k_diffpanel_v2_no_mismatch_without_join_and_broader_current_only'
+        CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -40796,7 +40859,7 @@ except Exception:
 # =====================================================================
 # PATCH FIX2U_VERSION_BUMP (ADDITIVE)
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 # END PATCH FIX2U_VERSION_BUMP
@@ -40808,7 +40871,7 @@ except Exception:
 # PATCH FIX2Y_VERSION_BUMP (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 # =====================================================================
@@ -41052,7 +41115,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -41317,7 +41380,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -41893,7 +41956,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -42285,7 +42348,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -42301,7 +42364,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -42365,7 +42428,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -42663,7 +42726,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -42908,7 +42971,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -43436,7 +43499,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -43901,7 +43964,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -44224,7 +44287,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -44325,12 +44388,12 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 
 # =========================
@@ -44818,7 +44881,7 @@ except Exception:
     pass
 
 # Final, authoritative version stamp (last-wins)
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # =====================================================================
 # END PATCH FIX2D65
@@ -44829,7 +44892,7 @@ CODE_VERSION = "FIX2D69B"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -44854,7 +44917,7 @@ except Exception:
 # PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -44879,7 +44942,7 @@ except Exception:
 # PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -44904,7 +44967,7 @@ except Exception:
 # PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -45199,7 +45262,7 @@ except Exception:
 # FINAL VERSION OVERRIDE
 # =========================
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -45464,7 +45527,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -45936,7 +45999,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # =====================================================================
 
 # Version stamp (ensure last-wins in monolithic file)
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # Patch tracker entry
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -46328,7 +46391,7 @@ except Exception:
     pass
 
 try:
-    CODE_VERSION = "FIX2D44"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -46344,7 +46407,7 @@ except Exception:
 # and unconditionally builds baseline_schema_metrics_v1 during
 # Analysis finalisation when schema + canonical metrics exist.
 
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 def _fix2d45_force_baseline_schema_materialisation(analysis: dict) -> None:
     if "results" not in analysis:
         analysis["results"] = {}
@@ -46408,7 +46471,7 @@ if "_fix2d45_force_baseline_schema_materialisation" not in globals():
 #   - Deterministic: stable tie-breaks for current winner selection.
 #
 # Versioning:
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 def _fix2d47_get_nested(d, path, default=None):
     try:
         x = d
@@ -46706,7 +46769,7 @@ def build_diff_metrics_panel_v2_FIX2D47(prev_response: dict, cur_response: dict)
 # FIX2D47 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
 # Ensure the authoritative code version reflects this patch.
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D48 — Canonical Key Grammar v1 (Builder + Validator)
 # =========================================================
@@ -46951,7 +47014,7 @@ def _fix2d48_should_validate_ckeys(web_context: Optional[dict]) -> bool:
 # =========================================================
 # FIX2D48 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D49 — Audit canonical-key minting + optional rekeying
 # =========================================================
@@ -47479,7 +47542,7 @@ def _fix2d50_try_gate_output_obj(output_obj: dict, web_context: dict | None = No
 # =========================================================
 # FIX2D49 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D52 — Schema-first canonical key resolution (binder)
 # =========================================================
@@ -47944,7 +48007,7 @@ def _fix2d53_try_remap_output_obj(output_obj: dict, web_context: dict | None = N
 # =========================================================
 # FIX2D52 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D54 — Schema Baseline Materialisation (PMC lifting)
 # =========================================================
@@ -48267,7 +48330,7 @@ def _fix2d56_should_enable(web_context: dict | None) -> bool:
 # =========================================================
 # FIX2D54 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # =========================================================
 # FIX2D57 — Analysis-side Schema Baseline Materialisation
 # =========================================================
@@ -48368,12 +48431,12 @@ def _fix2d57_force_schema_pipeline(output_obj, web_context):
 # =========================================================
 # FIX2D57 — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # =========================================================
 # FIX2D57B — FINAL VERSION STAMP OVERRIDE
 # =========================================================
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 
 # =========================
@@ -48842,7 +48905,7 @@ except Exception:
     pass
 
 # Final, authoritative version stamp (last-wins)
-CODE_VERSION = "FIX2D69B"
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # =====================================================================
 # END PATCH FIX2D65
@@ -48853,7 +48916,7 @@ CODE_VERSION = "FIX2D69B"
 # PATCH FIX2D65B (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -48878,7 +48941,7 @@ except Exception:
 # PATCH FIX2D65C (FINAL OVERRIDE): contract restoration for analysis->evolution diff
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -48903,7 +48966,7 @@ except Exception:
 # PATCH FIX2D65D (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -48928,7 +48991,7 @@ except Exception:
 # PATCH FIX2D66 (FINAL OVERRIDE): version stamp + patch tracker
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
@@ -49086,14 +49149,14 @@ except Exception:
 # PATCH FIX2D69B FINAL VERSION OVERRIDE (ADDITIVE)
 # =====================================================================
 try:
-    CODE_VERSION = "FIX2D69B"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
 
 
 # PATCH FIX2D71: FINAL_OVERRIDE
-CODE_VERSION = "FIX2D72"  # FINAL_OVERRIDE
+CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 
 # PATCH FIX2D71: final end-of-file version override (last-wins)
@@ -49104,21 +49167,21 @@ globals()["CODE_VERSION"] = "FIX2D71"
 # FINAL LAST-WINS CODE_VERSION OVERRIDE
 # =====================
 try:
-    CODE_VERSION = 'FIX2D72'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
 
 # FIX2D73_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
-    CODE_VERSION = "FIX2D73"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
 
 
 # FIX2D75_VERSION_FINAL_OVERRIDE (REQUIRED): option B fork
 try:
-    CODE_VERSION = "FIX2D75"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
@@ -49126,7 +49189,7 @@ except Exception:
 
 # FIX2D76_VERSION_FINAL_OVERRIDE (REQUIRED): fix39 unit evidence for v2 rows; prevent false unit_mismatch blanking
 try:
-    CODE_VERSION = "FIX2D76"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
@@ -49152,7 +49215,7 @@ except Exception:
 
 # FIX2D77_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
-    CODE_VERSION = 'FIX2D77'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
@@ -49448,7 +49511,7 @@ except Exception:
 
 # FIX2D82_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
-    CODE_VERSION = 'FIX2D82'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
@@ -49478,7 +49541,7 @@ except Exception:
 
 # FIX2D86_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
 try:
-    CODE_VERSION = 'FIX2D86'
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
@@ -49536,7 +49599,7 @@ except Exception:
 # - Ensure the refactor patch id remains authoritative.
 # =====================
 try:
-    CODE_VERSION = "REFACTOR04"
+    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
