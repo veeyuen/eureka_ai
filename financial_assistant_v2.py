@@ -90,14 +90,14 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR17'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR18'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
     except Exception:
-        return "REFACTOR17"
+        return "REFACTOR18"
 
 def _yureeka_lock_version_globals_v1():
     """Re-assert global version vars for observability (does not affect the frozen getter)."""
@@ -108,11 +108,49 @@ def _yureeka_lock_version_globals_v1():
     except Exception:
         pass
 
+
+def _yureeka_set_authoritative_binding_v1(fn, tag: str) -> bool:
+    """Best-effort: stamp the authoritative binding tag onto the callable.
+    Falls back to globals if the callable doesn't support attribute assignment.
+    """
+    ok = False
+    try:
+        setattr(fn, "__YUREEKA_AUTHORITATIVE_BINDING__", str(tag))
+        ok = True
+    except Exception:
+        ok = False
+    try:
+        globals()["_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE"] = fn
+    except Exception:
+        pass
+    try:
+        globals()["_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE_TAG"] = str(tag)
+    except Exception:
+        pass
+    return bool(ok)
+
+def _yureeka_get_authoritative_binding_tag_v1(fn) -> str:
+    """Return the authoritative binding tag for the given callable (attr first, then globals fallback)."""
+    try:
+        v = getattr(fn, "__YUREEKA_AUTHORITATIVE_BINDING__", None)
+        if v:
+            return str(v)
+    except Exception:
+        pass
+    try:
+        v = globals().get("_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE_TAG")
+        if v:
+            return str(v)
+    except Exception:
+        pass
+    return ""
+
 def _yureeka_ensure_final_bindings_v1():
     """Ensure FINAL BINDINGS tags are always present and consistent with the version lock.
 
-    REFACTOR15: resolves the active diff function deterministically so diagnostics can't
-    silently report an empty binding manifest, and so evolution can always compute diffs.
+    REFACTOR18: make the diff binding authority signal *non-optional*:
+      - Try to stamp __YUREEKA_AUTHORITATIVE_BINDING__ on the callable.
+      - Always mirror the tag into globals as a fallback (some callable wrappers reject setattr).
     """
     try:
         v = _yureeka_get_code_version()
@@ -120,7 +158,7 @@ def _yureeka_ensure_final_bindings_v1():
     except Exception:
         pass
 
-    # Resolve active diff entrypoint (last-wins, but never None if a known candidate exists)
+    # Resolve active diff entrypoint (best-effort)
     fn = None
     bound_from = ""
     try:
@@ -128,7 +166,9 @@ def _yureeka_ensure_final_bindings_v1():
     except Exception:
         fn = None
 
-    if not callable(fn):
+    if callable(fn):
+        bound_from = "diff_metrics_by_name"
+    else:
         for _cand_name in [
             "_yureeka_diff_metrics_by_name_v24",
             "diff_metrics_by_name_V24_BASE",
@@ -161,12 +201,10 @@ def _yureeka_ensure_final_bindings_v1():
 
     try:
         if callable(fn):
-            try:
-                setattr(fn, "__YUREEKA_AUTHORITATIVE_BINDING__", _yureeka_get_code_version())
-            except Exception:
-                pass
+            _yureeka_set_authoritative_binding_v1(fn, _yureeka_get_code_version())
     except Exception:
         pass
+
 
 # assert globals early for debugging (safe no-op)
 
@@ -174,7 +212,7 @@ _yureeka_lock_version_globals_v1()
 _yureeka_ensure_final_bindings_v1()
 
 
-_YUREEKA_DEBUG_PLAYBOOK_MD_V1 = """## Debug Playbook (REFACTOR17)
+_YUREEKA_DEBUG_PLAYBOOK_MD_V1 = """## Debug Playbook (REFACTOR18)
 
 This file is **single-file Streamlit-safe** and is intentionally refactored in small, testable steps.
 The refactor harness (when enabled) is the authority for “did we preserve behavior?”.
@@ -212,6 +250,30 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
         pass
 
 # ============================================================
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR18
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR18":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR18",
+            "date": "2026-01-23",
+            "summary": "Harden authoritative diff binding signal: ensure diff_metrics_by_name always carries a reliable __YUREEKA_AUTHORITATIVE_BINDING__ tag (with globals fallback when callable wrappers reject setattr). Make binding_manifest_v1 self-contained (use local bound_from values) and update harness report IDs to the current refactor version for cleaner diagnostics.",
+            "files": ["REFACTOR18_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR17"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): REFACTOR17
 # ============================================================
 try:
@@ -25753,6 +25815,29 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             pass
 
+        _auth_tag = ""
+        _auth_src = ""
+        _auth_set_ok = False
+        try:
+            if callable(_fn):
+                _auth_set_ok = bool(_yureeka_set_authoritative_binding_v1(_fn, _yureeka_get_code_version()))
+        except Exception:
+            _auth_set_ok = False
+
+        try:
+            _auth_tag = str(getattr(_fn, "__YUREEKA_AUTHORITATIVE_BINDING__", "") or "")
+            if _auth_tag:
+                _auth_src = "attr"
+        except Exception:
+            _auth_tag = ""
+        if not _auth_tag:
+            try:
+                _auth_tag = str(globals().get("_YUREEKA_DIFF_METRICS_BY_NAME_AUTHORITATIVE_TAG") or "")
+                if _auth_tag:
+                    _auth_src = "globals"
+            except Exception:
+                _auth_tag = ""
+
         _man = {
             "code_version": _yureeka_get_code_version(),
             "final_bindings_version": str(globals().get("_YUREEKA_FINAL_BINDINGS_VERSION") or ""),
@@ -25762,15 +25847,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             "diff_panel_v2_entrypoint_qualname": str(getattr(_fn_v2, "__qualname__", "") or ""),
             "diff_panel_v2_entrypoint_module": str(getattr(_fn_v2, "__module__", "") or ""),
             "diff_panel_v2_entrypoint_id": str(id(_fn_v2)) if _fn_v2 is not None else "",
-            "diff_panel_v2_entrypoint_bound_from": str(globals().get("_YUREEKA_DIFF_PANEL_V2_ENTRYPOINT_BOUND_FROM") or ""),
+            "diff_panel_v2_entrypoint_bound_from": str(_bf_v2 or ""),
 
             # Legacy diff (best-effort)
-            "diff_metrics_by_name_authoritative": str(getattr(_fn, "__YUREEKA_AUTHORITATIVE_BINDING__", "") or ""),
+            "diff_metrics_by_name_authoritative": str(_auth_tag or ""),
+            "diff_metrics_by_name_authoritative_source": str(_auth_src or ""),
+            "diff_metrics_by_name_authoritative_set_ok": bool(_auth_set_ok),
             "diff_metrics_by_name_name": str(getattr(_fn, "__name__", "") or ""),
             "diff_metrics_by_name_qualname": str(getattr(_fn, "__qualname__", "") or ""),
             "diff_metrics_by_name_module": str(getattr(_fn, "__module__", "") or ""),
             "diff_metrics_by_name_id": str(id(_fn)) if _fn is not None else "",
-            "diff_metrics_by_name_bound_from": str(globals().get("_YUREEKA_DIFF_METRICS_BY_NAME_BOUND_FROM") or ""),
+            "diff_metrics_by_name_bound_from": str(_bf or ""),
         }
 
         if not _man.get("diff_panel_v2_entrypoint_name"):
@@ -49862,7 +49949,7 @@ def _refactor02_run_harness_v2():
         pass
 
     report = {
-        "patch_id": "REFACTOR09",
+        "patch_id": "REFACTOR18",
         "code_version": _yureeka_get_code_version(),
         "run_ts_utc": _refactor01__safe_now_iso(),
         "config": {
@@ -49891,7 +49978,7 @@ def _refactor02_run_harness_v2():
 
     # 0) Binding sanity: ensure we are running against the authoritative diff binding.
     try:
-        _auth = getattr(globals().get("diff_metrics_by_name"), "__YUREEKA_AUTHORITATIVE_BINDING__", None)
+        _auth = _yureeka_get_authoritative_binding_tag_v1(globals().get("diff_metrics_by_name"))
     except Exception:
         _auth = None
     expected_auth = str(_yureeka_get_code_version() or "")
@@ -50095,7 +50182,7 @@ def _refactor02_run_harness_v2():
             os.makedirs(_dir, exist_ok=True)
         except Exception:
             _dir = os.getcwd()
-        fname = f"refactor_harness_report_REFACTOR08_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
+        fname = f"refactor_harness_report_REFACTOR18_{analysis_run_id or 'analysis'}_{evo_run_id or 'evo'}.json"
         fpath = os.path.join(_dir, fname)
         try:
             with open(fpath, "w", encoding="utf-8") as f:
@@ -50295,7 +50382,7 @@ def _refactor02_run_harness_v2():
         fpath = os.path.join(_dir, fname)
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"[REFACTOR11] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
+        print(f"[REFACTOR18] Harness {'PASSED' if ok_all else 'FAILED'}. Report: {fpath}")
     except Exception:
         pass
 
