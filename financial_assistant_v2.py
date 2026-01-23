@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR20'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR21'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -256,6 +256,32 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
 # ============================================================
 # ============================================================
 # ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR21
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR21":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR21",
+            "date": "2026-01-23",
+            "summary": "Harden unit inference against year/range artifacts: mark 4-digit year tokens as junk (year_token) when unitless, prevent context-driven unit backfill for yearlike candidates, and tag negative endpoints produced by hyphen ranges (e.g., '151-300' -> '-300') as junk (hyphen_range_negative_endpoint). Reduces unit inconsistencies and percent/currency 'poisoning' from nearby context.",
+            "files": ["REFACTOR21_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR20"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): REFACTOR20
 # ============================================================
 try:
@@ -4440,23 +4466,38 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
     raw_s = (candidate.get("raw") or candidate.get("display_value") or "")
     context_unit_backfill_v1 = {"applied": False}
     if (ut or "").strip() == "":
-        itag, ifam, phr, ex = ("", "", "", "")
+        # Guard: do not infer %/currency units from surrounding context for plain year tokens.
+        _skip_backfill_yearlike = False
         try:
-            itag, ifam, phr, ex = infer_unit_tag_from_context(ctx_s, raw_s)
+            _vi = int(float(v)) if v is not None else None
+            if _vi is not None and float(_vi) == float(v) and 1900 <= _vi <= 2100:
+                import re as _re
+                _rs = (raw_s or "").strip().lower()
+                if not _re.search(r"[%$€£¥]|\b(us\$|s\$|usd|sgd|eur|gbp|jpy|aud|cad|chf)\b", _rs):
+                    _skip_backfill_yearlike = True
         except Exception:
-            pass
+            _skip_backfill_yearlike = False
+
+        if _skip_backfill_yearlike:
+            context_unit_backfill_v1 = {"applied": False, "skipped": True, "reason": "yearlike_no_backfill"}
+        else:
             itag, ifam, phr, ex = ("", "", "", "")
-        if itag or ifam:
-            if itag:
-                ut = itag
-                candidate["unit_tag"] = itag
-            context_unit_backfill_v1 = {
-                "applied": True,
-                "matched_phrase": phr,
-                "inferred_unit_family": ifam,
-                "inferred_unit_tag": itag,
-                "window_excerpt": ex,
-            }
+            try:
+                itag, ifam, phr, ex = infer_unit_tag_from_context(ctx_s, raw_s)
+            except Exception:
+                pass
+                itag, ifam, phr, ex = ("", "", "", "")
+            if itag or ifam:
+                if itag:
+                    ut = itag
+                    candidate["unit_tag"] = itag
+                context_unit_backfill_v1 = {
+                    "applied": True,
+                    "matched_phrase": phr,
+                    "inferred_unit_family": ifam,
+                    "inferred_unit_tag": itag,
+                    "window_excerpt": ex,
+                }
     try:
         candidate["context_unit_backfill_v1"] = context_unit_backfill_v1
     except Exception:
@@ -30670,18 +30711,19 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         # Example: "CAGR 2025-2030" producing "-2030"
         # - Do NOT drop here (keep non-destructive policy); just tag.
         # =========================
+        neg_from_hyphen_range = False
         neg_year_from_range = False
         try:
-            if num_s.startswith("-"):
+            if num_s.startswith("-") and m.start() > 0 and raw[m.start() - 1].isdigit():
+                neg_from_hyphen_range = True
                 iv = int(abs(float(val)))
                 if 1900 <= iv <= 2099:
-                    # look immediately behind the match for a digit (the "2025" in "2025-2030")
-                    if m.start() > 0 and raw[m.start() - 1].isdigit():
-                        neg_year_from_range = True
+                    neg_year_from_range = True
         except Exception:
             pass
+            neg_from_hyphen_range = False
             neg_year_from_range = False
-        # =========================
+# =========================
 
         anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx_store}")
         # FIX2D69B: defensive tuple normalization (prevent unpack None)
@@ -30700,6 +30742,9 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         if neg_year_from_range:
             is_junk = True
             junk_reason = "year_range_negative_endpoint"
+        elif neg_from_hyphen_range:
+            is_junk = True
+            junk_reason = "hyphen_range_negative_endpoint"
         # =========================
 
 
@@ -30723,29 +30768,10 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                         _v_int = None
 
                     if _v_int is not None and 1900 <= _v_int <= 2100:
-                        _ctx = str(ctx_store or "")
-                        _ctx_l = _ctx.lower()
-
-                        # Strong numeric-metric cues that should keep the candidate
-                        _keep_cue = False
-                        try:
-                            if re.search(r"[$€£¥]|\b(usd|sgd|eur|gbp|jpy|aud|cad|chf)\b", _ctx_l):
-                                _keep_cue = True
-                            elif re.search(r"%|\b(cagr|yoy|growth|increase|decrease)\b", _ctx_l):
-                                _keep_cue = True
-                            elif re.search(r"\b(million|billion|trillion|mn|bn|m|b)\b", _ctx_l):
-                                _keep_cue = True
-                            elif re.search(r"\b(kwh|mwh|gwh|twh|mw|gw|tw|kg|tonnes?|mt|kt)\b", _ctx_l):
-                                _keep_cue = True
-                            elif re.search(r"\b(revenue|sales|market\s*size|valuation|profit|earnings)\b", _ctx_l):
-                                _keep_cue = True
-                        except Exception:
-                            pass
-                            _keep_cue = False
-
-                        if not _keep_cue:
-                            is_junk = True
-                            junk_reason = "year_only"
+                        # Treat 4-digit years as non-metric tokens; keep but mark as junk.
+                        is_junk = True
+                        if not junk_reason:
+                            junk_reason = "year_token"
             except Exception:
                 pass
             # =================================================================
