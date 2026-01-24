@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR34'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR35'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -4014,6 +4014,15 @@ def add_to_history(analysis: dict) -> bool:
 
                     except Exception:
                         _rebuilt, _diag = (None, None)
+
+                # REFACTOR35: guard against schema-only rebuilds leaking debug keys into PMC
+                # Keep only keys that exist in the frozen schema.
+                try:
+                    _schema_keys = set((analysis.get('metric_schema_frozen') or {}).keys()) if isinstance(analysis.get('metric_schema_frozen'), dict) else set()
+                    if isinstance(_rebuilt, dict) and _schema_keys:
+                        _rebuilt = {k: v for (k, v) in _rebuilt.items() if isinstance(k, str) and k in _schema_keys and isinstance(v, dict)}
+                except Exception:
+                    pass
 
                 if isinstance(_rebuilt, dict) and _rebuilt:
                     try:
@@ -27153,6 +27162,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _rebuilt = None
                     _fix41afc19_skip_reason_v19 = "rebuild_exception:" + str(type(_e).__name__)
 
+                # REFACTOR35: guard against schema-only rebuilds leaking debug keys into PMC
+                # Keep only keys that exist in the frozen schema.
+                try:
+                    _schema_keys = set((analysis.get('metric_schema_frozen') or {}).keys()) if isinstance(analysis.get('metric_schema_frozen'), dict) else set()
+                    if isinstance(_rebuilt, dict) and _schema_keys:
+                        _rebuilt = {k: v for (k, v) in _rebuilt.items() if isinstance(k, str) and k in _schema_keys and isinstance(v, dict)}
+                except Exception:
+                    pass
+
                 if isinstance(_rebuilt, dict) and _rebuilt:
                     current_metrics_for_display = dict(_rebuilt)
                     _fix41afc19_skip_reason_v19 = "applied_v19_display_rebuild:" + str(_fn_name)
@@ -32772,9 +32790,8 @@ def _normalize_prev_response_for_rebuild(previous_data):
 
 
 if __name__ == "__main__":
-    # REFACTOR02: if harness is requested, defer execution until end-of-file
-    if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
-        main()
+    # REFACTOR35: main() invocation moved to end-of-file so all late refactor defs/overrides are loaded before any runs.
+    pass
 
 
 # ===================== PATCH RMS_DISPATCH2 (ADDITIVE) =====================
@@ -50407,5 +50424,38 @@ if not _refactor28__schema_only_wrapped:
 
     try:
         globals()["_refactor28__schema_only_wrapped"] = True
+    except Exception:
+        pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR35
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "REFACTOR35",
+        "summary": "Move main() invocation to EOF so late refactor defs/overrides are active during runs; add schema-key filter to baseline PMC materialization to prevent debug-key leakage.",
+        "files": ["REFACTOR35_full_codebase_streamlit_safe.py"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# REFACTOR35: EOF entrypoint (Streamlit-safe)
+# - We intentionally call main() only after ALL patch blocks and helper defs have executed,
+#   so late overrides (diff engine, schema-only rebuild, etc.) are active during runs.
+# ============================================================
+try:
+    if __name__ == "__main__":
+        if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
+            main()
+except Exception:
+    # Streamlit-safe: surface the exception if possible without crashing hard.
+    try:
+        import streamlit as st
+        st.exception(Exception("Yureeka app crashed during main() execution (REFACTOR35)."))
     except Exception:
         pass
