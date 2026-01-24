@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR33'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR34'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -531,6 +531,31 @@ try:
             "summary": "Downsize footprint by deleting shadowed duplicate top-level function definitions and redundant metric_changes_legacy preservation block, keeping only the final authoritative implementations. No schema/key-grammar changes.",
             "files": ["REFACTOR33_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR32"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR34
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR34":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR34",
+            "date": "2026-01-24",
+            "summary": "Fix a missing return in rebuild_metrics_from_snapshots_schema_only_fix17 that caused schema-only rebuilds to return None, breaking Analysis primary_metrics_canonical persistence and Evolution diffing after REFACTOR33 deletions. No schema/key-grammar changes.",
+            "files": ["REFACTOR34_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR33"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -41741,8 +41766,9 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
             if isinstance(web_context.get("debug"), dict):
                 web_context["debug"].update(debug)
     except Exception:
-        return rebuilt
+        pass
 
+    return rebuilt
 # =====================================================================
 # END PATCH FIX2D2X
 # =====================================================================
