@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR31'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR32'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -482,6 +482,31 @@ try:
             "summary": "Add runtime_identity_v1 stamp (code_version lock + __file__ + SHA1) to Analysis/Evolution debug for diagnosing stale-version runs; and harden run_timing_v1 row_delta_gating_v1 stats to count unique canonical_keys only (prevents double-counting when both metric_changes and metric_changes_v2 exist). No schema/key-grammar changes.",
             "files": ["REFACTOR31_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR30"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR32
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR32":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR32",
+            "date": "2026-01-24",
+            "summary": "Clarify injected URL semantics: treat only UI-provided extra_urls_ui(_raw) (or explicit internal marker) as injected for debug + run-delta gating, preventing production source URLs from being misclassified as injected. Add __yureeka_extra_urls_are_injection_v1 markers when Evolution wires injected URLs into web_context['extra_urls']. No schema/key-grammar changes.",
+            "files": ["REFACTOR32_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR31"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -8588,6 +8613,69 @@ def _inj_diag_norm_url_list(extra_urls: Any) -> list:
     except Exception:
         return []
     return out
+
+
+def _yureeka_extract_injected_urls_v1(web_context: Any) -> list:
+    """Extract UI-injected URLs deterministically.
+
+    Contract:
+      - Prefer Streamlit/UI fields: diag_extra_urls_ui(_raw), extra_urls_ui(_raw), and list variants.
+      - If Evolution wired injected URLs into web_context['extra_urls'], it MUST also set
+        __yureeka_extra_urls_are_injection_v1 / __yureeka_injected_urls_v1 so we can safely
+        treat extra_urls as injected without misclassifying production source lists.
+    """
+    out: list = []
+    try:
+        if not isinstance(web_context, dict):
+            return []
+        # list variants (UI)
+        _cand = web_context.get("diag_extra_urls_ui") or web_context.get("extra_urls_ui") or []
+        if isinstance(_cand, str):
+            # allow simple newline/comma separated
+            for part in _cand.replace(",", "\n").split():
+                if part.startswith("http://") or part.startswith("https://"):
+                    out.append(part.strip())
+            _cand = []
+        if isinstance(_cand, (list, tuple)):
+            out.extend([u for u in _cand if isinstance(u, str)])
+
+        # ui_raw string variants
+        _ui_raw = web_context.get("diag_extra_urls_ui_raw") or web_context.get("extra_urls_ui_raw") or ""
+        if isinstance(_ui_raw, str) and _ui_raw.strip():
+            for part in _ui_raw.replace(",", "\n").split():
+                if part.startswith("http://") or part.startswith("https://"):
+                    out.append(part.strip())
+
+        # explicit internal marker fallback (set by Evolution wiring)
+        _marked = bool(web_context.get("__yureeka_extra_urls_are_injection_v1"))
+        _marked_list = web_context.get("__yureeka_injected_urls_v1")
+        if _marked and isinstance(_marked_list, (list, tuple)):
+            out.extend([u for u in _marked_list if isinstance(u, str)])
+        if _marked and isinstance(web_context.get("extra_urls"), (list, tuple)):
+            out.extend([u for u in web_context.get("extra_urls") if isinstance(u, str)])
+
+        # normalize / de-dup (keep original strings, but stable ordering)
+        out = [u.strip() for u in out if isinstance(u, str) and u.strip()]
+        _seen = set()
+        _uniq = []
+        for u in out:
+            if u not in _seen:
+                _seen.add(u)
+                _uniq.append(u)
+        out = _uniq
+
+        # canonicalize for stability where possible (strip tracking params)
+        try:
+            _norm = _inj_diag_norm_url_list(out)
+            if isinstance(_norm, list) and _norm:
+                # keep normalized, but only if it doesn't erase all
+                out = _norm
+        except Exception:
+            pass
+
+        return out
+    except Exception:
+        return []
 
 
 def _inj_diag_set_hash(urls: list) -> str:
@@ -19087,42 +19175,9 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # - No refetch, no heuristic matching. Additive only.
     # =====================================================================
     try:
-        # Collect injected URLs from all known web_context keys (list and ui_raw string variants)
-        _inj_urls = []
-        if isinstance(web_context, dict):
-            _cand = (
-                web_context.get("diag_extra_urls_final")
-                or web_context.get("diag_extra_urls")
-                or web_context.get("extra_urls")
-                or web_context.get("diag_extra_urls_ui")
-                or web_context.get("extra_urls_ui")
-                or []
-            )
-            # ui_raw string variants (may contain newlines/commas/spaces)
-            _ui_raw = (
-                web_context.get("diag_extra_urls_ui_raw")
-                or web_context.get("extra_urls_ui_raw")
-                or ""
-            )
-            if isinstance(_cand, str):
-                _ui_raw = (_ui_raw + "\n" + _cand)
-                _cand = []
-            if isinstance(_cand, list):
-                _inj_urls.extend([u for u in _cand if isinstance(u, str)])
-            if isinstance(_ui_raw, str) and _ui_raw.strip():
-                for part in _ui_raw.replace(",", "\n").split():
-                    if part.startswith("http://") or part.startswith("https://"):
-                        _inj_urls.append(part.strip())
-
-        # normalize / de-dup
-        _inj_urls = [u.strip() for u in _inj_urls if isinstance(u, str) and u.strip()]
-        _seen = set()
-        _uniq = []
-        for u in _inj_urls:
-            if u not in _seen:
-                _seen.add(u)
-                _uniq.append(u)
-        _inj_urls = _uniq
+        # Collect injected URLs from UI/diagnostic fields only (plus explicit internal marker fallback)
+        # to avoid misclassifying production source lists as "injected".
+        _inj_urls = _yureeka_extract_injected_urls_v1(web_context)
 
         _has_inj = bool(_inj_urls)
         if _has_inj:
@@ -19131,6 +19186,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 if isinstance(analysis.get("debug"), dict):
                     analysis["debug"]["fix2d65b_forced_canonical_pipeline"] = True
                     analysis["debug"]["fix2d65b_injected_urls"] = _inj_urls[:10]
+                    analysis["debug"]["injected_urls_v1"] = _inj_urls[:10]
             except Exception:
                 pass
 
@@ -27444,6 +27500,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _wc_extra = _evo_wc.get("extra_urls")
                         if (not isinstance(_wc_extra, (list, tuple)) or not _wc_extra) and isinstance(_evo_extra_urls, list) and _evo_extra_urls:
                             _evo_wc["extra_urls"] = list(_evo_extra_urls)
+                            try:
+                                _evo_wc["__yureeka_extra_urls_are_injection_v1"] = True
+                                _evo_wc["__yureeka_injected_urls_v1"] = list(_evo_extra_urls)
+                            except Exception:
+                                pass
+
                 except Exception:
                     pass
 
