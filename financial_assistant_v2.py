@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR36'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR37'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -50479,10 +50479,110 @@ except Exception:
     pass
 
 
+
+# REFACTOR37 patch tracker
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR37":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR37",
+            "summary": "Add a final crash-proof wrapper for run_source_anchored_evolution to prevent fatal NoneType.get exceptions from aborting Streamlit Evolution; coerce inputs to dict and return renderer-safe failed payload with traceback.",
+            "files": ["REFACTOR37_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR36"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
 # ============================================================
 # REFACTOR35: EOF entrypoint (Streamlit-safe)
 # - We intentionally call main() only after ALL patch blocks and helper defs have executed,
 #   so late overrides (diff engine, schema-only rebuild, etc.) are active during runs.
+# ============================================================
+# REFACTOR37: Crash-proof wrapper for run_source_anchored_evolution()
+#
+# Context:
+# - This codebase historically had multiple definitions of run_source_anchored_evolution
+#   (FIX24 wrapper + earlier entrypoints).
+# - A deep NoneType.get() crash inside the FIX24 wrapper can bubble up to the Streamlit UI
+#   and abort the run.
+#
+# Behavior:
+# - Preserve the existing implementation as _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL
+# - Provide a final, Streamlit-safe wrapper that:
+#     * coerces inputs to dict
+#     * catches all exceptions and returns a renderer-safe failed payload with traceback
+# ============================================================
+try:
+    _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL = run_source_anchored_evolution
+except Exception:
+    _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL = None
+
+
+def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+    # Input coercion (avoid None.get)
+    if not isinstance(previous_data, dict):
+        previous_data = {}
+    if web_context is None or not isinstance(web_context, dict):
+        web_context = {}
+
+    def _fail(msg: str, tb: str = "") -> dict:
+        out = {
+            "status": "failed",
+            "message": msg,
+            "sources_checked": 0,
+            "sources_fetched": 0,
+            "numbers_extracted_total": 0,
+            "stability_score": 0.0,
+            "summary": {
+                "total_metrics": 0,
+                "metrics_found": 0,
+                "metrics_increased": 0,
+                "metrics_decreased": 0,
+                "metrics_unchanged": 0,
+            },
+            "metric_changes": [],
+            "source_results": [],
+            "interpretation": "Evolution failed.",
+            "code_version": str(globals().get("_YUREEKA_CODE_VERSION_LOCK") or ""),
+            "debug": {
+                "refactor37": {
+                    "error": msg,
+                }
+            },
+        }
+        if tb:
+            try:
+                out["debug"]["refactor37"]["traceback"] = tb
+            except Exception:
+                pass
+        return out
+
+    impl = _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL
+    if not callable(impl):
+        return _fail("run_source_anchored_evolution implementation is not callable.")
+
+    try:
+        return impl(previous_data, web_context=web_context)
+    except TypeError:
+        # Backward-compat: some historical defs accept only previous_data
+        try:
+            return impl(previous_data)
+        except Exception as e:
+            import traceback as _tb
+            return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
+    except Exception as e:
+        import traceback as _tb
+        return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
+
 # ============================================================
 try:
     if __name__ == "__main__":
