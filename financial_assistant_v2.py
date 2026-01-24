@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR39'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR40'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -17002,6 +17002,17 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
     """
     Store full snapshots to a dedicated worksheet tab in chunked rows.
     Returns a ref string like: 'gsheet:Snapshots:<hash>'
+
+    REFACTOR40 (BUGFIX):
+    - Previously, the "write-once" gate used ws.findall(hash) and would treat ANY existing rows
+      as "already written". If a prior write partially failed (rate-limit / quota / transient),
+      we could end up with an incomplete snapshot stored under the hash forever, and subsequent
+      runs would never repair it.
+    - Now:
+      * If rows exist, we first validate that the snapshot is actually loadable.
+      * If not loadable, we attempt a repair write (append a fresh batch keyed by created_at).
+      * After successful writes, we invalidate the worksheet read cache so recent snapshots
+        are immediately retrievable.
     """
     import json, hashlib
     if not source_snapshot_hash:
@@ -17015,15 +17026,17 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
         if not ws:
             return ""
 
-        # Write-once: if hash already present, do not write again.
+        # If any rows exist for this hash, only short-circuit if it is actually loadable.
         try:
-            # Find any existing rows for this hash (skip header)
             existing = ws.findall(source_snapshot_hash)
             if existing:
-                return f"gsheet:{worksheet_title}:{source_snapshot_hash}"
+                try:
+                    _probe = load_full_snapshots_from_sheet(source_snapshot_hash, worksheet_title=worksheet_title)
+                    if isinstance(_probe, list) and _probe:
+                        return f"gsheet:{worksheet_title}:{source_snapshot_hash}"
+                except Exception:
+                    pass
         except Exception:
-            pass
-            # best effort; continue to attempt write
             pass
 
         payload = json.dumps(baseline_sources_cache, ensure_ascii=False, default=str)
@@ -17045,41 +17058,59 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
         pairs.sort()
         fingerprints_sig = "|".join([f"{u}#{fp}" for (u, fp) in pairs]) if pairs else ""
 
-        from datetime import datetime
         created_at = _yureeka_now_iso_utc()
 
-        # Append rows in order (deterministic)
+        # best-effort: use global if exists
         code_version = ""
         try:
-            # best effort: use global if exists
             code_version = globals().get("CODE_VERSION") or ""
         except Exception:
-            pass
             code_version = ""
 
-        # Use append_rows if available, else append_row in loop
         rows = []
         for idx, part in enumerate(parts):
             rows.append([source_snapshot_hash, idx, total, part, created_at, code_version, fingerprints_sig, sha])
 
+        wrote_all = False
         try:
             ws.append_rows(rows, value_input_option="RAW")
+            wrote_all = True
         except Exception:
-            pass
+            # Fall back to append_row loop; do NOT early-return on the first failure.
+            success = 0
             for r in rows:
                 try:
                     ws.append_row(r, value_input_option="RAW")
+                    success += 1
                 except Exception:
                     pass
-                    # partial failure: still return empty to avoid false pointer
-                    return ""
+            wrote_all = (success == len(rows))
 
-        return f"gsheet:{worksheet_title}:{source_snapshot_hash}"
+        # If we believe we wrote all rows, invalidate snapshot read cache so we can re-load immediately.
+        if wrote_all:
+            try:
+                # This cache key format matches sheets_get_all_values_cached()
+                _cache_key = f"get_all_values:{worksheet_title}"
+                _cache = globals().get("_SHEETS_READ_CACHE")
+                if isinstance(_cache, dict):
+                    _cache.pop(_cache_key, None)
+            except Exception:
+                pass
+            return f"gsheet:{worksheet_title}:{source_snapshot_hash}"
+
+        # Partial write: return empty ref to avoid pointing to a broken snapshot.
+        return ""
     except Exception:
         return ""
 
 def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: str = "Snapshots") -> list:
-    """Load and reassemble full snapshots list from a dedicated worksheet."""
+    """Load and reassemble full snapshots list from a dedicated worksheet.
+
+    REFACTOR40 (BUGFIX):
+    - Fix stale cache behavior: if the requested hash is not found in cached values, do a direct read once.
+    - Fix partial-write repair behavior: if multiple write batches exist for the same hash, select the
+      most recent *complete* batch (grouped by created_at), not a mixed/partial merge.
+    """
     import json, hashlib
     if not source_snapshot_hash:
         return []
@@ -17089,36 +17120,30 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
         if not ws:
             return []
 
-        # =====================================================================
-        # PATCH SNAPLOAD1 (ADDITIVE): cache-safe snapshot read fallback
-        # Why:
-        # - If a prior read hit quota / partial failure and we cached [], evolution
-        #   will permanently think "no snapshots exist" until cache clears.
-        # Behavior:
-        # - Try cached read first (fast)
-        # - If empty/too small, do ONE direct read to bypass stale empty cache
-        # =====================================================================
-        values = []
-        try:
-            values = sheets_get_all_values_cached(ws, cache_key=worksheet_title)
-        except Exception:
-            pass
-            values = []
-
-        if not values or len(values) < 2:
-            # Direct retry (best-effort)
+        def _read_cached():
             try:
-                direct = ws.get_all_values()
-                if direct and len(direct) >= 2:
-                    values = direct
+                return sheets_get_all_values_cached(ws, cache_key=worksheet_title)
+            except Exception:
+                return []
+
+        def _read_direct():
+            try:
+                return ws.get_all_values()
+            except Exception:
+                return []
+
+        values = _read_cached()
+
+        # If empty/too small, do one direct read to bypass stale empty cache.
+        if not values or len(values) < 2:
+            values = _read_direct()
+            if not values or len(values) < 2:
+                return []
+            # Best-effort cache refresh
+            try:
+                _sheets_cache_set(f"get_all_values:{worksheet_title}", values)
             except Exception:
                 pass
-        # =====================================================================
-        # END PATCH SNAPLOAD1 (ADDITIVE)
-        # =====================================================================
-
-        if not values or len(values) < 2:
-            return []
 
         header = values[0] or []
         # Expect at least: source_snapshot_hash, part_index, total_parts, payload_part
@@ -17127,56 +17152,141 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
             col_i = header.index("part_index")
             col_t = header.index("total_parts")
             col_p = header.index("payload_part")
+            col_ca = header.index("created_at") if "created_at" in header else None
             col_sha = header.index("sha256") if "sha256" in header else None
         except Exception:
-            pass
             # If headers are missing/misaligned, bail safely
             return []
 
-        # Filter rows for this hash
-        rows = []
-        for r in values[1:]:
-            try:
-                if len(r) > col_h and r[col_h] == source_snapshot_hash:
-                    rows.append(r)
-            except Exception:
-                pass
-                continue
-
-        if not rows:
-            return []
-
-        # Deterministic sort by part_index
         def _safe_int(x):
             try:
                 return int(x)
             except Exception:
                 return 0
-        rows.sort(key=lambda r: _safe_int(r[col_i] if len(r) > col_i else 0))
 
-        # Reassemble
-        payload_parts = []
-        for r in rows:
-            if len(r) > col_p:
-                payload_parts.append(r[col_p] or "")
-        payload = "".join(payload_parts)
+        def _parse_iso(s: str):
+            try:
+                # Lexicographic order works for ISO8601 UTC strings, but parse for safety.
+                from datetime import datetime
+                return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+            except Exception:
+                return None
 
-        # Optional integrity check
-        try:
-            if col_sha is not None and len(rows[0]) > col_sha:
-                expected = rows[0][col_sha] or ""
-                if expected:
-                    actual = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-                    if actual != expected:
-                        return []
-        except Exception:
-            pass
+        def _extract_best(values_table):
+            rows = []
+            for r in values_table[1:]:
+                try:
+                    if len(r) > col_h and r[col_h] == source_snapshot_hash:
+                        rows.append(r)
+                except Exception:
+                    continue
+            if not rows:
+                return []
 
-        try:
-            data = json.loads(payload)
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
+            # Group by created_at (per-write batch). If missing, fall back to a single group.
+            groups = {}
+            for r in rows:
+                k = ""
+                try:
+                    if col_ca is not None and len(r) > col_ca:
+                        k = str(r[col_ca] or "")
+                except Exception:
+                    k = ""
+                if not k:
+                    k = "legacy"
+                groups.setdefault(k, []).append(r)
+
+            candidates = []
+            for created_at, grows in groups.items():
+                try:
+                    # Determine expected total parts
+                    expected_total = 0
+                    try:
+                        if grows and len(grows[0]) > col_t:
+                            expected_total = _safe_int(grows[0][col_t])
+                    except Exception:
+                        expected_total = 0
+                    if expected_total <= 0:
+                        continue
+
+                    # Build part map (dedupe by part_index; keep longest payload_part)
+                    part_map = {}
+                    for rr in grows:
+                        try:
+                            pi = _safe_int(rr[col_i] if len(rr) > col_i else 0)
+                            pp = rr[col_p] if len(rr) > col_p else ""
+                            if pi not in part_map or (isinstance(pp, str) and len(pp) > len(part_map.get(pi, ""))):
+                                part_map[pi] = pp or ""
+                        except Exception:
+                            continue
+
+                    # Completeness check: must have all indices 0..expected_total-1
+                    if len(part_map) < expected_total:
+                        continue
+                    missing = False
+                    payload_parts = []
+                    for i in range(expected_total):
+                        if i not in part_map:
+                            missing = True
+                            break
+                        payload_parts.append(part_map[i] or "")
+                    if missing:
+                        continue
+
+                    payload = "".join(payload_parts)
+
+                    # Optional integrity check
+                    try:
+                        if col_sha is not None:
+                            exp = ""
+                            try:
+                                exp = (grows[0][col_sha] if len(grows[0]) > col_sha else "") or ""
+                            except Exception:
+                                exp = ""
+                            if exp:
+                                actual = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                                if actual != exp:
+                                    continue
+                    except Exception:
+                        pass
+
+                    # JSON decode
+                    try:
+                        data = json.loads(payload)
+                        if not isinstance(data, list) or not data:
+                            continue
+                    except Exception:
+                        continue
+
+                    # Candidate score: prefer latest created_at when parseable; else fallback to string.
+                    dt = _parse_iso(created_at) if created_at and created_at != "legacy" else None
+                    candidates.append((dt, created_at, data))
+                except Exception:
+                    continue
+
+            if not candidates:
+                return []
+            # Choose best candidate: latest datetime if available else latest created_at string.
+            candidates.sort(key=lambda x: (x[0] is not None, x[0] or x[1]), reverse=True)
+            return candidates[0][2]
+
+        best = _extract_best(values)
+
+        # If the hash is missing or incomplete in cached values, do ONE direct refresh and retry.
+        if not best:
+            direct = _read_direct()
+            if direct and len(direct) >= 2:
+                try:
+                    best = _extract_best(direct)
+                except Exception:
+                    best = []
+                # refresh cache best-effort
+                try:
+                    _sheets_cache_set(f"get_all_values:{worksheet_title}", direct)
+                except Exception:
+                    pass
+
+        return best if isinstance(best, list) else []
     except Exception:
         return []
 
@@ -50995,3 +51105,28 @@ except Exception:
         st.exception(Exception("Yureeka app crashed during main() execution (REFACTOR35)."))
     except Exception:
         pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR40
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR40":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR40",
+            "summary": "Fix recent snapshot retrievability and partial snapshot corruption in Snapshots sheet store. load_full_snapshots_from_sheet now bypasses stale cache on hash miss, and selects the most recent *complete* write batch (grouped by created_at) to avoid mixed/partial merges. store_full_snapshots_to_sheet no longer treats any existing rows as 'complete'; it validates loadability first and attempts repair writes when prior batch is incomplete, and invalidates snapshot worksheet cache after successful writes.",
+            "files": ["REFACTOR40_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR39"],
+        })
+
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
