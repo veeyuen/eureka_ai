@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR35'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR36'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -3185,6 +3185,11 @@ def add_to_history(analysis: dict) -> bool:
       - Never blocks saving if enrichment fails.
       - If Sheets unavailable, falls back to session_state.
     """
+
+    # REFACTOR36: harden against None callers (prevents NoneType.get crashes)
+    if not isinstance(analysis, dict):
+        return False
+
 
     # =====================================================================
     # PATCH AI_A_CALL (ADDITIVE): ensure metric_anchors emitted before persistence
@@ -16228,6 +16233,13 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
       - Accept optional web_context so evolution can reuse same-run analysis upstream artifacts.
       - ALWAYS returns a dict with required keys (even on crash).
     """
+
+    # REFACTOR36: coerce inputs to dict to avoid NoneType.get failures
+    if not isinstance(previous_data, dict):
+        previous_data = {}
+    if web_context is None or not isinstance(web_context, dict):
+        web_context = {}
+
     fn = globals().get("compute_source_anchored_diff")
 
     def _fail(msg: str) -> dict:
@@ -50442,6 +50454,30 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR36
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR36":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR36",
+            "summary": "Fix Evolution fatal 'NoneType has no attribute get' by hardening add_to_history() against None callers and coercing run_source_anchored_evolution inputs (previous_data/web_context) to dicts.",
+            "files": ["REFACTOR36_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR35"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 # ============================================================
 # REFACTOR35: EOF entrypoint (Streamlit-safe)
