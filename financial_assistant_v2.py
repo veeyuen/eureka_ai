@@ -90,14 +90,14 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR29'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR30'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
     except Exception:
-        return "REFACTOR28"
+        return "REFACTOR29"
 
 def _yureeka_lock_version_globals_v1():
     """Re-assert global version vars for observability (does not affect the frozen getter)."""
@@ -386,6 +386,31 @@ try:
 except Exception:
     pass
 
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR30
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR30":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR30",
+            "date": "2026-01-24",
+            "summary": "Fix REFACTOR29 run_timing_v1 row_delta_gating_v1 double-counting: apply per-row Analysis→Evolution delta stamping once (primary metric_changes list) and propagate to metric_changes_v2 by canonical_key, so diagnostic counts match the displayed table while keeping injection gating behavior unchanged.",
+            "files": ["REFACTOR30_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR29"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # PATCH TRACKER V1 (ADD): REFACTOR24
 # ============================================================
@@ -33532,8 +33557,50 @@ def main():
                                     except Exception:
                                         pass
 
-                    _apply_delta_to_rows(results.get("metric_changes"))
-                    _apply_delta_to_rows(results.get("metric_changes_v2"))
+                    # REFACTOR30: avoid double-counting by applying delta stamping once, then propagating
+                    _rows_a = results.get("metric_changes")
+                    _rows_b = results.get("metric_changes_v2")
+                    _primary_rows = _rows_a if isinstance(_rows_a, list) and _rows_a else (_rows_b if isinstance(_rows_b, list) else None)
+
+                    # If metric_changes is missing/empty but v2 exists, alias metric_changes to v2 (UI reads metric_changes).
+                    try:
+                        if isinstance(results, dict) and isinstance(_primary_rows, list):
+                            if (not isinstance(_rows_a, list)) or (len(_rows_a) == 0):
+                                results["metric_changes"] = _primary_rows
+                            if (not isinstance(_rows_b, list)) or (len(_rows_b) == 0):
+                                results["metric_changes_v2"] = _primary_rows
+                    except Exception:
+                        pass
+
+                    if isinstance(_primary_rows, list):
+                        _apply_delta_to_rows(_primary_rows)
+
+                    # Propagate delta fields to the other list (best-effort), keyed by canonical_key
+                    try:
+                        _rows_a2 = results.get("metric_changes")
+                        _rows_b2 = results.get("metric_changes_v2")
+                        if isinstance(_rows_a2, list) and isinstance(_rows_b2, list) and (_rows_a2 is not _rows_b2) and isinstance(_primary_rows, list):
+                            _map = {}
+                            for _pr in _primary_rows:
+                                if isinstance(_pr, dict):
+                                    _ck = _pr.get("canonical_key")
+                                    if isinstance(_ck, str) and _ck and _ck not in _map:
+                                        _map[_ck] = _pr
+                            _secondary = _rows_b2 if _primary_rows is _rows_a2 else _rows_a2
+                            for _sr in _secondary:
+                                if not isinstance(_sr, dict):
+                                    continue
+                                _ck2 = _sr.get("canonical_key")
+                                _src = _map.get(_ck2) if isinstance(_ck2, str) else None
+                                if isinstance(_src, dict):
+                                    _sr["analysis_evolution_delta_human"] = _src.get("analysis_evolution_delta_human") or ""
+                                    _sr["analysis_evolution_delta_seconds"] = _src.get("analysis_evolution_delta_seconds")
+                                else:
+                                    _sr.setdefault("analysis_evolution_delta_human", "")
+                                    _sr.setdefault("analysis_evolution_delta_seconds", None)
+                    except Exception:
+                        pass
+
 
                     # Harness / invariants (soft assertions + diagnostics)
                     try:
