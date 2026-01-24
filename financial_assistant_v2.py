@@ -90,14 +90,64 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR30'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR31'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
     except Exception:
-        return "REFACTOR29"
+        return "UNKNOWN"
+
+
+def _yureeka_runtime_identity_v1():
+    """Additive debug helper: identify the running script reliably (helps diagnose stale-version runs)."""
+    try:
+        import os, sys, platform, hashlib, datetime
+        out = {
+            "code_version": _yureeka_get_code_version(),
+            "code_version_lock": globals().get("_YUREEKA_CODE_VERSION_LOCK"),
+        }
+        try:
+            out["__file__"] = __file__
+        except Exception:
+            out["__file__"] = None
+        try:
+            out["cwd"] = os.getcwd()
+        except Exception:
+            out["cwd"] = None
+        try:
+            out["pid"] = os.getpid()
+        except Exception:
+            out["pid"] = None
+        try:
+            out["python"] = sys.version.split()[0]
+        except Exception:
+            out["python"] = None
+        try:
+            out["platform"] = platform.platform()
+        except Exception:
+            out["platform"] = None
+        try:
+            out["now_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        except Exception:
+            out["now_utc"] = None
+
+        # File signature (best-effort; safe in Streamlit)
+        try:
+            p = out.get("__file__")
+            if isinstance(p, str) and p and os.path.exists(p):
+                with open(p, "rb") as f:
+                    b = f.read()
+                out["file_sha1_12"] = hashlib.sha1(b).hexdigest()[:12]
+                out["file_bytes"] = int(len(b))
+        except Exception:
+            pass
+
+        return out
+    except Exception:
+        return {"code_version": _yureeka_get_code_version(), "code_version_lock": globals().get("_YUREEKA_CODE_VERSION_LOCK")}
+
 
 def _yureeka_lock_version_globals_v1():
     """Re-assert global version vars for observability (does not affect the frozen getter)."""
@@ -407,6 +457,31 @@ try:
             "summary": "Fix REFACTOR29 run_timing_v1 row_delta_gating_v1 double-counting: apply per-row Analysis→Evolution delta stamping once (primary metric_changes list) and propagate to metric_changes_v2 by canonical_key, so diagnostic counts match the displayed table while keeping injection gating behavior unchanged.",
             "files": ["REFACTOR30_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR29"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR31
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR31":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR31",
+            "date": "2026-01-24",
+            "summary": "Add runtime_identity_v1 stamp (code_version lock + __file__ + SHA1) to Analysis/Evolution debug for diagnosing stale-version runs; and harden run_timing_v1 row_delta_gating_v1 stats to count unique canonical_keys only (prevents double-counting when both metric_changes and metric_changes_v2 exist). No schema/key-grammar changes.",
+            "files": ["REFACTOR31_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR30"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -24028,6 +24103,11 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
 
         if not isinstance(output.get("debug"), dict):
             output["debug"] = {}
+
+            try:
+                output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
+            except Exception:
+                pass
         output["debug"]["refactor11_summary_recompute_v1"] = {
             "counts": dict(_rf11_counts),
             "total_rows": int(_rf11_total),
@@ -33129,6 +33209,16 @@ def main():
                 "code_version": _yureeka_get_code_version(),
                 }
 
+
+            # REFACTOR31 (ADDITIVE): runtime identity stamp for diagnosing stale-version runs
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
+            except Exception:
+                pass
+
+
             try:
                 if isinstance(output.get("primary_response"), dict):
                     output["primary_response"]["code_version"] = _yureeka_get_code_version()
@@ -33490,7 +33580,10 @@ def main():
                         "production_rows_total": 0,
                         "production_rows_with_delta": 0,
                         "unattributed_rows": 0,
+                        "duplicate_rows_skipped": 0,
                     }
+
+                    _seen_ck = set()
 
                     def _apply_delta_to_rows(_rows: list):
                         if not isinstance(_rows, list):
@@ -33499,10 +33592,31 @@ def main():
                             if not isinstance(_r, dict):
                                 continue
 
+                            _ckey_for_count = None
                             try:
-                                _row_delta_gating["rows_total"] += 1
+                                _ckey_for_count = _r.get("canonical_key")
+                            except Exception:
+                                _ckey_for_count = None
+
+                            _uniq_key = _ckey_for_count if (isinstance(_ckey_for_count, str) and _ckey_for_count) else ("__row_%s" % (id(_r),))
+                            _count_row = True
+                            try:
+                                if _uniq_key in _seen_ck:
+                                    _count_row = False
+                                    try:
+                                        _row_delta_gating["duplicate_rows_skipped"] += 1
+                                    except Exception:
+                                        pass
+                                else:
+                                    _seen_ck.add(_uniq_key)
                             except Exception:
                                 pass
+
+                            if _count_row:
+                                try:
+                                    _row_delta_gating["rows_total"] += 1
+                                except Exception:
+                                    pass
 
                             is_injected = False
                             if _inj_set:
@@ -33519,10 +33633,11 @@ def main():
                                 if _su is None:
                                     # If injections exist but we cannot attribute, treat as injected for safety
                                     is_injected = True
-                                    try:
-                                        _row_delta_gating["unattributed_rows"] += 1
-                                    except Exception:
-                                        pass
+                                    if _count_row:
+                                        try:
+                                            _row_delta_gating["unattributed_rows"] += 1
+                                        except Exception:
+                                            pass
                                 else:
                                     _su_norm = _su
                                     try:
@@ -33533,13 +33648,14 @@ def main():
                                         _su_norm = _su
                                     is_injected = (_su_norm in _inj_set)
 
-                            try:
-                                if is_injected:
-                                    _row_delta_gating["injected_rows_total"] += 1
-                                else:
-                                    _row_delta_gating["production_rows_total"] += 1
-                            except Exception:
-                                pass
+                            if _count_row:
+                                try:
+                                    if is_injected:
+                                        _row_delta_gating["injected_rows_total"] += 1
+                                    else:
+                                        _row_delta_gating["production_rows_total"] += 1
+                                except Exception:
+                                    pass
 
                             if (not is_injected) and (_delta_human or _delta_seconds is not None):
                                 _r["analysis_evolution_delta_human"] = _delta_human
@@ -33551,7 +33667,7 @@ def main():
                             else:
                                 _r["analysis_evolution_delta_human"] = ""
                                 _r["analysis_evolution_delta_seconds"] = None
-                                if is_injected:
+                                if is_injected and _count_row:
                                     try:
                                         _row_delta_gating["injected_rows_blank_delta"] += 1
                                     except Exception:
