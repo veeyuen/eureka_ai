@@ -90,14 +90,14 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR25'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR26'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
     except Exception:
-        return "REFACTOR19"
+        return "REFACTOR26"
 
 def _yureeka_lock_version_globals_v1():
     """Re-assert global version vars for observability (does not affect the frozen getter)."""
@@ -288,6 +288,30 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+# PATCH TRACKER V1 (ADD): REFACTOR26
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR26":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR26",
+            "date": "2026-01-24",
+            "summary": "Tighten and centralize current metric source_url attribution for reliable row-level injection gating. Add a hydrator that fills primary_metrics_canonical[*].source_url from evidence/provenance, expose current_source_url fields on diff rows, and enhance per-row injection detection to prefer row-attributed URLs before falling back to canonical maps.",
+            "files": ["REFACTOR26_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR25"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 # PATCH TRACKER V1 (ADD): REFACTOR24
 # ============================================================
@@ -16312,6 +16336,119 @@ def _yureeka_now_iso_utc() -> str:
         except Exception:
             return ""
 
+
+
+# =============================================================================
+# REFACTOR26: Centralized source_url attribution helpers (schema-preserving)
+# - Goal: ensure row-level injection gating can reliably attribute a current metric
+#   to its source URL (production vs injected), even when source_url lives only
+#   inside evidence/provenance structures.
+# =============================================================================
+
+def _refactor26_extract_metric_source_url_v1(_m: dict):
+    """Best-effort extraction of a metric's source URL without changing schema."""
+    if not isinstance(_m, dict):
+        return None
+    # Direct fields
+    for k in ("source_url", "url", "source", "sourceURL", "sourceUrl"):
+        try:
+            v = _m.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        except Exception:
+            pass
+
+    # Evidence list
+    try:
+        ev = _m.get("evidence")
+        if isinstance(ev, list):
+            for e in ev:
+                if isinstance(e, dict):
+                    for k in ("source_url", "url"):
+                        v = e.get(k)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+    except Exception:
+        pass
+
+    # Winner/debug/provenance structures (common in this codebase)
+    try:
+        wd = _m.get("winner_candidate_debug")
+        if isinstance(wd, dict):
+            v = wd.get("source_url") or wd.get("url")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    except Exception:
+        pass
+
+    try:
+        prov = _m.get("provenance") or _m.get("provenance_v1") or _m.get("diag")
+        if isinstance(prov, dict):
+            v = prov.get("source_url") or prov.get("url")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    except Exception:
+        pass
+
+    return None
+
+
+def _refactor26_hydrate_primary_metrics_canonical_source_urls_v1(_pmc: dict) -> dict:
+    """In-place: ensure pmc[*].source_url exists when discoverable from evidence."""
+    if not isinstance(_pmc, dict):
+        return _pmc
+    for _ck, _m in list(_pmc.items()):
+        if not isinstance(_m, dict):
+            continue
+        try:
+            su = _m.get("source_url")
+            if isinstance(su, str) and su.strip():
+                continue
+            su2 = _refactor26_extract_metric_source_url_v1(_m)
+            if isinstance(su2, str) and su2.strip():
+                _m["source_url"] = su2.strip()
+        except Exception:
+            pass
+    return _pmc
+
+
+def _refactor26_extract_row_current_source_url_v1(_row: dict):
+    """Prefer row-attributed *current* URL fields before any fallbacks."""
+    if not isinstance(_row, dict):
+        return None
+    for k in ("cur_source_url", "current_source_url", "current_source", "current_source_url_effective", "current_source_effective"):
+        try:
+            v = _row.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        except Exception:
+            pass
+    # As a last resort, some rows store the current URL in source_url (ambiguous)
+    try:
+        v = _row.get("source_url")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _refactor26_norm_url_for_compare_v1(_u: str):
+    """Normalize URL for set-membership comparisons using existing normalizer when available."""
+    if not isinstance(_u, str):
+        return None
+    u = _u.strip()
+    if not u:
+        return None
+    try:
+        fn = globals().get("_inj_diag_norm_url_list")
+        if callable(fn):
+            out = fn([u])
+            if isinstance(out, list) and out and isinstance(out[0], str) and out[0].strip():
+                return out[0].strip()
+    except Exception:
+        pass
+    return u
 def _yureeka_humanize_seconds_v1(delta_seconds) -> str:
     """Compact human format for a positive second delta (e.g., '1m 18s')."""
     try:
@@ -20352,6 +20489,8 @@ def diff_metrics_by_name_BASE(prev_response: dict, cur_response: dict):
                 "cur_unit_cmp": cur_unit_cmp,
                 # PATCH FIX2B_TRACE_V1 (ADDITIVE): expose chosen URL + selector trace (no behavior change)
                 "cur_source_url": str((cur_can_obj or {}).get("source_url") or ""),
+                "current_source_url": str((cur_can_obj or {}).get("source_url") or ""),
+                "current_source_url_effective": str((cur_can_obj or {}).get("source_url") or _src or ""),
                 "selector_used": str((cur_can_obj or {}).get("selector_used") or ""),
                 "evo_selector_trace_v1": (dict((cur_can_obj or {}).get("analysis_selector_trace_v1") or {}) if isinstance((cur_can_obj or {}).get("analysis_selector_trace_v1"), dict) else {}),
                 "winner_candidate_debug": (dict((cur_can_obj or {}).get("winner_candidate_debug") or {}) if isinstance((cur_can_obj or {}).get("winner_candidate_debug"), dict) else {}),
@@ -27912,6 +28051,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             pass
 
+        # REFACTOR26: hydrate source_url for canonical metrics (in-place, schema-preserving)
+        try:
+            _pmc_tmp = output.get("primary_metrics_canonical") if isinstance(output, dict) else None
+            if isinstance(_pmc_tmp, dict):
+                _refactor26_hydrate_primary_metrics_canonical_source_urls_v1(_pmc_tmp)
+        except Exception:
+            pass
+
+
         # =====================================================================
         # PATCH V30_CANONICAL_FOR_RENDER_SEED_DISABLE (ADDITIVE)
         # Goal:
@@ -33065,19 +33213,10 @@ def main():
                     _inj_set = set([str(u).strip() for u in (_inj_norm or _inj_urls) if isinstance(u, str) and u.strip()])
 
                     def _refactor25_extract_metric_source_url(_m: dict):
-                        if not isinstance(_m, dict):
+                        try:
+                            return _refactor26_extract_metric_source_url_v1(_m)
+                        except Exception:
                             return None
-                        su = _m.get("source_url") or _m.get("url")
-                        if isinstance(su, str) and su.strip():
-                            return su.strip()
-                        ev = _m.get("evidence")
-                        if isinstance(ev, list) and ev:
-                            e0 = ev[0]
-                            if isinstance(e0, dict):
-                                su2 = e0.get("source_url") or e0.get("url")
-                                if isinstance(su2, str) and su2.strip():
-                                    return su2.strip()
-                        return None
 
                     _pmc = {}
                     if isinstance(results, dict):
@@ -33097,8 +33236,15 @@ def main():
                             is_injected = False
                             if _inj_set:
                                 _ckey = _r.get("canonical_key")
-                                _cm = _pmc.get(_ckey) if isinstance(_ckey, str) else None
-                                _su = _refactor25_extract_metric_source_url(_cm) if isinstance(_cm, dict) else None
+                                # REFACTOR26: prefer row-attributed current URL when available
+                                _su = None
+                                try:
+                                    _su = _refactor26_extract_row_current_source_url_v1(_r)
+                                except Exception:
+                                    _su = None
+                                if _su is None:
+                                    _cm = _pmc.get(_ckey) if isinstance(_ckey, str) else None
+                                    _su = _refactor25_extract_metric_source_url(_cm) if isinstance(_cm, dict) else None
                                 if _su is None:
                                     # Fallback: if injection exists but we cannot attribute, blank for safety
                                     is_injected = True
