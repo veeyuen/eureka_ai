@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR37'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR38'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -35922,6 +35922,8 @@ def _fix24_get_prev_full_payload(previous_data: dict) -> dict:
     except Exception:
         return previous_data if isinstance(previous_data, dict) else {}
 
+    return previous_data if isinstance(previous_data, dict) else {}
+
 
 def _fix24_extract_source_urls(prev_full: dict) -> list:
     """
@@ -36105,6 +36107,8 @@ def _fix24_get_prev_hashes(prev_full: dict) -> dict:
     except Exception:
         return out
 
+    return out
+
 
 def _fix24_compute_current_hashes(baseline_sources_cache: list) -> dict:
     """
@@ -36120,6 +36124,8 @@ def _fix24_compute_current_hashes(baseline_sources_cache: list) -> dict:
             out["v1"] = str(fn1(baseline_sources_cache) or "")
     except Exception:
         return out
+
+    return out
 
 
 def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
@@ -50502,6 +50508,28 @@ except Exception:
     pass
 
 
+# REFACTOR38 patch tracker
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR38":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR38",
+            "summary": "Fix FIX24 helper regressions causing None.get crashes in Evolution: ensure _fix24_get_prev_full_payload/_fix24_get_prev_hashes/_fix24_compute_current_hashes always return dicts; enhance REFACTOR37 evolution wrapper to persist full traceback under debug.error_traceback, surface a callsite hint in message/debug, and guard against non-dict impl returns.",
+            "files": ["REFACTOR38_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR37"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
 # ============================================================
 # REFACTOR35: EOF entrypoint (Streamlit-safe)
 # - We intentionally call main() only after ALL patch blocks and helper defs have executed,
@@ -50564,6 +50592,23 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 out["debug"]["refactor37"]["traceback"] = tb
             except Exception:
                 pass
+            try:
+                _cs = ""
+                for _ln in str(tb).splitlines():
+                    _lns = _ln.strip()
+                    if _lns.startswith("File "):
+                        _cs = _lns
+                if _cs:
+                    try:
+                        out["debug"]["refactor37"]["callsite"] = _cs
+                    except Exception:
+                        pass
+                    try:
+                        out["message"] = f"{msg} | {_cs}"
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         return out
 
     impl = _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL
@@ -50571,11 +50616,19 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         return _fail("run_source_anchored_evolution implementation is not callable.")
 
     try:
-        return impl(previous_data, web_context=web_context)
+        _res = impl(previous_data, web_context=web_context)
+        if not isinstance(_res, dict):
+            import traceback as _tb
+            return _fail("run_source_anchored_evolution returned non-dict result (impl)", tb=_tb.format_stack())
+        return _res
     except TypeError:
         # Backward-compat: some historical defs accept only previous_data
         try:
-            return impl(previous_data)
+            _res = impl(previous_data)
+            if not isinstance(_res, dict):
+                import traceback as _tb
+                return _fail("run_source_anchored_evolution returned non-dict result (impl fallback)", tb=_tb.format_stack())
+            return _res
         except Exception as e:
             import traceback as _tb
             return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
