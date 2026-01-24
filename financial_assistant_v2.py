@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR28'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR29'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -362,6 +362,30 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+# PATCH TRACKER V1 (ADD): REFACTOR29
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR29":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR29",
+            "date": "2026-01-24",
+            "summary": "Refine REFACTOR25 run-delta harness and diagnostics: replace overly-strict global injection assertion with per-row gating stats (injected rows must have blank delta, production rows should show delta when available). Persist row_delta_gating_v1 into run_timing_v1 for easier debugging, without changing schema/key grammar or diff behavior.",
+            "files": ["REFACTOR29_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR28"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 # PATCH TRACKER V1 (ADD): REFACTOR24
 # ============================================================
@@ -33432,12 +33456,28 @@ def main():
                     if not isinstance(_pmc, dict):
                         _pmc = {}
 
+                                        # REFACTOR29: collect per-row gating stats for injection/production delta display
+                    _row_delta_gating = {
+                        "inj_set_size": len(_inj_set),
+                        "rows_total": 0,
+                        "injected_rows_total": 0,
+                        "injected_rows_blank_delta": 0,
+                        "production_rows_total": 0,
+                        "production_rows_with_delta": 0,
+                        "unattributed_rows": 0,
+                    }
+
                     def _apply_delta_to_rows(_rows: list):
                         if not isinstance(_rows, list):
                             return
                         for _r in _rows:
                             if not isinstance(_r, dict):
                                 continue
+
+                            try:
+                                _row_delta_gating["rows_total"] += 1
+                            except Exception:
+                                pass
 
                             is_injected = False
                             if _inj_set:
@@ -33452,8 +33492,12 @@ def main():
                                     _cm = _pmc.get(_ckey) if isinstance(_ckey, str) else None
                                     _su = _refactor25_extract_metric_source_url(_cm) if isinstance(_cm, dict) else None
                                 if _su is None:
-                                    # Fallback: if injection exists but we cannot attribute, blank for safety
+                                    # If injections exist but we cannot attribute, treat as injected for safety
                                     is_injected = True
+                                    try:
+                                        _row_delta_gating["unattributed_rows"] += 1
+                                    except Exception:
+                                        pass
                                 else:
                                     _su_norm = _su
                                     try:
@@ -33464,27 +33508,60 @@ def main():
                                         _su_norm = _su
                                     is_injected = (_su_norm in _inj_set)
 
+                            try:
+                                if is_injected:
+                                    _row_delta_gating["injected_rows_total"] += 1
+                                else:
+                                    _row_delta_gating["production_rows_total"] += 1
+                            except Exception:
+                                pass
+
                             if (not is_injected) and (_delta_human or _delta_seconds is not None):
                                 _r["analysis_evolution_delta_human"] = _delta_human
                                 _r["analysis_evolution_delta_seconds"] = _delta_seconds
+                                try:
+                                    _row_delta_gating["production_rows_with_delta"] += 1
+                                except Exception:
+                                    pass
                             else:
                                 _r["analysis_evolution_delta_human"] = ""
                                 _r["analysis_evolution_delta_seconds"] = None
+                                if is_injected:
+                                    try:
+                                        _row_delta_gating["injected_rows_blank_delta"] += 1
+                                    except Exception:
+                                        pass
 
                     _apply_delta_to_rows(results.get("metric_changes"))
                     _apply_delta_to_rows(results.get("metric_changes_v2"))
 
-                    # Harness / invariants (soft assertions)
+                    # Harness / invariants (soft assertions + diagnostics)
                     try:
                         if isinstance(results, dict) and isinstance(results.get("debug"), dict):
                             rt = results["debug"].get("run_timing_v1")
                             if isinstance(rt, dict):
                                 rt.setdefault("assertions", {})
+                                rt["row_delta_gating_v1"] = dict(_row_delta_gating)
                                 if isinstance(rt.get("assertions"), dict):
                                     if (not _inj_set) and _analysis_ts_norm:
                                         rt["assertions"]["delta_computed_non_negative"] = bool((_delta_seconds is not None) and (float(_delta_seconds) >= 0))
                                     if _inj_set:
-                                        rt["assertions"]["delta_blank_for_injection"] = True
+                                        rt["assertions"]["injected_rows_have_blank_delta"] = bool(
+                                            _row_delta_gating.get("injected_rows_blank_delta", 0) == _row_delta_gating.get("injected_rows_total", 0)
+                                        )
+                                    if (_delta_seconds is not None) and (_row_delta_gating.get("production_rows_total", 0) > 0):
+                                        rt["assertions"]["production_rows_have_delta"] = bool(
+                                            _row_delta_gating.get("production_rows_with_delta", 0) == _row_delta_gating.get("production_rows_total", 0)
+                                        )
+
+                        # Keep nested results copy aligned (best-effort)
+                        if isinstance(results, dict) and isinstance(results.get("results"), dict):
+                            _dbg_nested = results["results"].get("debug")
+                            if not isinstance(_dbg_nested, dict):
+                                _dbg_nested = {}
+                                results["results"]["debug"] = _dbg_nested
+                            if isinstance(results.get("debug"), dict) and isinstance(results["debug"].get("run_timing_v1"), dict):
+                                _dbg_nested["run_timing_v1"] = dict(results["debug"]["run_timing_v1"])
                     except Exception:
                         pass
                 except Exception:
