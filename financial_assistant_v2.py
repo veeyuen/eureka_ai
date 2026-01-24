@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR26'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR27'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -311,6 +311,32 @@ try:
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
+
+
+# PATCH TRACKER V1 (ADD): REFACTOR27
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR27":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR27",
+            "date": "2026-01-24",
+            "summary": "Harden unit comparability and candidate eligibility for currency metrics. Reject date-fragment currency candidates (e.g., 'July 01, 2025') during schema-only rebuild, and strengthen currency unit mismatch detection so mixed scale/code representations do not emit nonsense deltas. Also expose current_source_url on diff rows for clearer row-level injection attribution.",
+            "files": ["REFACTOR27_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR26"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
 
 
 # PATCH TRACKER V1 (ADD): REFACTOR24
@@ -6210,6 +6236,69 @@ def _refactor03_candidate_rejected_by_unit_family_v1(cand: dict, spec: dict = No
         return False
 
 
+
+def _refactor27_candidate_rejected_currency_date_fragment_v1(cand: dict, spec: dict = None) -> bool:
+    """Reject date-fragment candidates like '01' in contexts such as 'July 01, 2025' for currency-ish metrics.
+
+    Rationale:
+      - Some news pages include datelines (e.g., 'July 01, 2025') near genuine currency values.
+      - Weak context-based currency evidence can cause day-of-month tokens to outscore real values.
+    Determinism:
+      - Pure filter; does not invent candidates or refetch content.
+    """
+    try:
+        if not isinstance(cand, dict) or not isinstance(spec, dict):
+            return False
+        uf = str(spec.get("unit_family") or "").lower().strip()
+        if uf not in ("currency", "money"):
+            return False
+
+        raw = str(cand.get("raw") or "").strip()
+        if not raw:
+            return False
+
+        # Only target tiny integer tokens that look like day-of-month (01..31)
+        try:
+            v = cand.get("value_norm")
+            if v is None:
+                v = cand.get("value")
+            iv = int(float(v))
+        except Exception:
+            return False
+
+        if iv < 1 or iv > 31:
+            return False
+
+        if not re.fullmatch(r"0?\d{1,2}", raw):
+            return False
+
+        ctx = " ".join([
+            str(cand.get("context_snippet") or ""),
+            str(cand.get("context") or ""),
+        ]).lower()
+
+        if not ctx:
+            return False
+
+        # Month + year pattern indicates this is very likely a dateline token
+        months = (
+            "jan", "january", "feb", "february", "mar", "march", "apr", "april",
+            "may", "jun", "june", "jul", "july", "aug", "august", "sep", "sept", "september",
+            "oct", "october", "nov", "november", "dec", "december",
+        )
+        if any(m in ctx for m in months) and re.search(r"\b(19|20)\d{2}\b", ctx):
+            # If the raw itself directly carries currency markers, do not reject
+            raw_l = raw.lower()
+            if any(sym in raw_l for sym in ("$", "usd", "eur", "gbp", "sgd", "aud", "cad", "hk$", "us$")):
+                return False
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+
 def _refactor03_diff_unit_mismatch_v1(prev_key: str, prev_metric: dict, cur_metric: dict, prev_unit: str = None, cur_unit: str = None) -> bool:
     """Return True if the prev/current pair is not comparable due to unit family or scale mismatch."""
     try:
@@ -6246,6 +6335,68 @@ def _refactor03_diff_unit_mismatch_v1(prev_key: str, prev_metric: dict, cur_metr
                 return True
         except Exception:
             pass
+
+        # REFACTOR27 (ADDITIVE): currency code/scale mismatch guard (handles mixed representations like 'USD' vs 'B')
+        try:
+            if expected == "currency":
+                pu = str(prev_unit or "").upper().strip()
+                cu = str(cur_unit or "").upper().strip()
+
+                def _split_code_scale(u: str):
+                    u = str(u or "").upper().strip()
+                    if not u:
+                        return ("", "")
+                    # Composite like 'USD:B'
+                    if ":" in u:
+                        parts = [p.strip() for p in u.split(":") if p is not None]
+                        if len(parts) >= 2:
+                            code = parts[0].upper()
+                            sc = parts[1].upper()
+                            if sc in ("K", "M", "B", "T"):
+                                return (code, sc)
+                            return (code, "")
+                    # Composite like 'USD_B'
+                    if "_" in u:
+                        parts = [p.strip() for p in u.split("_") if p is not None]
+                        if len(parts) >= 2:
+                            code = parts[0].upper()
+                            sc = parts[-1].upper()
+                            if sc in ("K", "M", "B", "T"):
+                                return (code, sc)
+                            return (code, "")
+                    # Pure scale token
+                    if u in ("K", "M", "B", "T"):
+                        return ("", u)
+                    # Pure currency code
+                    try:
+                        if re.fullmatch(r"[A-Z]{3}", u):
+                            return (u, "")
+                    except Exception:
+                        pass
+                    return ("", "")
+
+                p_code, p_sc = _split_code_scale(pu)
+                c_code, c_sc = _split_code_scale(cu)
+
+                # Prefer explicit unit-encoded code, else infer from evidence text
+                p_code = p_code or infer_currency_code_from_text_v1(prev_txt)
+                c_code = c_code or infer_currency_code_from_text_v1(cur_txt)
+
+                if p_code and c_code and p_code != c_code:
+                    return True
+
+                # If only one side has a magnitude scale token (K/M/B/T), treat as mismatch.
+                has_ps = p_sc in ("K", "M", "B", "T")
+                has_cs = c_sc in ("K", "M", "B", "T")
+                if (has_ps and (not has_cs)) or (has_cs and (not has_ps)):
+                    return True
+
+                # Both sides have a scale token and they differ.
+                if has_ps and has_cs and p_sc != c_sc:
+                    return True
+        except Exception:
+            pass
+
 
         # family mismatch
         if expected == "currency":
@@ -6447,6 +6598,13 @@ def rebuild_metrics_from_snapshots_schema_only(
             # REFACTOR03 (ADDITIVE): enforce unit family + unit-tag eligibility
             if _refactor03_candidate_rejected_by_unit_family_v1(c, spec):
                 continue
+            # REFACTOR27 (ADDITIVE): reject currency date-fragment candidates (e.g., 'July 01, 2025')
+            try:
+                if _refactor27_candidate_rejected_currency_date_fragment_v1(c, spec):
+                    continue
+            except Exception:
+                pass
+
             # =====================================================================
             # PATCH AI2 (ADDITIVE): guard against year-only candidates on currency-like metrics
             # Why:
@@ -24278,6 +24436,15 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
         _has_prev = prev_ckey in _prev_set
         _has_cur = prev_ckey in _cur_set
 
+        # REFACTOR27: capture per-row source URLs for debugging/injection gating
+        prev_source_url = None
+        cur_source_url = None
+        try:
+            _purls = _metric_source_urls(pm) if isinstance(pm, dict) else []
+            prev_source_url = _purls[0] if isinstance(_purls, list) and _purls else None
+        except Exception:
+            prev_source_url = None
+
         prev_raw = _raw_display_value(pm)
         prev_val_norm = _canon_value_norm(pm)
         prev_unit = _canon_unit_tag(pm)
@@ -24603,7 +24770,9 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
 
             # minimal context fields kept for UI compatibility
             "context_snippet": None,
-            "source_url": None,
+            "source_url": (cur_source_url or prev_source_url),
+            "current_source_url": cur_source_url,
+            "previous_source_url": prev_source_url,
 
             # anchor fields for debugging/inspection
             "anchor_used": (method == "anchor_hash"),
@@ -24641,6 +24810,19 @@ def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
                 },
             },
         }
+
+        # REFACTOR27: hard veto unit-mismatch rows from emitting numeric deltas (avoid nonsense deltas)
+        try:
+            if bool(_ref03_unit_mismatch):
+                row["unit_mismatch"] = True
+                row["change_type"] = "unit_mismatch"
+                row["change_pct"] = None
+                row["baseline_is_comparable"] = False
+                row["baseline_change_type"] = "unit_mismatch"
+                row["baseline_delta_abs"] = None
+                row["baseline_delta_pct"] = None
+        except Exception:
+            pass
 
         # Keep any helpful selector breadcrumb if present on current metric
         try:
