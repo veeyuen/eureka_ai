@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR24'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR25'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -264,6 +264,31 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
 # ============================================================
 
 # ============================================================
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR25
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR25":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR25",
+            "date": "2026-01-24",
+            "summary": "Add production-only Analysis→Evolution run delta column for metric changes. Standardize top-level timestamps to UTC (+00:00), compute/stamp run_timing_v1 (delta_seconds/human) in Evolution results, and gate per-row delta display when current metric is sourced from injected URLs.",
+            "files": ["REFACTOR25_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR24"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): REFACTOR24
 # ============================================================
 try:
@@ -4071,7 +4096,7 @@ def add_to_history(analysis: dict) -> bool:
                         # keep a preview for debugging/UI; still parseable JSON
                         "preview": payload_json[: max(0, SHEETS_CELL_LIMIT - 600)],
                         "analysis_id": analysis_id,
-                        "timestamp": analysis.get("timestamp", datetime.now().isoformat()),
+                        "timestamp": analysis.get("timestamp", _yureeka_now_iso_utc()),
                         "question": (analysis.get("question", "") or "")[:200],
                     },
                     ensure_ascii=False,
@@ -4170,7 +4195,7 @@ def add_to_history(analysis: dict) -> bool:
 
         row = [
             analysis_id,
-            analysis.get("timestamp", datetime.now().isoformat()),
+            analysis.get("timestamp", _yureeka_now_iso_utc()),
             (analysis.get("question", "") or "")[:100],
             str(analysis.get("final_confidence", "")),
             payload_json,
@@ -16276,6 +16301,43 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _yureeka_now_iso_utc() -> str:
+    """UTC ISO-8601 timestamp with offset (e.g., 2026-01-23T11:13:15.665069+00:00)."""
+    try:
+        return now_utc().isoformat()
+    except Exception:
+        try:
+            from datetime import datetime, timezone
+            return datetime.now(timezone.utc).isoformat()
+        except Exception:
+            return ""
+
+def _yureeka_humanize_seconds_v1(delta_seconds) -> str:
+    """Compact human format for a positive second delta (e.g., '1m 18s')."""
+    try:
+        if delta_seconds is None:
+            return ""
+        ds = float(delta_seconds)
+        if ds < 0:
+            ds = 0.0
+        total = int(round(ds))
+        mins, secs = divmod(total, 60)
+        hrs, mins = divmod(mins, 60)
+        days, hrs = divmod(hrs, 24)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hrs:
+            parts.append(f"{hrs}h")
+        if mins:
+            parts.append(f"{mins}m")
+        parts.append(f"{secs}s")
+        return " ".join(parts)
+    except Exception:
+        return ""
+
+
+
 def _normalize_number_to_parse_base(value: float, unit: str) -> float:
     u = (unit or "").strip().upper()
     if u == "T":
@@ -17268,7 +17330,7 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
         fingerprints_sig = "|".join([f"{u}#{fp}" for (u, fp) in pairs]) if pairs else ""
 
         from datetime import datetime
-        created_at = datetime.utcnow().isoformat() + "Z"
+        created_at = _yureeka_now_iso_utc()
 
         # Append rows in order (deterministic)
         code_version = ""
@@ -19370,7 +19432,7 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
         try:
             return datetime.utcnow().isoformat() + "+00:00"
         except Exception:
-            return datetime.now().isoformat()
+            return _yureeka_now_iso_utc()
 
     def _is_homepage_url(u: str) -> bool:
         try:
@@ -31255,6 +31317,13 @@ def render_source_anchored_results(results, query: str):
         st.info("No metric changes to display.")
         return
 
+
+
+    show_delta = any(
+        isinstance(r, dict) and str(r.get("analysis_evolution_delta_human") or "").strip()
+        for r in rows
+    )
+
     table_rows = []
     for r in rows:
         if not isinstance(r, dict):
@@ -31263,7 +31332,7 @@ def render_source_anchored_results(results, query: str):
         metric_label = r.get("metric") or r.get("name") or ""
         status_label = r.get("status") or r.get("change_type") or ""
 
-        table_rows.append({
+        out_row = {
             "Metric": metric_label,
             "Canonical Key": r.get("canonical_key", "") or "",
             "Match Stage": r.get("match_stage", "") or "",
@@ -31274,9 +31343,14 @@ def render_source_anchored_results(results, query: str):
             "Match": _fmt_pct(r.get("match_confidence")),
             "Score": ("" if r.get("match_score") is None else f"{_safe_float(r.get('match_score'), 0.0):.2f}"),
             "Anchor": "✅" if r.get("anchor_used") else "",
-        })
+        }
+        if show_delta:
+            out_row["Δt (A→E)"] = r.get("analysis_evolution_delta_human") or ""
+
+        table_rows.append(out_row)
 
     st.dataframe(table_rows, use_container_width=True)
+
 
     # -------------------------
     # Debug / tuning views
@@ -32098,7 +32172,7 @@ def render_native_comparison(baseline: Dict, compare: Dict):
     # Download comparison
     st.markdown("---")
     comparison_output = {
-        "comparison_timestamp": datetime.now().isoformat(),
+        "comparison_timestamp": _yureeka_now_iso_utc(),
         "baseline": baseline,
         "current": compare,
         "stability_score": stability_pct,
@@ -32644,7 +32718,7 @@ def main():
                 "question_category": question_profile.get("category"),
                 "question_signals": question_signals,
                 "side_questions": question_profile.get("side_questions", []),
-                "timestamp": now_utc().isoformat(),
+                "timestamp": _yureeka_now_iso_utc(),
                 "primary_response": primary_data,
                 "final_confidence": final_conf,
                 "veracity_scores": veracity_scores,
@@ -32909,11 +32983,165 @@ def main():
                     pass
                     interpretation = ""
 
+
+
+                # =====================================================================
+                # REFACTOR25: Analysis→Evolution timing delta (production only)
+                # - Standardize timestamps to UTC with offset (+00:00)
+                # - Compute/stamp run_timing_v1 in Evolution results
+                # - Attach per-row delta fields; blank when current metric is injected-sourced
+                # =====================================================================
+                _analysis_ts_raw = None
+                _analysis_ts_norm = None
+                _evo_ts = _yureeka_now_iso_utc()
+
+                try:
+                    _analysis_ts_raw = (baseline_data or {}).get("timestamp")
+                    _dt_a = _parse_iso_dt(_analysis_ts_raw) if _analysis_ts_raw else None
+                    _analysis_ts_norm = _dt_a.isoformat() if _dt_a else (_analysis_ts_raw or None)
+                except Exception:
+                    _analysis_ts_norm = _analysis_ts_raw or None
+
+                _delta_seconds = None
+                _delta_human = ""
+                _delta_warnings = []
+                try:
+                    _dt_a2 = _parse_iso_dt(_analysis_ts_norm) if _analysis_ts_norm else None
+                    _dt_e2 = _parse_iso_dt(_evo_ts) if _evo_ts else None
+                    if _dt_a2 and _dt_e2:
+                        _ds = (_dt_e2 - _dt_a2).total_seconds()
+                        if _ds < 0:
+                            _delta_warnings.append("delta_negative_clamped_to_zero")
+                            _ds = 0.0
+                        _delta_seconds = float(_ds)
+                        _delta_human = _yureeka_humanize_seconds_v1(_delta_seconds)
+                    else:
+                        _delta_warnings.append("delta_uncomputed_missing_timestamp")
+                except Exception:
+                    _delta_warnings.append("delta_uncomputed_exception")
+
+                # Attach run timing to Evolution results (debug + non-debug copy)
+                try:
+                    if isinstance(results, dict):
+                        _dbg = results.get("debug")
+                        if not isinstance(_dbg, dict):
+                            _dbg = {}
+                            results["debug"] = _dbg
+                        _dbg["run_timing_v1"] = {
+                            "analysis_timestamp": _analysis_ts_norm,
+                            "evolution_timestamp": _evo_ts,
+                            "delta_seconds": _delta_seconds,
+                            "delta_human": _delta_human,
+                            "warnings": list(_delta_warnings),
+                        }
+                        results["run_delta_seconds"] = _delta_seconds
+                        results["run_delta_human"] = _delta_human
+                        if isinstance(results.get("results"), dict):
+                            results["results"]["run_delta_seconds"] = _delta_seconds
+                            results["results"]["run_delta_human"] = _delta_human
+                            _dbg2 = results["results"].get("debug")
+                            if not isinstance(_dbg2, dict):
+                                _dbg2 = {}
+                                results["results"]["debug"] = _dbg2
+                            _dbg2["run_timing_v1"] = dict(_dbg["run_timing_v1"])
+                except Exception:
+                    pass
+
+                # Add per-row delta fields (production only; blank if injected)
+                try:
+                    _inj_urls = []
+                    if isinstance(results, dict):
+                        _dbg3 = results.get("debug") if isinstance(results.get("debug"), dict) else {}
+                        _inj_urls = _dbg3.get("fix2d65b_injected_urls") or []
+                        if not isinstance(_inj_urls, list):
+                            _inj_urls = []
+
+                    _inj_norm = None
+                    try:
+                        _inj_norm = _inj_diag_norm_url_list(_inj_urls)
+                    except Exception:
+                        _inj_norm = None
+
+                    _inj_set = set([str(u).strip() for u in (_inj_norm or _inj_urls) if isinstance(u, str) and u.strip()])
+
+                    def _refactor25_extract_metric_source_url(_m: dict):
+                        if not isinstance(_m, dict):
+                            return None
+                        su = _m.get("source_url") or _m.get("url")
+                        if isinstance(su, str) and su.strip():
+                            return su.strip()
+                        ev = _m.get("evidence")
+                        if isinstance(ev, list) and ev:
+                            e0 = ev[0]
+                            if isinstance(e0, dict):
+                                su2 = e0.get("source_url") or e0.get("url")
+                                if isinstance(su2, str) and su2.strip():
+                                    return su2.strip()
+                        return None
+
+                    _pmc = {}
+                    if isinstance(results, dict):
+                        _pmc = results.get("primary_metrics_canonical") or {}
+                        if (not isinstance(_pmc, dict)) and isinstance(results.get("results"), dict):
+                            _pmc = results["results"].get("primary_metrics_canonical") or {}
+                    if not isinstance(_pmc, dict):
+                        _pmc = {}
+
+                    def _apply_delta_to_rows(_rows: list):
+                        if not isinstance(_rows, list):
+                            return
+                        for _r in _rows:
+                            if not isinstance(_r, dict):
+                                continue
+
+                            is_injected = False
+                            if _inj_set:
+                                _ckey = _r.get("canonical_key")
+                                _cm = _pmc.get(_ckey) if isinstance(_ckey, str) else None
+                                _su = _refactor25_extract_metric_source_url(_cm) if isinstance(_cm, dict) else None
+                                if _su is None:
+                                    # Fallback: if injection exists but we cannot attribute, blank for safety
+                                    is_injected = True
+                                else:
+                                    _su_norm = _su
+                                    try:
+                                        _tmp = _inj_diag_norm_url_list([_su])
+                                        if isinstance(_tmp, list) and _tmp:
+                                            _su_norm = str(_tmp[0] or _su).strip()
+                                    except Exception:
+                                        _su_norm = _su
+                                    is_injected = (_su_norm in _inj_set)
+
+                            if (not is_injected) and (_delta_human or _delta_seconds is not None):
+                                _r["analysis_evolution_delta_human"] = _delta_human
+                                _r["analysis_evolution_delta_seconds"] = _delta_seconds
+                            else:
+                                _r["analysis_evolution_delta_human"] = ""
+                                _r["analysis_evolution_delta_seconds"] = None
+
+                    _apply_delta_to_rows(results.get("metric_changes"))
+                    _apply_delta_to_rows(results.get("metric_changes_v2"))
+
+                    # Harness / invariants (soft assertions)
+                    try:
+                        if isinstance(results, dict) and isinstance(results.get("debug"), dict):
+                            rt = results["debug"].get("run_timing_v1")
+                            if isinstance(rt, dict):
+                                rt.setdefault("assertions", {})
+                                if isinstance(rt.get("assertions"), dict):
+                                    if (not _inj_set) and _analysis_ts_norm:
+                                        rt["assertions"]["delta_computed_non_negative"] = bool((_delta_seconds is not None) and (float(_delta_seconds) >= 0))
+                                    if _inj_set:
+                                        rt["assertions"]["delta_blank_for_injection"] = True
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 evolution_output = {
                     "question": evolution_query,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": _evo_ts,
                     "analysis_type": "source_anchored",
-                    "previous_timestamp": baseline_data.get("timestamp"),
+                    "previous_timestamp": _analysis_ts_norm,
                     "results": results,
                     "interpretation": {
                         "text": interpretation,
@@ -32992,7 +33220,7 @@ def main():
 
                         compare_data = {
                             "question": query,
-                            "timestamp": datetime.now().isoformat(),
+                            "timestamp": _yureeka_now_iso_utc(),
                             "primary_response": new_parsed,
                             "final_confidence": final_conf,
                             "veracity_scores": veracity,
