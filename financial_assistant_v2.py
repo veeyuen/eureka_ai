@@ -90,14 +90,14 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR27'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR28'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
     except Exception:
-        return "REFACTOR26"
+        return "REFACTOR28"
 
 def _yureeka_lock_version_globals_v1():
     """Re-assert global version vars for observability (does not affect the frozen getter)."""
@@ -338,6 +338,30 @@ except Exception:
 
 
 
+
+
+# PATCH TRACKER V1 (ADD): REFACTOR28
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR28":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR28",
+            "date": "2026-01-24",
+            "summary": "Consolidate schema-only rebuild authority to eliminate stale wrapper capture chains and ensure REFACTOR27 candidate filters (especially currency date-fragment rejection) are active at runtime. This prevents day-of-month tokens like '01' from binding as currency values, restoring comparable currency baselines while preserving percent-year poisoning sanitization.",
+            "files": ["REFACTOR28_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR27"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 
 # PATCH TRACKER V1 (ADD): REFACTOR24
 # ============================================================
@@ -51486,5 +51510,544 @@ except Exception:
     try:
         import sys as _rf01_sys
         _rf01_sys.exit(1)
+    except Exception:
+        pass
+
+
+# ============================================================
+# REFACTOR28 FINAL OVERRIDE: Schema-only rebuild authority
+# - Eliminates stale wrapper-capture chains (FIX2D86/FIX16)
+# - Ensures REFACTOR27 candidate filters are actually active at runtime
+# ============================================================
+
+def _refactor28_schema_only_rebuild_authoritative_v1(
+    prev_response: dict,
+    baseline_sources_cache: list,
+    web_context: dict = None
+) -> dict:
+    """Schema-driven deterministic rebuild from cached snapshots only.
+
+    This is intentionally minimal:
+      - It does NOT attempt free-form metric discovery.
+      - It ONLY populates metrics declared in the frozen schema.
+      - Candidate selection is driven by schema fields (keywords + unit family/tag).
+      - Deterministic sorting ensures stable output ordering.
+
+    Returns:
+      Dict[str, Dict] shaped like primary_metrics_canonical.
+    """
+    import re
+
+# =====================================================================
+    # =====================================================================
+    # PATCH FIX33 (ADDITIVE): enforce unit-required eligibility in schema-only rebuild
+    # Why:
+    #   - When anchors are not used (anchor_used:false), schema-only rebuild can still
+    #     select unit-less year tokens (e.g., 2024/2025) for currency/percent metrics.
+    #   - This patch hard-rejects candidates with no token-level unit evidence when
+    #     the schema (or canonical_key suffix) implies a unit is required.
+    #   - Also optionally emits compact debug metadata for top candidates/rejections.
+    # Determinism:
+    #   - Pure filtering + stable ordering; no refetch; no randomness.
+    # =====================================================================
+
+    def _fix33_schema_unit_required(spec_unit_family: str, spec_unit_tag: str, canonical_key: str) -> bool:
+        uf = str(spec_unit_family or "").strip().lower()
+        ut = str(spec_unit_tag or "").strip().lower()
+        ck = str(canonical_key or "").strip().lower()
+        # Explicit unit families
+        if uf in {"currency", "percent", "rate", "ratio"}:
+            return True
+        if ut in {"%", "percent"}:
+            return True
+        # Unit-sales metrics require a unit (prevents bare-year selection)
+        if ck.endswith("__unit_sales") or ck.endswith("__units") or ck.endswith("__unit"):
+            return True
+        # Canonical-key suffix conventions (backstop)
+        if ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio"):
+            return True
+        return False
+
+    def _fix33_candidate_has_unit_evidence(c: dict) -> bool:
+        if not isinstance(c, dict):
+            return False
+        # Any explicit unit/currency/% evidence is enough to qualify as "has unit".
+        if str(c.get("unit_tag") or "").strip():
+            return True
+        if str(c.get("unit_family") or "").strip():
+            return True
+        if str(c.get("base_unit") or "").strip():
+            return True
+        if str(c.get("unit") or "").strip():
+            return True
+        if str(c.get("currency_symbol") or c.get("currency") or "").strip():
+            return True
+        if bool(c.get("is_percent") or c.get("has_percent")):
+            return True
+        mk = str(c.get("measure_kind") or "").strip().lower()
+        if mk in {"money", "percent", "percentage", "rate", "ratio"}:
+            return True
+        toks = c.get("unit_tokens") or c.get("unit_evidence_tokens") or []
+        if isinstance(toks, (list, tuple)) and len(toks) > 0:
+            return True
+        return False
+
+    _fix33_dbg = False
+    try:
+        _fix33_dbg = bool((web_context or {}).get("debug_evolution") or ((prev_response or {}).get("debug") or {}).get("debug_evolution"))
+    except Exception:
+        pass
+        _fix33_dbg = False
+
+
+    # -------------------------
+    # Resolve frozen schema (supports multiple storage locations)
+    # -------------------------
+    schema = None
+    try:
+        if isinstance(prev_response, dict):
+            if isinstance(prev_response.get("metric_schema_frozen"), dict):
+                schema = prev_response.get("metric_schema_frozen")
+            elif isinstance(prev_response.get("primary_response"), dict) and isinstance(prev_response["primary_response"].get("metric_schema_frozen"), dict):
+                schema = prev_response["primary_response"].get("metric_schema_frozen")
+            elif isinstance(prev_response.get("results"), dict) and isinstance(prev_response["results"].get("metric_schema_frozen"), dict):
+                schema = prev_response["results"].get("metric_schema_frozen")
+    except Exception:
+        pass
+        schema = None
+
+    if not isinstance(schema, dict) or not schema:
+        return {}
+
+    # -------------------------
+    # Collect candidates from snapshots (no re-fetch)
+    # -------------------------
+    candidates = []
+    if isinstance(baseline_sources_cache, list):
+        for src in baseline_sources_cache:
+            if not isinstance(src, dict):
+                continue
+            nums = src.get("extracted_numbers")
+            if not isinstance(nums, list) or not nums:
+                continue
+            for n in nums:
+                if not isinstance(n, dict):
+                    continue
+                # Filter junk deterministically (strict rebuild exclusion)
+                if _candidate_disallowed_for_metric(n, None):
+                    continue
+                # Normalize a few fields to ensure stable downstream access
+                c = dict(n)
+                if not c.get("source_url"):
+                    c["source_url"] = src.get("url", "") or src.get("source_url", "") or ""
+                candidates.append(c)
+
+    # Deterministic candidate ordering (no set/dict iteration surprises)
+    def _cand_sort_key(c: dict):
+        return (
+            str(c.get("source_url") or ""),
+            str(c.get("anchor_hash") or ""),
+            int(c.get("start_idx") or 0),
+            str(c.get("raw") or ""),
+            str(c.get("unit_tag") or ""),
+            str(c.get("unit_family") or ""),
+            float(c.get("value_norm") or c.get("value") or 0.0),
+        )
+
+    candidates.sort(key=_cand_sort_key)
+
+    if not candidates:
+        return {}
+
+    # -------------------------
+    # Deterministic schema-driven selection
+    # -------------------------
+    def _norm_text(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").lower()).strip()
+
+    out = {}
+
+    for canonical_key in sorted(schema.keys()):
+        spec = schema.get(canonical_key) or {}
+        if not isinstance(spec, dict):
+            continue
+
+        spec_keywords = spec.get("keywords") or []
+        if not isinstance(spec_keywords, list):
+            spec_keywords = []
+        spec_keywords_norm = [str(k).lower().strip() for k in spec_keywords if str(k).strip()]
+
+        spec_unit_tag = str(spec.get("unit_tag") or spec.get("unit") or "").strip()
+        spec_unit_family = str(spec.get("unit_family") or "").strip()
+
+        # Score candidates by schema keyword hits, then filter by unit constraints if present.
+        best = None
+        best_key = None
+
+        # ============================================================
+        # PATCH FIX33 (ADDITIVE): per-metric debug collectors
+        # ============================================================
+        _fix33_top = []
+        _fix33_rej = {}
+
+        for c in candidates:
+            # PATCH F: strict candidate exclusion at scoring time
+            if _candidate_disallowed_for_metric(c, spec):
+                continue
+            # REFACTOR03 (ADDITIVE): enforce unit family + unit-tag eligibility
+            if _refactor03_candidate_rejected_by_unit_family_v1(c, spec):
+                continue
+            # REFACTOR27 (ADDITIVE): reject currency date-fragment candidates (e.g., 'July 01, 2025')
+            try:
+                if _refactor27_candidate_rejected_currency_date_fragment_v1(c, spec):
+                    continue
+            except Exception:
+                pass
+
+            # =====================================================================
+            # PATCH AI2 (ADDITIVE): guard against year-only candidates on currency-like metrics
+            # Why:
+            # - Some sources contain many years (e.g., 2023, 2024) that can outscore true values.
+            # - For currency-ish metrics, suppress candidates that look like bare years unless context clearly indicates money.
+            # Determinism:
+            # - Pure filter; does not invent candidates or refetch content.
+            # =====================================================================
+            try:
+                def _ai2_is_year_only(c: dict):
+                    """Return True if candidate is a likely standalone year (1900-2100) with no unit."""
+                    try:
+                        c = c if isinstance(c, dict) else {}
+                        # Prefer canonical numeric
+                        v = c.get("value_norm")
+                        if v is None:
+                            v = c.get("value")
+                        try:
+                            iv = int(float(v))
+                        except Exception:
+                            return False
+                        if iv < 1900 or iv > 2100:
+                            return False
+                        # Must be truly 4-digit (avoid 2023.5 etc)
+                        try:
+                            if abs(float(v) - float(iv)) > 1e-9:
+                                return False
+                        except Exception:
+                            pass
+
+                        # If the candidate itself signals time/year, do not treat as "junk year".
+                        u = str(c.get("base_unit") or c.get("unit") or "").strip().lower()
+                        ut = str(c.get("unit_tag") or "").strip().lower()
+                        uf = str(c.get("unit_family") or "").strip().lower()
+                        if "year" in u or "year" in ut or "year" in uf or "time" in uf:
+                            return False
+
+                        raw = str(c.get("raw") or "").strip()
+                        sval = str(iv)
+
+                        # -------------------------------------------------------------
+                        # PATCH E (ADDITIVE): strict handling when raw contains context
+                        # - Some extractors store a wider raw window (e.g. includes '$721m ... in 2023')
+                        # - Currency symbols elsewhere in raw should NOT make a year candidate non-year.
+                        # - Only treat as non-year if the currency symbol is directly attached to the year.
+                        # -------------------------------------------------------------
+                        try:
+                            if re.search(r"(\$|usd|eur|gbp|aud|cad|sgd)\s*"+re.escape(sval)+r"\b", raw.lower()):
+                                return False
+                        except Exception:
+                            pass
+
+                        # If raw is basically just the year token (allow brackets/punctuation), it's year-only.
+                        try:
+                            raw2 = re.sub(r"[\s,.;:()\[\]{}<>]", "", raw)
+                            if raw2 == sval:
+                                return True
+                        except Exception:
+                            pass
+
+                        # If raw contains multiple numbers, it's likely context; still treat as year-only
+                        # when this candidate has no unit.
+                        try:
+                            nums = re.findall(r"\d{2,}", raw)
+                            if len(nums) >= 2:
+                                return True
+                        except Exception:
+                            pass
+
+                        # If raw contains month names, likely a date; treat as year-only (we suppress dates too).
+                        try:
+                            if re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b", raw.lower()):
+                                return True
+                        except Exception:
+                            return True
+                    except Exception:
+                        return False
+                def _ai2_schema_currencyish(sd: dict) -> bool:
+                    try:
+                        if not isinstance(sd, dict):
+                            return False
+                        u = str(sd.get('unit') or sd.get('base_unit') or '').lower()
+                        if any(x in u for x in ('usd','sgd','eur','gbp','jpy','$','€','£')):
+                            return True
+                        # heuristic keywords on definition (safe, schema-driven-ish)
+                        nm = str(sd.get('name') or '').lower()
+                        if any(x in nm for x in ('revenue','sales','cost','price','capex','opex','investment','spend','spending','expenditure','value')):
+                            return True
+                        return False
+                    except Exception:
+                        return False
+
+                _sd = locals().get('schema_def')
+                if _ai2_schema_currencyish(_sd) and _ai2_is_year_only(c):
+                    continue
+
+                # =====================================================================
+                # PATCH YEAR3 (ADDITIVE): suppress year-only candidates for percent/CAGR-like metrics too
+                # Why: year tokens (e.g., 2025) can outrank true percent values when unit evidence is weak.
+                # Safe: only suppress when candidate has no explicit unit and looks like a bare year.
+                # =====================================================================
+                try:
+                    if _ai2_is_year_only(c):
+                        _sd_name = str((_sd or {}).get('name') or '').lower()
+                        _sd_ckey = str((_sd or {}).get('canonical_key') or ckey or '').lower()
+                        _sd_unit_tag = str((_sd or {}).get('unit_tag') or '').lower()
+                        _sd_unit_family = str((_sd or {}).get('unit_family') or '').lower()
+                        if ('cagr' in _sd_name) or ('cagr' in _sd_ckey) or (_sd_unit_tag in ('percent','pct')) or (_sd_unit_family in ('percent','ratio','rate')):
+                            continue
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            ctx = _norm_text(c.get("context_snippet") or "")
+            if not ctx:
+                continue
+
+            # Keyword hits: schema-driven (no external heuristics)
+            hits = 0
+            if spec_keywords_norm:
+                for kw in spec_keywords_norm:
+                    if kw and kw in ctx:
+                        hits += 1
+
+            if spec_keywords_norm and hits == 0:
+                continue
+
+            # Unit constraints (only if schema declares them)
+            if spec_unit_family:
+                if str(c.get("unit_family") or "").strip() != spec_unit_family:
+                    # allow a unit_tag-only match when family is missing in candidate
+                    if not (spec_unit_tag and str(c.get("unit_tag") or "").strip() == spec_unit_tag):
+                        continue
+
+            if spec_unit_tag:
+                # if a tag is specified, prefer exact tag matches
+                if str(c.get("unit_tag") or "").strip() != spec_unit_tag:
+                    # allow family match when tag differs
+                    if not (spec_unit_family and str(c.get("unit_family") or "").strip() == spec_unit_family):
+                        continue
+
+            # =====================================================================
+            # PATCH FIX41AFC5 (ADDITIVE): reject year-only candidates early (schema-only rebuild parity)
+            # =====================================================================
+            try:
+                _vnorm = c.get("value_norm", None)
+                if _vnorm is None:
+                    _vnorm = c.get("value", None)
+                _is_year = _is_yearish_value(_vnorm)
+                _mk0 = str(c.get("measure_kind") or "").strip().lower()
+                _cand_ut0 = str(c.get("unit_tag") or "").strip()
+                _cand_fam0 = str(c.get("unit_family") or "").strip().lower()
+                _is_pct0 = bool(c.get("is_percent") or c.get("has_percent") or (_cand_ut0 == "%") or (_cand_fam0 == "percent"))
+                _has_curr0 = bool(str(c.get("currency_symbol") or c.get("currency") or "").strip())
+                _has_unit_ev0 = bool(_cand_ut0 or _cand_fam0 or _is_pct0 or _has_curr0 or str(c.get("base_unit") or c.get("unit") or "").strip())
+                if _is_year and (not _has_unit_ev0) and (not _is_pct0) and (not _has_curr0) and (_mk0 in ("magnitude_other", "count_units", "count", "number", "")):
+                    try:
+                        _fix41afc5_dbg2["rejected_year_only"] = int(_fix41afc5_dbg2.get("rejected_year_only", 0) or 0) + 1
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                pass
+
+            # =====================================================================
+            # PATCH FIX33 (ADDITIVE): hard-reject unit-less candidates when unit is required
+            # =====================================================================
+            try:
+                _req = _fix33_schema_unit_required(spec_unit_family, spec_unit_tag, canonical_key)
+                _has_unit_ev = _fix33_candidate_has_unit_evidence(c)
+                # PATCH FIX2D58G (ADDITIVE): reject year-like candidates for unit_sales metrics
+                # unit_sales keys represent quantities; they must never take a bare year token as the value.
+                try:
+                    if str(canonical_key or '').strip().lower().endswith('__unit_sales'):
+                        _v = c.get('value_norm', None)
+                        if _v is None:
+                            _v = c.get('value', None)
+                        if _is_yearish_value(_v):
+                            if _fix33_dbg:
+                                try:
+                                    _fix33_rej['rejected_year_for_unit_sales'] = int(_fix33_rej.get('rejected_year_for_unit_sales', 0) or 0) + 1
+                                except Exception:
+                                    pass
+                            continue
+                except Exception:
+                    pass
+
+                if _req and not _has_unit_ev:
+                    # Track rejection (debug)
+                    if _fix33_dbg:
+                        try:
+                            _fix33_rej["missing_unit_required"] = int(_fix33_rej.get("missing_unit_required", 0) or 0) + 1
+                        except Exception:
+                            pass
+                    continue
+
+
+                # Track top candidates (debug)
+                if _fix33_dbg:
+                    try:
+                        _fix33_top.append({
+                            "raw": c.get("raw"),
+                            "value_norm": c.get("value_norm"),
+                            "unit_tag": c.get("unit_tag"),
+                            "unit_family": c.get("unit_family"),
+                            "base_unit": c.get("base_unit") or c.get("unit"),
+                            "measure_kind": c.get("measure_kind"),
+                            "hits": hits,
+                            "has_unit_ev": bool(_has_unit_ev),
+                            "source_url": c.get("source_url"),
+                            "anchor_hash": c.get("anchor_hash"),
+                        })
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Deterministic tie-break:
+            #   (-hits, then stable candidate identity tuple)
+            tie = (-hits,) + _cand_sort_key(c)
+            if best is None or tie < best_key:
+                best = c
+                best_key = tie
+
+        if not isinstance(best, dict):
+            continue
+
+        # Emit a minimal canonical metric row (schema-driven, deterministic)
+        metric = {
+            "name": spec.get("name") or spec.get("canonical_id") or canonical_key,
+            "value": best.get("value"),
+            "unit": best.get("unit") or spec.get("unit") or "",
+            "unit_tag": best.get("unit_tag") or spec.get("unit_tag") or "",
+            "unit_family": best.get("unit_family") or spec.get("unit_family") or "",
+            "currency_code": best.get("currency_code") or "",
+            "base_unit": best.get("base_unit") or best.get("unit_tag") or spec.get("unit_tag") or "",
+            "multiplier_to_base": best.get("multiplier_to_base") if best.get("multiplier_to_base") is not None else 1.0,
+            "value_norm": best.get("value_norm") if best.get("value_norm") is not None else best.get("value"),
+            "canonical_id": spec.get("canonical_id") or spec.get("canonical_key") or canonical_key,
+            "canonical_key": canonical_key,
+            "dimension": spec.get("dimension") or "",
+            "original_name": spec.get("name") or "",
+            "geo_scope": "unknown",
+            "geo_name": "",
+            "is_proxy": False,
+            "proxy_type": "",
+            "provenance": {
+                "method": "schema_keyword_match",
+                "best_candidate": {
+                    "raw": best.get("raw"),
+                    "source_url": best.get("source_url"),
+                    "context_snippet": best.get("context_snippet"),
+                    "anchor_hash": best.get("anchor_hash"),
+                    "start_idx": best.get("start_idx"),
+                    "end_idx": best.get("end_idx"),
+                },
+            },
+        }
+
+# ============================================================
+        # ============================================================
+        # PATCH FIX33 (ADDITIVE): selection debug (top candidates + rejection counts)
+        # ============================================================
+        try:
+            if _fix33_dbg and isinstance(metric, dict):
+                try:
+                    _fix33_top_sorted = sorted(
+                        _fix33_top,
+                        key=lambda d: (-(int(d.get("hits") or 0)), str(d.get("value_norm") or ""), str(d.get("raw") or "")),
+                    )
+                except Exception:
+                    pass
+                    _fix33_top_sorted = _fix33_top
+                metric.setdefault("provenance", {})
+                metric["provenance"]["fix33_top_candidates"] = list(_fix33_top_sorted[:10])
+                metric["provenance"]["fix33_rejected_reason_counts"] = dict(_fix33_rej or {})
+        except Exception:
+            pass
+
+        out[canonical_key] = metric
+
+    return out
+
+
+
+# ===================== PATCH RMS_AWARE1 (ADDITIVE) =====================
+
+
+# REFACTOR28: define the authoritative FIX16 schema-only wrapper directly on top of the authoritative base.
+try:
+    _refactor28__schema_only_wrapped = globals().get("_refactor28__schema_only_wrapped", False)
+except Exception:
+    _refactor28__schema_only_wrapped = False
+
+if not _refactor28__schema_only_wrapped:
+    def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, snapshot_pool, web_context=None):  # noqa: F811
+        """Authoritative schema-only rebuild wrapper (REFACTOR28).
+
+        Contract:
+          - Deterministic selection from baseline snapshots (no re-fetch).
+          - Preserves percent-year poisoning sanitization for percent keys.
+          - Ensures currency date-fragment candidates (e.g., 'July 01, 2025') are not eligible.
+        """
+        rebuilt = {}
+        try:
+            rebuilt = _refactor28_schema_only_rebuild_authoritative_v1(prev_response, snapshot_pool, web_context=web_context)
+        except Exception:
+            rebuilt = {}
+
+        # Preserve FIX2D86 sanitization: percent keys must not bind to bare year tokens.
+        try:
+            schema = {}
+            if isinstance(prev_response, dict):
+                schema = prev_response.get("metric_schema_frozen") or (prev_response.get("results") or {}).get("metric_schema_frozen") or {}
+            if isinstance(rebuilt, dict) and rebuilt:
+                rebuilt2, _sdbg = _fix2d86_sanitize_pmc_percent_year_tokens_v1(
+                    pmc=rebuilt,
+                    metric_schema_frozen=schema if isinstance(schema, dict) else {},
+                    label="schema_only_rebuild_refactor28_final",
+                )
+                rebuilt = rebuilt2
+        except Exception:
+            pass
+
+        return rebuilt
+
+    try:
+        rebuild_metrics_from_snapshots_schema_only_fix16._fix2d86_wrapped = True  # type: ignore[attr-defined]
+        rebuild_metrics_from_snapshots_schema_only_fix16._refactor28_authoritative = True  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    # Rebind canonical symbol names to the authoritative wrapper.
+    try:
+        globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = rebuild_metrics_from_snapshots_schema_only_fix16
+    except Exception:
+        pass
+    try:
+        globals()["rebuild_metrics_from_snapshots_schema_only"] = rebuild_metrics_from_snapshots_schema_only_fix16
+    except Exception:
+        pass
+
+    try:
+        globals()["_refactor28__schema_only_wrapped"] = True
     except Exception:
         pass
