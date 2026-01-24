@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR38'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR39'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -2647,30 +2647,30 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "FIX2D42"
+#CODE_VERSION = "REFACTOR39"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "FIX2D42"
+#CODE_VERSION = "REFACTOR39"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "FIX2D42"
+#CODE_VERSION = "REFACTOR39"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D42"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "FIX2D42"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "REFACTOR39"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "REFACTOR39"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "FIX2D42"
+#CODE_VERSION = "REFACTOR39"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -22038,10 +22038,175 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         pass
     # =====================================================================
 
+
+    # =====================================================================
+    # PATCH REFACTOR39_SNAPSHOT_STORE_FALLBACK (ADDITIVE)
+    # Purpose:
+    # - During HistoryFull persistence we may omit baseline_sources_cache to avoid Sheets cell limits,
+    #   and instead persist snapshots in the Snapshots worksheet / local snapshot store with a ref/hash.
+    # - Source-anchored evolution MUST be able to rehydrate baseline snapshots from:
+    #     * snapshot_store_ref / snapshot_store_ref_v2 (gsheet:Snapshots:<hash> OR local path)
+    #     * source_snapshot_hash_v2 / source_snapshot_hash
+    # Behavior:
+    # - If baseline_sources_cache is empty after normal discovery, attempt to load snapshots deterministically.
+    # - Still strict: if we cannot load snapshots, we remain snapshot-gated (no fabricated matches).
+    # =====================================================================
+    _snapshot_store_debug = {}
+    try:
+        if (not baseline_sources_cache) and isinstance(previous_data, dict):
+            _res = previous_data.get("results") if isinstance(previous_data.get("results"), dict) else {}
+            _pr = previous_data.get("primary_response") if isinstance(previous_data.get("primary_response"), dict) else {}
+            _pr_res = _pr.get("results") if isinstance(_pr.get("results"), dict) else {}
+
+            # Prefer explicit refs; fall back to hashes
+            _store_ref = (
+                previous_data.get("snapshot_store_ref")
+                or (_res.get("snapshot_store_ref") if isinstance(_res, dict) else "")
+                or (_pr.get("snapshot_store_ref") if isinstance(_pr, dict) else "")
+                or (_pr_res.get("snapshot_store_ref") if isinstance(_pr_res, dict) else "")
+                or ""
+            )
+
+            _store_ref_v2 = (
+                previous_data.get("snapshot_store_ref_v2")
+                or (_res.get("snapshot_store_ref_v2") if isinstance(_res, dict) else "")
+                or (_pr.get("snapshot_store_ref_v2") if isinstance(_pr, dict) else "")
+                or (_pr_res.get("snapshot_store_ref_v2") if isinstance(_pr_res, dict) else "")
+                or ""
+            )
+
+            _ssh_v2 = (
+                previous_data.get("source_snapshot_hash_v2")
+                or (_res.get("source_snapshot_hash_v2") if isinstance(_res, dict) else "")
+                or (_pr.get("source_snapshot_hash_v2") if isinstance(_pr, dict) else "")
+                or (_pr_res.get("source_snapshot_hash_v2") if isinstance(_pr_res, dict) else "")
+                or ""
+            )
+
+            _ssh_v1 = (
+                previous_data.get("source_snapshot_hash")
+                or (_res.get("source_snapshot_hash") if isinstance(_res, dict) else "")
+                or (_pr.get("source_snapshot_hash") if isinstance(_pr, dict) else "")
+                or (_pr_res.get("source_snapshot_hash") if isinstance(_pr_res, dict) else "")
+                or ""
+            )
+
+            def _extract_hash(ref: str) -> str:
+                try:
+                    ref = str(ref or "")
+                    if ref.startswith("gsheet:Snapshots:"):
+                        return ref.split(":")[-1]
+                except Exception:
+                    pass
+                return ""
+
+            _hash_to_load = _extract_hash(_store_ref_v2) or _extract_hash(_store_ref) or str(_ssh_v2 or "") or str(_ssh_v1 or "")
+
+            _snapshot_store_debug = {
+                "store_ref": str(_store_ref or ""),
+                "store_ref_v2": str(_store_ref_v2 or ""),
+                "ssh_v2_present": bool(_ssh_v2),
+                "ssh_v1_present": bool(_ssh_v1),
+                "hash_to_load": str(_hash_to_load or ""),
+            }
+
+            _loaded = []
+            _loaded_origin = ""
+
+            # 1) Load by explicit gsheet ref (v2 then v1)
+            if isinstance(_store_ref_v2, str) and _store_ref_v2.startswith("gsheet:Snapshots:"):
+                try:
+                    _loaded = load_full_snapshots_from_sheet(_store_ref_v2.split(":")[-1], worksheet_title="Snapshots")
+                    _loaded_origin = "gsheet_ref_v2"
+                except Exception:
+                    pass
+
+            if (not _loaded) and isinstance(_store_ref, str) and _store_ref.startswith("gsheet:Snapshots:"):
+                try:
+                    _loaded = load_full_snapshots_from_sheet(_store_ref.split(":")[-1], worksheet_title="Snapshots")
+                    _loaded_origin = "gsheet_ref_v1"
+                except Exception:
+                    pass
+
+            # 2) Load by local store ref if it looks like a path
+            if (not _loaded) and isinstance(_store_ref, str) and _store_ref and (not _store_ref.startswith("gsheet:")):
+                try:
+                    _loaded = load_full_snapshots_local(_store_ref)
+                    _loaded_origin = "local_ref"
+                except Exception:
+                    pass
+
+            # 3) Load by hash (sheet first, then deterministic local path)
+            if (not _loaded) and _hash_to_load:
+                try:
+                    _loaded = load_full_snapshots_from_sheet(str(_hash_to_load), worksheet_title="Snapshots")
+                    _loaded_origin = "gsheet_hash"
+                except Exception:
+                    pass
+
+            if (not _loaded) and _hash_to_load:
+                try:
+                    # Deterministic path used by store_full_snapshots_local
+                    import os
+                    _p = os.path.join(_snapshot_store_dir(), f"{str(_hash_to_load)}.json")
+                    _loaded = load_full_snapshots_local(_p)
+                    if _loaded:
+                        _loaded_origin = "local_hash_path"
+                except Exception:
+                    pass
+
+            if isinstance(_loaded, list) and _loaded:
+                baseline_sources_cache = _loaded
+                snapshot_origin = f"snapshot_store_fallback:{_loaded_origin}"
+                _snapshot_store_debug["loaded_count"] = int(len(_loaded))
+                _snapshot_store_debug["loaded_origin"] = str(_loaded_origin)
+            else:
+                _snapshot_store_debug["loaded_count"] = 0
+                _snapshot_store_debug["loaded_origin"] = str(_loaded_origin or "none")
+    except Exception:
+        pass
+
+    # Re-validate snapshot shape after fallback load (keeps strict invariants)
+    try:
+        if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            _kept2 = []
+            for s in baseline_sources_cache:
+                if not isinstance(s, dict):
+                    continue
+                u = s.get("source_url") or s.get("url")
+                ex = s.get("extracted_numbers")
+                # Some legacy stores use "numbers" instead of "extracted_numbers"
+                if ex is None and isinstance(s.get("numbers"), list):
+                    try:
+                        s["extracted_numbers"] = s.get("numbers") or []
+                        ex = s.get("extracted_numbers")
+                    except Exception:
+                        pass
+                if u and isinstance(ex, list):
+                    _kept2.append(s)
+            _kept2.sort(key=lambda d: (str(d.get("source_url") or d.get("url") or ""), str(d.get("fingerprint") or "")))
+            baseline_sources_cache = _kept2
+            # Update debug if available
+            if isinstance(_snapshot_debug, dict):
+                _snapshot_debug["origin"] = snapshot_origin
+                _snapshot_debug["valid_count"] = int(len(baseline_sources_cache))
+    except Exception:
+        pass
+    # =====================================================================
+
     # If no valid snapshots, return "not_found"
     if not baseline_sources_cache:
+        try:
+            output.setdefault("debug", {})
+            if isinstance(output.get("debug"), dict):
+                if isinstance(_snapshot_debug, dict):
+                    output["debug"]["snapshot_debug_v1"] = _snapshot_debug
+                if isinstance(_snapshot_store_debug, dict) and _snapshot_store_debug:
+                    output["debug"]["snapshot_store_debug_v1"] = _snapshot_store_debug
+        except Exception:
+            pass
         output["status"] = "failed"
-        output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
+        output["message"] = "No valid snapshots available for source-anchored evolution. (Snapshot store fallback attempted; no re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         # ============================================================
         # PATCH START: FIX2D8_PROMOTE_NESTED_RESULTS_CALLSITE_V1
@@ -25857,10 +26022,175 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # =====================================================================
 
+
+    # =====================================================================
+    # PATCH REFACTOR39_SNAPSHOT_STORE_FALLBACK (ADDITIVE)
+    # Purpose:
+    # - During HistoryFull persistence we may omit baseline_sources_cache to avoid Sheets cell limits,
+    #   and instead persist snapshots in the Snapshots worksheet / local snapshot store with a ref/hash.
+    # - Source-anchored evolution MUST be able to rehydrate baseline snapshots from:
+    #     * snapshot_store_ref / snapshot_store_ref_v2 (gsheet:Snapshots:<hash> OR local path)
+    #     * source_snapshot_hash_v2 / source_snapshot_hash
+    # Behavior:
+    # - If baseline_sources_cache is empty after normal discovery, attempt to load snapshots deterministically.
+    # - Still strict: if we cannot load snapshots, we remain snapshot-gated (no fabricated matches).
+    # =====================================================================
+    _snapshot_store_debug = {}
+    try:
+        if (not baseline_sources_cache) and isinstance(previous_data, dict):
+            _res = previous_data.get("results") if isinstance(previous_data.get("results"), dict) else {}
+            _pr = previous_data.get("primary_response") if isinstance(previous_data.get("primary_response"), dict) else {}
+            _pr_res = _pr.get("results") if isinstance(_pr.get("results"), dict) else {}
+
+            # Prefer explicit refs; fall back to hashes
+            _store_ref = (
+                previous_data.get("snapshot_store_ref")
+                or (_res.get("snapshot_store_ref") if isinstance(_res, dict) else "")
+                or (_pr.get("snapshot_store_ref") if isinstance(_pr, dict) else "")
+                or (_pr_res.get("snapshot_store_ref") if isinstance(_pr_res, dict) else "")
+                or ""
+            )
+
+            _store_ref_v2 = (
+                previous_data.get("snapshot_store_ref_v2")
+                or (_res.get("snapshot_store_ref_v2") if isinstance(_res, dict) else "")
+                or (_pr.get("snapshot_store_ref_v2") if isinstance(_pr, dict) else "")
+                or (_pr_res.get("snapshot_store_ref_v2") if isinstance(_pr_res, dict) else "")
+                or ""
+            )
+
+            _ssh_v2 = (
+                previous_data.get("source_snapshot_hash_v2")
+                or (_res.get("source_snapshot_hash_v2") if isinstance(_res, dict) else "")
+                or (_pr.get("source_snapshot_hash_v2") if isinstance(_pr, dict) else "")
+                or (_pr_res.get("source_snapshot_hash_v2") if isinstance(_pr_res, dict) else "")
+                or ""
+            )
+
+            _ssh_v1 = (
+                previous_data.get("source_snapshot_hash")
+                or (_res.get("source_snapshot_hash") if isinstance(_res, dict) else "")
+                or (_pr.get("source_snapshot_hash") if isinstance(_pr, dict) else "")
+                or (_pr_res.get("source_snapshot_hash") if isinstance(_pr_res, dict) else "")
+                or ""
+            )
+
+            def _extract_hash(ref: str) -> str:
+                try:
+                    ref = str(ref or "")
+                    if ref.startswith("gsheet:Snapshots:"):
+                        return ref.split(":")[-1]
+                except Exception:
+                    pass
+                return ""
+
+            _hash_to_load = _extract_hash(_store_ref_v2) or _extract_hash(_store_ref) or str(_ssh_v2 or "") or str(_ssh_v1 or "")
+
+            _snapshot_store_debug = {
+                "store_ref": str(_store_ref or ""),
+                "store_ref_v2": str(_store_ref_v2 or ""),
+                "ssh_v2_present": bool(_ssh_v2),
+                "ssh_v1_present": bool(_ssh_v1),
+                "hash_to_load": str(_hash_to_load or ""),
+            }
+
+            _loaded = []
+            _loaded_origin = ""
+
+            # 1) Load by explicit gsheet ref (v2 then v1)
+            if isinstance(_store_ref_v2, str) and _store_ref_v2.startswith("gsheet:Snapshots:"):
+                try:
+                    _loaded = load_full_snapshots_from_sheet(_store_ref_v2.split(":")[-1], worksheet_title="Snapshots")
+                    _loaded_origin = "gsheet_ref_v2"
+                except Exception:
+                    pass
+
+            if (not _loaded) and isinstance(_store_ref, str) and _store_ref.startswith("gsheet:Snapshots:"):
+                try:
+                    _loaded = load_full_snapshots_from_sheet(_store_ref.split(":")[-1], worksheet_title="Snapshots")
+                    _loaded_origin = "gsheet_ref_v1"
+                except Exception:
+                    pass
+
+            # 2) Load by local store ref if it looks like a path
+            if (not _loaded) and isinstance(_store_ref, str) and _store_ref and (not _store_ref.startswith("gsheet:")):
+                try:
+                    _loaded = load_full_snapshots_local(_store_ref)
+                    _loaded_origin = "local_ref"
+                except Exception:
+                    pass
+
+            # 3) Load by hash (sheet first, then deterministic local path)
+            if (not _loaded) and _hash_to_load:
+                try:
+                    _loaded = load_full_snapshots_from_sheet(str(_hash_to_load), worksheet_title="Snapshots")
+                    _loaded_origin = "gsheet_hash"
+                except Exception:
+                    pass
+
+            if (not _loaded) and _hash_to_load:
+                try:
+                    # Deterministic path used by store_full_snapshots_local
+                    import os
+                    _p = os.path.join(_snapshot_store_dir(), f"{str(_hash_to_load)}.json")
+                    _loaded = load_full_snapshots_local(_p)
+                    if _loaded:
+                        _loaded_origin = "local_hash_path"
+                except Exception:
+                    pass
+
+            if isinstance(_loaded, list) and _loaded:
+                baseline_sources_cache = _loaded
+                snapshot_origin = f"snapshot_store_fallback:{_loaded_origin}"
+                _snapshot_store_debug["loaded_count"] = int(len(_loaded))
+                _snapshot_store_debug["loaded_origin"] = str(_loaded_origin)
+            else:
+                _snapshot_store_debug["loaded_count"] = 0
+                _snapshot_store_debug["loaded_origin"] = str(_loaded_origin or "none")
+    except Exception:
+        pass
+
+    # Re-validate snapshot shape after fallback load (keeps strict invariants)
+    try:
+        if isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+            _kept2 = []
+            for s in baseline_sources_cache:
+                if not isinstance(s, dict):
+                    continue
+                u = s.get("source_url") or s.get("url")
+                ex = s.get("extracted_numbers")
+                # Some legacy stores use "numbers" instead of "extracted_numbers"
+                if ex is None and isinstance(s.get("numbers"), list):
+                    try:
+                        s["extracted_numbers"] = s.get("numbers") or []
+                        ex = s.get("extracted_numbers")
+                    except Exception:
+                        pass
+                if u and isinstance(ex, list):
+                    _kept2.append(s)
+            _kept2.sort(key=lambda d: (str(d.get("source_url") or d.get("url") or ""), str(d.get("fingerprint") or "")))
+            baseline_sources_cache = _kept2
+            # Update debug if available
+            if isinstance(_snapshot_debug, dict):
+                _snapshot_debug["origin"] = snapshot_origin
+                _snapshot_debug["valid_count"] = int(len(baseline_sources_cache))
+    except Exception:
+        pass
+    # =====================================================================
+
     # If no valid snapshots, return "not_found"
     if not baseline_sources_cache:
+        try:
+            output.setdefault("debug", {})
+            if isinstance(output.get("debug"), dict):
+                if isinstance(_snapshot_debug, dict):
+                    output["debug"]["snapshot_debug_v1"] = _snapshot_debug
+                if isinstance(_snapshot_store_debug, dict) and _snapshot_store_debug:
+                    output["debug"]["snapshot_store_debug_v1"] = _snapshot_store_debug
+        except Exception:
+            pass
         output["status"] = "failed"
-        output["message"] = "No valid snapshots available for source-anchored evolution. (No re-fetch / no heuristic matching performed.)"
+        output["message"] = "No valid snapshots available for source-anchored evolution. (Snapshot store fallback attempted; no re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
         _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
@@ -50525,6 +50855,23 @@ try:
             "files": ["REFACTOR38_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR37"],
         })
+
+        # =====================================================================
+        # PATCH TRACKER: REFACTOR39
+        # =====================================================================
+        _already = False
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR39":
+                _already = True
+                break
+        if not _already:
+            PATCH_TRACKER_V1.append({
+                "patch_id": "REFACTOR39",
+                "summary": "Fix source-anchored evolution snapshot gating regression: when baseline_sources_cache is omitted from HistoryFull payload (Sheets cell limit), rehydrate snapshots deterministically via snapshot_store_ref/snapshot_store_ref_v2 and source_snapshot_hash_v2/source_snapshot_hash (Snapshots worksheet and local snapshot store). Attach snapshot_store_debug into output.debug on failure for fast diagnosis. No heuristic matching added; remains strict snapshot-gated without valid cached source text.",
+                "files": ["REFACTOR39_full_codebase_streamlit_safe.py"],
+                "supersedes": ["REFACTOR38"],
+            })
+
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
