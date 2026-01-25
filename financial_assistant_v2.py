@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR53'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR54'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -4504,6 +4504,72 @@ def add_to_history(analysis: dict) -> bool:
                                 "final_snapshot_store_ref": str((analysis.get("snapshot_store_ref") or "") if isinstance(analysis, dict) else ""),
                                 "final_snapshot_store_ref_stable": str((analysis.get("snapshot_store_ref_stable") or "") if isinstance(analysis, dict) else ""),
                             }
+                            # =============================================================
+                            # REFACTOR54 (ADDITIVE): snapshot round-trip verification
+                            # - After writing snapshot_store_ref_stable, attempt to load it back
+                            #   (sheet or local path) and record basic success/failure stats.
+                            # - Best-effort only; never blocks persistence.
+                            # =============================================================
+                            try:
+                                import os as _os, json as _json
+                                _stable_ref_rt = str(analysis.get("snapshot_store_ref_stable") or "")
+                                _rt = {
+                                    "stable_ref": _stable_ref_rt,
+                                    "origin": "",
+                                    "expected_count": 0,
+                                    "loaded_count": 0,
+                                    "ok": False,
+                                    "note": "",
+                                }
+                                try:
+                                    _rt["expected_count"] = int(len(_bsc)) if isinstance(_bsc, list) else 0
+                                except Exception:
+                                    _rt["expected_count"] = 0
+
+                                _loaded = None
+                                try:
+                                    if _stable_ref_rt.startswith("gsheet:Snapshots:"):
+                                        _h = ""
+                                        try:
+                                            _h = _stable_ref_rt.split(":", 2)[-1].strip()
+                                        except Exception:
+                                            _h = ""
+                                        if _h:
+                                            _loaded = load_full_snapshots_from_sheet(_h, worksheet_title="Snapshots")
+                                            _rt["origin"] = "sheet"
+                                except Exception:
+                                    _loaded = None
+
+                                try:
+                                    if _loaded is None and _stable_ref_rt and _os.path.exists(_stable_ref_rt):
+                                        with open(_stable_ref_rt, "r", encoding="utf-8") as _f:
+                                            _loaded = _json.load(_f)
+                                        _rt["origin"] = "path"
+                                except Exception:
+                                    _loaded = None
+
+                                try:
+                                    _rt["loaded_count"] = int(len(_loaded)) if isinstance(_loaded, list) else 0
+                                except Exception:
+                                    _rt["loaded_count"] = 0
+
+                                try:
+                                    if _rt["loaded_count"] > 0:
+                                        if _rt["expected_count"] > 0:
+                                            _rt["ok"] = bool(_rt["loaded_count"] == _rt["expected_count"])
+                                            if not _rt["ok"]:
+                                                _rt["note"] = "count_mismatch"
+                                        else:
+                                            _rt["ok"] = True
+                                    else:
+                                        _rt["ok"] = False
+                                        _rt["note"] = "empty_or_unreadable"
+                                except Exception:
+                                    pass
+
+                                _dbg["snapshot_roundtrip_v1"] = _rt
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 
@@ -45470,131 +45536,6 @@ except Exception:
 # =====================================================================
 # PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2I",
-        "date": "2026-01-16",
-        "summary": "Authoritative Diff Panel V2 wiring to __rows builder; adds pool/selection/commit trace and preserves guarded inference year-blocking. by defining deterministic extracted_numbers pool unwrapping for Diff Panel V2 __rows (previously undefined, silently disabling inference). Harden sentinel trace, add explicit per-row inference_commit trace fields, and bump CODE_VERSION with final override.",
-        "files": ["FIX2D2I.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# =====================================================================
-# PATCH FIX2D2I (AUTHORITATIVE): Diff Panel V2 — binding inference commit
-# + trace + simplified wiring
-#
-# Problem: multiple legacy V2 builders/wrappers exist; some "attempt" inference
-# but never commit into row[current_value/current_value_norm], leaving Current=N/A.
-#
-# Fix: make the active Diff Panel V2 entrypoint call the proven __rows builder
-# (which already implements guarded soft-match inference and commits into the
-# UI-read fields), and add explicit trace proving candidate pool / selection / commit.
-#
-# Also: treat "yearlike joined current" as a join failure (already handled in __rows)
-# and ensure the trace captures that event.
-#
-# Obsolete patches: prior ad-hoc V2 wrappers (fix2k, etc.) remain defined for
-# backward compatibility but are no longer used by default.
-# =====================================================================
-
-try:
-    # ---- Enhance __rows trace with pool stats / top candidates (non-invasive) ----
-    # We patch via wrapper to avoid risky edits in the core loop.
-    # REFACTOR49: Make FIX2D2I-style wrapper idempotent and non-recursive.
-    # Streamlit reruns execute this file multiple times in the same interpreter;
-    # duplicate wrapper passes previously captured an already-wrapped __rows,
-    # triggering RecursionError (maximum recursion depth exceeded).
-    _cur_rows_fn = globals().get('build_diff_metrics_panel_v2__rows')
-    # If already wrapped in this run/session, do not wrap again.
-    if callable(_cur_rows_fn) and getattr(_cur_rows_fn, '__yureeka_fix2d2i_wrapped__', False):
-        pass
-    else:
-        _base_rows_fn = globals().get('_YUREEKA_DIFFPANEL_V2_ROWS_BASE')
-        # First time we see a callable __rows in this run, treat it as the base.
-        if not callable(_base_rows_fn) and callable(_cur_rows_fn):
-            _base_rows_fn = _cur_rows_fn
-            globals()['_YUREEKA_DIFFPANEL_V2_ROWS_BASE'] = _base_rows_fn
-
-        if callable(_base_rows_fn):
-            def build_diff_metrics_panel_v2__rows_fix2d2i(prev_response: dict, cur_response: dict):
-                rows, summary = _base_rows_fn(prev_response, cur_response)
-                try:
-                    # Add lightweight trace fields if inference_commit_v2 exists.
-                    for r in rows:
-                        if not isinstance(r, dict):
-                            continue
-                        diag = r.get('diag')
-                        if not isinstance(diag, dict):
-                            continue
-                        dcs = diag.get('diff_current_source_trace_v1')
-                        if not isinstance(dcs, dict):
-                            continue
-                        ic = dcs.get('inference_commit_v2')
-                        if not isinstance(ic, dict):
-                            continue
-                        # pool stats may have been computed inside __rows; if not present, leave None
-                        if 'pool_size' not in ic:
-                            ic['pool_size'] = diag.get('diff_join_trace_v1', {}).get('pool_size') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
-                        if 'top_candidates' not in ic:
-                            ic['top_candidates'] = diag.get('diff_join_trace_v1', {}).get('top_candidates') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
-                except Exception:
-                    return rows, summary
-                return rows, summary
-
-            try:
-                setattr(build_diff_metrics_panel_v2__rows_fix2d2i, '__yureeka_fix2d2i_wrapped__', True)
-                setattr(build_diff_metrics_panel_v2__rows_fix2d2i, '__yureeka_fix2d2i_base_name__', getattr(_base_rows_fn, '__name__', ''))
-            except Exception:
-                pass
-
-            globals()['build_diff_metrics_panel_v2__rows'] = build_diff_metrics_panel_v2__rows_fix2d2i
-
-except Exception:
-    pass
-
-try:
-    # ---- Authoritative wiring: Diff Panel V2 entrypoint ----
-    _rows_impl = globals().get('build_diff_metrics_panel_v2__rows')
-    if callable(_rows_impl):
-        def build_diff_metrics_panel_v2_fix2d2i(prev_response: dict, cur_response: dict):
-            return _rows_impl(prev_response, cur_response)
-        # Make this the default V2 builder used by DIFF_PANEL_V2_WIRING.
-        globals()['build_diff_metrics_panel_v2'] = build_diff_metrics_panel_v2_fix2d2i
-except Exception:
-    pass
-
-# END PATCH FIX2D2I
-
-
-# =====================================================================
-# PATCH TRACKER ENTRY: FIX2D2M (ADDITIVE)
-# - Injected-first current-value selection (two-pass: injected pool then global)
-# - Trace fields: pass1_injected_pool_size, pass1_selected, fallback_used, selected_source_url
-# - Final version bump
-# =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2M",
-        "date": "2026-01-16",
-        "summary": "Injected-first current-value inference: two-pass selection (injected-only pool then global fallback) with explicit trace fields and authoritative commit into metric_changes.current_value(_norm).",
-        "files": ["FIX2D2M.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
 # =====================================================================
 # PATCH TRACKER ENTRY: FIX2D2N (ADDITIVE)
 # - Baseline-keyed current mapping for Analysis→Evolution diffing
@@ -52156,6 +52097,29 @@ try:
             "summary": "Make metric_changes rows self-attributing for injected-vs-production gating. Extend source_url extraction to include provenance.best_candidate.source_url; stamp rows with cur/current/source_url fields; change Δt gating to suppress only when row source URL matches injected URL set (missing attribution no longer treated as injected). Add debug counters rows_with_source_url/rows_missing_source_url/rows_suppressed_by_injection.",
             "files": ["REFACTOR53_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR52"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR54
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR54":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR54",
+            "date": "2026-01-25",
+            "summary": "Safe downsizing + durability diagnostics: remove duplicated FIX2D2I Diff Panel V2 wrapper block (redundant after recursion hardening); add snapshot_roundtrip_v1 (best-effort readback of snapshot_store_ref_stable) into Analysis persistence debug to catch recent snapshot save/retrieve issues early. No schema/key-grammar changes.",
+            "files": ["REFACTOR54_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR53"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
