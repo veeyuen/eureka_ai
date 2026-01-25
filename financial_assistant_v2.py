@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR42'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR43'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -2640,7 +2640,7 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = 'REFACTOR41'
+#CODE_VERSION = 'REFACTOR43'
 
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
@@ -17312,15 +17312,28 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
                                     continue
                     except Exception:
                         pass
-
-                    # JSON decode
+                    # JSON decode (supports REFACTOR42 compressed payloads)
                     try:
-                        data = json.loads(payload)
+                        payload_json = payload
+                        try:
+                            # REFACTOR43 (BUGFIX): transparently decode 'zlib64:' compressed payloads.
+                            if isinstance(payload_json, str) and payload_json.startswith("zlib64:"):
+                                import base64, zlib
+                                b64 = payload_json.split(":", 1)[1] if ":" in payload_json else ""
+                                if not b64:
+                                    continue
+                                comp = base64.b64decode(b64.encode("ascii"), validate=False)
+                                raw = zlib.decompress(comp)
+                                payload_json = raw.decode("utf-8", errors="strict")
+                        except Exception:
+                            # If decoding fails, treat as invalid snapshot batch
+                            continue
+
+                        data = json.loads(payload_json)
                         if not isinstance(data, list) or not data:
                             continue
                     except Exception:
                         continue
-
                     # Candidate score: prefer latest created_at when parseable; else fallback to string.
                     dt = _parse_iso(created_at) if created_at and created_at != "legacy" else None
                     candidates.append((dt, created_at, data))
@@ -51238,6 +51251,31 @@ try:
             "summary": "Fix snapshot-gate failures caused by large baseline_sources_cache writes silently failing under Sheets rate limits. Snapshots sheet store now compresses very large payloads (zlib+base64 with 'zlib64:' prefix) to drastically reduce chunk count and API calls, adds a small throttle between batch appends for very large writes, and the loader transparently detects/decompresses compressed payloads while remaining backward-compatible with existing uncompressed snapshots.",
             "files": ["REFACTOR42_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR41"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ===========================================================
+# PATCH TRACKER V1 (ADD): REFACTOR43
+# ===========================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR43":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR43",
+            "date": "2026-01-25",
+            "summary": "BUGFIX: make Snapshots sheet loader actually decode REFACTOR42 compressed payloads ('zlib64:' prefix). Previously store_full_snapshots_to_sheet could write compressed snapshots but load_full_snapshots_from_sheet attempted json.loads() on the compressed string and returned empty, causing Evolution to be snapshot-gated for recent runs while older (uncompressed) snapshots still loaded.",
+            "files": ["REFACTOR43_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR42"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
