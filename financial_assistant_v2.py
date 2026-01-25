@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR43'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR44'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -2640,7 +2640,7 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = 'REFACTOR43'
+#CODE_VERSION = 'REFACTOR44'
 
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
@@ -4313,7 +4313,11 @@ def add_to_history(analysis: dict) -> bool:
                         _gs_ref = ""
                         _gs_ref_v2 = ""
 
-                    _ref = store_full_snapshots_local(_bsc, _ssh)
+                    _ref = ""
+                    try:
+                        _ref = store_full_snapshots_local(_bsc, _ssh)
+                    except Exception:
+                        _ref = ""
 
                     analysis["source_snapshot_hash"] = analysis.get("source_snapshot_hash") or _ssh
                     analysis.setdefault("results", {})
@@ -16600,7 +16604,8 @@ def _snapshot_store_dir() -> str:
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
-        return d
+        pass
+    return d
 
 def store_full_snapshots_local(baseline_sources_cache: list, source_snapshot_hash: str) -> str:
     """
@@ -16613,7 +16618,12 @@ def store_full_snapshots_local(baseline_sources_cache: list, source_snapshot_has
     if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
         return ""
 
-    path = os.path.join(_snapshot_store_dir(), f"{source_snapshot_hash}.json")
+    path = ""
+    try:
+        _d = _snapshot_store_dir() or os.path.join(os.getcwd(), "snapshot_store")
+        path = os.path.join(_d, f"{source_snapshot_hash}.json")
+    except Exception:
+        return ""
     try:
         # write-once semantics (deterministic)
         if os.path.exists(path) and os.path.getsize(path) > 0:
@@ -51276,6 +51286,29 @@ try:
             "summary": "BUGFIX: make Snapshots sheet loader actually decode REFACTOR42 compressed payloads ('zlib64:' prefix). Previously store_full_snapshots_to_sheet could write compressed snapshots but load_full_snapshots_from_sheet attempted json.loads() on the compressed string and returned empty, causing Evolution to be snapshot-gated for recent runs while older (uncompressed) snapshots still loaded.",
             "files": ["REFACTOR43_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR42"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ===================== PATCH TRACKER ENTRY: REFACTOR44 =====================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR44":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR44",
+            "date": "2026-01-25",
+            "summary": "BUGFIX: Fix local snapshot persistence path creation. _snapshot_store_dir() previously omitted a return on the success path, returning None and causing local snapshot store/load to fail (os.path.join(None,...)). Wrapped local snapshot write call in add_to_history with guards to prevent snapshot persistence block from aborting. Also hardened store_full_snapshots_local to compute path safely. This restores reliable snapshot persistence for recent runs when Sheets snapshot store is unavailable/partial, eliminating Evolution snapshot-gate failures caused by missing baseline_sources_cache.",
+            "files": ["REFACTOR44_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR43"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
