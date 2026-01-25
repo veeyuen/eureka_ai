@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR55'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR56'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -29443,22 +29443,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
 
     # =====================================================================
-    # PATCH FIX2F_OPTION_B_LASTMILE_OVERRIDE (ADDITIVE)
+    # REFACTOR56: Diff Panel V2 lastmile (downsizing)
     # Objective:
-    # - Ensure the Evolution "metrics change" table feed (results.metric_changes) is
-    #   deterministically produced by Diff Panel V2 when prev canonical metrics exist.
-    # - Preserve legacy output under metric_changes_legacy for audit.
+    # - Keep Diff Panel V2 as the authoritative producer of the metric changes table feed.
+    # - Do not emit metric_changes_legacy (removed).
     # Safety:
     # - Render-only. No inference. No changes to hashing/fastpath/snapshots/extraction.
-    # - If V2 fails for any reason, we fall back to legacy metric_changes.
     # =====================================================================
     _diff_v2_rows = []
     _diff_v2_summary = None
-    try:
-        # Preserve legacy rows (as computed above by legacy diff path)
-        output["metric_changes_legacy"] = metric_changes or []
-    except Exception:
-        pass
     # =====================================================================
     # REFACTOR45: Diff Panel V2 hardening (RecursionError-safe)
     # - Always pass minimal, acyclic wrappers into the V2 builder.
@@ -30648,6 +30641,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
 
+
+
+    # =====================================================================
+    # REFACTOR56: enforce removal of legacy metric_changes output (safety rail)
+    # =====================================================================
+    try:
+        output.pop("metric_changes_legacy", None)
+    except Exception:
+        pass
 
     _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
 
@@ -39303,7 +39305,7 @@ except Exception:
 # - Close the final gap by ensuring the Evolution "metrics change" table feed
 #   (results.metric_changes) is deterministically built from canonical outputs.
 # - Implement Option B: if V2 rows exist, override the returned metric_changes list,
-#   while preserving legacy output for audit (metric_changes_legacy).
+#   Legacy audit key removed; Diff Panel V2 is authoritative for metric changes.
 #
 # Safety:
 # - Additive only. No refactors. No changes to fastpath/hashing/snapshots/extraction.
@@ -52165,6 +52167,31 @@ try:
             "summary": "Consolidate metric changes outputs to a single canonical feed: output['metric_changes'] is authoritative; output['metric_changes_v2'] mirrors the same list for backward/UI compatibility; drop output['metric_changes_legacy'] (no longer maintained). Add a late-stage consolidation block in compute_source_anchored_diff_BASE to enforce invariants. No schema/key-grammar changes.",
             "files": ["REFACTOR55_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR54"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR56
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR56":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR56",
+            "date": "2026-01-26",
+            "summary": "Controlled downsizing: stop emitting metric_changes_legacy entirely (remove late-stage re-add), add end-of-function safety rail to pop it before returning. No schema/key-grammar changes; Diff Panel V2 remains authoritative and metric_changes_v2 continues to mirror metric_changes.",
+            "files": ["REFACTOR56.py"],
+            "supersedes": ["REFACTOR55"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
