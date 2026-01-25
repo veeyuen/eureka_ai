@@ -2640,7 +2640,7 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v21'
+#CODE_VERSION = 'REFACTOR41'
 
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
@@ -4298,6 +4298,7 @@ def add_to_history(analysis: dict) -> bool:
                     # - Pointer ref stored as 'gsheet:Snapshots:<hash>' when successful.
                     # =============================================================
                     _gs_ref = ""
+                    _gs_ref_v2 = ""
                     try:
                         _gs_ref = store_full_snapshots_to_sheet(_bsc, _ssh, worksheet_title="Snapshots")
                         # =========================
@@ -4305,12 +4306,12 @@ def add_to_history(analysis: dict) -> bool:
                         # =========================
                         if _ssh_v2 and isinstance(_ssh_v2, str) and _ssh_v2 != _ssh:
                             try:
-                                store_full_snapshots_to_sheet(_bsc, _ssh_v2, worksheet_title="Snapshots")
+                                _gs_ref_v2 = store_full_snapshots_to_sheet(_bsc, _ssh_v2, worksheet_title="Snapshots")
                             except Exception:
-                                pass
+                                _gs_ref_v2 = ""
                     except Exception:
-                        pass
                         _gs_ref = ""
+                        _gs_ref_v2 = ""
 
                     _ref = store_full_snapshots_local(_bsc, _ssh)
 
@@ -4342,8 +4343,8 @@ def add_to_history(analysis: dict) -> bool:
                             analysis["results"]["snapshot_store_ref"] = analysis["results"].get("snapshot_store_ref") or _ref
                             # PATCH A5 (ADD): v2 snapshot ref for convenience
                             try:
-                                if _ssh_v2:
-                                    analysis["results"]["snapshot_store_ref_v2"] = analysis["results"].get("snapshot_store_ref_v2") or f"gsheet:Snapshots:{_ssh_v2}"
+                                if _ssh_v2 and _gs_ref_v2:
+                                    analysis["results"]["snapshot_store_ref_v2"] = analysis["results"].get("snapshot_store_ref_v2") or _gs_ref_v2
                             except Exception:
                                 pass
                     # =============================================================
@@ -4354,6 +4355,39 @@ def add_to_history(analysis: dict) -> bool:
                             analysis["snapshot_store_ref"] = _gs_ref
                             if isinstance(analysis.get("results"), dict):
                                 analysis["results"]["snapshot_store_ref"] = _gs_ref
+                    except Exception:
+                        pass
+
+                    # =============================================================
+                    # PATCH REFACTOR41 (ADDITIVE): stable snapshot store ref + write debug
+                    # - Avoid advertising a v2 gsheet ref unless it was actually written successfully.
+                    # - Provide a stable ref that always points to a verified store (v2 sheet > v1 sheet > local).
+                    # - Emit a compact debug manifest for diagnosing snapshot write failures.
+                    # =============================================================
+                    try:
+                        _stable_ref = (_gs_ref_v2 or _gs_ref or (analysis.get("snapshot_store_ref") if isinstance(analysis, dict) else "") or (_ref if "_ref" in locals() else "") or "")
+                        if _stable_ref and isinstance(analysis, dict):
+                            analysis["snapshot_store_ref_stable"] = analysis.get("snapshot_store_ref_stable") or _stable_ref
+                            if isinstance(analysis.get("results"), dict):
+                                analysis["results"]["snapshot_store_ref_stable"] = analysis["results"].get("snapshot_store_ref_stable") or _stable_ref
+                    except Exception:
+                        pass
+
+                    try:
+                        if isinstance(analysis, dict) and isinstance(analysis.get("results"), dict):
+                            _dbg = analysis["results"].get("debug")
+                            if not isinstance(_dbg, dict):
+                                _dbg = {}
+                                analysis["results"]["debug"] = _dbg
+                            _dbg["snapshot_store_write_v1"] = {
+                                "ssh_v1": str(_ssh or ""),
+                                "ssh_v2": str(_ssh_v2 or ""),
+                                "gs_ref_v1": str(_gs_ref or ""),
+                                "gs_ref_v2": str(_gs_ref_v2 or ""),
+                                "local_ref_v1": str(_ref or ""),
+                                "final_snapshot_store_ref": str((analysis.get("snapshot_store_ref") or "") if isinstance(analysis, dict) else ""),
+                                "final_snapshot_store_ref_stable": str((analysis.get("snapshot_store_ref_stable") or "") if isinstance(analysis, dict) else ""),
+                            }
                     except Exception:
                         pass
 
@@ -16998,7 +17032,7 @@ def _ensure_snapshot_worksheet(spreadsheet, title: str = "Snapshots"):
     except Exception:
         return None
 
-def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_hash: str, worksheet_title: str = "Snapshots", chunk_chars: int = 45000) -> str:
+def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_hash: str, worksheet_title: str = "Snapshots", chunk_chars: int = 20000) -> str:
     """
     Store full snapshots to a dedicated worksheet tab in chunked rows.
     Returns a ref string like: 'gsheet:Snapshots:<hash>'
@@ -17073,8 +17107,14 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
 
         wrote_all = False
         try:
-            ws.append_rows(rows, value_input_option="RAW")
-            wrote_all = True
+            # Append in small batches to reduce API payload size / rate-limit failures.
+            batch_size = 10
+            wrote = 0
+            for i in range(0, len(rows), batch_size):
+                chunk = rows[i:i+batch_size]
+                ws.append_rows(chunk, value_input_option="RAW")
+                wrote += len(chunk)
+            wrote_all = (wrote == len(rows))
         except Exception:
             # Fall back to append_row loop; do NOT early-return on the first failure.
             success = 0
@@ -51127,6 +51167,30 @@ try:
             "supersedes": ["REFACTOR39"],
         })
 
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR41
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR41":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR41",
+            "date": "2026-01-25",
+            "summary": "Fix recent snapshot rehydration failures by (1) preventing fake snapshot_store_ref_v2 (gsheet:Snapshots:<hash>) from being emitted unless the mirror-write actually succeeded, (2) emitting snapshot_store_ref_stable pointing to a verified store (v2 sheet > v1 sheet > local) plus a compact snapshot_store_write_v1 debug manifest, and (3) making store_full_snapshots_to_sheet more reliable via smaller default chunk size and batched append_rows to reduce API payload size / rate-limit failures.",
+            "files": ["REFACTOR41_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR40"],
+        })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
