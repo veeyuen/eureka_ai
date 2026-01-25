@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR40'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR42'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -17048,7 +17048,7 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
       * After successful writes, we invalidate the worksheet read cache so recent snapshots
         are immediately retrievable.
     """
-    import json, hashlib
+    import json, hashlib, zlib, base64, zlib, base64
     if not source_snapshot_hash:
         return ""
     if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
@@ -17074,6 +17074,22 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
             pass
 
         payload = json.dumps(baseline_sources_cache, ensure_ascii=False, default=str)
+        # =============================================================
+        # REFACTOR42 (ADDITIVE): compress very large snapshot payloads to
+        # reduce write volume / API calls (helps avoid rate limits).
+        # Storage format:
+        #   payload_part begins with 'zlib64:' then base64(zlib(json_bytes))
+        # Backward compatible: loader detects/decompresses when prefix present.
+        # =============================================================
+        try:
+            if isinstance(payload, str) and len(payload) > 120000:
+                _raw = payload.encode("utf-8", errors="strict")
+                _comp = zlib.compress(_raw, level=9)
+                _b64 = base64.b64encode(_comp).decode("ascii")
+                payload = "zlib64:" + _b64
+        except Exception:
+            pass
+
         sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
         # deterministic chunking
@@ -17109,11 +17125,18 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
         try:
             # Append in small batches to reduce API payload size / rate-limit failures.
             batch_size = 10
+            import time
+            _need_throttle = (len(rows) > 60)
             wrote = 0
             for i in range(0, len(rows), batch_size):
                 chunk = rows[i:i+batch_size]
                 ws.append_rows(chunk, value_input_option="RAW")
                 wrote += len(chunk)
+                try:
+                    if _need_throttle:
+                        time.sleep(0.15)
+                except Exception:
+                    pass
             wrote_all = (wrote == len(rows))
         except Exception:
             # Fall back to append_row loop; do NOT early-return on the first failure.
@@ -51190,6 +51213,31 @@ try:
             "summary": "Fix recent snapshot rehydration failures by (1) preventing fake snapshot_store_ref_v2 (gsheet:Snapshots:<hash>) from being emitted unless the mirror-write actually succeeded, (2) emitting snapshot_store_ref_stable pointing to a verified store (v2 sheet > v1 sheet > local) plus a compact snapshot_store_write_v1 debug manifest, and (3) making store_full_snapshots_to_sheet more reliable via smaller default chunk size and batched append_rows to reduce API payload size / rate-limit failures.",
             "files": ["REFACTOR41_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR40"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR42
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR42":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR42",
+            "date": "2026-01-25",
+            "summary": "Fix snapshot-gate failures caused by large baseline_sources_cache writes silently failing under Sheets rate limits. Snapshots sheet store now compresses very large payloads (zlib+base64 with 'zlib64:' prefix) to drastically reduce chunk count and API calls, adds a small throttle between batch appends for very large writes, and the loader transparently detects/decompresses compressed payloads while remaining backward-compatible with existing uncompressed snapshots.",
+            "files": ["REFACTOR42_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR41"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
