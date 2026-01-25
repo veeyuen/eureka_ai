@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR52'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR53'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -16106,9 +16106,26 @@ def _refactor26_extract_metric_source_url_v1(_m: dict):
     try:
         prov = _m.get("provenance") or _m.get("provenance_v1") or _m.get("diag")
         if isinstance(prov, dict):
+            # Direct provenance URL
             v = prov.get("source_url") or prov.get("url")
             if isinstance(v, str) and v.strip():
                 return v.strip()
+
+            # Common nested winner shape: provenance.best_candidate.source_url
+            bc = prov.get("best_candidate") or prov.get("best_candidate_v1") or prov.get("winner") or prov.get("best")
+            if isinstance(bc, dict):
+                v2 = bc.get("source_url") or bc.get("url")
+                if isinstance(v2, str) and v2.strip():
+                    return v2.strip()
+
+            # Sometimes stored as list of candidates
+            cands = prov.get("candidates") or prov.get("top_candidates") or prov.get("candidates_v1")
+            if isinstance(cands, list):
+                for c in cands:
+                    if isinstance(c, dict):
+                        v3 = c.get("source_url") or c.get("url")
+                        if isinstance(v3, str) and v3.strip():
+                            return v3.strip()
     except Exception:
         pass
 
@@ -33144,6 +33161,9 @@ def main():
                         "injected_rows_blank_delta": 0,
                         "production_rows_total": 0,
                         "production_rows_with_delta": 0,
+                        "rows_with_source_url": 0,
+                        "rows_missing_source_url": 0,
+                        "rows_suppressed_by_injection": 0,
                         "unattributed_rows": 0,
                         "duplicate_rows_skipped": 0,
                     }
@@ -33196,14 +33216,20 @@ def main():
                                     _cm = _pmc.get(_ckey) if isinstance(_ckey, str) else None
                                     _su = _refactor25_extract_metric_source_url(_cm) if isinstance(_cm, dict) else None
                                 if _su is None:
-                                    # If injections exist but we cannot attribute, treat as injected for safety
-                                    is_injected = True
+                                    # REFACTOR53: cannot attribute -> treat as production (do not suppress)
+                                    is_injected = False
                                     if _count_row:
                                         try:
                                             _row_delta_gating["unattributed_rows"] += 1
+                                            _row_delta_gating["rows_missing_source_url"] += 1
                                         except Exception:
                                             pass
                                 else:
+                                    if _count_row:
+                                        try:
+                                            _row_delta_gating["rows_with_source_url"] += 1
+                                        except Exception:
+                                            pass
                                     _su_norm = _su
                                     try:
                                         _tmp = _inj_diag_norm_url_list([_su])
@@ -33217,6 +33243,7 @@ def main():
                                 try:
                                     if is_injected:
                                         _row_delta_gating["injected_rows_total"] += 1
+                                        _row_delta_gating["rows_suppressed_by_injection"] += 1
                                     else:
                                         _row_delta_gating["production_rows_total"] += 1
                                 except Exception:
@@ -51873,12 +51900,42 @@ try:
             try:
                 if isinstance(cm, dict):
                     src_url = cm.get("source_url") or cm.get("url") or None
+
+                    # Common nested winner shape: provenance.best_candidate.source_url
+                    if (not src_url) and isinstance(cm.get("provenance"), dict):
+                        prov = cm.get("provenance")
+                        bc = prov.get("best_candidate") or prov.get("best_candidate_v1") or prov.get("winner") or prov.get("best")
+                        if isinstance(bc, dict):
+                            src_url = bc.get("source_url") or bc.get("url") or None
+
+                    if (not src_url) and isinstance(cm.get("provenance_v1"), dict):
+                        prov = cm.get("provenance_v1")
+                        bc = prov.get("best_candidate") or prov.get("best_candidate_v1") or prov.get("winner") or prov.get("best")
+                        if isinstance(bc, dict):
+                            src_url = bc.get("source_url") or bc.get("url") or None
+
                     if not src_url and isinstance(cm.get("sources"), list) and cm.get("sources"):
                         s0 = cm.get("sources")[0]
                         if isinstance(s0, dict):
                             src_url = s0.get("url") or s0.get("source_url") or None
             except Exception:
                 src_url = None
+
+            # Last resort: centralized extractor (schema-preserving)
+            if not src_url:
+                try:
+                    fn = globals().get("_refactor26_extract_metric_source_url_v1")
+                    if callable(fn):
+                        su2 = fn(cm)
+                        if isinstance(su2, str) and su2.strip():
+                            src_url = su2.strip()
+                except Exception:
+                    pass
+
+            try:
+                src_url = (src_url.strip() if isinstance(src_url, str) else "")
+            except Exception:
+                src_url = ""
 
             rows.append({
                 "canonical_key": ck,
@@ -51895,6 +51952,8 @@ try:
                 "baseline_is_comparable": bool(is_comp),
                 "current_method": "refactor47_canonical_join",
                 "source_url": src_url,
+                "cur_source_url": src_url,
+                "current_source_url": src_url,
             })
 
         # cur-only keys (optional accounting; we do not emit rows by default)
@@ -52072,6 +52131,31 @@ try:
             "summary": "Add authority_manifest_v1 (runtime last-wins introspection) into binding_manifest_v1 to make refactor deletions safer. No schema/key-grammar changes; no behavior changes.",
             "files": ["REFACTOR52_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR51"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR53
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR53":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR53",
+            "date": "2026-01-25",
+            "summary": "Make metric_changes rows self-attributing for injected-vs-production gating. Extend source_url extraction to include provenance.best_candidate.source_url; stamp rows with cur/current/source_url fields; change Δt gating to suppress only when row source URL matches injected URL set (missing attribution no longer treated as injected). Add debug counters rows_with_source_url/rows_missing_source_url/rows_suppressed_by_injection.",
+            "files": ["REFACTOR53_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR52"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
