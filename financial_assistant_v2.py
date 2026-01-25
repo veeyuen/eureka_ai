@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR51'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR52'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -100,12 +100,70 @@ def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
         return "UNKNOWN"
 
 
+
+
+
+def _yureeka_authority_manifest_v1() -> dict:
+    """Additive debug helper: capture which 'last-wins' definitions are actually active at runtime.
+
+    This is used during the downsizing phase to ensure deletions don't accidentally swap authority.
+    Streamlit-safe: pure introspection (no IO/network).
+    """
+    def _fn_meta(name: str):
+        try:
+            fn = globals().get(name)
+            if fn is None:
+                return {"present": False}
+            meta = {"present": True, "type": str(type(fn))}
+            if callable(fn):
+                try:
+                    meta.update({
+                        "name": str(getattr(fn, "__name__", "") or ""),
+                        "qualname": str(getattr(fn, "__qualname__", "") or ""),
+                        "module": str(getattr(fn, "__module__", "") or ""),
+                        "id": str(id(fn)),
+                    })
+                except Exception:
+                    pass
+                try:
+                    c = getattr(fn, "__code__", None)
+                    if c is not None:
+                        meta["firstlineno"] = int(getattr(c, "co_firstlineno", -1) or -1)
+                        meta["filename"] = str(getattr(c, "co_filename", "") or "")
+                except Exception:
+                    pass
+            return meta
+        except Exception as e:
+            return {"present": False, "error": f"{e}"}
+
+    try:
+        keys = [
+            # evolution / snapshots
+            "run_source_anchored_evolution",
+            "compute_source_anchored_diff",
+            "attach_source_snapshots_to_analysis",
+            # diff panel + join engine
+            "build_diff_metrics_panel_v2__rows_fix2d2i",
+            "build_diff_metrics_panel_v2__rows",
+            "build_diff_metrics_panel_v2",
+            "diff_metrics_by_name",
+            "_refactor09_diff_metrics_by_name",
+            "metric_changes_v2",
+        ]
+    except Exception:
+        keys = []
+
+    out = {"code_version": str(globals().get("_YUREEKA_CODE_VERSION_LOCK") or ""), "targets": {}}
+    for k in keys:
+        out["targets"][k] = _fn_meta(k)
+    return out
 def _yureeka_runtime_identity_v1():
     """Additive debug helper: identify the running script reliably (helps diagnose stale-version runs)."""
     try:
         import os, sys, platform, hashlib, datetime
         out = {
             "code_version": _yureeka_get_code_version(),
+            "authority_manifest_v1": _yureeka_authority_manifest_v1(),
             "code_version_lock": globals().get("_YUREEKA_CODE_VERSION_LOCK"),
         }
         try:
@@ -146,7 +204,8 @@ def _yureeka_runtime_identity_v1():
 
         return out
     except Exception:
-        return {"code_version": _yureeka_get_code_version(), "code_version_lock": globals().get("_YUREEKA_CODE_VERSION_LOCK")}
+        return {"code_version": _yureeka_get_code_version(),
+            "authority_manifest_v1": _yureeka_authority_manifest_v1(), "code_version_lock": globals().get("_YUREEKA_CODE_VERSION_LOCK")}
 
 
 def _yureeka_lock_version_globals_v1():
@@ -26200,6 +26259,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         _man = {
             "code_version": _yureeka_get_code_version(),
+            "authority_manifest_v1": _yureeka_authority_manifest_v1(),
             "final_bindings_version": str(globals().get("_YUREEKA_FINAL_BINDINGS_VERSION") or ""),
 
             # Diff Panel V2 (authoritative for metric_changes_v2)
@@ -30279,6 +30339,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _dbg["canonical_for_render_v1"] = {
                         "present": True,
                         "code_version": _yureeka_get_code_version(),
+            "authority_manifest_v1": _yureeka_authority_manifest_v1(),
                         "note": "REFACTOR12 standardized debug block (was intermittently missing)",
                     }
             except Exception:
@@ -32710,6 +32771,7 @@ def main():
                 "veracity_scores": veracity_scores,
                 "web_sources": web_context.get("sources", []),
                 "code_version": _yureeka_get_code_version(),
+            "authority_manifest_v1": _yureeka_authority_manifest_v1(),
                 }
 
 
@@ -50013,6 +50075,7 @@ def _refactor02_run_harness_v2():
     report = {
         "patch_id": "REFACTOR18",
         "code_version": _yureeka_get_code_version(),
+            "authority_manifest_v1": _yureeka_authority_manifest_v1(),
         "run_ts_utc": _refactor01__safe_now_iso(),
         "config": {
             "query": query,
@@ -50110,6 +50173,7 @@ def _refactor02_run_harness_v2():
             "veracity_scores": veracity_scores,
             "web_sources": (web_context.get("sources", []) if isinstance(web_context, dict) else []),
             "code_version": _yureeka_get_code_version(),
+            "authority_manifest_v1": _yureeka_authority_manifest_v1(),
             # ensure evolution can find these top-level as well
             "metric_schema_frozen": schema,
             "primary_metrics_canonical": pmc,
@@ -51983,6 +52047,31 @@ try:
             "date": "2026-01-25",
             "summary": "Fix evolution stability graded fallback: cap per-row abs % change at 100 before averaging so injected/outlier deltas don't force 0% stability. Add debug fields mean_abs_pct_raw/capped.",
             "files": ["REFACTOR51_full_codebase_streamlit_safe.py"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR52
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR52":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR52",
+            "date": "2026-01-25",
+            "summary": "Add authority_manifest_v1 (runtime last-wins introspection) into binding_manifest_v1 to make refactor deletions safer. No schema/key-grammar changes; no behavior changes.",
+            "files": ["REFACTOR52_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR51"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
