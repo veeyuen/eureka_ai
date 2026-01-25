@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR44'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR45'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -2640,7 +2640,7 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 # PATCH V21_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
 # =====================================================================
-#CODE_VERSION = 'REFACTOR44'
+#CODE_VERSION = 'REFACTOR45'
 
 # =====================================================================
 # PATCH V22_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
@@ -29200,72 +29200,182 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["metric_changes_legacy"] = metric_changes or []
     except Exception:
         pass
+    # =====================================================================
+    # REFACTOR45: Diff Panel V2 hardening (RecursionError-safe)
+    # - Always pass minimal, acyclic wrappers into the V2 builder.
+    # - Capture traceback for any V2 builder failure.
+    # - If V2 fails, DO NOT overwrite previously computed rows; otherwise
+    #   synthesize strict canonical-join rows so the panel never goes empty
+    #   when prev/cur canonical maps are present.
+    # =====================================================================
+    try:
+        import traceback as _tb
+    except Exception:
+        _tb = None
+
+    _prev_can_v2 = {}
+    _cur_can_v2 = {}
+
     try:
         _fn_v2 = globals().get("build_diff_metrics_panel_v2__rows") or globals().get("build_diff_metrics_panel_v2")
         if callable(_fn_v2):
-            # Prefer the same cur_resp_for_diff used by legacy diff; fallback to minimal wrapper from current_metrics.
-            _cur_for_v2 = cur_resp_for_diff if isinstance(cur_resp_for_diff, dict) else None
-            if not isinstance(_cur_for_v2, dict):
-                try:
-                    if isinstance(current_metrics, dict):
-                        _cur_for_v2 = {"primary_metrics_canonical": current_metrics}
-                except Exception:
-                    pass
-                    _cur_for_v2 = None
-
-
-            # =====================================================================
-            # PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS (ADDITIVE)
-            # Why:
-            # - FIX2N promotes observed rows from cur_response.results.source_results[*].extracted_numbers.
-            # - In practice, cur_resp_for_diff often omits results.source_results; the only place
-            #   source_results exists is the final evolution output dict being built here.
-            # What:
-            # - If output has source_results and _cur_for_v2 lacks results.source_results,
-            #   attach it so FIX2N can see extracted_numbers and promote observed rows.
-            # Safety:
-            # - Render-only adapter wiring. Does NOT alter extraction, hashing, or joins.
-            # =====================================================================
+            # Previous (baseline) canonical map
             try:
-                if isinstance(output, dict):
-                    _sr = output.get("source_results")
-                    # FIX2Q (ADDITIVE): at this point in the evolution builder, output["source_results"]
-                    # may not be populated yet (it is attached later). Prefer the in-scope baseline cache,
-                    # which already contains extracted_numbers, so FIX2N can promote observed rows.
-                    if (not isinstance(_sr, list) or not _sr):
-                        try:
-                            _sr = baseline_sources_cache if isinstance(baseline_sources_cache, list) else _sr
-                        except Exception:
-                            pass
-                    if (not isinstance(_sr, list) or not _sr):
-                        try:
-                            _sr = baseline_sources_cache_current if isinstance(baseline_sources_cache_current, list) else _sr
-                        except Exception:
-                            pass
-                    if isinstance(_sr, list) and _sr:
-                        if not isinstance(_cur_for_v2, dict):
-                            _cur_for_v2 = {}
-                        _r = _cur_for_v2.get("results")
-                        if not isinstance(_r, dict):
-                            _r = {}
-                        # only attach if missing/empty
-                        if not isinstance(_r.get("source_results"), list) or not _r.get("source_results"):
-                            _r["source_results"] = _sr
-                        _cur_for_v2["results"] = _r
+                _prev_can_v2 = _diffpanel_v2__unwrap_primary_metrics_canonical(prev_response)
+            except Exception:
+                _prev_can_v2 = {}
+            if not isinstance(_prev_can_v2, dict):
+                try:
+                    _prev_can_v2 = prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else {}
+                except Exception:
+                    _prev_can_v2 = {}
+            if not isinstance(_prev_can_v2, dict):
+                _prev_can_v2 = {}
+
+            # Current canonical map (prefer already rebuilt current_metrics)
+            try:
+                if isinstance(current_metrics, dict) and current_metrics:
+                    _cur_can_v2 = current_metrics
+                else:
+                    _cur_can_v2 = _diffpanel_v2__unwrap_primary_metrics_canonical(cur_resp_for_diff) if isinstance(cur_resp_for_diff, dict) else {}
+            except Exception:
+                _cur_can_v2 = {}
+            if not isinstance(_cur_can_v2, dict):
+                _cur_can_v2 = {}
+
+            # Minimal wrappers (avoid passing the full evolution output dict)
+            _prev_for_v2 = {"primary_metrics_canonical": dict(_prev_can_v2)}
+            _cur_for_v2 = {"primary_metrics_canonical": dict(_cur_can_v2)}
+
+            # Carry schema freeze map if present (helps unit-family expectations)
+            try:
+                _msf = None
+                if isinstance(prev_response, dict):
+                    _msf = prev_response.get("metric_schema_frozen") or (prev_response.get("results") or {}).get("metric_schema_frozen")
+                if _msf is None and isinstance(output, dict):
+                    _msf = output.get("metric_schema_frozen") or (output.get("results") or {}).get("metric_schema_frozen")
+                if isinstance(_msf, dict) and _msf:
+                    _prev_for_v2["metric_schema_frozen"] = _msf
+                    _cur_for_v2["metric_schema_frozen"] = _msf
             except Exception:
                 pass
-            # =====================================================================
-            # END PATCH FIX2O_DIFF_PANEL_V2_PASS_SOURCE_RESULTS
-            # =====================================================================
-            _diff_v2_rows, _diff_v2_summary = _fn_v2(prev_response, _cur_for_v2 or {})
+
+            # Attach observed-number pools (source_results) for V2 "observed" promotion
+            try:
+                _sr = None
+                if isinstance(baseline_sources_cache_current, list) and baseline_sources_cache_current:
+                    _sr = baseline_sources_cache_current
+                elif isinstance(baseline_sources_cache, list) and baseline_sources_cache:
+                    _sr = baseline_sources_cache
+                elif isinstance(output, dict):
+                    _sr = output.get("source_results") or ((output.get("results") or {}).get("source_results"))
+                if isinstance(_sr, list) and _sr:
+                    _cur_for_v2.setdefault("results", {})
+                    if isinstance(_cur_for_v2.get("results"), dict) and (not isinstance(_cur_for_v2["results"].get("source_results"), list) or not _cur_for_v2["results"].get("source_results")):
+                        _cur_for_v2["results"]["source_results"] = _sr
+            except Exception:
+                pass
+
+            _diff_v2_rows, _diff_v2_summary = _fn_v2(_prev_for_v2, _cur_for_v2 or {})
     except Exception as _e:
         try:
             _dbg = output.setdefault("debug", {})
             if isinstance(_dbg, dict):
                 _dbg["diff_panel_v2_error"] = f"{type(_e).__name__}: {_e}"
+                try:
+                    if _tb is not None:
+                        _dbg["diff_panel_v2_traceback"] = _tb.format_exc()
+                except Exception:
+                    pass
         except Exception:
             pass
-        _diff_v2_rows, _diff_v2_summary = ([], None)
+
+        # If rows were already computed earlier in this function, preserve them.
+        try:
+            _existing = output.get("metric_changes_v2")
+            if isinstance(_existing, list) and _existing:
+                _diff_v2_rows = _existing
+                _diff_v2_summary = None
+            else:
+                # Strict canonical-key join fallback (no inference, no heuristics)
+                _diff_v2_rows = []
+                _prev_map = _prev_can_v2 if isinstance(_prev_can_v2, dict) else {}
+                _cur_map = _cur_can_v2 if isinstance(_cur_can_v2, dict) else {}
+
+                def _vn(_m):
+                    try:
+                        if isinstance(_m, dict):
+                            v = _m.get("value_norm")
+                            if v is None:
+                                v = _m.get("value")
+                            return float(v) if v is not None else None
+                    except Exception:
+                        return None
+                    return None
+
+                def _unit(_m):
+                    try:
+                        if isinstance(_m, dict):
+                            return (_m.get("unit_tag") or _m.get("unit") or None)
+                    except Exception:
+                        return None
+                    return None
+
+                for _ck in sorted([k for k in _prev_map.keys() if isinstance(k, str) and k]):
+                    _pm = _prev_map.get(_ck) if isinstance(_prev_map, dict) else None
+                    _cm = _cur_map.get(_ck) if isinstance(_cur_map, dict) else None
+
+                    _pv = _vn(_pm)
+                    _cv = _vn(_cm)
+                    _pu = _unit(_pm)
+                    _cu = _unit(_cm)
+
+                    _is_comp = (_pv is not None and _cv is not None and str(_pu or "") == str(_cu or ""))
+                    _d = None
+                    _pct = None
+                    _ctype = "unknown"
+                    if _is_comp:
+                        _d = float(_cv) - float(_pv)
+                        if abs(float(_pv)) > 1e-12:
+                            _pct = (_d / float(_pv)) * 100.0
+                        if abs(_d) < 1e-9:
+                            _ctype = "unchanged"
+                        elif _d > 0:
+                            _ctype = "increased"
+                        else:
+                            _ctype = "decreased"
+                    else:
+                        if (_pm is None) and (_cm is not None):
+                            _ctype = "added"
+                        elif _cm is None:
+                            _ctype = "not_found"
+
+                    _name = None
+                    try:
+                        _name = ((_pm or {}).get("name") if isinstance(_pm, dict) else None) or ((_cm or {}).get("name") if isinstance(_cm, dict) else None) or _ck
+                    except Exception:
+                        _name = _ck
+
+                    _diff_v2_rows.append({
+                        "canonical_key": _ck,
+                        "name": _name,
+                        "previous_value": _pv,
+                        "current_value": (_cv if _cm is not None else "N/A"),
+                        "previous_unit": _pu,
+                        "current_unit": (_cu if _cm is not None else None),
+                        "prev_value_norm": _pv,
+                        "cur_value_norm": (_cv if _cm is not None else None),
+                        "delta_abs": _d,
+                        "delta_pct": _pct,
+                        "change_type": _ctype,
+                        "baseline_is_comparable": bool(_is_comp),
+                        "current_method": "strict_fallback_v2",
+                        "source_url": None,
+                    })
+                _diff_v2_summary = {"rows_total": int(len(_diff_v2_rows)), "builder_id": "REFACTOR45_STRICT_FALLBACK"}
+
+        except Exception:
+            _diff_v2_rows, _diff_v2_summary = ([], None)
 
     # Persist V2 artifacts for auditability
     try:
@@ -49495,6 +49605,14 @@ try:
         'files': ['FIX2D83_full_codebase.py'],
         'supersedes': ['FIX2D78', 'FIX2D79', 'FIX2D80'],
     })
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'REFACTOR45',
+        'date': '2026-01-25',
+        'summary': 'Evolution: fix Diff Panel V2 empty rows by hardening the V2 builder call against RecursionError (minimal wrappers, traceback capture, preserve existing rows, strict canonical-join fallback).',
+        'files': ['REFACTOR45_full_codebase_streamlit_safe.py'],
+        'supersedes': ['REFACTOR44'],
+    })
+
     globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
 except Exception:
     pass
