@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR45'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR47'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -965,16 +965,69 @@ except Exception:
 # Invocation:
 #   - python REFACTOR02_full_codebase_streamlit_safe.py --run_refactor_harness
 #   - or set RUN_REFACTOR_HARNESS=1
+# NOTE:
+#   - Under Streamlit runtime, the harness is forcibly disabled to prevent sys.exit()
+#     from terminating the Streamlit server / failing health checks.
 # ============================================================
 try:
     import os as _rf01_os
     import sys as _rf01_sys
+
+    def _rf01__running_under_streamlit() -> bool:
+        try:
+            argv = _rf01_sys.argv or []
+            if any("streamlit" in str(a).lower() for a in argv[:5]):
+                return True
+        except Exception:
+            pass
+        try:
+            if "streamlit" in _rf01_sys.modules:
+                return True
+            if "streamlit.runtime.scriptrunner" in _rf01_sys.modules:
+                return True
+        except Exception:
+            pass
+        try:
+            for _k in (
+                "STREAMLIT_SERVER_PORT",
+                "STREAMLIT_SERVER_ADDRESS",
+                "STREAMLIT_SERVER_HEADLESS",
+                "STREAMLIT_BROWSER_GATHER_USAGE_STATS",
+            ):
+                if _rf01_os.getenv(_k) is not None:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    _rf01__is_streamlit = _rf01__running_under_streamlit()
+
     _REFACTOR01_HARNESS_REQUESTED = (
-        ("--run_refactor_harness" in (_rf01_sys.argv or []))
-        or (str(_rf01_os.getenv("RUN_REFACTOR_HARNESS", "")).strip().lower() in ("1", "true", "yes", "y"))
+        (("--run_refactor_harness" in (_rf01_sys.argv or []))
+         or (str(_rf01_os.getenv("RUN_REFACTOR_HARNESS", "")).strip().lower() in ("1", "true", "yes", "y")))
+        and (not _rf01__is_streamlit)
     )
 except Exception:
     _REFACTOR01_HARNESS_REQUESTED = False
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR46
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "REFACTOR46",
+        "date": "2026-01-25",
+        "summary": "Prevent refactor harness from terminating Streamlit runtime (disable harness under Streamlit; double-guard EOF harness dispatch).",
+        "files": ["REFACTOR46_full_codebase_streamlit_safe.py"],
+        "supersedes": ["REFACTOR45"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): FIX2D71
@@ -50530,12 +50583,28 @@ except Exception:
 
 # ============================================================
 # REFACTOR11: END-OF-FILE HARNESS DISPATCH (ADDITIVE)
+# - HARD SAFETY: Never terminate the Streamlit server.
+# - Only runs when explicitly invoked AND we are not under Streamlit runtime.
 # ============================================================
 try:
     if bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
         import sys as _rf01_sys
-        _ok = _refactor02_run_harness_v2()
-        _rf01_sys.exit(0 if _ok else 1)
+        _is_st = False
+        try:
+            argv = _rf01_sys.argv or []
+            if any("streamlit" in str(a).lower() for a in argv[:5]):
+                _is_st = True
+        except Exception:
+            pass
+        try:
+            if ("streamlit" in _rf01_sys.modules) or ("streamlit.runtime.scriptrunner" in _rf01_sys.modules):
+                _is_st = True
+        except Exception:
+            pass
+
+        if not _is_st:
+            _ok = _refactor02_run_harness_v2()
+            _rf01_sys.exit(0 if _ok else 1)
 except SystemExit:
     raise
 except Exception:
@@ -51427,6 +51496,264 @@ try:
             "summary": "BUGFIX: Fix local snapshot persistence path creation. _snapshot_store_dir() previously omitted a return on the success path, returning None and causing local snapshot store/load to fail (os.path.join(None,...)). Wrapped local snapshot write call in add_to_history with guards to prevent snapshot persistence block from aborting. Also hardened store_full_snapshots_local to compute path safely. This restores reliable snapshot persistence for recent runs when Sheets snapshot store is unavailable/partial, eliminating Evolution snapshot-gate failures caused by missing baseline_sources_cache.",
             "files": ["REFACTOR44_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR43"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+# =============================================================================
+# REFACTOR47 (ADDITIVE): Fix Diff Panel V2 recursion by rebinding __rows entrypoint
+# =============================================================================
+# Problem:
+# - build_diff_metrics_panel_v2__rows was repeatedly wrapped by FIX2D2I-style
+#   closures that captured an already-wrapped implementation, causing
+#   RecursionError: maximum recursion depth exceeded.
+# - The engine then fell back to REFACTOR45_STRICT_FALLBACK and set
+#   debug.diff_panel_v2_error, even though rows were produced.
+#
+# Fix:
+# - Provide a deterministic, non-recursive canonical-first join implementation.
+# - Rebind build_diff_metrics_panel_v2__rows (and FIX2D2I alias names) to this
+#   implementation as the last-wins definition at module import.
+# - Preserve strict unit comparability + percent/year poisoning containment.
+# - Schema/key grammar untouched.
+# =============================================================================
+try:
+    def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_response: dict):
+        # ---- unwrap canonical maps (robust to packaging variants)
+        def _unwrap_pmc(resp: dict) -> dict:
+            try:
+                fn = globals().get("_diffpanel_v2__unwrap_primary_metrics_canonical")
+                if callable(fn):
+                    m = fn(resp)
+                    return m if isinstance(m, dict) else {}
+            except Exception:
+                pass
+            try:
+                if isinstance(resp, dict):
+                    m = resp.get("primary_metrics_canonical")
+                    if isinstance(m, dict):
+                        return m
+                    r = resp.get("results")
+                    if isinstance(r, dict):
+                        m2 = r.get("primary_metrics_canonical")
+                        if isinstance(m2, dict):
+                            return m2
+            except Exception:
+                pass
+            return {}
+
+        prev_can = _unwrap_pmc(prev_response if isinstance(prev_response, dict) else {})
+        cur_can = _unwrap_pmc(cur_response if isinstance(cur_response, dict) else {})
+
+        # ---- helpers
+        def _as_float(v):
+            try:
+                if v is None:
+                    return None
+                if isinstance(v, (int, float)):
+                    return float(v)
+                if isinstance(v, str):
+                    s = v.strip().replace(",", "")
+                    if not s:
+                        return None
+                    return float(s)
+            except Exception:
+                return None
+            return None
+
+        def _get_value_unit(m):
+            try:
+                if not isinstance(m, dict):
+                    return (None, None)
+                v = m.get("value_norm")
+                if v is None:
+                    v = m.get("value")
+                unit = m.get("base_unit") or m.get("unit_tag") or m.get("unit")
+                return (_as_float(v), unit)
+            except Exception:
+                return (None, None)
+
+        def _is_percent_key(ck: str) -> bool:
+            try:
+                if not isinstance(ck, str):
+                    return False
+                ck_l = ck.lower()
+                return ("__percent" in ck_l) or ck_l.endswith("_percent") or ("percent" in ck_l and "__" in ck_l)
+            except Exception:
+                return False
+
+        def _is_yearlike_number(x) -> bool:
+            try:
+                if x is None:
+                    return False
+                if not isinstance(x, (int, float)):
+                    return False
+                xi = int(x)
+                # Conservative yearlike band
+                return (1900 <= xi <= 2500) and abs(float(x) - float(xi)) < 1e-9
+            except Exception:
+                return False
+
+        def _looks_like_percent_unit(u) -> bool:
+            try:
+                s = str(u or "").lower()
+                return ("%" in s) or ("percent" in s) or ("pct" in s)
+            except Exception:
+                return False
+
+        rows = []
+
+        prev_keys = sorted([k for k in prev_can.keys() if isinstance(k, str) and k])
+        cur_keys = set([k for k in cur_can.keys() if isinstance(k, str) and k])
+
+        both_count = 0
+        prev_only = 0
+        cur_only = 0
+
+        for ck in prev_keys:
+            pm = prev_can.get(ck) if isinstance(prev_can, dict) else None
+            cm = cur_can.get(ck) if isinstance(cur_can, dict) else None
+
+            pv, pu = _get_value_unit(pm)
+            cv, cu = _get_value_unit(cm)
+
+            # Percent/year poisoning containment (defensive, even without inference):
+            # If the key is percent-like but unit doesn't look like percent and the
+            # numeric looks yearlike, treat as invalid (non-comparable).
+            if _is_percent_key(ck):
+                if (cv is not None) and _is_yearlike_number(cv) and (not _looks_like_percent_unit(cu)):
+                    cv = None
+                if (pv is not None) and _is_yearlike_number(pv) and (not _looks_like_percent_unit(pu)):
+                    pv = None
+
+            # strict unit comparability
+            is_comp = (pv is not None and cv is not None and str(pu or "").strip() == str(cu or "").strip())
+
+            d = None
+            pct = None
+            ctype = "unknown"
+            if cm is None:
+                ctype = "not_found"
+            elif pm is None:
+                ctype = "added"
+            elif is_comp:
+                d = float(cv) - float(pv)
+                if abs(d) < 1e-12:
+                    d = 0.0
+                if pv != 0:
+                    pct = (d / float(pv)) * 100.0
+                else:
+                    pct = 0.0 if d == 0.0 else None
+                if d > 0:
+                    ctype = "increased"
+                elif d < 0:
+                    ctype = "decreased"
+                else:
+                    ctype = "unchanged"
+            else:
+                # present but not comparable
+                ctype = "incomparable"
+
+            # counts for summary
+            if ck in cur_keys:
+                both_count += 1
+            else:
+                prev_only += 1
+
+            name = None
+            try:
+                name = (pm.get("name") if isinstance(pm, dict) else None) or (cm.get("name") if isinstance(cm, dict) else None) or ck
+            except Exception:
+                name = ck
+
+            # attempt to surface source_url (if present)
+            src_url = None
+            try:
+                if isinstance(cm, dict):
+                    src_url = cm.get("source_url") or cm.get("url") or None
+                    if not src_url and isinstance(cm.get("sources"), list) and cm.get("sources"):
+                        s0 = cm.get("sources")[0]
+                        if isinstance(s0, dict):
+                            src_url = s0.get("url") or s0.get("source_url") or None
+            except Exception:
+                src_url = None
+
+            rows.append({
+                "canonical_key": ck,
+                "name": name,
+                "previous_value": pv,
+                "current_value": (cv if cm is not None else "N/A"),
+                "previous_unit": pu,
+                "current_unit": (cu if cm is not None else None),
+                "prev_value_norm": pv,
+                "cur_value_norm": (cv if cm is not None else None),
+                "delta_abs": d,
+                "delta_pct": pct,
+                "change_type": ctype,
+                "baseline_is_comparable": bool(is_comp),
+                "current_method": "refactor47_canonical_join",
+                "source_url": src_url,
+            })
+
+        # cur-only keys (optional accounting; we do not emit rows by default)
+        try:
+            cur_only = int(max(0, len(cur_keys) - len(set(prev_keys) & cur_keys)))
+        except Exception:
+            cur_only = 0
+
+        summary = {
+            "rows_total": int(len(rows)),
+            "builder_id": "REFACTOR47_CANONICAL_JOIN",
+            "join_mode": "canonical_key",
+            "both_count": int(both_count),
+            "prev_only_count": int(prev_only),
+            "cur_only_count": int(cur_only),
+            "found": int(both_count),
+            "not_found": int(prev_only),
+        }
+        return rows, summary
+
+    # ---- last-wins rebind (eliminate recursion wrappers)
+    try:
+        globals()["build_diff_metrics_panel_v2__rows"] = build_diff_metrics_panel_v2__rows_refactor47
+    except Exception:
+        pass
+    # neutralize FIX2D2I alias names if present
+    try:
+        globals()["build_diff_metrics_panel_v2__rows_fix2d2i"] = build_diff_metrics_panel_v2__rows_refactor47
+    except Exception:
+        pass
+    try:
+        globals()["build_diff_metrics_panel_v2"] = build_diff_metrics_panel_v2__rows_refactor47
+    except Exception:
+        pass
+except Exception:
+    pass
+
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR47
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR47":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR47",
+            "date": "2026-01-25",
+            "summary": "Fix Diff Panel V2 recursion (maximum recursion depth exceeded) caused by FIX2D2I wrapper chains capturing already-wrapped __rows implementations. Provide a deterministic, non-recursive canonical-first join builder (strict unit comparability + percent/year poisoning containment) and rebind build_diff_metrics_panel_v2__rows (and FIX2D2I aliases) as last-wins entrypoint so Evolution no longer sets diff_panel_v2_error or falls back to strict_fallback_v2.",
+            "files": ["REFACTOR47_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR46"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
