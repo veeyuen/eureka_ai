@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR54'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR55'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -23966,7 +23966,29 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
 
-    # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
+
+    # =====================================================================
+    # REFACTOR55: Consolidate Metric Changes outputs (single source of truth)
+    # - Keep output["metric_changes"] as the canonical feed.
+    # - Mirror the same list into output["metric_changes_v2"] for backward/UI compatibility.
+    # - Drop metric_changes_legacy (no longer maintained).
+    # =====================================================================
+    try:
+        _final_rows = output.get("metric_changes")
+        if not isinstance(_final_rows, list) or not _final_rows:
+            _final_rows = output.get("metric_changes_v2") or []
+        if not isinstance(_final_rows, list):
+            _final_rows = []
+        output["metric_changes"] = _final_rows
+        output["metric_changes_v2"] = _final_rows
+        try:
+            output.pop("metric_changes_legacy", None)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+# PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
 
     _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
 
@@ -52120,6 +52142,29 @@ try:
             "summary": "Safe downsizing + durability diagnostics: remove duplicated FIX2D2I Diff Panel V2 wrapper block (redundant after recursion hardening); add snapshot_roundtrip_v1 (best-effort readback of snapshot_store_ref_stable) into Analysis persistence debug to catch recent snapshot save/retrieve issues early. No schema/key-grammar changes.",
             "files": ["REFACTOR54_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR53"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR55
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR55":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR55",
+            "date": "2026-01-25",
+            "summary": "Consolidate metric changes outputs to a single canonical feed: output['metric_changes'] is authoritative; output['metric_changes_v2'] mirrors the same list for backward/UI compatibility; drop output['metric_changes_legacy'] (no longer maintained). Add a late-stage consolidation block in compute_source_anchored_diff_BASE to enforce invariants. No schema/key-grammar changes.",
+            "files": ["REFACTOR55_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR54"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
