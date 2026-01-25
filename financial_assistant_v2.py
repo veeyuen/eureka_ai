@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR48'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR49'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -41704,33 +41704,55 @@ except Exception:
 try:
     # ---- Enhance __rows trace with pool stats / top candidates (non-invasive) ----
     # We patch via wrapper to avoid risky edits in the core loop.
-    _impl_rows = globals().get('build_diff_metrics_panel_v2__rows')
-    if callable(_impl_rows):
-        def build_diff_metrics_panel_v2__rows_fix2d2i(prev_response: dict, cur_response: dict):
-            rows, summary = _impl_rows(prev_response, cur_response)
-            try:
-                # Add lightweight trace fields if inference_commit_v2 exists.
-                for r in rows:
-                    if not isinstance(r, dict):
-                        continue
-                    diag = r.get('diag')
-                    if not isinstance(diag, dict):
-                        continue
-                    dcs = diag.get('diff_current_source_trace_v1')
-                    if not isinstance(dcs, dict):
-                        continue
-                    ic = dcs.get('inference_commit_v2')
-                    if not isinstance(ic, dict):
-                        continue
-                    # pool stats may have been computed inside __rows; if not present, leave None
-                    if 'pool_size' not in ic:
-                        ic['pool_size'] = diag.get('diff_join_trace_v1', {}).get('pool_size') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
-                    if 'top_candidates' not in ic:
-                        ic['top_candidates'] = diag.get('diff_join_trace_v1', {}).get('top_candidates') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
-            except Exception:
+    # REFACTOR49: Make FIX2D2I-style wrapper idempotent and non-recursive.
+    # Streamlit reruns execute this file multiple times in the same interpreter;
+    # duplicate wrapper passes previously captured an already-wrapped __rows,
+    # triggering RecursionError (maximum recursion depth exceeded).
+    _cur_rows_fn = globals().get('build_diff_metrics_panel_v2__rows')
+    # If already wrapped in this run/session, do not wrap again.
+    if callable(_cur_rows_fn) and getattr(_cur_rows_fn, '__yureeka_fix2d2i_wrapped__', False):
+        pass
+    else:
+        _base_rows_fn = globals().get('_YUREEKA_DIFFPANEL_V2_ROWS_BASE')
+        # First time we see a callable __rows in this run, treat it as the base.
+        if not callable(_base_rows_fn) and callable(_cur_rows_fn):
+            _base_rows_fn = _cur_rows_fn
+            globals()['_YUREEKA_DIFFPANEL_V2_ROWS_BASE'] = _base_rows_fn
+
+        if callable(_base_rows_fn):
+            def build_diff_metrics_panel_v2__rows_fix2d2i(prev_response: dict, cur_response: dict):
+                rows, summary = _base_rows_fn(prev_response, cur_response)
+                try:
+                    # Add lightweight trace fields if inference_commit_v2 exists.
+                    for r in rows:
+                        if not isinstance(r, dict):
+                            continue
+                        diag = r.get('diag')
+                        if not isinstance(diag, dict):
+                            continue
+                        dcs = diag.get('diff_current_source_trace_v1')
+                        if not isinstance(dcs, dict):
+                            continue
+                        ic = dcs.get('inference_commit_v2')
+                        if not isinstance(ic, dict):
+                            continue
+                        # pool stats may have been computed inside __rows; if not present, leave None
+                        if 'pool_size' not in ic:
+                            ic['pool_size'] = diag.get('diff_join_trace_v1', {}).get('pool_size') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
+                        if 'top_candidates' not in ic:
+                            ic['top_candidates'] = diag.get('diff_join_trace_v1', {}).get('top_candidates') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
+                except Exception:
+                    return rows, summary
                 return rows, summary
 
-        globals()['build_diff_metrics_panel_v2__rows'] = build_diff_metrics_panel_v2__rows_fix2d2i
+            try:
+                setattr(build_diff_metrics_panel_v2__rows_fix2d2i, '__yureeka_fix2d2i_wrapped__', True)
+                setattr(build_diff_metrics_panel_v2__rows_fix2d2i, '__yureeka_fix2d2i_base_name__', getattr(_base_rows_fn, '__name__', ''))
+            except Exception:
+                pass
+
+            globals()['build_diff_metrics_panel_v2__rows'] = build_diff_metrics_panel_v2__rows_fix2d2i
+
 except Exception:
     pass
 
@@ -45354,33 +45376,55 @@ except Exception:
 try:
     # ---- Enhance __rows trace with pool stats / top candidates (non-invasive) ----
     # We patch via wrapper to avoid risky edits in the core loop.
-    _impl_rows = globals().get('build_diff_metrics_panel_v2__rows')
-    if callable(_impl_rows):
-        def build_diff_metrics_panel_v2__rows_fix2d2i(prev_response: dict, cur_response: dict):
-            rows, summary = _impl_rows(prev_response, cur_response)
-            try:
-                # Add lightweight trace fields if inference_commit_v2 exists.
-                for r in rows:
-                    if not isinstance(r, dict):
-                        continue
-                    diag = r.get('diag')
-                    if not isinstance(diag, dict):
-                        continue
-                    dcs = diag.get('diff_current_source_trace_v1')
-                    if not isinstance(dcs, dict):
-                        continue
-                    ic = dcs.get('inference_commit_v2')
-                    if not isinstance(ic, dict):
-                        continue
-                    # pool stats may have been computed inside __rows; if not present, leave None
-                    if 'pool_size' not in ic:
-                        ic['pool_size'] = diag.get('diff_join_trace_v1', {}).get('pool_size') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
-                    if 'top_candidates' not in ic:
-                        ic['top_candidates'] = diag.get('diff_join_trace_v1', {}).get('top_candidates') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
-            except Exception:
+    # REFACTOR49: Make FIX2D2I-style wrapper idempotent and non-recursive.
+    # Streamlit reruns execute this file multiple times in the same interpreter;
+    # duplicate wrapper passes previously captured an already-wrapped __rows,
+    # triggering RecursionError (maximum recursion depth exceeded).
+    _cur_rows_fn = globals().get('build_diff_metrics_panel_v2__rows')
+    # If already wrapped in this run/session, do not wrap again.
+    if callable(_cur_rows_fn) and getattr(_cur_rows_fn, '__yureeka_fix2d2i_wrapped__', False):
+        pass
+    else:
+        _base_rows_fn = globals().get('_YUREEKA_DIFFPANEL_V2_ROWS_BASE')
+        # First time we see a callable __rows in this run, treat it as the base.
+        if not callable(_base_rows_fn) and callable(_cur_rows_fn):
+            _base_rows_fn = _cur_rows_fn
+            globals()['_YUREEKA_DIFFPANEL_V2_ROWS_BASE'] = _base_rows_fn
+
+        if callable(_base_rows_fn):
+            def build_diff_metrics_panel_v2__rows_fix2d2i(prev_response: dict, cur_response: dict):
+                rows, summary = _base_rows_fn(prev_response, cur_response)
+                try:
+                    # Add lightweight trace fields if inference_commit_v2 exists.
+                    for r in rows:
+                        if not isinstance(r, dict):
+                            continue
+                        diag = r.get('diag')
+                        if not isinstance(diag, dict):
+                            continue
+                        dcs = diag.get('diff_current_source_trace_v1')
+                        if not isinstance(dcs, dict):
+                            continue
+                        ic = dcs.get('inference_commit_v2')
+                        if not isinstance(ic, dict):
+                            continue
+                        # pool stats may have been computed inside __rows; if not present, leave None
+                        if 'pool_size' not in ic:
+                            ic['pool_size'] = diag.get('diff_join_trace_v1', {}).get('pool_size') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
+                        if 'top_candidates' not in ic:
+                            ic['top_candidates'] = diag.get('diff_join_trace_v1', {}).get('top_candidates') if isinstance(diag.get('diff_join_trace_v1'), dict) else None
+                except Exception:
+                    return rows, summary
                 return rows, summary
 
-        globals()['build_diff_metrics_panel_v2__rows'] = build_diff_metrics_panel_v2__rows_fix2d2i
+            try:
+                setattr(build_diff_metrics_panel_v2__rows_fix2d2i, '__yureeka_fix2d2i_wrapped__', True)
+                setattr(build_diff_metrics_panel_v2__rows_fix2d2i, '__yureeka_fix2d2i_base_name__', getattr(_base_rows_fn, '__name__', ''))
+            except Exception:
+                pass
+
+            globals()['build_diff_metrics_panel_v2__rows'] = build_diff_metrics_panel_v2__rows_fix2d2i
+
 except Exception:
     pass
 
@@ -51826,6 +51870,30 @@ try:
             "patch_id": "REFACTOR48",
             "date": "2026-01-25",
             "summary": "Fix source-anchored Metric Changes table to render metric_changes_v2 fields (delta_abs/delta_pct/comparability/method) while keeping legacy fallback; bump version lock to REFACTOR48.",
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR49
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR49":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR49",
+            "date": "2026-01-25",
+            "summary": "Eliminate Diff Panel V2 RecursionError by making FIX2D2I-style __rows wrapper idempotent and non-recursive across duplicate wrapper blocks and Streamlit reruns. Store a stable base __rows implementation, avoid re-wrapping an already wrapped function, and keep trace augmentation without affecting schema/key grammar or diff semantics.",
+            "files": ["REFACTOR49_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR48"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
