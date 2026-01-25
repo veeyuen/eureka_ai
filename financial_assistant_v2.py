@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR50'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR51'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -16254,6 +16254,11 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
     method = "no_comparable_rows"
     n = len(comparable)
 
+    # REFACTOR51: track graded stats so stability remains meaningful with extreme deltas
+    mean_abs_pct_raw = None
+    mean_abs_pct_capped = None
+    mean_abs_cap_used = None
+
     if n > 0:
         # Discrete stability:
         #   stability = (unchanged + 0.5 * small_change_changed_rows) / comparable_n * 100
@@ -16277,11 +16282,29 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
             stability = max(0.0, min(100.0, discrete))
             method = "discrete_unchanged_smallchange"
         else:
-            # Graded fallback: 100 - mean(abs % change), clamped
+            # Graded fallback:
+            #   Use a per-row cap to avoid a single extreme outlier driving mean_abs>=100 -> 0% stability.
+            #   stability = 100 - mean(min(abs_pct, 100))  (clamped [0,100])
             if abs_vals:
-                mean_abs = sum(abs_vals) / float(len(abs_vals))
-                stability = max(0.0, 100.0 - min(100.0, mean_abs))
-                method = "graded_mean_abs_pct"
+                try:
+                    mean_abs_pct_raw = sum(abs_vals) / float(len(abs_vals))
+                except Exception:
+                    mean_abs_pct_raw = None
+                try:
+                    mean_abs_cap_used = 100.0
+                    mean_abs_pct_capped = sum((a if a <= mean_abs_cap_used else mean_abs_cap_used) for a in abs_vals) / float(len(abs_vals))
+                except Exception:
+                    mean_abs_pct_capped = None
+                if isinstance(mean_abs_pct_capped, (int, float)):
+                    stability = max(0.0, min(100.0, 100.0 - float(mean_abs_pct_capped)))
+                    method = "graded_mean_abs_pct_capped"
+                elif isinstance(mean_abs_pct_raw, (int, float)):
+                    # last-resort: clamp the mean itself (previous behavior)
+                    stability = max(0.0, 100.0 - min(100.0, float(mean_abs_pct_raw)))
+                    method = "graded_mean_abs_pct"
+                else:
+                    stability = 0.0
+                    method = "no_pct_values"
             else:
                 stability = 0.0
                 method = "no_pct_values"
@@ -16317,6 +16340,18 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
                 "stability_score": round(float(stability), 1),
                 "stability_method": method,
             }
+            _r13 = dbg.get("refactor13_summary_stability_v1")
+            if isinstance(_r13, dict) and mean_abs_pct_raw is not None:
+                try:
+                    _r13["mean_abs_pct_raw"] = round(float(mean_abs_pct_raw), 2)
+                except Exception:
+                    pass
+            if isinstance(_r13, dict) and mean_abs_pct_capped is not None:
+                try:
+                    _r13["mean_abs_pct_capped"] = round(float(mean_abs_pct_capped), 2)
+                    _r13["mean_abs_pct_cap_used"] = mean_abs_cap_used
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -51925,6 +51960,29 @@ try:
             "summary": "Fix Evolution stability calculation: prevent unchanged rows from being double-counted as 'small change' (<10%), clamp discrete stability to 0–100, and compute stable/small counts from comparable rows only. Removes impossible 150% stability when all rows are unchanged; no schema/key-grammar changes.",
             "files": ["REFACTOR50_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR49"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR51
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR51":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR51",
+            "date": "2026-01-25",
+            "summary": "Fix evolution stability graded fallback: cap per-row abs % change at 100 before averaging so injected/outlier deltas don't force 0% stability. Add debug fields mean_abs_pct_raw/capped.",
+            "files": ["REFACTOR51_full_codebase_streamlit_safe.py"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
