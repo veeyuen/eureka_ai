@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR47'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR48'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -31207,42 +31207,92 @@ def render_source_anchored_results(results, query: str):
     # Metric changes table
     # -------------------------
     st.subheader("💰 Metric Changes")
-    rows = results.get("metric_changes") or []
+
+    # Prefer the V2 schema if present; fall back to legacy key for older snapshots.
+    rows = results.get("metric_changes_v2") or results.get("metric_changes") or []
     if not isinstance(rows, list) or not rows:
         st.info("No metric changes to display.")
         return
 
+    def _is_v2_row(_r: dict) -> bool:
+        try:
+            return isinstance(_r, dict) and (
+                ("delta_pct" in _r) or ("prev_value_norm" in _r) or ("cur_value_norm" in _r)
+            )
+        except Exception:
+            return False
 
+    is_v2 = any(_is_v2_row(r) for r in rows)
 
+    # Only show Δt column if at least one row has a non-empty value.
     show_delta = any(
         isinstance(r, dict) and str(r.get("analysis_evolution_delta_human") or "").strip()
         for r in rows
     )
+
+    def _fmt_vu(v, u: str) -> str:
+        """Format value + unit compactly for tables."""
+        u = (u or "").strip()
+        if v is None or v == "":
+            return ""
+        try:
+            vv = float(v)
+            # Use general format; keep it compact.
+            s = f"{vv:g}"
+        except Exception:
+            s = str(v)
+        return f"{s} {u}".strip()
+
+    def _fmt_delta_pct_v2(v) -> str:
+        if v is None or v == "":
+            return ""
+        try:
+            return f"{_safe_float(v, 0.0):.2f}%"
+        except Exception:
+            return str(v)
 
     table_rows = []
     for r in rows:
         if not isinstance(r, dict):
             continue
 
-        metric_label = r.get("metric") or r.get("name") or ""
-        status_label = r.get("status") or r.get("change_type") or ""
+        if is_v2:
+            prev_u = r.get("previous_unit") or ""
+            cur_u = r.get("current_unit") or prev_u or ""
 
-        out_row = {
-            "Metric": metric_label,
-            "Canonical Key": r.get("canonical_key", "") or "",
-            "Match Stage": r.get("match_stage", "") or "",
-            "Previous": r.get("previous_value", "") or "",
-            "Current": r.get("current_value", "") or "",
-            "Δ%": _fmt_change_pct(r.get("change_pct")),
-            "Status": status_label,
-            "Match": _fmt_pct(r.get("match_confidence")),
-            "Score": ("" if r.get("match_score") is None else f"{_safe_float(r.get('match_score'), 0.0):.2f}"),
-            "Anchor": "✅" if r.get("anchor_used") else "",
-        }
-        if show_delta:
-            out_row["Δt (A→E)"] = r.get("analysis_evolution_delta_human") or ""
+            out_row = {
+                "Metric": (r.get("name") or r.get("metric") or ""),
+                "Canonical Key": (r.get("canonical_key") or ""),
+                "Previous": _fmt_vu(r.get("previous_value"), prev_u),
+                "Current": _fmt_vu(r.get("current_value"), cur_u),
+                "Δ": ("" if r.get("delta_abs") is None else f"{_safe_float(r.get('delta_abs'), 0.0):g}"),
+                "Δ%": _fmt_delta_pct_v2(r.get("delta_pct")),
+                "Status": (r.get("change_type") or r.get("status") or ""),
+                "Comparable": ("✅" if r.get("baseline_is_comparable") else "⚠"),
+                "Method": (r.get("current_method") or ""),
+            }
+            if show_delta:
+                out_row["Δt (A→E)"] = r.get("analysis_evolution_delta_human") or ""
+            table_rows.append(out_row)
+        else:
+            metric_label = r.get("metric") or r.get("name") or ""
+            status_label = r.get("status") or r.get("change_type") or ""
 
-        table_rows.append(out_row)
+            out_row = {
+                "Metric": metric_label,
+                "Canonical Key": r.get("canonical_key", "") or "",
+                "Match Stage": r.get("match_stage", "") or "",
+                "Previous": r.get("previous_value", "") or "",
+                "Current": r.get("current_value", "") or "",
+                "Δ%": _fmt_change_pct(r.get("change_pct") if r.get("change_pct") is not None else r.get("delta_pct")),
+                "Status": status_label,
+                "Match": _fmt_pct(r.get("match_confidence")),
+                "Score": ("" if r.get("match_score") is None else f"{_safe_float(r.get('match_score'), 0.0):.2f}"),
+                "Anchor": "✅" if r.get("anchor_used") else "",
+            }
+            if show_delta:
+                out_row["Δt (A→E)"] = r.get("analysis_evolution_delta_human") or ""
+            table_rows.append(out_row)
 
     st.dataframe(table_rows, use_container_width=True)
 
@@ -51754,6 +51804,28 @@ try:
             "summary": "Fix Diff Panel V2 recursion (maximum recursion depth exceeded) caused by FIX2D2I wrapper chains capturing already-wrapped __rows implementations. Provide a deterministic, non-recursive canonical-first join builder (strict unit comparability + percent/year poisoning containment) and rebind build_diff_metrics_panel_v2__rows (and FIX2D2I aliases) as last-wins entrypoint so Evolution no longer sets diff_panel_v2_error or falls back to strict_fallback_v2.",
             "files": ["REFACTOR47_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR46"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR48
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR48":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR48",
+            "date": "2026-01-25",
+            "summary": "Fix source-anchored Metric Changes table to render metric_changes_v2 fields (delta_abs/delta_pct/comparability/method) while keeping legacy fallback; bump version lock to REFACTOR48.",
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
