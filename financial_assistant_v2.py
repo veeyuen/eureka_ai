@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR49'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR50'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -16222,6 +16222,8 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
         pass
 
     # Compute stability from comparable rows
+    # NOTE: We treat "small change" as <10% only for *changed* rows (increased/decreased),
+    # so unchanged rows are not double-counted (prevents >100% stability).
     comparable = []
     for r in rows:
         if not isinstance(r, dict):
@@ -16237,14 +16239,14 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
         # Require numeric pct (or at least numeric norms)
         cp = r.get("change_pct")
         if isinstance(cp, (int, float)):
-            comparable.append(float(cp))
+            comparable.append((float(cp), ct))
         else:
             # fallback if norms are numeric: compute pct safely
             pv = r.get("prev_value_norm")
             cv = r.get("cur_value_norm")
             try:
                 if isinstance(pv, (int, float)) and isinstance(cv, (int, float)) and abs(float(pv)) > 1e-12:
-                    comparable.append(((float(cv) - float(pv)) / float(pv)) * 100.0)
+                    comparable.append((((float(cv) - float(pv)) / float(pv)) * 100.0, ct))
             except Exception:
                 pass
 
@@ -16253,22 +16255,26 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
     n = len(comparable)
 
     if n > 0:
-        # Discrete stability similar to legacy compute_stability_score metric component
-        stable = unchanged  # unchanged count across all rows is OK (V2 uses same change_type)
+        # Discrete stability:
+        #   stability = (unchanged + 0.5 * small_change_changed_rows) / comparable_n * 100
+        stable = 0
         small = 0
         abs_vals = []
-        for cp in comparable:
+        for cp, ct in comparable:
             try:
                 a = abs(float(cp))
                 abs_vals.append(a)
-                if a < 10.0:
+                if ct == "unchanged":
+                    stable += 1
+                elif ct in ("increased", "decreased") and a < 10.0:
                     small += 1
             except Exception:
                 pass
 
-        discrete = ((stable + (small * 0.5)) / max(1, n)) * 100.0
+        discrete = ((stable + (small * 0.5)) / float(max(1, n))) * 100.0
         if discrete > 0.0:
-            stability = discrete
+            # Clamp for safety (should already be <=100 with the counting rules above)
+            stability = max(0.0, min(100.0, discrete))
             method = "discrete_unchanged_smallchange"
         else:
             # Graded fallback: 100 - mean(abs % change), clamped
@@ -51894,6 +51900,31 @@ try:
             "summary": "Eliminate Diff Panel V2 RecursionError by making FIX2D2I-style __rows wrapper idempotent and non-recursive across duplicate wrapper blocks and Streamlit reruns. Store a stable base __rows implementation, avoid re-wrapping an already wrapped function, and keep trace augmentation without affecting schema/key grammar or diff semantics.",
             "files": ["REFACTOR49_full_codebase_streamlit_safe.py"],
             "supersedes": ["REFACTOR48"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR50
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR50":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR50",
+            "date": "2026-01-25",
+            "summary": "Fix Evolution stability calculation: prevent unchanged rows from being double-counted as 'small change' (<10%), clamp discrete stability to 0–100, and compute stable/small counts from comparable rows only. Removes impossible 150% stability when all rows are unchanged; no schema/key-grammar changes.",
+            "files": ["REFACTOR50_full_codebase_streamlit_safe.py"],
+            "supersedes": ["REFACTOR49"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
