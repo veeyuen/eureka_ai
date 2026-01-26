@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR67'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR68'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -25463,15 +25463,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
 
     output["metric_changes"] = metric_changes or []
-    output["summary"]["total_metrics"] = len(output["metric_changes"])
-    output["summary"]["metrics_found"] = int(found or 0)
-    output["summary"]["metrics_increased"] = int(increased or 0)
-    output["summary"]["metrics_decreased"] = int(decreased or 0)
-    output["summary"]["metrics_unchanged"] = int(unchanged or 0)
-
-    total = max(1, len(output["metric_changes"]))
-    output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
-
+    # REFACTOR68: recompute summary + stability from the final canonical-first diff rows.
+    # This prevents stale 0 counters (and stability=0) when we swap the UI feed to metric_changes_v2.
+    try:
+        _refactor13_recompute_summary_and_stability_v1(output)
+    except Exception:
+        pass
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
     output["sources_fetched"] = len(baseline_sources_cache)
@@ -42667,6 +42664,8 @@ try:
                 break
         except Exception:
             pass
+
+
     if not _already:
         PATCH_TRACKER_V1.append({
             "patch_id": "REFACTOR67",
@@ -42674,6 +42673,34 @@ try:
             "summary": "Controlled downsizing: remove legacy run_source_anchored_evolution_BASE preservation path and the old pre-FIX24 evolution wrapper. FIX24 changed-case recompute now routes directly through compute_source_anchored_diff (single authoritative path), while retaining FIX24 debug markers, snapshot hash trace, Δt injection gating, and stability scoring. No schema/key-grammar changes.",
             "files": ["REFACTOR67.py"],
             "supersedes": ["REFACTOR66"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH TRACKER V1 (ADD): REFACTOR68
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        try:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR68":
+                _already = True
+                break
+        except Exception:
+            pass
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR68",
+            "date": "2026-01-26",
+            "summary": "Fix Evolution stability + summary regression: stop overwriting stability_score with legacy (unchanged/total) formula and recompute results.summary + stability_score from the final canonical-first metric_changes rows (V2-first). Restores correct increased/decreased/unchanged counters and non-zero graded stability for injection runs, while keeping strict unit comparability and schema/key-grammar freeze.",
+            "files": ["REFACTOR68.py"],
+            "supersedes": ["REFACTOR67"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
