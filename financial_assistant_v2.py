@@ -60,6 +60,187 @@ import plotly.express as px
 import streamlit as st
 
 
+
+
+# ============================================================
+# STREAMLIT SAFE-RENDER GUARD (FIX2D92)
+# ============================================================
+# Prevent Streamlit from rendering callables (functions) as large inspection panels
+# when callables leak into debug objects.
+
+def _sanitize_for_streamlit(obj, *, _depth: int = 0, _max_depth: int = 6):
+    """Return a Streamlit-safe version of obj by stripping callables."""
+    try:
+        if callable(obj):
+            # Hide callables entirely to avoid Streamlit function-inspection panels.
+            return ""
+    except Exception:
+        pass
+
+    if _depth >= _max_depth:
+        return obj
+
+    try:
+        if isinstance(obj, dict):
+            return {k: _sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for v in obj)
+        if isinstance(obj, set):
+            return {_sanitize_for_streamlit(v, _depth=_depth + 1, _max_depth=_max_depth) for v in obj}
+    except Exception:
+        return obj
+    return obj
+
+try:
+    _yureeka__orig_write = getattr(st, "write", None)
+    _yureeka__orig_json = getattr(st, "json", None)
+
+    if callable(_yureeka__orig_write):
+        def _yureeka_safe_write(*args, **kwargs):
+            args = tuple(_sanitize_for_streamlit(a) for a in args)
+            return _yureeka__orig_write(*args, **kwargs)
+        st.write = _yureeka_safe_write  # type: ignore[assignment]
+
+    if callable(_yureeka__orig_json):
+        def _yureeka_safe_json(obj=None, *args, **kwargs):
+            obj = _sanitize_for_streamlit(obj)
+            return _yureeka__orig_json(obj, *args, **kwargs)
+        st.json = _yureeka_safe_json  # type: ignore[assignment]
+except Exception:
+    # Never block app startup due to a defensive UI patch.
+    pass
+
+
+# ============================================================
+# EVOLUTION STABILITY RECOMPUTE (FIX2D93)
+# ============================================================
+def _fix2d93_recompute_evolution_summary_and_stability(rows):
+    """Recompute Evolution summary counters and stability from final diff rows.
+
+    Why:
+    - Render-layer wrappers can rewrite row.current fields / change_type after the base diff
+      has already computed (unchanged/increased/decreased/found) counters.
+    - The legacy Evolution panel uses results['stability_score'], which was derived from stale counters,
+      causing it to stick at 0% even when rows indicate unchanged/stable metrics.
+
+    Definition:
+    - stable = unchanged + non_numeric_found (found but not numerically comparable)
+    - changed = increased + decreased
+    - Unit mismatches and not_found rows are excluded from comparable_total
+    - stability_score = 100 if comparable_total==0 else stable/comparable_total*100
+    """
+    if not isinstance(rows, list) or not rows:
+        return {
+            "total_metrics": 0,
+            "metrics_found": 0,
+            "metrics_increased": 0,
+            "metrics_decreased": 0,
+            "metrics_unchanged": 0,
+            "metrics_non_numeric_stable": 0,
+            "metrics_unit_mismatch": 0,
+            "metrics_not_found": 0,
+            "stability_score": 100.0,
+        }
+
+    def _to_float(x):
+        try:
+            if x is None:
+                return None
+            if isinstance(x, (int, float)):
+                return float(x)
+            s = str(x).strip()
+            if not s or s.lower() in ("n/a", "na", "none", "-", "null"):
+                return None
+            s = s.replace(",", "")
+            return float(s)
+        except Exception:
+            return None
+
+    total = len(rows)
+    found = 0
+    inc = 0
+    dec = 0
+    unch = 0
+    nonnum_stable = 0
+    unit_mismatch = 0
+    not_found = 0
+
+    stable = 0
+    changed = 0
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+
+        ct = str(r.get("change_type") or "").strip().lower()
+        um = bool(r.get("unit_mismatch")) or (ct == "unit_mismatch")
+
+        # Determine presence of current-side value
+        cur_vn = r.get("cur_value_norm", r.get("current_value_norm", None))
+        cur_disp = r.get("current_value", r.get("new", r.get("cur", "")))
+        has_cur = (cur_vn is not None) or (isinstance(cur_disp, str) and cur_disp.strip() not in ("", "-", "N/A", "n/a"))
+
+        # Determine not_found
+        if ct in ("not_found", "missing", "removed", "dropped") or (not has_cur and ct == ""):
+            not_found += 1
+            continue
+
+        found += 1
+
+        if um:
+            unit_mismatch += 1
+            # Exclude from comparable stability denominator
+            continue
+
+        # Prefer numeric compare on existing normalized fields
+        pv = _to_float(r.get("prev_value_norm", r.get("previous_value_norm", r.get("previous_value", None))))
+        cv = _to_float(cur_vn)
+
+        if pv is not None and cv is not None:
+            if abs(cv - pv) < 1e-9:
+                unch += 1
+                stable += 1
+            elif cv > pv:
+                inc += 1
+                changed += 1
+            else:
+                dec += 1
+                changed += 1
+            continue
+
+        # Fall back to change_type tags (no inference)
+        if ct == "unchanged":
+            unch += 1
+            stable += 1
+        elif ct == "increased":
+            inc += 1
+            changed += 1
+        elif ct == "decreased":
+            dec += 1
+            changed += 1
+        else:
+            # Found but non-numeric / non-comparable -> treat as stable for stability purposes
+            nonnum_stable += 1
+            stable += 1
+
+    comparable_total = stable + changed
+    stability = 100.0 if comparable_total <= 0 else (stable / float(comparable_total)) * 100.0
+
+    return {
+        "total_metrics": int(total),
+        "metrics_found": int(found),
+        "metrics_increased": int(inc),
+        "metrics_decreased": int(dec),
+        "metrics_unchanged": int(unch),
+        "metrics_non_numeric_stable": int(nonnum_stable),
+        "metrics_unit_mismatch": int(unit_mismatch),
+        "metrics_not_found": int(not_found),
+        "stability_score": float(stability),
+    }
+
+
 # PATCH FIX2D64 (SHADOW MODE): Canonical Identity Spine module import (no behavior change).
 # Enabled only if caller sets web_context["enable_spine_shadow_fix2d64"]=True or env ENABLE_SPINE_SHADOW_FIX2D64=1.
 try:
@@ -87,11 +268,46 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # =========================
 # VERSION STAMP (ADDITIVE)
 # =========================
-CODE_VERSION = "FIX2D89"
+CODE_VERSION = "FIX2D91"
+
+
+# ============================================================
+# HARD-CODE TOGGLES (UI + INJECTION)
+# ============================================================
+# Extra URL injection textbox: set to True to hide or disable (and ignore any prior value).
+HIDE_EXTRA_URL_TEXTBOX_ANALYSIS = False
+DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS = False
+
+HIDE_EXTRA_URL_TEXTBOX_EVOLUTION = False
+DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION = False
+
+# Hard-coded injected URL(s) for Evolution (newline-separated allowed).
+# When FORCE_INJECTED_URL_IN_EVOLUTION is True, Evolution will ALWAYS inject these URL(s),
+# regardless of any UI input.
+INJECTED_URL = ""
+FORCE_INJECTED_URL_IN_EVOLUTION = False
 # ============================================================
 # ============================================================
 
 # ============================================================
+# ============================================================
+# PATCH TRACKER V1 (ADD): FIX2D90
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        "patch_id": "FIX2D90",
+        "date": "2026-01-21",
+        "summary": "Add hard-coded toggles to hide/disable the Extra source URLs textbox in Analysis/Evolution, and add hard-coded INJECTED_URL override for Evolution injection.",
+        "files": ["FIX2D90_full_codebase_streamlit_safe.py"],
+        "supersedes": ["FIX2D89"],
+    })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
 # PATCH TRACKER V1 (ADD): FIX2D89
 # ============================================================
 try:
@@ -22365,14 +22581,40 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
         pass
     # =====================================================================
 
-    output["summary"]["total_metrics"] = len(output["metric_changes"])
-    output["summary"]["metrics_found"] = int(found or 0)
-    output["summary"]["metrics_increased"] = int(increased or 0)
-    output["summary"]["metrics_decreased"] = int(decreased or 0)
-    output["summary"]["metrics_unchanged"] = int(unchanged or 0)
-
-    total = max(1, len(output["metric_changes"]))
-    output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
+    # FIX2D93 (ADDITIVE): recompute summary + stability from the FINAL diff rows.
+    # Why:
+    # - Render-layer wrappers can adjust row.change_type/current fields without updating counters.
+    # - Legacy stability used metrics_unchanged/len(metric_changes), which can stick at 0%.
+    try:
+        _rows = output.get("metric_changes") or []
+        _stats = _fix2d93_recompute_evolution_summary_and_stability(_rows)
+        if isinstance(_stats, dict) and _stats:
+            output["summary"]["total_metrics"] = int(_stats.get("total_metrics", len(_rows)))
+            output["summary"]["metrics_found"] = int(_stats.get("metrics_found", 0))
+            output["summary"]["metrics_increased"] = int(_stats.get("metrics_increased", 0))
+            output["summary"]["metrics_decreased"] = int(_stats.get("metrics_decreased", 0))
+            output["summary"]["metrics_unchanged"] = int(_stats.get("metrics_unchanged", 0))
+            # non-breaking extra diagnostics
+            output["summary"]["metrics_non_numeric_stable"] = int(_stats.get("metrics_non_numeric_stable", 0))
+            output["summary"]["metrics_unit_mismatch"] = int(_stats.get("metrics_unit_mismatch", 0))
+            output["summary"]["metrics_not_found"] = int(_stats.get("metrics_not_found", 0))
+            output["stability_score"] = float(_stats.get("stability_score", 0.0))
+        else:
+            output["summary"]["total_metrics"] = len(output["metric_changes"])
+            output["summary"]["metrics_found"] = int(found or 0)
+            output["summary"]["metrics_increased"] = int(increased or 0)
+            output["summary"]["metrics_decreased"] = int(decreased or 0)
+            output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+            _den = max(1, int(output["summary"]["metrics_unchanged"]) + int(output["summary"]["metrics_increased"]) + int(output["summary"]["metrics_decreased"]))
+            output["stability_score"] = (float(output["summary"]["metrics_unchanged"]) / float(_den)) * 100.0
+    except Exception:
+        output["summary"]["total_metrics"] = len(output["metric_changes"])
+        output["summary"]["metrics_found"] = int(found or 0)
+        output["summary"]["metrics_increased"] = int(increased or 0)
+        output["summary"]["metrics_decreased"] = int(decreased or 0)
+        output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+        total = max(1, len(output["metric_changes"]))
+        output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
 
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
@@ -27674,14 +27916,40 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
 
     output["metric_changes"] = metric_changes or []
-    output["summary"]["total_metrics"] = len(output["metric_changes"])
-    output["summary"]["metrics_found"] = int(found or 0)
-    output["summary"]["metrics_increased"] = int(increased or 0)
-    output["summary"]["metrics_decreased"] = int(decreased or 0)
-    output["summary"]["metrics_unchanged"] = int(unchanged or 0)
-
-    total = max(1, len(output["metric_changes"]))
-    output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
+    # FIX2D93 (ADDITIVE): recompute summary + stability from the FINAL diff rows.
+    # Why:
+    # - Render-layer wrappers can adjust row.change_type/current fields without updating counters.
+    # - Legacy stability used metrics_unchanged/len(metric_changes), which can stick at 0%.
+    try:
+        _rows = output.get("metric_changes") or []
+        _stats = _fix2d93_recompute_evolution_summary_and_stability(_rows)
+        if isinstance(_stats, dict) and _stats:
+            output["summary"]["total_metrics"] = int(_stats.get("total_metrics", len(_rows)))
+            output["summary"]["metrics_found"] = int(_stats.get("metrics_found", 0))
+            output["summary"]["metrics_increased"] = int(_stats.get("metrics_increased", 0))
+            output["summary"]["metrics_decreased"] = int(_stats.get("metrics_decreased", 0))
+            output["summary"]["metrics_unchanged"] = int(_stats.get("metrics_unchanged", 0))
+            # non-breaking extra diagnostics
+            output["summary"]["metrics_non_numeric_stable"] = int(_stats.get("metrics_non_numeric_stable", 0))
+            output["summary"]["metrics_unit_mismatch"] = int(_stats.get("metrics_unit_mismatch", 0))
+            output["summary"]["metrics_not_found"] = int(_stats.get("metrics_not_found", 0))
+            output["stability_score"] = float(_stats.get("stability_score", 0.0))
+        else:
+            output["summary"]["total_metrics"] = len(output["metric_changes"])
+            output["summary"]["metrics_found"] = int(found or 0)
+            output["summary"]["metrics_increased"] = int(increased or 0)
+            output["summary"]["metrics_decreased"] = int(decreased or 0)
+            output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+            _den = max(1, int(output["summary"]["metrics_unchanged"]) + int(output["summary"]["metrics_increased"]) + int(output["summary"]["metrics_decreased"]))
+            output["stability_score"] = (float(output["summary"]["metrics_unchanged"]) / float(_den)) * 100.0
+    except Exception:
+        output["summary"]["total_metrics"] = len(output["metric_changes"])
+        output["summary"]["metrics_found"] = int(found or 0)
+        output["summary"]["metrics_increased"] = int(increased or 0)
+        output["summary"]["metrics_decreased"] = int(decreased or 0)
+        output["summary"]["metrics_unchanged"] = int(unchanged or 0)
+        total = max(1, len(output["metric_changes"]))
+        output["stability_score"] = (output["summary"]["metrics_unchanged"] / total) * 100.0
 
     output["source_results"] = baseline_sources_cache[:50]
     output["sources_checked"] = len(baseline_sources_cache)
@@ -31120,20 +31388,32 @@ def main():
 
             # ============================================================
 
-            extra_sources_text_tab1 = st.text_area(
-
-                "Extra source URLs (optional, one per line)",
-
-                placeholder="https://example.com/report\nhttps://another-source.com/page",
-
-                help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
-
-                height=90,
-
-                key="ui_extra_sources_tab1",
-
-            )
-
+            # ============================================================
+            # HARD-CODE TOGGLE: hide/disable extra URL injection UI (Analysis)
+            # ============================================================
+            extra_sources_text_tab1 = ""
+            if not bool(globals().get("HIDE_EXTRA_URL_TEXTBOX_ANALYSIS", False)):
+                if bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS", False)):
+                    try:
+                        st.session_state["ui_extra_sources_tab1"] = ""
+                    except Exception:
+                        pass
+                extra_sources_text_tab1 = st.text_area(
+                    "Extra source URLs (optional, one per line)",
+                    placeholder="https://example.com/report\nhttps://another-source.com/page",
+                    help="Add these URLs to the admitted source list for this analysis run (useful for hash-mismatch tests).",
+                    height=90,
+                    key="ui_extra_sources_tab1",
+                    disabled=bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS", False)),
+                )
+                if bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_ANALYSIS", False)):
+                    extra_sources_text_tab1 = ""
+            else:
+                # Ensure any prior session-state doesn't keep injecting URLs when hidden
+                try:
+                    st.session_state["ui_extra_sources_tab1"] = ""
+                except Exception:
+                    pass
             # ============================================================
 
 
@@ -31586,13 +31866,46 @@ def main():
         # ============================================================
         # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
         # ============================================================
-        extra_sources_text = st.text_area(
-            "Extra source URLs (optional, one per line)",
-            placeholder="https://example.com/report\nhttps://another-source.com/page",
-            help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
-            height=110,
-        )
-
+        # ============================================================
+        # HARD-CODE TOGGLES + FORCED INJECTION URL (Evolution)
+        # ============================================================
+        _ui_extra_sources_key = "ui_extra_sources_evolution"
+        _forced_injected_text = str(globals().get("INJECTED_URL", "") or "").strip()
+        _force_injected = bool(globals().get("FORCE_INJECTED_URL_IN_EVOLUTION", False)) and bool(_forced_injected_text)
+        extra_sources_text = _forced_injected_text if _force_injected else ""
+        if not bool(globals().get("HIDE_EXTRA_URL_TEXTBOX_EVOLUTION", False)):
+            if _force_injected:
+                # lock to hard-coded injected URL (still visible unless hidden)
+                try:
+                    st.session_state[_ui_extra_sources_key] = _forced_injected_text
+                except Exception:
+                    pass
+            elif bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION", False)):
+                try:
+                    st.session_state[_ui_extra_sources_key] = ""
+                except Exception:
+                    pass
+            extra_sources_text = st.text_area(
+                "Extra source URLs (optional, one per line)",
+                value=(_forced_injected_text if _force_injected else ""),
+                placeholder="https://example.com/report\nhttps://another-source.com/page",
+                help="Adds these URLs to the admitted source list for this run. Useful to test hash-mismatch rebuilds.",
+                height=110,
+                key=_ui_extra_sources_key,
+                disabled=bool(_force_injected or globals().get("DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION", False)),
+            )
+            # When disabled/forced, ignore any UI value to prevent stale injections.
+            if bool(globals().get("DISABLE_EXTRA_URL_TEXTBOX_EVOLUTION", False)) and not _force_injected:
+                extra_sources_text = ""
+            if _force_injected:
+                extra_sources_text = _forced_injected_text
+        else:
+            # Hidden UI: ensure no stale session-state injection remains
+            try:
+                st.session_state[_ui_extra_sources_key] = ""
+            except Exception:
+                pass
+            extra_sources_text = _forced_injected_text if _force_injected else ""
         compare_data = None
         if "another saved analysis" in compare_method:
             compare_options = [
@@ -36564,16 +36877,26 @@ def _ph2b_v23_current_metrics_suspicious(_cm_map):
 
 
 def diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR(prev_response, cur_response, *args, **kwargs):
-    """Wrapper around the existing diff implementation to force render-only rebuild when current canonical is suspicious."""
-    if not callable(diff_metrics_by_name_FIX31_BASE):
-        # If we can't find the base function, fall back to any existing diff impl
-        if callable(diff_metrics_by_name_FIX32_V22_BASE):
-            return diff_metrics_by_name_FIX32_V22_BASE(prev_response, cur_response, *args, **kwargs)
-        return []
+    """FIX2D91: V23 wrapper made return-shape incompatible with callers.
+
+    Purpose (kept): if current canonical dict is present-but-suspicious, pass an empty
+    primary_metrics_canonical into the underlying diff so the existing rebuild ladder runs.
+
+    IMPORTANT: must preserve the canonical diff contract:
+      returns (metric_changes:list, unchanged:int, increased:int, decreased:int, found:int)
+    """
+    # Pick a base implementation (prefer FIX31 base; else V22 base)
+    base_fn = diff_metrics_by_name_FIX31_BASE if callable(diff_metrics_by_name_FIX31_BASE) else None
+    if not callable(base_fn) and callable(diff_metrics_by_name_FIX32_V22_BASE):
+        base_fn = diff_metrics_by_name_FIX32_V22_BASE
+
+    if not callable(base_fn):
+        return ([], 0, 0, 0, 0)
 
     _cur = cur_response
     _forced_clear = False
     _sus = False
+
     try:
         cm = None
         if isinstance(cur_response, dict):
@@ -36588,30 +36911,37 @@ def diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR(prev_response, cur_response, 
                 _cur.setdefault('diag', {})
                 if isinstance(_cur.get('diag'), dict):
                     _cur['diag'].setdefault('ph2b_v23_force_clear_current_metrics', True)
-                    try:
-                        _cur['diag'].setdefault('ph2b_v23_force_clear_reason', 'suspicious_current_metrics_triggered_render_rebuild')
-                    except Exception:
-                        pass
+                    _cur['diag'].setdefault('ph2b_v23_force_clear_reason', 'suspicious_current_metrics_triggered_render_rebuild')
                 # Force empty so v21/v22 rebuild ladder actually runs
                 _cur['primary_metrics_canonical'] = {}
     except Exception:
-        pass
         _cur = cur_response
         _forced_clear = False
+        _sus = False
 
-    rows = diff_metrics_by_name_FIX31_BASE(prev_response, _cur, *args, **kwargs)
+    res = base_fn(prev_response, _cur, *args, **kwargs)
 
-    # PATCH V23_ROW_DIAG (ADDITIVE): mark every returned row so we can confirm v23 wrapper ran
+    # Normalize base return-shape to the 5-tuple contract
+    if isinstance(res, tuple) and len(res) == 5:
+        metric_changes, unchanged, increased, decreased, found = res
+    elif isinstance(res, list):
+        metric_changes, unchanged, increased, decreased, found = res, 0, 0, 0, 0
+    else:
+        metric_changes, unchanged, increased, decreased, found = [], 0, 0, 0, 0
+
+    # Mark every returned row so we can confirm wrapper ran (auditable, non-breaking)
     try:
-        if _forced_clear and isinstance(rows, list):
-            for r in rows:
+        if _forced_clear and isinstance(metric_changes, list):
+            for r in metric_changes:
                 if isinstance(r, dict):
                     r.setdefault('diag', {})
                     if isinstance(r.get('diag'), dict):
                         r['diag'].setdefault('ph2b_v23_force_clear_applied', True)
                         r['diag'].setdefault('ph2b_v23_force_clear_suspicious', bool(_sus))
     except Exception:
-        return rows
+        pass
+
+    return (metric_changes, unchanged, increased, decreased, found)
 
 
 # PATCH V23_WIRE (ADDITIVE): Replace the public diff entrypoint used by evolution with the v23 wrapper.
@@ -36621,12 +36951,7 @@ try:
 except Exception:
     pass
 
-# PATCH V23_VERSION_BUMP (ADDITIVE): bump CODE_VERSION for audit
-try:
-    CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v23'
-except Exception:
-    pass
-
+# NOTE: do NOT bump CODE_VERSION here; final override at end-of-file keeps patch id authoritative.
 
 
 # =====================================================================
@@ -48741,5 +49066,56 @@ try:
             pass
 
         globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = rebuild_metrics_from_snapshots_schema_only_fix16
+except Exception:
+    pass
+
+# =====================================================================
+# PATCH FIX2D91 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D91',
+        'date': '2026-01-21',
+        'summary': "Fix Streamlit 'function error panel' caused by V23 diff wrapper (diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR) returning None/list instead of the required 5-tuple. Wrapper now preserves the canonical diff contract and always returns (metric_changes, unchanged, increased, decreased, found). This prevents uncaught unpacking/None errors that surfaced as a noisy panel in Analysis/Evolution.",
+        'files': ['FIX2D91_full_codebase_streamlit_safe.py'],
+        'supersedes': [],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# FIX2D91_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
+try:
+    CODE_VERSION = 'FIX2D91'
+    globals()['CODE_VERSION'] = CODE_VERSION
+except Exception:
+    pass
+
+
+# =====================================================================
+# PATCH FIX2D93 PATCH TRACKER ENTRY (ADDITIVE)
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    PATCH_TRACKER_V1.append({
+        'patch_id': 'FIX2D93',
+        'date': '2026-01-21',
+        'summary': "Fix Evolution Stability metric stuck at 0% by recomputing summary counters from the FINAL metric_changes rows (after render-layer wrappers) and computing stability over comparable metrics. Also incorporates the FIX2D92 Streamlit safe-render guard (sanitizes callables before st.write/st.json) to prevent function-inspection panels.",
+        'files': ['FIX2D93_full_codebase_streamlit_safe.py'],
+        'supersedes': ['FIX2D92'],
+    })
+    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# FIX2D93_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
+try:
+    CODE_VERSION = 'FIX2D93'
+    globals()['CODE_VERSION'] = CODE_VERSION
 except Exception:
     pass
