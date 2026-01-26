@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR66'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR67'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -16460,99 +16460,6 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
 
 
 
-def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
-    """
-    Backward-compatible entrypoint used by the Streamlit Evolution UI.
-
-    Enhancements:
-      - Accept optional web_context so evolution can reuse same-run analysis upstream artifacts.
-      - ALWAYS returns a dict with required keys (even on crash).
-    """
-
-    # REFACTOR36: coerce inputs to dict to avoid NoneType.get failures
-    if not isinstance(previous_data, dict):
-        previous_data = {}
-    if web_context is None or not isinstance(web_context, dict):
-        web_context = {}
-
-    fn = globals().get("compute_source_anchored_diff")
-
-    def _fail(msg: str) -> dict:
-        return {
-            "status": "failed",
-            "message": msg,
-            "sources_checked": 0,
-            "sources_fetched": 0,
-            "numbers_extracted_total": 0,
-            "stability_score": 0.0,
-            "summary": {
-                "total_metrics": 0,
-                "metrics_found": 0,
-                "metrics_increased": 0,
-                "metrics_decreased": 0,
-                "metrics_unchanged": 0,
-            },
-            "metric_changes": [],
-            "source_results": [],
-            "interpretation": "Evolution failed.",
-        }
-
-    if not callable(fn):
-        return _fail("compute_source_anchored_diff() is not defined, so source-anchored evolution cannot run.")
-
-    try:
-        # Support both old signature (previous_data) and new signature (previous_data, web_context)
-        try:
-            out = fn(previous_data, web_context=web_context)
-        except TypeError:
-            out = fn(previous_data)
-    except Exception as e:
-        return _fail(f"compute_source_anchored_diff crashed: {e}")
-
-    if not isinstance(out, dict):
-        return _fail("compute_source_anchored_diff returned a non-dict payload.")
-
-    # Renderer-required defaults
-    out.setdefault("status", "success")
-    out.setdefault("message", "")
-    out.setdefault("sources_checked", 0)
-    out.setdefault("sources_fetched", 0)
-    out.setdefault("numbers_extracted_total", 0)
-    out.setdefault("stability_score", 0.0)
-    out.setdefault("summary", {})
-    out["summary"].setdefault("total_metrics", len(out.get("metric_changes") or []))
-    out["summary"].setdefault("metrics_found", 0)
-    out["summary"].setdefault("metrics_increased", 0)
-    out["summary"].setdefault("metrics_decreased", 0)
-    out["summary"].setdefault("metrics_unchanged", 0)
-    out.setdefault("metric_changes", [])
-    out.setdefault("source_results", [])
-    out.setdefault("interpretation", "")
-    # =====================================================================
-    # PATCH FIX39 (ADDITIVE): sanitize evolution output before publish/render
-    # =====================================================================
-    try:
-        _fix39_sanitize_metric_change_rows(out)
-    except Exception:
-        pass
-
-    # PATCH FIX2D20 (ADD): trace year-like commits on evolution base-run output
-
-
-    _fix2d20_trace_year_like_commits(out, stage='evolution', callsite='run_source_anchored_evolution_base')
-
-    # =====================================================================
-    # REFACTOR13 (ADDITIVE): recompute summary + stability from canonical-first diff rows
-    # Ensures results.summary and stability_score reflect metric_changes_v2 (or legacy metric_changes).
-    # =====================================================================
-    try:
-        _refactor13_recompute_summary_and_stability_v1(out)
-    except Exception:
-        pass
-
-
-
-    return out
 # =========================================================
 # ROBUST EVOLUTION HELPERS (DETERMINISTIC)
 # =========================================================
@@ -32798,16 +32705,11 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
 #      (same rebuild/anchors logic as used elsewhere in this codebase).
 #
 # This patch is purely additive:
-#   - Preserves original run_source_anchored_evolution as run_source_anchored_evolution_BASE
+#   - REFACTOR67: legacy base evolution runner removed; changed-case recompute calls compute_source_anchored_diff directly
 #   - Adds helper functions prefixed _fix24_*
 #   - Overrides run_source_anchored_evolution by re-defining it below
 # ==============================================================================
 
-try:
-    run_source_anchored_evolution_BASE = run_source_anchored_evolution  # type: ignore
-except Exception:
-    pass
-    run_source_anchored_evolution_BASE = None  # type: ignore
 
 
 def _fix24_get_prev_full_payload(previous_data: dict) -> dict:
@@ -34066,35 +33968,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         pass
     # =====================================================================
 
+    # REFACTOR67: changed-case recompute routes directly through compute_source_anchored_diff
 
-
-    if callable(run_source_anchored_evolution_BASE):
-        try:
-            out = run_source_anchored_evolution_BASE(prev_full, web_context=wc)
-            if isinstance(out, dict):
-                out.setdefault("debug", {})
-                if isinstance(out["debug"], dict):
-                    out["debug"]["fix24"] = True
-                    out["debug"]["fix24_mode"] = "recompute_changed"
-                    # =====================================================================
-                    # PATCH FIX40 (ADDITIVE): record Scenario B override
-                    # =====================================================================
-                    out["debug"]["fix40_force_rebuild"] = bool(_force_rebuild)
-                    # =====================================================================
-            # =====================================================================
-            # =====================================================================
-            # =====================================================================
-            # =====================================================================
-                    out["debug"]["prev_source_snapshot_hash_v2"] = prev_hashes.get("v2","")
-                    out["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2","")
-                    out["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1","")
-                    out["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1","")
-            return out
-        except Exception as e:
-            # Fall through to original behavior if anything unexpected
-            pass
-
-    # Ultimate fallback: call compute_source_anchored_diff directly if base runner not available
     fn = globals().get("compute_source_anchored_diff")
     if callable(fn):
         try:
@@ -34121,11 +33996,25 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
             _fix2d20_trace_year_like_commits(out_changed, stage='evolution', callsite='run_source_anchored_evolution_changed')
 
+            # REFACTOR67: always mark changed recompute path with FIX24 debug (no base runner branch)
+            try:
+                if isinstance(out_changed, dict):
+                    out_changed.setdefault("debug", {})
+                    if isinstance(out_changed.get("debug"), dict):
+                        out_changed["debug"]["fix24"] = True
+                        out_changed["debug"]["fix24_mode"] = "recompute_changed"
+                        out_changed["debug"]["prev_source_snapshot_hash_v2"] = prev_hashes.get("v2", "")
+                        out_changed["debug"]["cur_source_snapshot_hash_v2"] = cur_hashes.get("v2", "")
+                        out_changed["debug"]["prev_source_snapshot_hash"] = prev_hashes.get("v1", "")
+                        out_changed["debug"]["cur_source_snapshot_hash"] = cur_hashes.get("v1", "")
+            except Exception:
+                pass
+
             return out_changed
         except Exception:
             return {
         "status": "failed",
-        "message": "FIX24: Evolution recompute failed (no callable base evolution runner).",
+        "message": "FIX24: Evolution recompute failed (compute_source_anchored_diff path).",
         "sources_checked": len(urls),
         "sources_fetched": len(urls),
         "metric_changes": [],
@@ -42759,6 +42648,32 @@ try:
             "summary": "Controlled downsizing + safety rail: de-duplicate the redundant nested output['results'] mirror in Evolution payloads by shrinking it to a lightweight compatibility stub (prevents baseline_sources_cache duplication and reduces JSON/Sheets footprint). No schema/key-grammar changes; preserves canonical-first diffing, unit comparability, snapshot rehydration, Δt injection gating, and stability scoring.",
             "files": ["REFACTOR66.py"],
             "supersedes": ["REFACTOR65"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# =====================================================================
+# PATCH TRACKER V1 (ADD): REFACTOR67
+# =====================================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        try:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR67":
+                _already = True
+                break
+        except Exception:
+            pass
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR67",
+            "date": "2026-01-26",
+            "summary": "Controlled downsizing: remove legacy run_source_anchored_evolution_BASE preservation path and the old pre-FIX24 evolution wrapper. FIX24 changed-case recompute now routes directly through compute_source_anchored_diff (single authoritative path), while retaining FIX24 debug markers, snapshot hash trace, Δt injection gating, and stability scoring. No schema/key-grammar changes.",
+            "files": ["REFACTOR67.py"],
+            "supersedes": ["REFACTOR66"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
