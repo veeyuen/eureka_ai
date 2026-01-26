@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR60'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR61'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -22058,6 +22058,165 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
         })
 
     return out_changes
+
+
+
+# =====================================================================
+# REFACTOR61 (ADDITIVE): Restore a minimal Diff Panel V2 row builder
+# Why:
+# - REFACTOR59/60 downsizing removed legacy Diff Panel V2 builder defs.
+# - compute_source_anchored_diff expects a callable v2 entrypoint to populate
+#   metric_changes_v2 (and optionally override metric_changes via canonical-first join).
+# - When the v2 entrypoint is missing, Evolution reports "no metrics to display"
+#   despite primary_metrics_canonical being present.
+#
+# What:
+# - Provide a small, deterministic, schema-agnostic canonical-first join row builder:
+#   build_diff_metrics_panel_v2__rows_refactor47(prev_response, cur_response) -> (rows, summary)
+# - Keep strict unit comparability (no silent nonsense deltas).
+# - No schema/key-grammar changes. Purely diff/render wiring.
+# =====================================================================
+
+def _refactor61__unwrap_pmc(obj):
+    """Best-effort unwrap for primary_metrics_canonical across historical payload shapes."""
+    try:
+        if isinstance(obj, dict) and isinstance(obj.get("primary_metrics_canonical"), dict):
+            return obj.get("primary_metrics_canonical") or {}
+        if isinstance(obj, dict) and isinstance(obj.get("primary_response"), dict) and isinstance(obj["primary_response"].get("primary_metrics_canonical"), dict):
+            return obj["primary_response"].get("primary_metrics_canonical") or {}
+        if isinstance(obj, dict) and isinstance(obj.get("results"), dict) and isinstance(obj["results"].get("primary_metrics_canonical"), dict):
+            return obj["results"].get("primary_metrics_canonical") or {}
+        if isinstance(obj, dict) and isinstance(obj.get("results"), dict) and isinstance(obj["results"].get("primary_response"), dict) and isinstance(obj["results"]["primary_response"].get("primary_metrics_canonical"), dict):
+            return obj["results"]["primary_response"].get("primary_metrics_canonical") or {}
+    except Exception:
+        pass
+    return {}
+
+def _refactor61__pick_val_unit(m):
+    """Extract (value_norm, unit_tag) deterministically from a canonical metric dict."""
+    try:
+        if not isinstance(m, dict):
+            return (None, "")
+        vn = m.get("value_norm")
+        if vn is None:
+            vn = m.get("value")
+        unit = (m.get("unit_tag") or m.get("unit") or m.get("unit_cmp") or m.get("base_unit") or "").strip()
+        return (vn, unit)
+    except Exception:
+        return (None, "")
+
+def _refactor61__pick_source_url(m):
+    try:
+        if not isinstance(m, dict):
+            return None
+        prov = m.get("provenance") if isinstance(m.get("provenance"), dict) else None
+        bc = prov.get("best_candidate") if isinstance(prov, dict) and isinstance(prov.get("best_candidate"), dict) else None
+        if isinstance(bc, dict):
+            u = bc.get("source_url") or bc.get("url")
+            return str(u) if u else None
+    except Exception:
+        pass
+    return None
+
+def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_response: dict):
+    """
+    Canonical-first strict join:
+      - Iterate baseline canonical keys (prev primary_metrics_canonical)
+      - Join on exact canonical_key only (no heuristics)
+      - Enforce strict unit comparability; only compute deltas when units match
+    Returns: (rows, summary)
+    """
+    prev_can = _refactor61__unwrap_pmc(prev_response)
+    cur_can = _refactor61__unwrap_pmc(cur_response)
+
+    rows = []
+    try:
+        if not isinstance(prev_can, dict):
+            prev_can = {}
+        if not isinstance(cur_can, dict):
+            cur_can = {}
+
+        # Preserve deterministic ordering (stable UI + diff)
+        for ckey in sorted(prev_can.keys()):
+            pm = prev_can.get(ckey) if isinstance(prev_can.get(ckey), dict) else {}
+            cm = cur_can.get(ckey) if isinstance(cur_can.get(ckey), dict) else None
+
+            pv, pu = _refactor61__pick_val_unit(pm)
+            cv, cu = (None, "")
+            if isinstance(cm, dict):
+                cv, cu = _refactor61__pick_val_unit(cm)
+
+            name = ""
+            try:
+                name = (pm.get("name") if isinstance(pm, dict) else "") or (cm.get("name") if isinstance(cm, dict) else "") or str(ckey)
+            except Exception:
+                name = str(ckey)
+
+            baseline_is_comparable = False
+            delta_abs = None
+            delta_pct = None
+            change_type = "not_found" if not isinstance(cm, dict) else "found"
+
+            try:
+                # Strict comparability: both present + units must match and be non-empty
+                if pv is not None and cv is not None and str(pu).strip() and str(cu).strip() and str(pu).strip() == str(cu).strip():
+                    baseline_is_comparable = True
+                    pvf = float(pv) if isinstance(pv, (int, float)) else None
+                    cvf = float(cv) if isinstance(cv, (int, float)) else None
+                    if pvf is not None and cvf is not None:
+                        delta_abs = cvf - pvf
+                        if abs(delta_abs) < 1e-12:
+                            delta_abs = 0.0
+                            change_type = "unchanged"
+                        elif delta_abs > 0:
+                            change_type = "increased"
+                        else:
+                            change_type = "decreased"
+                        if pvf != 0:
+                            delta_pct = (delta_abs / pvf) * 100.0
+            except Exception:
+                pass
+
+            if isinstance(cm, dict) and (pv is not None and cv is not None) and str(pu).strip() and str(cu).strip() and str(pu).strip() != str(cu).strip():
+                # Found, but not comparable
+                change_type = "unit_mismatch"
+
+            row = {
+                "canonical_key": str(ckey),
+                "name": name,
+                "previous_value": pv,
+                "previous_unit": pu,
+                "prev_value_norm": pv,
+                "current_value": cv,
+                "current_unit": cu,
+                "cur_value_norm": cv,
+                "delta_abs": delta_abs,
+                "delta_pct": delta_pct,
+                "change_type": change_type,
+                "baseline_is_comparable": bool(baseline_is_comparable),
+                "current_method": "strict_fallback_v2",
+                "source_url": _refactor61__pick_source_url(cm) if isinstance(cm, dict) else None,
+            }
+
+            rows.append(row)
+    except Exception:
+        pass
+
+    summary = {
+        "rows_total": int(len(rows)),
+        "builder": "REFACTOR61_build_diff_metrics_panel_v2__rows_refactor47",
+    }
+    return rows, summary
+
+# Compatibility aliases (compute_source_anchored_diff expects one of these)
+try:
+    build_diff_metrics_panel_v2__rows = build_diff_metrics_panel_v2__rows_refactor47  # type: ignore
+except Exception:
+    pass
+
+def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
+    rows, _summary = build_diff_metrics_panel_v2__rows_refactor47(prev_response, cur_response)
+    return rows, _summary
 
 
 def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = None) -> dict:
@@ -45573,5 +45732,54 @@ try:
             "files": ["REFACTOR59.py"],
             "supersedes": ["REFACTOR58"],
         })
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR60
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR60":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR60",
+            "date": "2026-01-26",
+            "summary": "Controlled downsizing continuation: removed additional shadowed Diff Panel helpers and tightened consolidation of metric_changes outputs. This inadvertently exposed a missing Diff Panel V2 row-builder dependency when early Streamlit execution triggered evolution before later defs were reached.",
+            "files": ["REFACTOR60.py"],
+            "supersedes": ["REFACTOR59"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR61
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR61":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR61",
+            "date": "2026-01-26",
+            "summary": "Restore minimal Diff Panel V2 canonical-first join row builder (build_diff_metrics_panel_v2__rows_refactor47) so Evolution always populates metric_changes_v2 (and thus metric_changes) even when Streamlit triggers execution before late diff wrapper defs. Strict unit comparability preserved; no schema/key-grammar changes.",
+            "files": ["REFACTOR61.py"],
+            "supersedes": ["REFACTOR60"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
