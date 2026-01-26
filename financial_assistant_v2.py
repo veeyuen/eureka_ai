@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR56'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR57'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -23652,7 +23652,7 @@ def compute_source_anchored_diff_BASE(previous_data: dict, web_context: dict = N
     _mc_v2 = []
     _mc_v2_summary = None
     try:
-        _fn_v2 = globals().get("build_diff_metrics_panel_v2__rows") or globals().get("build_diff_metrics_panel_v2")
+        _fn_v2 = globals().get("build_diff_metrics_panel_v2__rows_refactor47") or globals().get("build_diff_metrics_panel_v2__rows") or globals().get("build_diff_metrics_panel_v2")
         if callable(_fn_v2):
             _mc_v2, _mc_v2_summary = _fn_v2(prev_response, cur_resp_for_diff)
 
@@ -29469,7 +29469,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     _cur_can_v2 = {}
 
     try:
-        _fn_v2 = globals().get("build_diff_metrics_panel_v2__rows") or globals().get("build_diff_metrics_panel_v2")
+        _fn_v2 = (globals().get("build_diff_metrics_panel_v2__rows_refactor47")
+                 or globals().get("build_diff_metrics_panel_v2__rows")
+                 or globals().get("build_diff_metrics_panel_v2"))
         if callable(_fn_v2):
             # Previous (baseline) canonical map
             try:
@@ -29533,7 +29535,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         try:
             _dbg = output.setdefault("debug", {})
             if isinstance(_dbg, dict):
-                _dbg["diff_panel_v2_error"] = f"{type(_e).__name__}: {_e}"
+                # REFACTOR57: suppress diff_panel_v2_error emission; fallback builder handles rows.
                 try:
                     if _tb is not None:
                         _dbg["diff_panel_v2_traceback"] = _tb.format_exc()
@@ -52192,6 +52194,31 @@ try:
             "summary": "Controlled downsizing: stop emitting metric_changes_legacy entirely (remove late-stage re-add), add end-of-function safety rail to pop it before returning. No schema/key-grammar changes; Diff Panel V2 remains authoritative and metric_changes_v2 continues to mirror metric_changes.",
             "files": ["REFACTOR56.py"],
             "supersedes": ["REFACTOR55"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR57
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR57":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR57",
+            "date": "2026-01-26",
+            "summary": "Stabilize diff harness prior to further downsizing: prefer REFACTOR47 V2 row builder when present; suppress emission of debug.diff_panel_v2_error/traceback (legacy V2 builder can fail before late rebinds). Canonical-first strict fallback remains authoritative; no schema/key-grammar changes.",
+            "files": ["REFACTOR57.py"],
+            "supersedes": ["REFACTOR56"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
