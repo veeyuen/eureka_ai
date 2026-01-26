@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR69'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR70'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -26532,6 +26532,70 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
 
 
+    # =====================================================================
+    # REFACTOR70: Metric-changes + stability output bridge (safety rail)
+    #
+    # Why:
+    # - During controlled downsizing, minor nesting changes can cause the UI/export
+    #   path to miss the authoritative metric_changes list.
+    #
+    # What:
+    # - Enforce a single authoritative metric_changes list at output["metric_changes"].
+    # - Mirror to output["metric_changes_v2"] for compatibility.
+    # - Mirror stability_score to top-level when present.
+    # - Never emit metric_changes_legacy.
+    # =====================================================================
+    try:
+        if isinstance(output, dict):
+            _mc = None
+            if isinstance(output.get("metric_changes"), list):
+                _mc = output.get("metric_changes")
+            elif isinstance(output.get("metric_changes_v2"), list):
+                _mc = output.get("metric_changes_v2")
+            else:
+                _r = output.get("results")
+                if isinstance(_r, dict):
+                    if isinstance(_r.get("metric_changes"), list):
+                        _mc = _r.get("metric_changes")
+                    elif isinstance(_r.get("metric_changes_v2"), list):
+                        _mc = _r.get("metric_changes_v2")
+            if _mc is None:
+                _mc = []
+            # Ensure lists, and make metric_changes authoritative
+            if not isinstance(_mc, list):
+                try:
+                    _mc = list(_mc)
+                except Exception:
+                    _mc = []
+            output["metric_changes"] = _mc
+            output["metric_changes_v2"] = _mc
+
+            # Hard-remove legacy feed
+            output.pop("metric_changes_legacy", None)
+            try:
+                _r = output.get("results")
+                if isinstance(_r, dict):
+                    _r.pop("metric_changes_legacy", None)
+            except Exception:
+                pass
+
+            # Stability score mirror (clamped to [0, 100])
+            _ss = None
+            if isinstance(output.get("stability_score"), (int, float)):
+                _ss = float(output.get("stability_score"))
+            else:
+                _r = output.get("results")
+                if isinstance(_r, dict) and isinstance(_r.get("stability_score"), (int, float)):
+                    _ss = float(_r.get("stability_score"))
+            if _ss is not None:
+                if _ss < 0:
+                    _ss = 0.0
+                if _ss > 100:
+                    _ss = 100.0
+                output["stability_score"] = round(_ss, 1)
+    except Exception:
+        pass
+
     return output
 
 # =================== END PATCH RMS_CORE1 (ADDITIVE) ===================
@@ -42731,6 +42795,31 @@ try:
             "summary": "Controlled downsizing + safety fix: promote _fmt_currency_first to a shared top-level helper (prevents NameError in render_native_comparison and removes an unnecessary nested duplicate). Also make the Source-Anchored Evolution Metric Changes table prefer output['metric_changes'] (authoritative) while retaining metric_changes_v2 as a mirror for compatibility. No schema/key-grammar changes.",
             "files": ["REFACTOR69.py"],
             "supersedes": ["REFACTOR68"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR70
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR70":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR70",
+            "date": "2026-01-27",
+            "summary": "Safety rail + simplification: add a late-stage output bridge in compute_source_anchored_diff to enforce a single authoritative metric_changes list (mirrored to metric_changes_v2) and a clamped top-level stability_score, while hard-removing metric_changes_legacy. This stabilizes the Evolution UI/export path during controlled downsizing. No schema/key-grammar changes.",
+            "files": ["REFACTOR70.py"],
+            "supersedes": ["REFACTOR69"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
