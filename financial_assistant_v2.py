@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR63'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR64'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -98,163 +98,6 @@ def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
         return str(_lock)
     except Exception:
         return "UNKNOWN"
-
-
-# =====================================================================
-# REFACTOR62 (ADDITIVE): Early Diff Panel V2 failsafe row builder
-# Why:
-# - During controlled downsizing, we previously hit an ordering hazard where
-#   Evolution could be triggered (Streamlit rerun) before late diff-builder
-#   definitions were reached, yielding "no metrics to display".
-# What:
-# - Define a minimal canonical-first strict join builder early, and bind it as
-#   build_diff_metrics_panel_v2__rows/build_diff_metrics_panel_v2 only if no
-#   builder is already present.
-# - Later authoritative builders (e.g., build_diff_metrics_panel_v2__rows_refactor47)
-#   may still override this via last-wins binding.
-# Safety:
-# - No schema/key-grammar changes.
-# - Preserves strict unit comparability (units must match and be non-empty).
-# =====================================================================
-
-def _refactor62__unwrap_pmc(obj):
-    """Best-effort unwrap for primary_metrics_canonical across historical payload shapes."""
-    try:
-        if isinstance(obj, dict) and isinstance(obj.get("primary_metrics_canonical"), dict):
-            return obj.get("primary_metrics_canonical") or {}
-        if isinstance(obj, dict) and isinstance(obj.get("primary_response"), dict) and isinstance(obj["primary_response"].get("primary_metrics_canonical"), dict):
-            return obj["primary_response"].get("primary_metrics_canonical") or {}
-        if isinstance(obj, dict) and isinstance(obj.get("results"), dict) and isinstance(obj["results"].get("primary_metrics_canonical"), dict):
-            return obj["results"].get("primary_metrics_canonical") or {}
-        if isinstance(obj, dict) and isinstance(obj.get("results"), dict) and isinstance(obj["results"].get("primary_response"), dict) and isinstance(obj["results"]["primary_response"].get("primary_metrics_canonical"), dict):
-            return obj["results"]["primary_response"].get("primary_metrics_canonical") or {}
-    except Exception:
-        pass
-    return {}
-
-
-def _refactor62__pick_val_unit(m):
-    """Extract (value_norm, unit_tag) deterministically from a canonical metric dict."""
-    try:
-        if not isinstance(m, dict):
-            return (None, "")
-        vn = m.get("value_norm")
-        if vn is None:
-            vn = m.get("value")
-        unit = (m.get("unit_tag") or m.get("unit") or m.get("unit_cmp") or m.get("base_unit") or "").strip()
-        return (vn, unit)
-    except Exception:
-        return (None, "")
-
-
-def _refactor62__pick_source_url(m):
-    try:
-        if not isinstance(m, dict):
-            return None
-        prov = m.get("provenance") if isinstance(m.get("provenance"), dict) else None
-        bc = prov.get("best_candidate") if isinstance(prov, dict) and isinstance(prov.get("best_candidate"), dict) else None
-        if isinstance(bc, dict):
-            u = bc.get("source_url") or bc.get("url")
-            return str(u) if u else None
-    except Exception:
-        pass
-    return None
-
-
-def build_diff_metrics_panel_v2__rows_failsafe62(prev_response: dict, cur_response: dict):
-    """Canonical-first strict join (failsafe). Returns (rows, summary)."""
-    prev_can = _refactor62__unwrap_pmc(prev_response)
-    cur_can = _refactor62__unwrap_pmc(cur_response)
-
-    rows = []
-    try:
-        if not isinstance(prev_can, dict):
-            prev_can = {}
-        if not isinstance(cur_can, dict):
-            cur_can = {}
-
-        for ckey in sorted(prev_can.keys()):
-            pm = prev_can.get(ckey) if isinstance(prev_can.get(ckey), dict) else {}
-            cm = cur_can.get(ckey) if isinstance(cur_can.get(ckey), dict) else None
-
-            pv, pu = _refactor62__pick_val_unit(pm)
-            cv, cu = (None, "")
-            if isinstance(cm, dict):
-                cv, cu = _refactor62__pick_val_unit(cm)
-
-            try:
-                name = (pm.get("name") if isinstance(pm, dict) else "") or (cm.get("name") if isinstance(cm, dict) else "") or str(ckey)
-            except Exception:
-                name = str(ckey)
-
-            baseline_is_comparable = False
-            delta_abs = None
-            delta_pct = None
-            change_type = "not_found" if not isinstance(cm, dict) else "found"
-
-            try:
-                if pv is not None and cv is not None and str(pu).strip() and str(cu).strip() and str(pu).strip() == str(cu).strip():
-                    baseline_is_comparable = True
-                    pvf = float(pv) if isinstance(pv, (int, float)) else None
-                    cvf = float(cv) if isinstance(cv, (int, float)) else None
-                    if pvf is not None and cvf is not None:
-                        delta_abs = cvf - pvf
-                        if abs(delta_abs) < 1e-12:
-                            delta_abs = 0.0
-                            change_type = "unchanged"
-                        elif delta_abs > 0:
-                            change_type = "increased"
-                        else:
-                            change_type = "decreased"
-                        if pvf != 0:
-                            delta_pct = (delta_abs / pvf) * 100.0
-            except Exception:
-                pass
-
-            if isinstance(cm, dict) and (pv is not None and cv is not None) and str(pu).strip() and str(cu).strip() and str(pu).strip() != str(cu).strip():
-                change_type = "unit_mismatch"
-
-            rows.append({
-                "canonical_key": str(ckey),
-                "name": name,
-                "previous_value": pv,
-                "previous_unit": pu,
-                "prev_value_norm": pv,
-                "current_value": cv,
-                "current_unit": cu,
-                "cur_value_norm": cv,
-                "delta_abs": delta_abs,
-                "delta_pct": delta_pct,
-                "change_type": change_type,
-                "baseline_is_comparable": bool(baseline_is_comparable),
-                "current_method": "strict_fallback_v2",
-                "source_url": _refactor62__pick_source_url(cm) if isinstance(cm, dict) else None,
-            })
-    except Exception:
-        pass
-
-    summary = {
-        "rows_total": int(len(rows)),
-        "builder": "REFACTOR62_build_diff_metrics_panel_v2__rows_failsafe62",
-    }
-    return rows, summary
-
-
-def build_diff_metrics_panel_v2_failsafe62(prev_response: dict, cur_response: dict):
-    return build_diff_metrics_panel_v2__rows_failsafe62(prev_response, cur_response)
-
-
-# Bind failsafe only if no builder has been defined yet.
-try:
-    if not callable(globals().get("build_diff_metrics_panel_v2__rows")):
-        globals()["build_diff_metrics_panel_v2__rows"] = build_diff_metrics_panel_v2__rows_failsafe62
-    if not callable(globals().get("build_diff_metrics_panel_v2")):
-        globals()["build_diff_metrics_panel_v2"] = build_diff_metrics_panel_v2_failsafe62
-except Exception:
-    pass
-
-
-
 
 
 
@@ -45046,270 +44889,6 @@ except Exception:
 
 
 
-# =============================================================================
-# REFACTOR47 (ADDITIVE): Fix Diff Panel V2 recursion by rebinding __rows entrypoint
-# =============================================================================
-# Problem:
-# - build_diff_metrics_panel_v2__rows was repeatedly wrapped by FIX2D2I-style
-#   closures that captured an already-wrapped implementation, causing
-#   RecursionError: maximum recursion depth exceeded.
-# - The engine then fell back to REFACTOR45_STRICT_FALLBACK and set
-#   debug.diff_panel_v2_error, even though rows were produced.
-#
-# Fix:
-# - Provide a deterministic, non-recursive canonical-first join implementation.
-# - Rebind build_diff_metrics_panel_v2__rows (and FIX2D2I alias names) to this
-#   implementation as the last-wins definition at module import.
-# - Preserve strict unit comparability + percent/year poisoning containment.
-# - Schema/key grammar untouched.
-# =============================================================================
-try:
-    def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_response: dict):
-        # ---- unwrap canonical maps (robust to packaging variants)
-        def _unwrap_pmc(resp: dict) -> dict:
-            try:
-                fn = globals().get("_diffpanel_v2__unwrap_primary_metrics_canonical")
-                if callable(fn):
-                    m = fn(resp)
-                    return m if isinstance(m, dict) else {}
-            except Exception:
-                pass
-            try:
-                if isinstance(resp, dict):
-                    m = resp.get("primary_metrics_canonical")
-                    if isinstance(m, dict):
-                        return m
-                    r = resp.get("results")
-                    if isinstance(r, dict):
-                        m2 = r.get("primary_metrics_canonical")
-                        if isinstance(m2, dict):
-                            return m2
-            except Exception:
-                pass
-            return {}
-
-        prev_can = _unwrap_pmc(prev_response if isinstance(prev_response, dict) else {})
-        cur_can = _unwrap_pmc(cur_response if isinstance(cur_response, dict) else {})
-
-        # ---- helpers
-        def _as_float(v):
-            try:
-                if v is None:
-                    return None
-                if isinstance(v, (int, float)):
-                    return float(v)
-                if isinstance(v, str):
-                    s = v.strip().replace(",", "")
-                    if not s:
-                        return None
-                    return float(s)
-            except Exception:
-                return None
-            return None
-
-        def _get_value_unit(m):
-            try:
-                if not isinstance(m, dict):
-                    return (None, None)
-                v = m.get("value_norm")
-                if v is None:
-                    v = m.get("value")
-                unit = m.get("base_unit") or m.get("unit_tag") or m.get("unit")
-                return (_as_float(v), unit)
-            except Exception:
-                return (None, None)
-
-        def _is_percent_key(ck: str) -> bool:
-            try:
-                if not isinstance(ck, str):
-                    return False
-                ck_l = ck.lower()
-                return ("__percent" in ck_l) or ck_l.endswith("_percent") or ("percent" in ck_l and "__" in ck_l)
-            except Exception:
-                return False
-
-        def _is_yearlike_number(x) -> bool:
-            try:
-                if x is None:
-                    return False
-                if not isinstance(x, (int, float)):
-                    return False
-                xi = int(x)
-                # Conservative yearlike band
-                return (1900 <= xi <= 2500) and abs(float(x) - float(xi)) < 1e-9
-            except Exception:
-                return False
-
-        def _looks_like_percent_unit(u) -> bool:
-            try:
-                s = str(u or "").lower()
-                return ("%" in s) or ("percent" in s) or ("pct" in s)
-            except Exception:
-                return False
-
-        rows = []
-
-        prev_keys = sorted([k for k in prev_can.keys() if isinstance(k, str) and k])
-        cur_keys = set([k for k in cur_can.keys() if isinstance(k, str) and k])
-
-        both_count = 0
-        prev_only = 0
-        cur_only = 0
-
-        for ck in prev_keys:
-            pm = prev_can.get(ck) if isinstance(prev_can, dict) else None
-            cm = cur_can.get(ck) if isinstance(cur_can, dict) else None
-
-            pv, pu = _get_value_unit(pm)
-            cv, cu = _get_value_unit(cm)
-
-            # Percent/year poisoning containment (defensive, even without inference):
-            # If the key is percent-like but unit doesn't look like percent and the
-            # numeric looks yearlike, treat as invalid (non-comparable).
-            if _is_percent_key(ck):
-                if (cv is not None) and _is_yearlike_number(cv) and (not _looks_like_percent_unit(cu)):
-                    cv = None
-                if (pv is not None) and _is_yearlike_number(pv) and (not _looks_like_percent_unit(pu)):
-                    pv = None
-
-            # strict unit comparability
-            is_comp = (pv is not None and cv is not None and str(pu or "").strip() == str(cu or "").strip())
-
-            d = None
-            pct = None
-            ctype = "unknown"
-            if cm is None:
-                ctype = "not_found"
-            elif pm is None:
-                ctype = "added"
-            elif is_comp:
-                d = float(cv) - float(pv)
-                if abs(d) < 1e-12:
-                    d = 0.0
-                if pv != 0:
-                    pct = (d / float(pv)) * 100.0
-                else:
-                    pct = 0.0 if d == 0.0 else None
-                if d > 0:
-                    ctype = "increased"
-                elif d < 0:
-                    ctype = "decreased"
-                else:
-                    ctype = "unchanged"
-            else:
-                # present but not comparable
-                ctype = "incomparable"
-
-            # counts for summary
-            if ck in cur_keys:
-                both_count += 1
-            else:
-                prev_only += 1
-
-            name = None
-            try:
-                name = (pm.get("name") if isinstance(pm, dict) else None) or (cm.get("name") if isinstance(cm, dict) else None) or ck
-            except Exception:
-                name = ck
-
-            # attempt to surface source_url (if present)
-            src_url = None
-            try:
-                if isinstance(cm, dict):
-                    src_url = cm.get("source_url") or cm.get("url") or None
-
-                    # Common nested winner shape: provenance.best_candidate.source_url
-                    if (not src_url) and isinstance(cm.get("provenance"), dict):
-                        prov = cm.get("provenance")
-                        bc = prov.get("best_candidate") or prov.get("best_candidate_v1") or prov.get("winner") or prov.get("best")
-                        if isinstance(bc, dict):
-                            src_url = bc.get("source_url") or bc.get("url") or None
-
-                    if (not src_url) and isinstance(cm.get("provenance_v1"), dict):
-                        prov = cm.get("provenance_v1")
-                        bc = prov.get("best_candidate") or prov.get("best_candidate_v1") or prov.get("winner") or prov.get("best")
-                        if isinstance(bc, dict):
-                            src_url = bc.get("source_url") or bc.get("url") or None
-
-                    if not src_url and isinstance(cm.get("sources"), list) and cm.get("sources"):
-                        s0 = cm.get("sources")[0]
-                        if isinstance(s0, dict):
-                            src_url = s0.get("url") or s0.get("source_url") or None
-            except Exception:
-                src_url = None
-
-            # Last resort: centralized extractor (schema-preserving)
-            if not src_url:
-                try:
-                    fn = globals().get("_refactor26_extract_metric_source_url_v1")
-                    if callable(fn):
-                        su2 = fn(cm)
-                        if isinstance(su2, str) and su2.strip():
-                            src_url = su2.strip()
-                except Exception:
-                    pass
-
-            try:
-                src_url = (src_url.strip() if isinstance(src_url, str) else "")
-            except Exception:
-                src_url = ""
-
-            rows.append({
-                "canonical_key": ck,
-                "name": name,
-                "previous_value": pv,
-                "current_value": (cv if cm is not None else "N/A"),
-                "previous_unit": pu,
-                "current_unit": (cu if cm is not None else None),
-                "prev_value_norm": pv,
-                "cur_value_norm": (cv if cm is not None else None),
-                "delta_abs": d,
-                "delta_pct": pct,
-                "change_type": ctype,
-                "baseline_is_comparable": bool(is_comp),
-                "current_method": "refactor47_canonical_join",
-                "source_url": src_url,
-                "cur_source_url": src_url,
-                "current_source_url": src_url,
-            })
-
-        # cur-only keys (optional accounting; we do not emit rows by default)
-        try:
-            cur_only = int(max(0, len(cur_keys) - len(set(prev_keys) & cur_keys)))
-        except Exception:
-            cur_only = 0
-
-        summary = {
-            "rows_total": int(len(rows)),
-            "builder_id": "REFACTOR47_CANONICAL_JOIN",
-            "join_mode": "canonical_key",
-            "both_count": int(both_count),
-            "prev_only_count": int(prev_only),
-            "cur_only_count": int(cur_only),
-            "found": int(both_count),
-            "not_found": int(prev_only),
-        }
-        return rows, summary
-
-    # ---- last-wins rebind (eliminate recursion wrappers)
-    try:
-        globals()["build_diff_metrics_panel_v2__rows"] = build_diff_metrics_panel_v2__rows_refactor47
-    except Exception:
-        pass
-    # neutralize FIX2D2I alias names if present
-    try:
-        globals()["build_diff_metrics_panel_v2__rows_fix2d2i"] = build_diff_metrics_panel_v2__rows_refactor47
-    except Exception:
-        pass
-    try:
-        globals()["build_diff_metrics_panel_v2"] = build_diff_metrics_panel_v2__rows_refactor47
-    except Exception:
-        pass
-except Exception:
-    pass
-
-
-
 # ============================================================
 # PATCH TRACKER V1 (ADD): REFACTOR47
 # ============================================================
@@ -45716,6 +45295,31 @@ try:
             "summary": "Controlled downsizing: remove the unused FIX2D47 Diff Panel V2 builder + shadow helper defs, while retaining (and hardening) the deterministic collision resolver used by schema/key remapping. No schema/key-grammar changes; diffing + unit comparability preserved.",
             "files": ["REFACTOR63.py"],
             "supersedes": ["REFACTOR62"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR64
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR64":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR64",
+            "date": "2026-01-26",
+            "summary": "Controlled downsizing (low-risk): remove redundant early Diff Panel V2 failsafe builder (REFACTOR62) and delete a dead post-main REFACTOR47 rebind block that never affects runtime diffing. No schema/key-grammar changes; preserves strict unit comparability + canonical-first diffing.",
+            "files": ["REFACTOR64.py"],
+            "supersedes": ["REFACTOR63"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
