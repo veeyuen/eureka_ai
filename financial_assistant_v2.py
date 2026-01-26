@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR57'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR58'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -2759,30 +2759,30 @@ _fix2af_last_scrape_ledger = {}
 # =====================================================================
 #CODE_VERSION = 'fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2b_hardwire_v22'
 # PATCH FIX41AFC6 (ADD): bump CODE_VERSION to new patch filename
-#CODE_VERSION = "REFACTOR39"
+#CODE_VERSION = "REFACTOR58"
 
 # =====================================================================
 # PATCH FIX41T (ADDITIVE): bump CODE_VERSION marker for this patched build
 # - Purely a version label for debugging/traceability.
 # - Does NOT alter runtime logic.
 # =====================================================================
-#CODE_VERSION = "REFACTOR39"
+#CODE_VERSION = "REFACTOR58"
 # =====================================================================
 # PATCH FIX41U (ADDITIVE): bump CODE_VERSION marker for this patched build
 # =====================================================================
-#CODE_VERSION = "REFACTOR39"
+#CODE_VERSION = "REFACTOR58"
 # =====================================================================
 # PATCH FIX41J (ADD): bump CODE_VERSION to this file version (additive override)
 # PATCH FIX40 (ADD): prior CODE_VERSION preserved above
-# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "REFACTOR39"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
-# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "REFACTOR39"
+# PATCH FIX33E (ADD): previous CODE_VERSION was: CODE_VERSION = "REFACTOR58"  # PATCH FIX33D (ADD): set CODE_VERSION to filename
+# PATCH FIX33D (ADD): previous CODE_VERSION was: CODE_VERSION = "REFACTOR58"
 # =====================================================================
 # PATCH FINAL (ADDITIVE): end-state single bump label (non-breaking)
 # NOTE: We do not overwrite CODE_VERSION to avoid any legacy coupling.
 # =====================================================================
 # PATCH FIX41AFC18 (ADDITIVE): bump CODE_VERSION to this file version
 # =====================================================================
-#CODE_VERSION = "REFACTOR39"
+#CODE_VERSION = "REFACTOR58"
 # =====================================================================
 # Consumers can prefer ENDSTATE_FINAL_VERSION when present.
 # =====================================================================
@@ -29535,7 +29535,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         try:
             _dbg = output.setdefault("debug", {})
             if isinstance(_dbg, dict):
-                # REFACTOR57: suppress diff_panel_v2_error emission; fallback builder handles rows.
+                # REFACTOR58: suppress diff_panel_v2_error emission; fallback builder handles rows.
                 try:
                     if _tb is not None:
                         _dbg["diff_panel_v2_traceback"] = _tb.format_exc()
@@ -40145,6 +40145,16 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
         method = "none"
         cur_anchor = None
 
+        # REFACTOR58: ensure "effective" current fields are always initialized before any early
+        # diagnostic or fallback row paths (prevents UnboundLocalError).
+        resolved_cur_ckey_effective = None
+        method_effective = method
+        cur_raw_effective = "N/A"
+        cur_val_norm_effective = None
+        cur_unit_effective = None
+        cur_source_url_effective = None
+        cur_ah_effective = None
+
         # Primary join: exact canonical key
         if prev_ckey in cur_can:
             resolved_cur_ckey = prev_ckey
@@ -40265,9 +40275,8 @@ def build_diff_metrics_panel_v2__rows(prev_response: dict, cur_response: dict):
             "previous_value": prev_v,
             "current_value": (cur_display if resolved_cur_ckey is not None else "N/A"),
             "current_value_norm": (cur_v if resolved_cur_ckey is not None else None),
-            "current_source": cur_source_url_effective,
-            "current_method": method_effective,
-            "current_value_norm": cur_val_norm_effective,
+            "current_source": cur_source_url,
+            "current_method": method,
             "change_pct": None,
             "change_type": "no_prev_metrics",
             "match_confidence": 0.0,
@@ -52219,6 +52228,31 @@ try:
             "summary": "Stabilize diff harness prior to further downsizing: prefer REFACTOR47 V2 row builder when present; suppress emission of debug.diff_panel_v2_error/traceback (legacy V2 builder can fail before late rebinds). Canonical-first strict fallback remains authoritative; no schema/key-grammar changes.",
             "files": ["REFACTOR57.py"],
             "supersedes": ["REFACTOR56"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR58
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR58":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR58",
+            "date": "2026-01-26",
+            "summary": "Fix latent UnboundLocalError in Diff Panel V2 row builder by initializing 'effective' locals on loop entry and removing a duplicate 'current_value_norm' key in an early fallback row. This eliminates recurring debug.diff_panel_v2_traceback noise while preserving canonical-first diffing semantics. No schema/key-grammar changes.",
+            "files": ["REFACTOR58.py"],
+            "supersedes": ["REFACTOR57"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
