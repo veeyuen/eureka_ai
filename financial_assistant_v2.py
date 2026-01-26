@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR65'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR66'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -22548,7 +22548,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["message"] = "No valid snapshots available for source-anchored evolution. (Snapshot store fallback attempted; no re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
         # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
-        _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+        _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
         return output    # ---------- Use your existing deterministic metric diff helper ----------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
 
@@ -23587,7 +23587,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # Keep current_metrics as empty dict; downstream code should handle it.
         current_metrics = {}
         # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
-        _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+        _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
     # =====================================================================
     # PATCH FIX41AFC19 (ADDITIVE): Anchor-first FIX16 rebuild override (schema parity)
     #
@@ -26553,7 +26553,73 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
-    _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('results',{}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+    _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
+
+
+    # =====================================================================
+    # REFACTOR66: De-duplicate nested output['results'] mirror (footprint control)
+    #
+    # Problem:
+    # - Some legacy flows attach a nested 'results' dict that re-includes heavy fields
+    #   such as baseline_sources_cache / baseline_sources_cache_current / primary_response.
+    # - This duplicates large payload segments in Evolution JSON and can aggravate
+    #   Sheets cell limits / local snapshot store bloat.
+    #
+    # Behavior:
+    # - Preserve backward compatibility by keeping output['results'] as a lightweight
+    #   stub containing only small, commonly expected fields.
+    # - Never remove top-level authoritative fields.
+    #
+    # Safety:
+    # - Purely a payload-shape cleanup; does not change diffing, schema, or key grammar.
+    # =====================================================================
+    try:
+        _nested = output.get("results")
+        if isinstance(_nested, dict) and _nested:
+            # Promote a few lightweight fields if they exist only under nested results
+            for _k in ("run_delta_seconds", "run_delta_human", "code_version"):
+                try:
+                    if _k in _nested and _k not in output:
+                        output[_k] = _nested.get(_k)
+                except Exception:
+                    pass
+
+            # Build a lightweight compatibility mirror (avoid duplicating heavy caches)
+            _light = {}
+            try:
+                _light["code_version"] = str(output.get("code_version") or globals().get("_YUREEKA_CODE_VERSION_LOCK") or "")
+            except Exception:
+                pass
+            for _k in ("run_delta_seconds", "run_delta_human"):
+                try:
+                    if _k in output:
+                        _light[_k] = output.get(_k)
+                except Exception:
+                    pass
+
+            # Optionally keep a small primary_metrics_canonical mirror (usually tiny: 4 keys)
+            try:
+                _pmc = output.get("primary_metrics_canonical")
+                if isinstance(_pmc, dict) and _pmc:
+                    _light["primary_metrics_canonical"] = _pmc
+            except Exception:
+                pass
+
+            # Keep a minimal debug marker for older consumers
+            try:
+                _d = output.get("debug") if isinstance(output.get("debug"), dict) else {}
+                if isinstance(_d, dict) and _d:
+                    _light["debug"] = {"__exec_code_version": _d.get("__exec_code_version")}
+            except Exception:
+                pass
+
+            output["results"] = _light
+    except Exception:
+        pass
+    # =====================================================================
+    # END REFACTOR66
+    # =====================================================================
+
 
 
     return output
@@ -42669,6 +42735,30 @@ try:
             "summary": "Controlled downsizing (low-risk): remove unused preserved BASE implementations (diff_metrics_by_name_BASE and compute_source_anchored_diff_BASE) along with their wrap scaffolding. Add code_version to Evolution report export so all JSON artifacts carry the patch ID. No schema/key-grammar changes; preserves canonical-first diffing + strict unit comparability + snapshot rehydration.",
             "files": ["REFACTOR65.py"],
             "supersedes": ["REFACTOR64"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR66
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR66":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR66",
+            "date": "2026-01-26",
+            "summary": "Controlled downsizing + safety rail: de-duplicate the redundant nested output['results'] mirror in Evolution payloads by shrinking it to a lightweight compatibility stub (prevents baseline_sources_cache duplication and reduces JSON/Sheets footprint). No schema/key-grammar changes; preserves canonical-first diffing, unit comparability, snapshot rehydration, Δt injection gating, and stability scoring.",
+            "files": ["REFACTOR66.py"],
+            "supersedes": ["REFACTOR65"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
