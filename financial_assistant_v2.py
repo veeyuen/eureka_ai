@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR59'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR60'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -43941,6 +43941,33 @@ except Exception:
     pass
 
 
+
+
+# ============================================================
+# REFACTOR60: PATCH TRACKER ENTRY (ADDITIVE)
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    try:
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR60":
+                _already = True
+                break
+    except Exception:
+        _already = False
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR60",
+            "date": "2026-01-26",
+            "summary": "Fix REFACTOR09 diff wrapper regression by robustly capturing a callable legacy diff implementation (and adding a signature-safe base fallback). Restores Evolution metric_changes so the dashboard no longer shows 'no metrics to display'.",
+            "files": ["REFACTOR60.py"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
 # ============================================================
 # REFACTOR09: DIFF ENGINE CONSOLIDATION (WRAPPER)
 #
@@ -43950,17 +43977,48 @@ except Exception:
 #     captured at end-of-file time.
 #   - Final bindings will point to this wrapper (single edit point).
 # ============================================================
+# REFACTOR60 (BUGFIX): robustly capture the working legacy diff function
+#
+# Why:
+# - REFACTOR09 binds diff_metrics_by_name to a wrapper that delegates to
+#   _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY. If the capture is None/non-callable,
+#   the wrapper returns an empty diff and Evolution shows 'no metrics to display'.
+#
+# Policy:
+# - Prefer an existing callable diff_metrics_by_name ONLY if it's not already the wrapper.
+# - Else fall back to known stable implementations in order.
+# - Never self-reference the wrapper.
 try:
-    _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY = globals().get("diff_metrics_by_name")
-    globals()["_YUREEKA_DIFF_METRICS_BY_NAME_LEGACY"] = _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY
+    _legacy = None
+    _cand0 = globals().get("diff_metrics_by_name")
+    if callable(_cand0):
+        try:
+            if str(getattr(_cand0, "__name__", "")) != "_refactor09_diff_metrics_by_name":
+                _legacy = _cand0
+        except Exception:
+            _legacy = _cand0
+
+    if not callable(_legacy):
+        for _nm in (
+            "_yureeka_diff_metrics_by_name_fix31",
+            "_yureeka_diff_metrics_by_name_wrap1",
+            "diff_metrics_by_name_BASE",
+        ):
+            _fn = globals().get(_nm)
+            if callable(_fn):
+                _legacy = _fn
+                break
+
+    globals()["_YUREEKA_DIFF_METRICS_BY_NAME_LEGACY"] = _legacy if callable(_legacy) else None
 except Exception:
-    _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY = None
+    globals()["_YUREEKA_DIFF_METRICS_BY_NAME_LEGACY"] = None
+
 
 def _refactor09_diff_metrics_by_name(prev_response: dict, cur_response: dict):
-    """Authoritative diff entrypoint (REFACTOR10).
+    """Authoritative diff entrypoint (REFACTOR09).
 
-    Delegates to the legacy diff implementation captured at load time, so behavior
-    remains unchanged while we consolidate/remove duplicates safely.
+    Delegates to the captured legacy implementation to preserve behavior while
+    we safely downsize/remove duplicates.
     """
     try:
         fn = globals().get("_YUREEKA_DIFF_METRICS_BY_NAME_LEGACY")
@@ -43968,15 +44026,17 @@ def _refactor09_diff_metrics_by_name(prev_response: dict, cur_response: dict):
             return fn(prev_response, cur_response)
     except Exception:
         pass
-    # Fallback (should be unreachable)
+
+    # Last-resort fallback: call the stable base diff directly (never recurse).
     try:
-        fn2 = globals().get("diff_metrics_by_name")
-        if callable(fn2) and fn2 is not _refactor09_diff_metrics_by_name:
-            return fn2(prev_response, cur_response)
+        fn_base = globals().get("diff_metrics_by_name_BASE")
+        if callable(fn_base):
+            return fn_base(prev_response, cur_response)
     except Exception:
         pass
-    # Safe empty result
-    return ([], [], [], [], False)
+
+    # Safe empty result (signature-compatible)
+    return ([], 0, 0, 0, 0)
 
 
 # REFACTOR11: FINAL BINDINGS (AUTHORITATIVE)
