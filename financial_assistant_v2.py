@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR68'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR69'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -14010,6 +14010,61 @@ def parse_to_float(value: Any) -> Optional[float]:
     except (ValueError, TypeError):
         return None
 
+
+
+def _fmt_currency_first(raw: str, unit: str) -> str:
+    """
+    Display helper: formats value+unit as currency-first when applicable.
+
+    Examples:
+      - raw='29.8', unit='S$B'  -> 'S$29.8B'
+      - raw='120',  unit='USD M' -> '$120M'
+      - raw='29.8', unit='%'     -> '29.8%'
+      - raw='90',   unit='M'     -> '90 M'
+    """
+    raw = (raw or "").strip()
+    unit = (unit or "").strip()
+
+    if not raw or raw == "-":
+        return "-"
+
+    # If already currency-first, trust it
+    if raw.startswith("S$") or raw.startswith("$"):
+        return raw
+
+    # Percent case
+    if unit == "%":
+        return f"{raw}%"
+
+    # Detect currency from unit
+    currency = ""
+    scale = unit.replace(" ", "")
+
+    if scale.upper().startswith("SGD"):
+        currency = "S$"
+        scale = scale[3:]
+    elif scale.upper().startswith("USD"):
+        currency = "$"
+        scale = scale[3:]
+    elif scale.startswith("S$"):
+        currency = "S$"
+        scale = scale[2:]
+    elif scale.startswith("$"):
+        currency = "$"
+        scale = scale[1:]
+
+    # Human-readable units
+    if unit.lower().endswith("billion"):
+        return f"{currency}{raw} billion".strip()
+    if unit.lower().endswith("million"):
+        return f"{currency}{raw} million".strip()
+
+    # Compact units (B/M/K)
+    if scale.upper() in {"B", "M", "K"}:
+        return f"{currency}{raw}{scale}".strip()
+
+    # Fallback
+    return f"{currency}{raw} {unit}".strip()
 def get_metric_value_span(metric: Dict) -> Dict[str, Any]:
     """
     Return a numeric span for a metric to support range-aware canonical metrics.
@@ -15687,56 +15742,7 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
     if diff.metric_diffs:
         metric_rows = []
 
-        def _fmt_currency_first(raw: str, unit: str) -> str:
-            """
-            Formats evolution metrics as:
-            - S$29.8B
-            - $120M
-            - 29.8%
-            """
-            raw = (raw or "").strip()
-            unit = (unit or "").strip()
 
-            if not raw or raw == "-":
-                return "-"
-
-            # If already currency-first, trust it
-            if raw.startswith("S$") or raw.startswith("$"):
-                return raw
-
-            # Percent case
-            if unit == "%":
-                return f"{raw}%"
-
-            # Detect currency from unit
-            currency = ""
-            scale = unit.replace(" ", "")
-
-            if scale.upper().startswith("SGD"):
-                currency = "S$"
-                scale = scale[3:]
-            elif scale.upper().startswith("USD"):
-                currency = "$"
-                scale = scale[3:]
-            elif scale.startswith("S$"):
-                currency = "S$"
-                scale = scale[2:]
-            elif scale.startswith("$"):
-                currency = "$"
-                scale = scale[1:]
-
-            # Human-readable units
-            if unit.lower().endswith("billion"):
-                return f"{currency}{raw} billion".strip()
-            if unit.lower().endswith("million"):
-                return f"{currency}{raw} million".strip()
-
-            # Compact units (B/M/K)
-            if scale.upper() in {"B", "M", "K"}:
-                return f"{currency}{raw}{scale}".strip()
-
-            # Fallback
-            return f"{currency}{raw} {unit}".strip()
 
         for m in diff.metric_diffs:
             icon = {
@@ -27290,7 +27296,7 @@ def render_source_anchored_results(results, query: str):
     st.subheader("💰 Metric Changes")
 
     # Prefer the V2 schema if present; fall back to legacy key for older snapshots.
-    rows = results.get("metric_changes_v2") or results.get("metric_changes") or []
+    rows = results.get("metric_changes") or results.get("metric_changes_v2") or []
     if not isinstance(rows, list) or not rows:
         st.info("No metric changes to display.")
         return
@@ -42701,6 +42707,30 @@ try:
             "summary": "Fix Evolution stability + summary regression: stop overwriting stability_score with legacy (unchanged/total) formula and recompute results.summary + stability_score from the final canonical-first metric_changes rows (V2-first). Restores correct increased/decreased/unchanged counters and non-zero graded stability for injection runs, while keeping strict unit comparability and schema/key-grammar freeze.",
             "files": ["REFACTOR68.py"],
             "supersedes": ["REFACTOR67"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR69
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR69":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR69",
+            "date": "2026-01-26",
+            "summary": "Controlled downsizing + safety fix: promote _fmt_currency_first to a shared top-level helper (prevents NameError in render_native_comparison and removes an unnecessary nested duplicate). Also make the Source-Anchored Evolution Metric Changes table prefer output['metric_changes'] (authoritative) while retaining metric_changes_v2 as a mirror for compatibility. No schema/key-grammar changes.",
+            "files": ["REFACTOR69.py"],
+            "supersedes": ["REFACTOR68"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
