@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR72'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR73'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -16294,24 +16294,23 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
 
     rows = _refactor13_get_metric_change_rows_v1(out)
 
-
-# Count change types
-increased = decreased = unchanged = added = removed = 0
-for r in rows:
-    try:
-        ct = (r.get("change_type") if isinstance(r, dict) else None) or ""
-        if ct == "increased":
-            increased += 1
-        elif ct == "decreased":
-            decreased += 1
-        elif ct == "unchanged":
-            unchanged += 1
-        elif ct in ("added", "missing_baseline", "new_metric"):
-            added += 1
-        elif ct in ("removed", "missing_current"):
-            removed += 1
-    except Exception:
-        pass
+    # Count change types
+    increased = decreased = unchanged = added = removed = 0
+    for r in rows:
+        try:
+            ct = (r.get("change_type") if isinstance(r, dict) else None) or ""
+            if ct == "increased":
+                increased += 1
+            elif ct == "decreased":
+                decreased += 1
+            elif ct == "unchanged":
+                unchanged += 1
+            elif ct in ("added", "missing_baseline", "new_metric"):
+                added += 1
+            elif ct in ("removed", "missing_current"):
+                removed += 1
+        except Exception:
+            pass
 
     total = len(rows)
 
@@ -16464,18 +16463,6 @@ for r in rows:
                     pass
     except Exception:
         pass
-
-
-
-# =========================================================
-# ROBUST EVOLUTION HELPERS (DETERMINISTIC)
-# =========================================================
-
-NON_DATA_CONTEXT_HINTS = [
-    "table of contents", "cookie", "privacy", "terms", "copyright",
-    "subscribe", "newsletter", "login", "sign in", "nav", "footer"
-]
-
 
 def _truncate_json_safely_for_sheets(json_str: str, max_chars: int = 45000) -> str:
     """
@@ -43053,5 +43040,28 @@ try:
             "supersedes": ["REFACTOR71"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR73
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR73":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR73",
+            "date": "2026-01-27",
+            "summary": "Fix REFACTOR72 indentation regression in _refactor13_recompute_summary_and_stability_v1 (rows loop escaped to module scope, causing runtime error). Restores Streamlit-safe execution and preserves completeness-first change_type counting.",
+        })
 except Exception:
     pass
