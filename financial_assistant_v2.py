@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR75'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR76'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -8705,6 +8705,8 @@ def _inj_trace_v1_build(
                 "exclude_injected_from_hash_env": str(_os.getenv("YUREEKA_EXCLUDE_INJECTED_URLS_FROM_SNAPSHOT_HASH") or ""),
                 "force_include_injected_in_hash_env": str(_os.getenv("YUREEKA_INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH") or ""),
                 "evolution_calls_fetch_web_context": d.get("evolution_calls_fetch_web_context"),
+                "evolution_injection_url_present": bool(ui_norm or intake_norm or admitted_norm or attempted_min or persisted_norm),
+                "evolution_injection_url_count": int(len(ui_norm) if isinstance(ui_norm, list) else 0),
                 "evolution_fastpath_allows_injection": False,
             }
         except Exception:
@@ -23278,6 +23280,22 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                                     _p = (_p or "").strip()
                                     if _p:
                                         _parts.append(_p)
+
+                            # REFACTOR76: surface schema-coverage / change_type integrity issues (counts only)
+                            try:
+                                if _schema_keys and isinstance(_inv, dict):
+                                    _mrk = _inv.get("metric_changes_schema_missing_keys") or []
+                                    _drk = _inv.get("metric_changes_schema_duplicate_keys") or []
+                                    _ctm = _inv.get("metric_changes_change_type_mismatches") or []
+                                    if isinstance(_mrk, list) and _mrk:
+                                        _parts.append(f"row_missing_keys={len(_mrk)}")
+                                    if isinstance(_drk, list) and _drk:
+                                        _parts.append(f"row_duplicate_keys={len(_drk)}")
+                                    if isinstance(_ctm, list) and _ctm:
+                                        _parts.append(f"row_change_type_mismatch={len(_ctm)}")
+                            except Exception:
+                                pass
+
                             if _parts:
                                 _evo_extra_urls = _parts
                 except Exception:
@@ -26933,6 +26951,61 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             pass
 
+        # REFACTOR76: Schema-key coverage + change_type integrity (warning-only invariant)
+        try:
+            _row_keys = []
+            if isinstance(_rows_for_cnt, list):
+                for _r in _rows_for_cnt:
+                    if not isinstance(_r, dict):
+                        continue
+                    _ck = _r.get("canonical_key") or _r.get("canonical_metric_key") or _r.get("key")
+                    if isinstance(_ck, str) and _ck:
+                        _row_keys.append(_ck)
+            _row_key_set = set(_row_keys)
+            _dups = []
+            try:
+                from collections import Counter as _Counter
+                _c = _Counter(_row_keys)
+                _dups = [k for k, v in _c.items() if int(v) > 1]
+            except Exception:
+                _dups = []
+            _schema_key_set = set(_schema_keys or [])
+            _missing_rows = [k for k in (_schema_keys or []) if k not in _row_key_set] if _schema_keys else []
+            _extra_rows = [k for k in _row_key_set if (_schema_keys and (k not in _schema_key_set))] if _schema_keys else []
+            _inv["metric_changes_schema_missing_keys"] = _missing_rows
+            _inv["metric_changes_schema_extra_keys"] = sorted(list(_extra_rows))[:100] if isinstance(_extra_rows, list) else []
+            _inv["metric_changes_schema_duplicate_keys"] = _dups
+            _inv["metric_changes_schema_coverage_ok"] = (bool(_schema_keys) and (not _missing_rows) and (not _extra_rows) and (not _dups)) if _schema_keys else None
+
+            _row_by_key = {}
+            if isinstance(_rows_for_cnt, list):
+                for _r in _rows_for_cnt:
+                    if not isinstance(_r, dict):
+                        continue
+                    _ck = _r.get("canonical_key") or _r.get("canonical_metric_key") or _r.get("key")
+                    if isinstance(_ck, str) and _ck and (_ck not in _row_by_key):
+                        _row_by_key[_ck] = _r
+
+            _ct_mismatches = []
+            if _schema_keys:
+                for _k in (_missing_prev or []):
+                    if _k in _cur_keys:
+                        _row = _row_by_key.get(_k) or {}
+                        _ct = str(_row.get("change_type") or "")
+                        if _ct not in ("missing_baseline", "new_metric"):
+                            _ct_mismatches.append({"key": _k, "expected": "missing_baseline", "got": _ct})
+                for _k in (_missing_cur or []):
+                    if _k in _prev_keys:
+                        _row = _row_by_key.get(_k) or {}
+                        _ct = str(_row.get("change_type") or "")
+                        if _ct not in ("missing_current",):
+                            _ct_mismatches.append({"key": _k, "expected": "missing_current", "got": _ct})
+
+            _inv["metric_changes_change_type_mismatches"] = _ct_mismatches[:50]
+            _inv["metric_changes_change_type_ok"] = (len(_ct_mismatches) == 0) if _schema_keys else None
+        except Exception:
+            pass
+
 
         output.setdefault("debug", {})
         if isinstance(output.get("debug"), dict):
@@ -29549,12 +29622,65 @@ def main():
                 except Exception:
                     pass
 
+
+                # === REFACTOR76: suppress results.run_delta_* on injection runs using canonical inj_trace_v1 ===
+                try:
+                    def _refactor76_is_injection_active(_res: dict) -> bool:
+                        try:
+                            if not isinstance(_res, dict):
+                                return False
+                            _dbg = _res.get("debug") if isinstance(_res.get("debug"), dict) else {}
+                            _it = _dbg.get("inj_trace_v1") if isinstance(_dbg.get("inj_trace_v1"), dict) else {}
+                            _counts = _it.get("counts") if isinstance(_it.get("counts"), dict) else {}
+                            for _k in ("ui_norm", "intake_norm", "admitted_norm", "attempted"):
+                                try:
+                                    if int(_counts.get(_k) or 0) > 0:
+                                        return True
+                                except Exception:
+                                    pass
+                            for _k in ("ui_norm", "intake_norm", "admitted_norm", "persisted_norm"):
+                                _lst = _it.get(_k)
+                                if isinstance(_lst, list) and any(isinstance(x, str) and x.strip() for x in _lst):
+                                    return True
+                            _legacy = _dbg.get("fix2d65b_injected_urls") or []
+                            if isinstance(_legacy, list) and any(isinstance(x, str) and x.strip() for x in _legacy):
+                                return True
+                        except Exception:
+                            return False
+                        return False
+
+                    if _refactor76_is_injection_active(results):
+                        results["run_delta_seconds"] = None
+                        results["run_delta_human"] = ""
+                        if isinstance(results.get("results"), dict):
+                            results["results"]["run_delta_seconds"] = None
+                            results["results"]["run_delta_human"] = ""
+                        try:
+                            _dbg_rt = results.get("debug") if isinstance(results.get("debug"), dict) else {}
+                            _rt = _dbg_rt.get("run_timing_v1") if isinstance(_dbg_rt.get("run_timing_v1"), dict) else None
+                            if isinstance(_rt, dict):
+                                _rt["suppressed_by_injection"] = True
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
                 # Add per-row delta fields (production only; blank if injected)
                 try:
                     _inj_urls = []
                     if isinstance(results, dict):
                         _dbg3 = results.get("debug") if isinstance(results.get("debug"), dict) else {}
-                        _inj_urls = _dbg3.get("fix2d65b_injected_urls") or []
+                        # Prefer canonical inj_trace_v1 signals (ui_norm/intake_norm) over legacy debug lists
+                        try:
+                            _it = _dbg3.get("inj_trace_v1")
+                            if isinstance(_it, dict):
+                                _iu = _it.get("ui_norm") or _it.get("intake_norm") or []
+                                if isinstance(_iu, list) and _iu:
+                                    _inj_urls = _iu
+                        except Exception:
+                            pass
+                        if not _inj_urls:
+                            _inj_urls = _dbg3.get("fix2d65b_injected_urls") or []
                         if not isinstance(_inj_urls, list):
                             _inj_urls = []
 
@@ -43335,6 +43461,31 @@ try:
             "summary": "High-value harness hardening: add explicit last-good snapshot fallback inside fetch_web_context for failed:no_text and scrape exceptions using existing_snapshots, with clear provenance fields (fallback_used/status_detail=fallback:last_good_snapshot) so extraction remains complete under source flakiness; extend harness_invariants_v1 to record and surface baseline/current fallbacks in both debug and harness_warning_v1; and restore the invariant that Evolution injection runs suppress Δt.",
             "files": ["REFACTOR75.py"],
             "supersedes": ["REFACTOR74"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR76
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR76":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR76",
+            "date": "2026-01-27",
+            "summary": "Fix injection-mode detection and completeness-first harness guards: suppress results.run_delta_seconds/human whenever injected URLs are present using canonical debug.inj_trace_v1 signals (not legacy lists); prefer inj_trace_v1 for per-row injection gating; extend harness_invariants_v1 with schema-key coverage checks (missing/extra/duplicate canonical keys) and warning-only change_type integrity validation for missing_baseline/missing_current rows, surfacing count-only warning banners.",
+            "files": ["REFACTOR76.py"],
+            "supersedes": ["REFACTOR75"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
