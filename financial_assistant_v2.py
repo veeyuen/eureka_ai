@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR70'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR71'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -26596,6 +26596,116 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
+
+
+    # ============================================================
+    # PATCH REFACTOR71_HARNESS_INVARIANTS_V1 (ADDITIVE)
+    # Why:
+    # - External source flakiness (e.g., failed:no_text) can silently reduce
+    #   primary_metrics_canonical_count below the frozen schema size.
+    # - This patch stamps a deterministic debug warning with missing keys
+    #   and source failure summaries so the harness can't "silently degrade".
+    # ============================================================
+    try:
+        _schema_frozen = None
+        try:
+            _schema_frozen = _first_present(previous_data or {}, [
+                ["metric_schema_frozen"],
+                ["results", "metric_schema_frozen"],
+                ["primary_response", "metric_schema_frozen"],
+                ["results", "primary_response", "metric_schema_frozen"],
+            ], default=None)
+        except Exception:
+            _schema_frozen = None
+        if _schema_frozen is None:
+            _schema_frozen = output.get("metric_schema_frozen")
+
+        _schema_keys = []
+        if isinstance(_schema_frozen, dict):
+            _schema_keys = list(_schema_frozen.keys())
+        elif isinstance(_schema_frozen, list):
+            _schema_keys = [str(x) for x in _schema_frozen if x is not None]
+
+        # baseline (prev) canonical metrics keys
+        _prev_pmc = _first_present(previous_data or {}, [
+            ["primary_metrics_canonical"],
+            ["results", "primary_metrics_canonical"],
+            ["primary_response", "primary_metrics_canonical"],
+            ["results", "primary_response", "primary_metrics_canonical"],
+        ], default={}) or {}
+        _prev_keys = set(_prev_pmc.keys()) if isinstance(_prev_pmc, dict) else set()
+
+        # current (cur) canonical metrics keys
+        _cur_pmc = output.get("primary_metrics_canonical") or _get_nested(output, ["results", "primary_metrics_canonical"], default={}) or {}
+        _cur_keys = set(_cur_pmc.keys()) if isinstance(_cur_pmc, dict) else set()
+
+        _missing_prev = []
+        _missing_cur = []
+        if _schema_keys:
+            _missing_prev = [k for k in _schema_keys if k not in _prev_keys]
+            _missing_cur = [k for k in _schema_keys if k not in _cur_keys]
+
+        def _summ_failures(_lst):
+            _out = []
+            if not isinstance(_lst, list):
+                return _out
+            for _e in _lst:
+                if not isinstance(_e, dict):
+                    continue
+                _url = _e.get("url") or _e.get("source_url") or _e.get("source") or ""
+                _st = str(_e.get("status") or "")
+                _sd = str(_e.get("status_detail") or "")
+                # mark anything explicitly failed, or any status_detail that starts with "failed"
+                _is_fail = False
+                if _st and _st.lower() in ("failed", "error", "timeout", "blocked"):
+                    _is_fail = True
+                if _sd and _sd.lower().startswith("failed"):
+                    _is_fail = True
+                if _is_fail:
+                    _out.append({"url": _url, "status": _st, "status_detail": _sd, "numbers_found": _e.get("numbers_found")})
+            return _out
+
+        _prev_cache = _first_present(previous_data or {}, [
+            ["baseline_sources_cache"],
+            ["results", "baseline_sources_cache"],
+            ["primary_response", "baseline_sources_cache"],
+            ["results", "primary_response", "baseline_sources_cache"],
+        ], default=None)
+        _cur_sources = output.get("source_results") or output.get("baseline_sources_cache_current") or []
+
+        _prev_failures = _summ_failures(_prev_cache)
+        _cur_failures = _summ_failures(_cur_sources)
+
+        _inv = {
+            "schema_frozen_key_count": len(_schema_keys),
+            "baseline_key_count": len(_prev_keys),
+            "current_key_count": len(_cur_keys),
+            "missing_baseline_keys": _missing_prev,
+            "missing_current_keys": _missing_cur,
+            "baseline_source_failures": _prev_failures,
+            "current_source_failures": _cur_failures,
+        }
+
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict):
+            output["debug"]["harness_invariants_v1"] = _inv
+
+        # Add a short banner string for UI visibility (non-breaking additive field)
+        if (_missing_prev or _missing_cur) and _schema_keys:
+            _parts = []
+            if _missing_prev:
+                _parts.append(f"baseline_missing={len(_missing_prev)}/{len(_schema_keys)}")
+            if _missing_cur:
+                _parts.append(f"current_missing={len(_missing_cur)}/{len(_schema_keys)}")
+            if _prev_failures:
+                _parts.append(f"baseline_failures={len(_prev_failures)}")
+            if _cur_failures:
+                _parts.append(f"current_failures={len(_cur_failures)}")
+            output["harness_warning_v1"] = " | ".join(_parts)
+    except Exception:
+        pass
+    # ================= END PATCH REFACTOR71_HARNESS_INVARIANTS_V1 =================
+
     return output
 
 # =================== END PATCH RMS_CORE1 (ADDITIVE) ===================
@@ -42820,6 +42930,31 @@ try:
             "summary": "Safety rail + simplification: add a late-stage output bridge in compute_source_anchored_diff to enforce a single authoritative metric_changes list (mirrored to metric_changes_v2) and a clamped top-level stability_score, while hard-removing metric_changes_legacy. This stabilizes the Evolution UI/export path during controlled downsizing. No schema/key-grammar changes.",
             "files": ["REFACTOR70.py"],
             "supersedes": ["REFACTOR69"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR71
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR71":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR71",
+            "date": "2026-01-27",
+            "summary": "Safety rail: stamp harness_invariants_v1 into Evolution results to prevent silent degradation when external sources flake (e.g., failed:no_text). Records schema-frozen key count vs baseline/current canonical counts, missing keys, and source failure summaries, plus an additive harness_warning_v1 banner string. No schema/key-grammar changes.",
+            "files": ["REFACTOR71.py"],
+            "supersedes": ["REFACTOR70"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
