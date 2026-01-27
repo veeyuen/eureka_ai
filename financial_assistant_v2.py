@@ -42698,7 +42698,6 @@ except Exception:
 if __name__ == "__main__":
         if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
             main()
-except Exception:
     # Streamlit-safe: surface the exception if possible without crashing hard.
     try:
         import streamlit as st
