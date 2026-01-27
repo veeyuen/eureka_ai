@@ -42660,6 +42660,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
 
 # ============================================================
+try:
+
 # ============================================================
 # PATCH TRACKER V1 (EARLY ADD): REFACTOR78
 # ============================================================
@@ -42696,8 +42698,9 @@ except Exception:
 
 
 if __name__ == "__main__":
-    if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
+        if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
             main()
+except Exception:
     # Streamlit-safe: surface the exception if possible without crashing hard.
     try:
         import streamlit as st
