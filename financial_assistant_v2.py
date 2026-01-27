@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR80'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR81'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -9168,14 +9168,149 @@ def fetch_web_context(
         "debug_counts": {},   # ✅ telemetry for dashboard + JSON debugging
     }
 
+    # ============================================================
+    # PATCH REFACTOR81_LAST_GOOD_SNAPSHOT_FALLBACK_TELEMETRY_V1 (ADDITIVE)
+    # Record explicit last-good snapshot fallback usage (never silent).
+    # ============================================================
+    def _record_last_good_fallback(_url: str) -> None:
+        try:
+            if not isinstance(_url, str) or not _url.strip():
+                return
+            out.setdefault("debug_counts", {})
+            out["debug_counts"]["fallback_last_good_snapshot_used"] = int(out["debug_counts"].get("fallback_last_good_snapshot_used") or 0) + 1
+            out["debug_counts"].setdefault("fallback_last_good_snapshot_used_urls", [])
+            if _url not in out["debug_counts"]["fallback_last_good_snapshot_used_urls"]:
+                out["debug_counts"]["fallback_last_good_snapshot_used_urls"].append(_url)
+        except Exception:
+            pass
+
     # ---- ADDITIVE: snapshot reuse lookup (Change #3) ----
     snap_lookup = {}
-    if isinstance(existing_snapshots, dict):
-        snap_lookup = existing_snapshots
-    elif isinstance(existing_snapshots, list):
-        for s in existing_snapshots:
-            if isinstance(s, dict) and s.get("url"):
-                snap_lookup[str(s.get("url")).strip()] = s
+    try:
+        def _snap_variants(u: str) -> list:
+            try:
+                if not isinstance(u, str):
+                    return []
+                u0 = u.strip()
+                if not u0:
+                    return []
+                nu = _normalize_url(u0) or u0
+                cands = []
+                for x in (u0, nu):
+                    if isinstance(x, str) and x.strip():
+                        cands.append(x.strip())
+
+                outv = []
+                for x in cands:
+                    x2 = x.rstrip("/")
+                    if x2 and x2 not in outv:
+                        outv.append(x2)
+                    if x2 and (x2 + "/") not in outv:
+                        outv.append(x2 + "/")
+
+                more = []
+                for x in list(outv):
+                    if x.lower().startswith("https://"):
+                        more.append("http://" + x[8:])
+                    elif x.lower().startswith("http://"):
+                        more.append("https://" + x[7:])
+                for x in more:
+                    if x and x not in outv:
+                        outv.append(x)
+
+                final = []
+                for x in outv:
+                    final.append(x)
+                    try:
+                        if x.lower().startswith("https://www."):
+                            final.append("https://" + x[len("https://www."):])
+                        elif x.lower().startswith("http://www."):
+                            final.append("http://" + x[len("http://www."):])
+                    except Exception:
+                        pass
+
+                seen = set()
+                uniq = []
+                for x in final:
+                    if not isinstance(x, str):
+                        continue
+                    t = x.strip()
+                    if not t or t in seen:
+                        continue
+                    seen.add(t)
+                    uniq.append(t)
+                return uniq
+            except Exception:
+                return [u] if isinstance(u, str) else []
+
+        def _choose_better(a: dict, b: dict) -> dict:
+            """Pick the better snapshot (prefer more numbers; then newer fetched_at)."""
+            try:
+                if not isinstance(a, dict):
+                    return b
+                if not isinstance(b, dict):
+                    return a
+                an = int(a.get("numbers_found") or 0)
+                bn = int(b.get("numbers_found") or 0)
+                if bn != an:
+                    return b if bn > an else a
+                af = str(a.get("fetched_at") or "")
+                bf = str(b.get("fetched_at") or "")
+                if bf and af and bf != af:
+                    return b if bf > af else a
+            except Exception:
+                pass
+            return a
+
+        _cands = []
+        if isinstance(existing_snapshots, dict):
+            for _k, _v in (existing_snapshots or {}).items():
+                if isinstance(_v, dict):
+                    if not _v.get("url") and isinstance(_k, str) and _k.strip():
+                        _vv = dict(_v)
+                        _vv["url"] = _k.strip()
+                        _v = _vv
+                    if _v.get("url"):
+                        _cands.append(_v)
+        elif isinstance(existing_snapshots, list):
+            for _v in (existing_snapshots or []):
+                if isinstance(_v, dict) and _v.get("url"):
+                    _cands.append(_v)
+
+        for s in _cands:
+            try:
+                u0 = str(s.get("url") or "").strip()
+                if not u0:
+                    continue
+                for key in _snap_variants(u0):
+                    if not key:
+                        continue
+                    if key not in snap_lookup:
+                        snap_lookup[key] = s
+                    else:
+                        snap_lookup[key] = _choose_better(snap_lookup.get(key), s)
+            except Exception:
+                continue
+
+        def _get_prev_snapshot(u: str):
+            try:
+                if not isinstance(u, str) or not u.strip():
+                    return None
+                if not isinstance(snap_lookup, dict):
+                    return None
+                for key in _snap_variants(u):
+                    if key in snap_lookup:
+                        return snap_lookup.get(key)
+                return snap_lookup.get(u.strip())
+            except Exception:
+                return None
+    except Exception:
+        snap_lookup = snap_lookup if isinstance(snap_lookup, dict) else {}
+        def _get_prev_snapshot(u: str):
+            try:
+                return snap_lookup.get(u) if isinstance(snap_lookup, dict) else None
+            except Exception:
+                return None
 
     extractor_fp = get_extractor_fingerprint()
     # ----------------------------------------------------
@@ -9528,7 +9663,7 @@ def fetch_web_context(
                 #   reuse its extracted_numbers with explicit provenance (never silent).
                 # ============================================================
                 try:
-                    _prev = snap_lookup.get(url) if isinstance(snap_lookup, dict) else None
+                    _prev = _get_prev_snapshot(url) if isinstance(snap_lookup, dict) else None
                     _prev_nums = _prev.get("extracted_numbers") if isinstance(_prev, dict) else None
                     if isinstance(_prev_nums, list) and _prev_nums:
                         meta["status"] = "fetched"
@@ -9563,6 +9698,10 @@ def fetch_web_context(
                         if meta.get("numbers_found", 0) > 0:
                             scraped_ok_numbers += 1
                         # REFACTOR75: we recovered; do not count as scraped_failed.
+                        try:
+                            _record_last_good_fallback(url)
+                        except Exception:
+                            pass
                         continue
                 except Exception:
                     pass
@@ -9590,7 +9729,7 @@ def fetch_web_context(
 
                 # ---- ADDITIVE: reuse extracted_numbers when unchanged (Change #3) ----
                 meta["extractor_fingerprint"] = extractor_fp
-                prev = snap_lookup.get(url) if isinstance(snap_lookup, dict) else None
+                prev = _get_prev_snapshot(url) if isinstance(snap_lookup, dict) else None
                 if isinstance(prev, dict):
                     if prev.get("fingerprint") == meta.get("fingerprint") and prev.get("extractor_fingerprint") == extractor_fp:
                         prev_nums = prev.get("extracted_numbers")
@@ -9719,6 +9858,49 @@ def fetch_web_context(
                     meta["numbers_found"] = len(meta["extracted_numbers"])
                     # --------------------------------------------------------------
 
+                # ============================================================
+                # PATCH REFACTOR81_LAST_GOOD_SNAPSHOT_FALLBACK_ON_ZERO_NUMBERS_V1 (ADDITIVE)
+                # If extraction yields zero numbers but a last-good snapshot has numbers,
+                # reuse them with explicit provenance (never silent).
+                # ============================================================
+                try:
+                    if int(meta.get("numbers_found") or 0) <= 0:
+                        _prev = _get_prev_snapshot(url) if callable(locals().get("_get_prev_snapshot")) else (snap_lookup.get(url) if isinstance(snap_lookup, dict) else None)
+                        _prev_nums = _prev.get("extracted_numbers") if isinstance(_prev, dict) else None
+                        if isinstance(_prev_nums, list) and _prev_nums:
+                            meta["status"] = "fetched"
+                            meta["status_detail"] = "fallback:last_good_snapshot"
+                            meta["fallback_used"] = True
+                            meta["fallback_reason"] = "numbers_found=0"
+                            meta["fallback_source"] = "existing_snapshots"
+                            meta["fallback_snapshot_fetched_at"] = _prev.get("fetched_at") if isinstance(_prev, dict) else None
+                            meta["reused_snapshot"] = True
+
+                            meta["fingerprint"] = _prev.get("fingerprint") if isinstance(_prev, dict) else meta.get("fingerprint")
+                            meta["extractor_fingerprint"] = _prev.get("extractor_fingerprint") if isinstance(_prev, dict) else meta.get("extractor_fingerprint")
+                            if not meta.get("extractor_fingerprint"):
+                                meta["extractor_fingerprint"] = extractor_fp
+
+                            meta["extracted_numbers"] = list(_prev_nums)
+                            meta["numbers_found"] = len(_prev_nums)
+
+                            _pc = (_prev.get("content") if isinstance(_prev, dict) else "") or ""
+                            _pt = (_prev.get("clean_text") if isinstance(_prev, dict) else "") or ""
+                            if not (meta.get("content") or "").strip():
+                                meta["content"] = _pc or _pt or ""
+                            if not (meta.get("clean_text") or "").strip():
+                                meta["clean_text"] = _pt or _pc or ""
+                            meta["content_len"] = len(meta.get("content") or "")
+                            meta["clean_text_len"] = len(meta.get("clean_text") or "")
+
+                            try:
+                                _record_last_good_fallback(url)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                # ================= END PATCH REFACTOR81_LAST_GOOD_SNAPSHOT_FALLBACK_ON_ZERO_NUMBERS_V1
+
                 out["scraped_meta"][url] = meta
                 out["scraped_content"][url] = cleaned
 
@@ -9735,7 +9917,7 @@ def fetch_web_context(
             # Attempt snapshot fallback on scrape exceptions.
             # ============================================================
             try:
-                _prev = snap_lookup.get(url) if isinstance(snap_lookup, dict) else None
+                _prev = _get_prev_snapshot(url) if isinstance(snap_lookup, dict) else None
                 _prev_nums = _prev.get("extracted_numbers") if isinstance(_prev, dict) else None
                 if isinstance(_prev_nums, list) and _prev_nums:
                     meta["status"] = "fetched"
@@ -9768,6 +9950,10 @@ def fetch_web_context(
                     if meta.get("numbers_found", 0) > 0:
                         scraped_ok_numbers += 1
                     # recovered; do not count as scraped_failed.
+                    try:
+                        _record_last_good_fallback(url)
+                    except Exception:
+                        pass
                     continue
             except Exception:
                 pass
@@ -21456,6 +21642,22 @@ def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_respon
                     cu = pu
             except Exception:
                 pass
+            # ============================================================
+            # PATCH REFACTOR81_SCHEMA_UNIT_FILL_FOR_MISSING_ROWS_V1 (ADDITIVE)
+            # If schema is known and both units are empty, fill from schema when safe.
+            # (Avoid currency placeholder unit 'U' to prevent misleading display.)
+            # ============================================================
+            try:
+                if (not str(pu).strip()) and (not str(cu).strip()) and isinstance(schema, dict):
+                    sch = schema.get(ckey) if isinstance(schema.get(ckey), dict) else None
+                    su = (sch.get("unit") if isinstance(sch, dict) else "") or ""
+                    su = str(su).strip()
+                    if su and su.upper() != "U":
+                        pu = su
+                        cu = su
+            except Exception:
+                pass
+
 
             # Best-effort metric name
             name = ""
@@ -43615,6 +43817,32 @@ try:
             "summary": "Fix injection-mode detection so production runs do not get falsely flagged as suppressed_by_injection; suppress run-delta only when true UI/intake injection URLs exist. Also improve row_delta_gating_v1 source-attribution counters (rows_with_source_url/rows_missing_source_url) even when no injection is present. No schema/key-grammar changes; Streamlit-safe.",
             "files": ["REFACTOR80.py"],
             "supersedes": ["REFACTOR79"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR81
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR81":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR81",
+            "date": "2026-01-27",
+            "summary": "Last-good snapshot fallback hardening: expand existing_snapshots lookup to match URL variants (scheme/www/trailing slash) and fall back not only on failed:no_text/exception but also when extraction yields zero numbers (explicit status_detail=fallback:last_good_snapshot, never silent). Add telemetry debug_counts.fallback_last_good_snapshot_used(+urls). Also fill units for schema-complete missing rows from metric_schema_frozen when safe (avoid currency placeholder unit 'U'). Streamlit-safe; no schema/key-grammar changes.",
+            "files": ["REFACTOR81.py"],
+            "supersedes": ["REFACTOR80"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
