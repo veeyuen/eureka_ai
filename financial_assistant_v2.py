@@ -25588,7 +25588,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 "diag_ext": (lambda: {
                     "current_metrics_count": int(len(current_metrics)) if isinstance(current_metrics, dict) else 0,
                     "baseline_sources_cache_current_rows": int(len(baseline_sources_cache_current)) if isinstance(baseline_sources_cache_current, list) else 0,
-                    "baseline_sources_cache_prev_rows": int(len(baseline_sources_cache_prev)) if isinstance(baseline_sources_cache_prev, list) else 0,
+                    "baseline_sources_cache_prev_rows": int(len((locals().get("baseline_sources_cache_prev") or baseline_sources_cache or []))) if isinstance((locals().get("baseline_sources_cache_prev") or baseline_sources_cache), list) else 0,
                     "has_web_context": bool(isinstance(web_context, dict)),
                     "web_context_extra_urls_count": int(len(web_context.get("extra_urls") or [])) if isinstance(web_context, dict) and isinstance(web_context.get("extra_urls"), list) else 0,
                     "web_context_fix2v_binding": (web_context.get("fix2v_candidate_binding_v1") or {}) if isinstance(web_context, dict) else {},
@@ -42789,6 +42789,62 @@ except Exception:
     _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL = None
 
 
+# ============================================================
+# REFACTOR83: Evolution output source-cache normalization (Streamlit-safe)
+#
+# Motivation:
+# - Some late patch blocks may overwrite results['baseline_sources_cache'] with an injected-only
+#   placeholder row (while results['baseline_sources_cache_current'] still contains the full
+#   current pool). This can confuse UI diagnostics and harness messaging.
+#
+# Behavior:
+# - If baseline_sources_cache_current (or source_results) is a list with more rows than
+#   baseline_sources_cache, widen baseline_sources_cache to match the full current pool.
+# - Debug-only stamp under results.debug.refactor83_source_cache_normalize_v1 when applied.
+#
+# Safety:
+# - Does NOT affect metric selection/diffing/stability. Payload-only normalization.
+# - Never raises.
+# ============================================================
+def _refactor83_normalize_evolution_source_caches_v1(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+
+    # Most evolution payloads store the main envelope under "results"
+    res = payload.get("results") if isinstance(payload.get("results"), dict) else payload
+    if not isinstance(res, dict):
+        return payload
+
+    cur = res.get("baseline_sources_cache_current")
+    if not isinstance(cur, list) or not cur:
+        cur = res.get("source_results")
+    base = res.get("baseline_sources_cache")
+
+    if isinstance(cur, list):
+        base_list = base if isinstance(base, list) else []
+        if len(cur) > len(base_list):
+            try:
+                res["baseline_sources_cache"] = cur
+            except Exception:
+                pass
+            try:
+                dbg = res.setdefault("debug", {})
+                if isinstance(dbg, dict):
+                    d = dbg.setdefault("refactor83_source_cache_normalize_v1", {})
+                    if isinstance(d, dict):
+                        d.update({
+                            "applied": True,
+                            "before_baseline_sources_cache_rows": int(len(base_list)),
+                            "after_baseline_sources_cache_rows": int(len(cur)),
+                            "reason": "widen_baseline_sources_cache_to_match_current_pool",
+                        })
+            except Exception:
+                pass
+
+    return payload
+
+
+
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
     # Input coercion (avoid None.get)
     if not isinstance(previous_data, dict):
@@ -42854,6 +42910,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         if not isinstance(_res, dict):
             import traceback as _tb
             return _fail("run_source_anchored_evolution returned non-dict result (impl)", tb=_tb.format_stack())
+        try:
+            _res = _refactor83_normalize_evolution_source_caches_v1(_res)
+        except Exception:
+            pass
         return _res
     except TypeError:
         # Backward-compat: some historical defs accept only previous_data
@@ -42862,6 +42922,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             if not isinstance(_res, dict):
                 import traceback as _tb
                 return _fail("run_source_anchored_evolution returned non-dict result (impl fallback)", tb=_tb.format_stack())
+            try:
+                _res = _refactor83_normalize_evolution_source_caches_v1(_res)
+            except Exception:
+                pass
             return _res
         except Exception as e:
             import traceback as _tb
@@ -42872,7 +42936,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
 # ============================================================
 # ============================================================
-# PATCH TRACKER V1 (EARLY ADD): REFACTOR82
+# ============================================================
+# PATCH TRACKER V1 (EARLY ADD): REFACTOR83
 # ============================================================
 # Why:
 # - Streamlit can execute main() before later end-of-file patch-tracker "ADD" blocks run.
@@ -42884,23 +42949,22 @@ try:
     _already = False
     try:
         for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR82":
+            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR83":
                 _already = True
                 break
     except Exception:
         _already = False
     if not _already:
         PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR82",
-            "date": "2026-01-27",
-            "summary": "Fix patch tracker/version self-check false positives by registering the current REFACTOR patch before main() executes (Streamlit load-order safe). Also make the main() crash banner use the active code version instead of a hardcoded patch id. No schema/key-grammar changes; Streamlit-safe.",
-            "files": ["REFACTOR82.py"],
-            "supersedes": ["REFACTOR81"],
+            "patch_id": "REFACTOR83",
+            "date": "2026-01-28",
+            "summary": "Hardening + clarity pass: (1) normalize Evolution output so baseline_sources_cache is never accidentally reduced to an injected-only row when baseline_sources_cache_current contains the full current pool (keeps UI/harness consistent), and (2) fix a latent NameError in canonical_for_render_v1 diagnostic extension (baseline_sources_cache_prev_rows) so diag_ext reliably populates. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.",
+            "files": ["REFACTOR83.py"],
+            "supersedes": ["REFACTOR82"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
-
 
 # ============================================================
 # MAIN ENTRYPOINT (Streamlit-safe)
