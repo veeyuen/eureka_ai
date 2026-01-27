@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR78'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR79'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -42660,18 +42660,12 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
 
 # ============================================================
-try:
-
-# ============================================================
-# PATCH TRACKER V1 (EARLY ADD): REFACTOR78
+# PATCH TRACKER V1 (EARLY ADD): REFACTOR79
 # ============================================================
 # Why:
-# - Streamlit executes this file top-to-bottom. The app's main() is invoked before
-#   the existing end-of-file PATCH_TRACKER entries, so the harness can run with a
-#   partially-populated PATCH_TRACKER_V1 list and falsely report:
-#     harness_warning_v1 = "version_mismatch=<CODE_VERSION>!=<patch_tracker_latest_refactor>"
-# - This block registers the current patch *before* main() executes, so harness
-#   invariant checks see an up-to-date tracker.
+# - REFACTOR78 introduced a broken top-level try/except near the end of the file (empty try body + stray except),
+#   causing an IndentationError during import.
+# - This block registers the current patch *before* main() executes, so harness/version checks see an up-to-date tracker.
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
     if not isinstance(PATCH_TRACKER_V1, list):
@@ -42679,35 +42673,38 @@ try:
     _already = False
     try:
         for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR78":
+            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR79":
                 _already = True
                 break
     except Exception:
         _already = False
     if not _already:
         PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR78",
+            "patch_id": "REFACTOR79",
             "date": "2026-01-27",
-            "summary": "Fix harness false-positive version_mismatch by registering the patch tracker entry before Streamlit main() executes. No schema/key-grammar changes; diffing semantics unchanged.",
-            "files": ["REFACTOR78.py"],
-            "supersedes": ["REFACTOR77"],
+            "summary": "Fix end-of-file try/except indentation regression introduced in REFACTOR78 early patch-tracker block; restore Streamlit-safe main guard. No schema/key-grammar changes.",
+            "files": ["REFACTOR79.py"],
+            "supersedes": ["REFACTOR78"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
 
 
-if __name__ == "__main__":
+# ============================================================
+# MAIN ENTRYPOINT (Streamlit-safe)
+# ============================================================
+try:
+    if __name__ == "__main__":
         if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
             main()
 except Exception:
     # Streamlit-safe: surface the exception if possible without crashing hard.
     try:
         import streamlit as st
-        st.exception(Exception("Yureeka app crashed during main() execution (REFACTOR35)."))
+        st.exception(Exception("Yureeka app crashed during main() execution (REFACTOR79)."))
     except Exception:
         pass
-
 
 # ============================================================
 # PATCH TRACKER V1 (ADD): REFACTOR40
