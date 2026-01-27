@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR81'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR82'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -42871,11 +42871,11 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
 
 # ============================================================
-# PATCH TRACKER V1 (EARLY ADD): REFACTOR80
+# ============================================================
+# PATCH TRACKER V1 (EARLY ADD): REFACTOR82
 # ============================================================
 # Why:
-# - REFACTOR78 introduced a broken top-level try/except near the end of the file (empty try body + stray except),
-#   causing an IndentationError during import.
+# - Streamlit can execute main() before later end-of-file patch-tracker "ADD" blocks run.
 # - This block registers the current patch *before* main() executes, so harness/version checks see an up-to-date tracker.
 try:
     PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
@@ -42884,18 +42884,18 @@ try:
     _already = False
     try:
         for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR80":
+            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR82":
                 _already = True
                 break
     except Exception:
         _already = False
     if not _already:
         PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR80",
+            "patch_id": "REFACTOR82",
             "date": "2026-01-27",
-            "summary": "Fix end-of-file try/except indentation regression introduced in REFACTOR78 early patch-tracker block; restore Streamlit-safe main guard. No schema/key-grammar changes.",
-            "files": ["REFACTOR80.py"],
-            "supersedes": ["REFACTOR79"],
+            "summary": "Fix patch tracker/version self-check false positives by registering the current REFACTOR patch before main() executes (Streamlit load-order safe). Also make the main() crash banner use the active code version instead of a hardcoded patch id. No schema/key-grammar changes; Streamlit-safe.",
+            "files": ["REFACTOR82.py"],
+            "supersedes": ["REFACTOR81"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -42913,7 +42913,7 @@ except Exception:
     # Streamlit-safe: surface the exception if possible without crashing hard.
     try:
         import streamlit as st
-        st.exception(Exception("Yureeka app crashed during main() execution (REFACTOR80)."))
+        st.exception(Exception(f"Yureeka app crashed during main() execution ({_yureeka_get_code_version()})."))
     except Exception:
         pass
 
@@ -43843,6 +43843,29 @@ try:
             "summary": "Last-good snapshot fallback hardening: expand existing_snapshots lookup to match URL variants (scheme/www/trailing slash) and fall back not only on failed:no_text/exception but also when extraction yields zero numbers (explicit status_detail=fallback:last_good_snapshot, never silent). Add telemetry debug_counts.fallback_last_good_snapshot_used(+urls). Also fill units for schema-complete missing rows from metric_schema_frozen when safe (avoid currency placeholder unit 'U'). Streamlit-safe; no schema/key-grammar changes.",
             "files": ["REFACTOR81.py"],
             "supersedes": ["REFACTOR80"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR82
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR82":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR82",
+            "date": "2026-01-27",
+            "summary": "Fix patch tracker/version self-check false positives by registering the current REFACTOR patch before main() executes (Streamlit load-order safe). Also make the main() crash banner use the active code version instead of a hardcoded patch id. No schema/key-grammar changes; Streamlit-safe.",
+            "files": ["REFACTOR82.py"],
+            "supersedes": ["REFACTOR81"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
