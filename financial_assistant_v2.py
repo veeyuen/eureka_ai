@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR73'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR74'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -21300,7 +21300,7 @@ def _refactor61__pick_source_url(m):
 
 def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_response: dict):
     """
-    Canonical-first strict join (schema-complete in REFACTOR72):
+    Canonical-first strict join (schema-complete in REFACTOR74):
 
       - Prefer iterating *frozen schema keys* when metric_schema_frozen is available.
       - For keys present in both baseline and current:
@@ -21437,7 +21437,7 @@ def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_respon
 
     summary = {
         "rows_total": int(len(rows)),
-        "builder": "REFACTOR72_build_diff_metrics_panel_v2__rows_refactor47",
+        "builder": "REFACTOR74_build_diff_metrics_panel_v2__rows_refactor47",
         "mode": (mode if 'mode' in locals() else ""),
         "schema_keys_total": int(len(schema_keys)) if schema_keys else 0,
     }
@@ -25423,7 +25423,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _diff_v2_rows = _existing
                 _diff_v2_summary = None
             else:
-                # Strict canonical-key join fallback (no inference, no heuristics)
+                # Strict schema-complete fallback (no inference, no heuristics)
                 _diff_v2_rows = []
                 _prev_map = _prev_can_v2 if isinstance(_prev_can_v2, dict) else {}
                 _cur_map = _cur_can_v2 if isinstance(_cur_can_v2, dict) else {}
@@ -25447,58 +25447,122 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         return None
                     return None
 
-                for _ck in sorted([k for k in _prev_map.keys() if isinstance(k, str) and k]):
+                # Prefer frozen schema keys if available (guarantees schema-complete rows)
+                _schema_keys = []
+                try:
+                    _msf = None
+                    if isinstance(prev_response, dict):
+                        _msf = prev_response.get("metric_schema_frozen") or (prev_response.get("results") or {}).get("metric_schema_frozen")
+                    if _msf is None and isinstance(output, dict):
+                        _msf = output.get("metric_schema_frozen") or (output.get("results") or {}).get("metric_schema_frozen")
+                    if _msf is None and isinstance(cur_resp_for_diff, dict):
+                        _msf = cur_resp_for_diff.get("metric_schema_frozen") or (cur_resp_for_diff.get("results") or {}).get("metric_schema_frozen")
+                    if isinstance(_msf, dict) and _msf:
+                        _schema_keys = [str(k) for k in _msf.keys()]
+                    elif isinstance(_msf, list) and _msf:
+                        _schema_keys = [str(x) for x in _msf if x is not None]
+                    _schema_keys = sorted([k for k in _schema_keys if isinstance(k, str) and k])
+                except Exception:
+                    _schema_keys = []
+
+                try:
+                    if _schema_keys:
+                        _iter_keys = list(_schema_keys)
+                        _mode = "schema_complete_fallback"
+                    else:
+                        _iter_keys = sorted({str(k) for k in list(_prev_map.keys()) + list(_cur_map.keys()) if k})
+                        _mode = "union_fallback"
+                except Exception:
+                    _iter_keys = []
+                    _mode = "empty"
+
+                for _ck in _iter_keys:
                     _pm = _prev_map.get(_ck) if isinstance(_prev_map, dict) else None
                     _cm = _cur_map.get(_ck) if isinstance(_cur_map, dict) else None
+                    _pm_ok = isinstance(_pm, dict) and bool(_pm)
+                    _cm_ok = isinstance(_cm, dict) and bool(_cm)
 
-                    _pv = _vn(_pm)
-                    _cv = _vn(_cm)
-                    _pu = _unit(_pm)
-                    _cu = _unit(_cm)
+                    _pv = _vn(_pm) if _pm_ok else None
+                    _cv = _vn(_cm) if _cm_ok else None
+                    _pu = _unit(_pm) if _pm_ok else None
+                    _cu = _unit(_cm) if _cm_ok else None
 
-                    _is_comp = (_pv is not None and _cv is not None and str(_pu or "") == str(_cu or ""))
+                    # For display clarity, carry known unit across when only one side is present
+                    try:
+                        if (not _pm_ok) and _cm_ok and str(_cu or "").strip():
+                            _pu = _cu
+                        if _pm_ok and (not _cm_ok) and str(_pu or "").strip():
+                            _cu = _pu
+                    except Exception:
+                        pass
+
                     _d = None
                     _pct = None
-                    _ctype = "unknown"
-                    if _is_comp:
-                        _d = float(_cv) - float(_pv)
-                        if abs(float(_pv)) > 1e-12:
-                            _pct = (_d / float(_pv)) * 100.0
-                        if abs(_d) < 1e-9:
-                            _ctype = "unchanged"
-                        elif _d > 0:
-                            _ctype = "increased"
+                    _is_comp = False
+
+                    if _pm_ok and _cm_ok:
+                        if (_pv is not None) and (_cv is not None) and str(_pu or "").strip() and str(_cu or "").strip() and str(_pu).strip() == str(_cu).strip():
+                            _is_comp = True
+                            _d = float(_cv) - float(_pv)
+                            if abs(float(_pv)) > 1e-12:
+                                _pct = (_d / float(_pv)) * 100.0
+                            if abs(_d) < 1e-9:
+                                _ctype = "unchanged"
+                                _d = 0.0
+                            elif _d > 0:
+                                _ctype = "increased"
+                            else:
+                                _ctype = "decreased"
                         else:
-                            _ctype = "decreased"
+                            # Both present but not comparable (usually unit mismatch)
+                            if str(_pu or "").strip() and str(_cu or "").strip() and str(_pu).strip() != str(_cu).strip():
+                                _ctype = "unit_mismatch"
+                            else:
+                                _ctype = "found"
+                    elif (not _pm_ok) and _cm_ok:
+                        _ctype = "missing_baseline"
+                    elif _pm_ok and (not _cm_ok):
+                        _ctype = "missing_current"
                     else:
-                        if (_pm is None) and (_cm is not None):
-                            _ctype = "added"
-                        elif _cm is None:
-                            _ctype = "not_found"
+                        _ctype = "missing_both"
 
                     _name = None
                     try:
-                        _name = ((_pm or {}).get("name") if isinstance(_pm, dict) else None) or ((_cm or {}).get("name") if isinstance(_cm, dict) else None) or _ck
+                        _name = ((_pm or {}).get("name") if _pm_ok else None) or ((_cm or {}).get("name") if _cm_ok else None) or _ck
                     except Exception:
                         _name = _ck
+
+                    _src = None
+                    try:
+                        if _cm_ok:
+                            _src = _cm.get("source_url") or _cm.get("url")
+                    except Exception:
+                        _src = None
 
                     _diff_v2_rows.append({
                         "canonical_key": _ck,
                         "name": _name,
                         "previous_value": _pv,
-                        "current_value": (_cv if _cm is not None else "N/A"),
+                        "current_value": (_cv if _cm_ok else "N/A"),
                         "previous_unit": _pu,
-                        "current_unit": (_cu if _cm is not None else None),
+                        "current_unit": (_cu if _cm_ok else _cu),
                         "prev_value_norm": _pv,
-                        "cur_value_norm": (_cv if _cm is not None else None),
+                        "cur_value_norm": (_cv if _cm_ok else None),
                         "delta_abs": _d,
                         "delta_pct": _pct,
                         "change_type": _ctype,
                         "baseline_is_comparable": bool(_is_comp),
-                        "current_method": "strict_fallback_v2",
-                        "source_url": None,
+                        "current_method": "strict_schema_fallback_v2",
+                        "source_url": _src,
+                        "schema_frozen_key": bool(_ck in _schema_keys) if _schema_keys else False,
                     })
-                _diff_v2_summary = {"rows_total": int(len(_diff_v2_rows)), "builder_id": "REFACTOR45_STRICT_FALLBACK"}
+
+                _diff_v2_summary = {
+                    "rows_total": int(len(_diff_v2_rows)),
+                    "builder_id": "REFACTOR74_STRICT_SCHEMA_FALLBACK",
+                    "mode": _mode,
+                    "schema_keys_total": int(len(_schema_keys)) if _schema_keys else 0,
+                }
 
         except Exception:
             _diff_v2_rows, _diff_v2_summary = ([], None)
@@ -26744,14 +26808,27 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             "baseline_source_failures": _prev_failures,
             "current_source_failures": _cur_failures,
         }
+        # REFACTOR74: Diff row count vs schema size (completeness-first invariant)
+        _rows_for_cnt = output.get("metric_changes")
+        if not isinstance(_rows_for_cnt, list) or not _rows_for_cnt:
+            _rows_for_cnt = output.get("metric_changes_v2")
+        _row_count = int(len(_rows_for_cnt)) if isinstance(_rows_for_cnt, list) else 0
+        _expected_rows = int(len(_schema_keys)) if _schema_keys else 0
+        try:
+            _inv["metric_changes_row_count"] = _row_count
+            _inv["metric_changes_expected_row_count"] = _expected_rows
+            _inv["metric_changes_row_count_matches_schema"] = (bool(_expected_rows and (_row_count == _expected_rows)) if _expected_rows else None)
+        except Exception:
+            pass
+
 
         output.setdefault("debug", {})
         if isinstance(output.get("debug"), dict):
             output["debug"]["harness_invariants_v1"] = _inv
 
         # Add a short banner string for UI visibility (non-breaking additive field)
+        _parts = []
         if (_missing_prev or _missing_cur) and _schema_keys:
-            _parts = []
             if _missing_prev:
                 _parts.append(f"baseline_missing={len(_missing_prev)}/{len(_schema_keys)}")
             if _missing_cur:
@@ -26760,6 +26837,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _parts.append(f"baseline_failures={len(_prev_failures)}")
             if _cur_failures:
                 _parts.append(f"current_failures={len(_cur_failures)}")
+
+        # Always surface a diff-row count mismatch against frozen schema keys (if any).
+        try:
+            _rc = int(_inv.get("metric_changes_row_count") or 0) if isinstance(_inv, dict) else 0
+            _er = int(_inv.get("metric_changes_expected_row_count") or 0) if isinstance(_inv, dict) else 0
+            if _schema_keys and _er and (_rc != _er):
+                _parts.append(f"row_count_mismatch={_rc}/{_er}")
+        except Exception:
+            pass
+
+        if _parts:
             output["harness_warning_v1"] = " | ".join(_parts)
     except Exception:
         pass
@@ -43063,5 +43151,30 @@ try:
             "date": "2026-01-27",
             "summary": "Fix REFACTOR72 indentation regression in _refactor13_recompute_summary_and_stability_v1 (rows loop escaped to module scope, causing runtime error). Restores Streamlit-safe execution and preserves completeness-first change_type counting.",
         })
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR74
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR74":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR74",
+            "date": "2026-01-27",
+            "summary": "Completeness-first diffs hardening: guarantee schema-complete Metric Changes rows even if the Diff Panel V2 builder errors by upgrading the strict fallback to iterate frozen schema keys (or union fallback) and emit explicit missing_baseline/missing_current/missing_both rows. Also extend harness_invariants_v1 to record metric_changes row_count vs schema size and surface row_count_mismatch in harness_warning_v1 when violated. No schema/key-grammar changes; Streamlit-safe.",
+            "files": ["REFACTOR74.py"],
+            "supersedes": ["REFACTOR73"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
