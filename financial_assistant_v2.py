@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR71'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR72'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -16294,23 +16294,24 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
 
     rows = _refactor13_get_metric_change_rows_v1(out)
 
-    # Count change types
-    increased = decreased = unchanged = added = removed = 0
-    for r in rows:
-        try:
-            ct = (r.get("change_type") if isinstance(r, dict) else None) or ""
-            if ct == "increased":
-                increased += 1
-            elif ct == "decreased":
-                decreased += 1
-            elif ct == "unchanged":
-                unchanged += 1
-            elif ct == "added":
-                added += 1
-            elif ct == "removed":
-                removed += 1
-        except Exception:
-            pass
+
+# Count change types
+increased = decreased = unchanged = added = removed = 0
+for r in rows:
+    try:
+        ct = (r.get("change_type") if isinstance(r, dict) else None) or ""
+        if ct == "increased":
+            increased += 1
+        elif ct == "decreased":
+            decreased += 1
+        elif ct == "unchanged":
+            unchanged += 1
+        elif ct in ("added", "missing_baseline", "new_metric"):
+            added += 1
+        elif ct in ("removed", "missing_current"):
+            removed += 1
+    except Exception:
+        pass
 
     total = len(rows)
 
@@ -21268,6 +21269,22 @@ def _refactor61__unwrap_pmc(obj):
         pass
     return {}
 
+def _refactor72__unwrap_metric_schema_frozen(obj):
+    """Best-effort unwrap for metric_schema_frozen across historical payload shapes."""
+    try:
+        if isinstance(obj, dict) and isinstance(obj.get("metric_schema_frozen"), dict):
+            return obj.get("metric_schema_frozen") or {}
+        if isinstance(obj, dict) and isinstance(obj.get("primary_response"), dict) and isinstance(obj["primary_response"].get("metric_schema_frozen"), dict):
+            return obj["primary_response"].get("metric_schema_frozen") or {}
+        if isinstance(obj, dict) and isinstance(obj.get("results"), dict) and isinstance(obj["results"].get("metric_schema_frozen"), dict):
+            return obj["results"].get("metric_schema_frozen") or {}
+        if isinstance(obj, dict) and isinstance(obj.get("results"), dict) and isinstance(obj["results"].get("primary_response"), dict) and isinstance(obj["results"]["primary_response"].get("metric_schema_frozen"), dict):
+            return obj["results"]["primary_response"].get("metric_schema_frozen") or {}
+    except Exception:
+        pass
+    return {}
+
+
 def _refactor61__pick_val_unit(m):
     """Extract (value_norm, unit_tag) deterministically from a canonical metric dict."""
     try:
@@ -21296,14 +21313,30 @@ def _refactor61__pick_source_url(m):
 
 def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_response: dict):
     """
-    Canonical-first strict join:
-      - Iterate baseline canonical keys (prev primary_metrics_canonical)
-      - Join on exact canonical_key only (no heuristics)
-      - Enforce strict unit comparability; only compute deltas when units match
+    Canonical-first strict join (schema-complete in REFACTOR72):
+
+      - Prefer iterating *frozen schema keys* when metric_schema_frozen is available.
+      - For keys present in both baseline and current:
+            * join on exact canonical_key only (no heuristics)
+            * enforce strict unit comparability; only compute deltas when units match
+      - Additionally emit explicit completeness rows for schema keys when either side is missing:
+            * missing_baseline: key absent in baseline but present in current
+            * missing_current: key present in baseline but absent in current
+            * missing_both: key absent in both (still emitted when schema is known)
+
     Returns: (rows, summary)
     """
     prev_can = _refactor61__unwrap_pmc(prev_response)
     cur_can = _refactor61__unwrap_pmc(cur_response)
+
+    # Prefer frozen schema key order for completeness (stable UI + deterministic diff feed)
+    schema = _refactor72__unwrap_metric_schema_frozen(prev_response) or _refactor72__unwrap_metric_schema_frozen(cur_response)
+    schema_keys = []
+    try:
+        if isinstance(schema, dict) and schema:
+            schema_keys = sorted([str(k) for k in schema.keys()])
+    except Exception:
+        schema_keys = []
 
     rows = []
     try:
@@ -21312,30 +21345,62 @@ def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_respon
         if not isinstance(cur_can, dict):
             cur_can = {}
 
-        # Preserve deterministic ordering (stable UI + diff)
-        for ckey in sorted(prev_can.keys()):
-            pm = prev_can.get(ckey) if isinstance(prev_can.get(ckey), dict) else {}
+        if schema_keys:
+            iter_keys = list(schema_keys)
+            mode = "schema_complete"
+        else:
+            # Fallback: union so we still show anything we can (legacy behavior)
+            iter_keys = sorted({str(k) for k in list(prev_can.keys()) + list(cur_can.keys())})
+            mode = "union_fallback"
+
+        for ckey in iter_keys:
+            pm = prev_can.get(ckey) if isinstance(prev_can.get(ckey), dict) else None
             cm = cur_can.get(ckey) if isinstance(cur_can.get(ckey), dict) else None
 
-            pv, pu = _refactor61__pick_val_unit(pm)
+            pm_ok = isinstance(pm, dict) and bool(pm)
+            cm_ok = isinstance(cm, dict) and bool(cm)
+
+            pv, pu = (None, "")
+            if pm_ok:
+                pv, pu = _refactor61__pick_val_unit(pm)
+
             cv, cu = (None, "")
-            if isinstance(cm, dict):
+            if cm_ok:
                 cv, cu = _refactor61__pick_val_unit(cm)
 
+            # For display clarity, if only one side is present, carry the known unit across.
+            try:
+                if (not pm_ok) and cm_ok and str(cu).strip():
+                    pu = cu
+                if pm_ok and (not cm_ok) and str(pu).strip():
+                    cu = pu
+            except Exception:
+                pass
+
+            # Best-effort metric name
             name = ""
             try:
-                name = (pm.get("name") if isinstance(pm, dict) else "") or (cm.get("name") if isinstance(cm, dict) else "") or str(ckey)
+                name = (pm.get("name") if pm_ok else "") or (cm.get("name") if cm_ok else "") or str(ckey)
             except Exception:
                 name = str(ckey)
 
             baseline_is_comparable = False
             delta_abs = None
             delta_pct = None
-            change_type = "not_found" if not isinstance(cm, dict) else "found"
+
+            # Completeness-first change_type defaults
+            if pm_ok and cm_ok:
+                change_type = "found"
+            elif (not pm_ok) and cm_ok:
+                change_type = "missing_baseline"
+            elif pm_ok and (not cm_ok):
+                change_type = "missing_current"
+            else:
+                change_type = "missing_both"
 
             try:
                 # Strict comparability: both present + units must match and be non-empty
-                if pv is not None and cv is not None and str(pu).strip() and str(cu).strip() and str(pu).strip() == str(cu).strip():
+                if pm_ok and cm_ok and pv is not None and cv is not None and str(pu).strip() and str(cu).strip() and str(pu).strip() == str(cu).strip():
                     baseline_is_comparable = True
                     pvf = float(pv) if isinstance(pv, (int, float)) else None
                     cvf = float(cv) if isinstance(cv, (int, float)) else None
@@ -21353,9 +21418,13 @@ def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_respon
             except Exception:
                 pass
 
-            if isinstance(cm, dict) and (pv is not None and cv is not None) and str(pu).strip() and str(cu).strip() and str(pu).strip() != str(cu).strip():
-                # Found, but not comparable
-                change_type = "unit_mismatch"
+            # If both present but units differ: explicitly mark unit mismatch.
+            try:
+                if pm_ok and cm_ok and (pv is not None and cv is not None) and str(pu).strip() and str(cu).strip() and str(pu).strip() != str(cu).strip():
+                    change_type = "unit_mismatch"
+                    baseline_is_comparable = False
+            except Exception:
+                pass
 
             row = {
                 "canonical_key": str(ckey),
@@ -21371,7 +21440,8 @@ def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_respon
                 "change_type": change_type,
                 "baseline_is_comparable": bool(baseline_is_comparable),
                 "current_method": "strict_fallback_v2",
-                "source_url": _refactor61__pick_source_url(cm) if isinstance(cm, dict) else None,
+                "source_url": _refactor61__pick_source_url(cm) if cm_ok else None,
+                "schema_frozen_key": bool(ckey in schema_keys) if schema_keys else False,
             }
 
             rows.append(row)
@@ -21380,7 +21450,9 @@ def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_respon
 
     summary = {
         "rows_total": int(len(rows)),
-        "builder": "REFACTOR61_build_diff_metrics_panel_v2__rows_refactor47",
+        "builder": "REFACTOR72_build_diff_metrics_panel_v2__rows_refactor47",
+        "mode": (mode if 'mode' in locals() else ""),
+        "schema_keys_total": int(len(schema_keys)) if schema_keys else 0,
     }
     return rows, summary
 
@@ -42955,6 +43027,30 @@ try:
             "summary": "Safety rail: stamp harness_invariants_v1 into Evolution results to prevent silent degradation when external sources flake (e.g., failed:no_text). Records schema-frozen key count vs baseline/current canonical counts, missing keys, and source failure summaries, plus an additive harness_warning_v1 banner string. No schema/key-grammar changes.",
             "files": ["REFACTOR71.py"],
             "supersedes": ["REFACTOR70"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR72
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR72":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR72",
+            "date": "2026-01-27",
+            "summary": "Completeness-first diffs: upgrade Diff Panel V2 strict canonical join to prefer frozen schema keys (when metric_schema_frozen is available) and emit explicit completeness rows when either side is missing (missing_baseline / missing_current / missing_both). Keeps strict unit comparability and delta computation only for unit-matching pairs; no schema/key-grammar changes; Streamlit-safe.",
+            "files": ["REFACTOR72.py"],
+            "supersedes": ["REFACTOR71"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
