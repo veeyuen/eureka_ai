@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR79'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR80'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -29661,25 +29661,28 @@ def main():
                     pass
 
 
-                # === REFACTOR76: suppress results.run_delta_* on injection runs using canonical inj_trace_v1 ===
+                # === REFACTOR80: suppress results.run_delta_* on true injection runs (ui/intake only) ===
                 try:
-                    def _refactor76_is_injection_active(_res: dict) -> bool:
+                    def _refactor80_is_injection_active(_res: dict) -> bool:
+                        """Return True only when the user provided injection URLs (ui_norm/intake_norm).
+                        Note: do NOT treat admitted production sources as injection."""
                         try:
                             if not isinstance(_res, dict):
                                 return False
                             _dbg = _res.get("debug") if isinstance(_res.get("debug"), dict) else {}
                             _it = _dbg.get("inj_trace_v1") if isinstance(_dbg.get("inj_trace_v1"), dict) else {}
                             _counts = _it.get("counts") if isinstance(_it.get("counts"), dict) else {}
-                            for _k in ("ui_norm", "intake_norm", "admitted_norm", "attempted"):
+                            for _k in ("ui_norm", "intake_norm"):
                                 try:
                                     if int(_counts.get(_k) or 0) > 0:
                                         return True
                                 except Exception:
                                     pass
-                            for _k in ("ui_norm", "intake_norm", "admitted_norm", "persisted_norm"):
+                            for _k in ("ui_norm", "intake_norm"):
                                 _lst = _it.get(_k)
                                 if isinstance(_lst, list) and any(isinstance(x, str) and x.strip() for x in _lst):
                                     return True
+                            # legacy: keep for backward compatibility
                             _legacy = _dbg.get("fix2d65b_injected_urls") or []
                             if isinstance(_legacy, list) and any(isinstance(x, str) and x.strip() for x in _legacy):
                                 return True
@@ -29687,23 +29690,27 @@ def main():
                             return False
                         return False
 
-                    if _refactor76_is_injection_active(results):
+                    _is_inj = _refactor80_is_injection_active(results)
+
+                    # Always record the flag truthfully (prevents false-positive harness banners)
+                    try:
+                        _dbg_rt = results.get("debug") if isinstance(results.get("debug"), dict) else {}
+                        _rt = _dbg_rt.get("run_timing_v1") if isinstance(_dbg_rt.get("run_timing_v1"), dict) else None
+                        if isinstance(_rt, dict):
+                            _rt["suppressed_by_injection"] = bool(_is_inj)
+                    except Exception:
+                        pass
+
+                    if _is_inj:
                         results["run_delta_seconds"] = None
                         results["run_delta_human"] = ""
                         if isinstance(results.get("results"), dict):
                             results["results"]["run_delta_seconds"] = None
                             results["results"]["run_delta_human"] = ""
-                        try:
-                            _dbg_rt = results.get("debug") if isinstance(results.get("debug"), dict) else {}
-                            _rt = _dbg_rt.get("run_timing_v1") if isinstance(_dbg_rt.get("run_timing_v1"), dict) else None
-                            if isinstance(_rt, dict):
-                                _rt["suppressed_by_injection"] = True
-                        except Exception:
-                            pass
                 except Exception:
                     pass
 
-                # Add per-row delta fields (production only; blank if injected)
+# Add per-row delta fields (production only; blank if injected)
                 try:
                     _inj_urls = []
                     if isinstance(results, dict):
@@ -29795,32 +29802,34 @@ def main():
                                     pass
 
                             is_injected = False
-                            if _inj_set:
-                                _ckey = _r.get("canonical_key")
-                                # REFACTOR26: prefer row-attributed current URL when available
+                            _ckey = _r.get("canonical_key")
+
+                            # REFACTOR80: always count source-attribution (even when injection set is empty)
+                            _su = None
+                            try:
+                                _su = _refactor26_extract_row_current_source_url_v1(_r)
+                            except Exception:
                                 _su = None
-                                try:
-                                    _su = _refactor26_extract_row_current_source_url_v1(_r)
-                                except Exception:
-                                    _su = None
-                                if _su is None:
-                                    _cm = _pmc.get(_ckey) if isinstance(_ckey, str) else None
-                                    _su = _refactor25_extract_metric_source_url(_cm) if isinstance(_cm, dict) else None
-                                if _su is None:
-                                    # REFACTOR53: cannot attribute -> treat as production (do not suppress)
-                                    is_injected = False
-                                    if _count_row:
-                                        try:
-                                            _row_delta_gating["unattributed_rows"] += 1
-                                            _row_delta_gating["rows_missing_source_url"] += 1
-                                        except Exception:
-                                            pass
-                                else:
-                                    if _count_row:
-                                        try:
-                                            _row_delta_gating["rows_with_source_url"] += 1
-                                        except Exception:
-                                            pass
+                            if _su is None:
+                                _cm = _pmc.get(_ckey) if isinstance(_ckey, str) else None
+                                _su = _refactor25_extract_metric_source_url(_cm) if isinstance(_cm, dict) else None
+
+                            if _su is None:
+                                # Cannot attribute -> treat as production (do not suppress)
+                                if _count_row:
+                                    try:
+                                        _row_delta_gating["unattributed_rows"] += 1
+                                        _row_delta_gating["rows_missing_source_url"] += 1
+                                    except Exception:
+                                        pass
+                                is_injected = False
+                            else:
+                                if _count_row:
+                                    try:
+                                        _row_delta_gating["rows_with_source_url"] += 1
+                                    except Exception:
+                                        pass
+                                if _inj_set:
                                     _su_norm = _su
                                     try:
                                         _tmp = _inj_diag_norm_url_list([_su])
@@ -42660,7 +42669,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
 
 # ============================================================
-# PATCH TRACKER V1 (EARLY ADD): REFACTOR79
+# PATCH TRACKER V1 (EARLY ADD): REFACTOR80
 # ============================================================
 # Why:
 # - REFACTOR78 introduced a broken top-level try/except near the end of the file (empty try body + stray except),
@@ -42673,18 +42682,18 @@ try:
     _already = False
     try:
         for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR79":
+            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR80":
                 _already = True
                 break
     except Exception:
         _already = False
     if not _already:
         PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR79",
+            "patch_id": "REFACTOR80",
             "date": "2026-01-27",
             "summary": "Fix end-of-file try/except indentation regression introduced in REFACTOR78 early patch-tracker block; restore Streamlit-safe main guard. No schema/key-grammar changes.",
-            "files": ["REFACTOR79.py"],
-            "supersedes": ["REFACTOR78"],
+            "files": ["REFACTOR80.py"],
+            "supersedes": ["REFACTOR79"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
@@ -42702,7 +42711,7 @@ except Exception:
     # Streamlit-safe: surface the exception if possible without crashing hard.
     try:
         import streamlit as st
-        st.exception(Exception("Yureeka app crashed during main() execution (REFACTOR79)."))
+        st.exception(Exception("Yureeka app crashed during main() execution (REFACTOR80)."))
     except Exception:
         pass
 
@@ -43582,6 +43591,30 @@ try:
             "summary": "Fix version stamping and add a self-check: bump the locked code version stamp to REFACTOR77, and extend harness_invariants_v1 with a warning-only comparison of output.code_version vs the latest REFACTOR patch_id in PATCH_TRACKER_V1, surfacing version_mismatch in harness_warning_v1 if they diverge (catches stale version locks / wrong file deployments).",
             "files": ["REFACTOR77.py"],
             "supersedes": ["REFACTOR76"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR80
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR80":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR80",
+            "date": "2026-01-27",
+            "summary": "Fix injection-mode detection so production runs do not get falsely flagged as suppressed_by_injection; suppress run-delta only when true UI/intake injection URLs exist. Also improve row_delta_gating_v1 source-attribution counters (rows_with_source_url/rows_missing_source_url) even when no injection is present. No schema/key-grammar changes; Streamlit-safe.",
+            "files": ["REFACTOR80.py"],
+            "supersedes": ["REFACTOR79"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
