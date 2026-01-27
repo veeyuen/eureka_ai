@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR77'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR78'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -27007,7 +27007,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
 
 
-        # REFACTOR77: Version-stamp self-check vs patch tracker (warning-only)
+        # REFACTOR78: Version-stamp self-check vs patch tracker (warning-only)
         try:
             _cv = str(output.get("code_version") or _yureeka_get_code_version() or "")
             _latest = None
@@ -27055,7 +27055,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if _cur_fallbacks:
                 _parts.append(f"current_fallbacks={len(_cur_fallbacks)}")
 
-        # REFACTOR77: Surface version mismatch banner (if any)
+        # REFACTOR78: Surface version mismatch banner (if any)
         try:
             _cv = str(_inv.get("code_version") or "")
             _latest = str(_inv.get("patch_tracker_latest_refactor") or "")
@@ -42661,7 +42661,43 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
 # ============================================================
 try:
-    if __name__ == "__main__":
+
+# ============================================================
+# PATCH TRACKER V1 (EARLY ADD): REFACTOR78
+# ============================================================
+# Why:
+# - Streamlit executes this file top-to-bottom. The app's main() is invoked before
+#   the existing end-of-file PATCH_TRACKER entries, so the harness can run with a
+#   partially-populated PATCH_TRACKER_V1 list and falsely report:
+#     harness_warning_v1 = "version_mismatch=<CODE_VERSION>!=<patch_tracker_latest_refactor>"
+# - This block registers the current patch *before* main() executes, so harness
+#   invariant checks see an up-to-date tracker.
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    try:
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR78":
+                _already = True
+                break
+    except Exception:
+        _already = False
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR78",
+            "date": "2026-01-27",
+            "summary": "Fix harness false-positive version_mismatch by registering the patch tracker entry before Streamlit main() executes. No schema/key-grammar changes; diffing semantics unchanged.",
+            "files": ["REFACTOR78.py"],
+            "supersedes": ["REFACTOR77"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+if __name__ == "__main__":
         if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
             main()
 except Exception:
