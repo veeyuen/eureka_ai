@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR76'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR77'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -27007,6 +27007,34 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
 
 
+        # REFACTOR77: Version-stamp self-check vs patch tracker (warning-only)
+        try:
+            _cv = str(output.get("code_version") or _yureeka_get_code_version() or "")
+            _latest = None
+            _maxn = None
+            _pt = globals().get("PATCH_TRACKER_V1")
+            if isinstance(_pt, list):
+                import re as _re
+                for _e in _pt:
+                    if not isinstance(_e, dict):
+                        continue
+                    _pid = str(_e.get("patch_id") or "")
+                    _m = _re.match(r"REFACTOR(\d+)$", _pid)
+                    if _m:
+                        try:
+                            _n = int(_m.group(1))
+                        except Exception:
+                            continue
+                        if (_maxn is None) or (_n > _maxn):
+                            _maxn = _n
+                            _latest = _pid
+            _inv["code_version"] = _cv
+            _inv["patch_tracker_latest_refactor"] = _latest
+            _inv["code_version_matches_patch_tracker_latest"] = ((_cv == _latest) if (_cv and _latest) else None)
+        except Exception:
+            pass
+
+
         output.setdefault("debug", {})
         if isinstance(output.get("debug"), dict):
             output["debug"]["harness_invariants_v1"] = _inv
@@ -27026,6 +27054,16 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _parts.append(f"baseline_fallbacks={len(_prev_fallbacks)}")
             if _cur_fallbacks:
                 _parts.append(f"current_fallbacks={len(_cur_fallbacks)}")
+
+        # REFACTOR77: Surface version mismatch banner (if any)
+        try:
+            _cv = str(_inv.get("code_version") or "")
+            _latest = str(_inv.get("patch_tracker_latest_refactor") or "")
+            if _cv and _latest and (_cv != _latest):
+                _parts.append(f"version_mismatch={_cv}!={_latest}")
+        except Exception:
+            pass
+
 
         # Always surface a diff-row count mismatch against frozen schema keys (if any).
         try:
@@ -43486,6 +43524,31 @@ try:
             "summary": "Fix injection-mode detection and completeness-first harness guards: suppress results.run_delta_seconds/human whenever injected URLs are present using canonical debug.inj_trace_v1 signals (not legacy lists); prefer inj_trace_v1 for per-row injection gating; extend harness_invariants_v1 with schema-key coverage checks (missing/extra/duplicate canonical keys) and warning-only change_type integrity validation for missing_baseline/missing_current rows, surfacing count-only warning banners.",
             "files": ["REFACTOR76.py"],
             "supersedes": ["REFACTOR75"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+
+
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR77
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR77":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR77",
+            "date": "2026-01-27",
+            "summary": "Fix version stamping and add a self-check: bump the locked code version stamp to REFACTOR77, and extend harness_invariants_v1 with a warning-only comparison of output.code_version vs the latest REFACTOR patch_id in PATCH_TRACKER_V1, surfacing version_mismatch in harness_warning_v1 if they diverge (catches stale version locks / wrong file deployments).",
+            "files": ["REFACTOR77.py"],
+            "supersedes": ["REFACTOR76"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
