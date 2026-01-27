@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR74'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR75'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -9517,6 +9517,54 @@ def fetch_web_context(
             if not text or not str(text).strip():
                 meta["status"] = "failed"
                 meta["status_detail"] = "failed:no_text"
+
+                # ============================================================
+                # PATCH REFACTOR75_LAST_GOOD_SNAPSHOT_FALLBACK_V1 (ADDITIVE)
+                # Why:
+                # - External flakiness can yield failed:no_text even for stable sources.
+                # - If existing_snapshots contains a last-good snapshot for this URL,
+                #   reuse its extracted_numbers with explicit provenance (never silent).
+                # ============================================================
+                try:
+                    _prev = snap_lookup.get(url) if isinstance(snap_lookup, dict) else None
+                    _prev_nums = _prev.get("extracted_numbers") if isinstance(_prev, dict) else None
+                    if isinstance(_prev_nums, list) and _prev_nums:
+                        meta["status"] = "fetched"
+                        meta["status_detail"] = "fallback:last_good_snapshot"
+                        meta["fallback_used"] = True
+                        meta["fallback_reason"] = "failed:no_text"
+                        meta["fallback_source"] = "existing_snapshots"
+                        meta["fallback_snapshot_fetched_at"] = _prev.get("fetched_at") if isinstance(_prev, dict) else None
+                        meta["reused_snapshot"] = True
+
+                        # Reuse snapshot identity so downstream snapshot hashes remain deterministic.
+                        meta["fingerprint"] = _prev.get("fingerprint") if isinstance(_prev, dict) else meta.get("fingerprint")
+                        meta["extractor_fingerprint"] = _prev.get("extractor_fingerprint") if isinstance(_prev, dict) else meta.get("extractor_fingerprint")
+                        if not meta.get("extractor_fingerprint"):
+                            meta["extractor_fingerprint"] = extractor_fp
+
+                        meta["extracted_numbers"] = list(_prev_nums)
+                        meta["numbers_found"] = len(_prev_nums)
+
+                        # Best-effort: keep content fields non-empty if the snapshot had them.
+                        _pc = (_prev.get("content") if isinstance(_prev, dict) else "") or ""
+                        _pt = (_prev.get("clean_text") if isinstance(_prev, dict) else "") or ""
+                        meta["content"] = _pc or _pt or ""
+                        meta["clean_text"] = _pt or _pc or ""
+                        meta["content_len"] = len(meta.get("content") or "")
+                        meta["clean_text_len"] = len(meta.get("clean_text") or "")
+
+                        out["scraped_meta"][url] = meta
+                        out["scraped_content"][url] = meta.get("clean_text") or meta.get("content") or ""
+
+                        scraped_ok_text += 1
+                        if meta.get("numbers_found", 0) > 0:
+                            scraped_ok_numbers += 1
+                        # REFACTOR75: we recovered; do not count as scraped_failed.
+                        continue
+                except Exception:
+                    pass
+                # ================= END PATCH REFACTOR75_LAST_GOOD_SNAPSHOT_FALLBACK_V1
                 scraped_failed += 1
                 out["scraped_meta"][url] = meta
             else:
@@ -9679,6 +9727,49 @@ def fetch_web_context(
         except Exception as e:
             meta["status"] = "failed"
             meta["status_detail"] = f"failed:exception:{type(e).__name__}"
+
+            # ============================================================
+            # PATCH REFACTOR75_LAST_GOOD_SNAPSHOT_FALLBACK_V1 (ADDITIVE)
+            # Attempt snapshot fallback on scrape exceptions.
+            # ============================================================
+            try:
+                _prev = snap_lookup.get(url) if isinstance(snap_lookup, dict) else None
+                _prev_nums = _prev.get("extracted_numbers") if isinstance(_prev, dict) else None
+                if isinstance(_prev_nums, list) and _prev_nums:
+                    meta["status"] = "fetched"
+                    meta["status_detail"] = "fallback:last_good_snapshot"
+                    meta["fallback_used"] = True
+                    meta["fallback_reason"] = meta.get("status_detail") or f"failed:exception:{type(e).__name__}"
+                    meta["fallback_source"] = "existing_snapshots"
+                    meta["fallback_snapshot_fetched_at"] = _prev.get("fetched_at") if isinstance(_prev, dict) else None
+                    meta["reused_snapshot"] = True
+
+                    meta["fingerprint"] = _prev.get("fingerprint") if isinstance(_prev, dict) else meta.get("fingerprint")
+                    meta["extractor_fingerprint"] = _prev.get("extractor_fingerprint") if isinstance(_prev, dict) else meta.get("extractor_fingerprint")
+                    if not meta.get("extractor_fingerprint"):
+                        meta["extractor_fingerprint"] = extractor_fp
+
+                    meta["extracted_numbers"] = list(_prev_nums)
+                    meta["numbers_found"] = len(_prev_nums)
+
+                    _pc = (_prev.get("content") if isinstance(_prev, dict) else "") or ""
+                    _pt = (_prev.get("clean_text") if isinstance(_prev, dict) else "") or ""
+                    meta["content"] = _pc or _pt or ""
+                    meta["clean_text"] = _pt or _pc or ""
+                    meta["content_len"] = len(meta.get("content") or "")
+                    meta["clean_text_len"] = len(meta.get("clean_text") or "")
+
+                    out["scraped_meta"][url] = meta
+                    out["scraped_content"][url] = meta.get("clean_text") or meta.get("content") or ""
+
+                    scraped_ok_text += 1
+                    if meta.get("numbers_found", 0) > 0:
+                        scraped_ok_numbers += 1
+                    # recovered; do not count as scraped_failed.
+                    continue
+            except Exception:
+                pass
+            # ================= END PATCH REFACTOR75_LAST_GOOD_SNAPSHOT_FALLBACK_V1
             scraped_failed += 1
             out["scraped_meta"][url] = meta
             out["errors"].append(meta["status_detail"])
@@ -26788,6 +26879,22 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _out.append({"url": _url, "status": _st, "status_detail": _sd, "numbers_found": _e.get("numbers_found")})
             return _out
 
+
+        def _summ_fallbacks(_lst):
+            _out = []
+            if not isinstance(_lst, list):
+                return _out
+            for _e in _lst:
+                if not isinstance(_e, dict):
+                    continue
+                _url = _e.get("url") or _e.get("source_url") or _e.get("source") or ""
+                _st = str(_e.get("status") or "")
+                _sd = str(_e.get("status_detail") or "")
+                _fb = bool(_e.get("fallback_used") or _e.get("reused_snapshot"))
+                if (_sd and _sd.lower().startswith("fallback")) or _fb:
+                    _out.append({"url": _url, "status": _st, "status_detail": _sd, "numbers_found": _e.get("numbers_found")})
+            return _out
+
         _prev_cache = _first_present(previous_data or {}, [
             ["baseline_sources_cache"],
             ["results", "baseline_sources_cache"],
@@ -26798,6 +26905,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         _prev_failures = _summ_failures(_prev_cache)
         _cur_failures = _summ_failures(_cur_sources)
+        _prev_fallbacks = _summ_fallbacks(_prev_cache)
+        _cur_fallbacks = _summ_fallbacks(_cur_sources)
+
 
         _inv = {
             "schema_frozen_key_count": len(_schema_keys),
@@ -26807,6 +26917,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             "missing_current_keys": _missing_cur,
             "baseline_source_failures": _prev_failures,
             "current_source_failures": _cur_failures,
+            "baseline_source_fallbacks": _prev_fallbacks,
+            "current_source_fallbacks": _cur_fallbacks,
         }
         # REFACTOR74: Diff row count vs schema size (completeness-first invariant)
         _rows_for_cnt = output.get("metric_changes")
@@ -26828,7 +26940,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         # Add a short banner string for UI visibility (non-breaking additive field)
         _parts = []
-        if (_missing_prev or _missing_cur) and _schema_keys:
+        if (_missing_prev or _missing_cur or _prev_failures or _cur_failures or _prev_fallbacks or _cur_fallbacks) and _schema_keys:
             if _missing_prev:
                 _parts.append(f"baseline_missing={len(_missing_prev)}/{len(_schema_keys)}")
             if _missing_cur:
@@ -26837,6 +26949,10 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _parts.append(f"baseline_failures={len(_prev_failures)}")
             if _cur_failures:
                 _parts.append(f"current_failures={len(_cur_failures)}")
+            if _prev_fallbacks:
+                _parts.append(f"baseline_fallbacks={len(_prev_fallbacks)}")
+            if _cur_fallbacks:
+                _parts.append(f"current_fallbacks={len(_cur_fallbacks)}")
 
         # Always surface a diff-row count mismatch against frozen schema keys (if any).
         try:
@@ -29384,7 +29500,29 @@ def main():
                 except Exception:
                     _delta_warnings.append("delta_uncomputed_exception")
 
-                # Attach run timing to Evolution results (debug + non-debug copy)
+
+                # ============================================================
+                # PATCH REFACTOR75_SUPPRESS_DELTA_ON_INJECTION_V1 (ADDITIVE)
+                # Why:
+                # - Injection runs are for diff activation/diagnostics; Δt is not meaningful.
+                # - Suppress Δt iff the UI provided injected/extra URLs (inj_trace_v1.ui_norm non-empty).
+                # ============================================================
+                try:
+                    _ui_norm = _first_present(results or {}, [
+                        ["debug", "inj_trace_v1", "ui_norm"],
+                        ["results", "debug", "inj_trace_v1", "ui_norm"],
+                        ["debug", "inj_trace_v2_postfetch", "ui_norm"],
+                        ["results", "debug", "inj_trace_v2_postfetch", "ui_norm"],
+                    ], default=[])
+                    if isinstance(_ui_norm, list) and _ui_norm:
+                        _delta_warnings.append("delta_suppressed_injection")
+                        _delta_seconds = None
+                        _delta_human = ""
+                except Exception:
+                    pass
+                # ================= END PATCH REFACTOR75_SUPPRESS_DELTA_ON_INJECTION_V1
+
+# Attach run timing to Evolution results (debug + non-debug copy)
                 try:
                     if isinstance(results, dict):
                         _dbg = results.get("debug")
@@ -43174,6 +43312,29 @@ try:
             "summary": "Completeness-first diffs hardening: guarantee schema-complete Metric Changes rows even if the Diff Panel V2 builder errors by upgrading the strict fallback to iterate frozen schema keys (or union fallback) and emit explicit missing_baseline/missing_current/missing_both rows. Also extend harness_invariants_v1 to record metric_changes row_count vs schema size and surface row_count_mismatch in harness_warning_v1 when violated. No schema/key-grammar changes; Streamlit-safe.",
             "files": ["REFACTOR74.py"],
             "supersedes": ["REFACTOR73"],
+        })
+    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+except Exception:
+    pass
+# ============================================================
+# PATCH TRACKER V1 (ADD): REFACTOR75
+# ============================================================
+try:
+    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+    if not isinstance(PATCH_TRACKER_V1, list):
+        PATCH_TRACKER_V1 = []
+    _already = False
+    for _e in PATCH_TRACKER_V1:
+        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR75":
+            _already = True
+            break
+    if not _already:
+        PATCH_TRACKER_V1.append({
+            "patch_id": "REFACTOR75",
+            "date": "2026-01-27",
+            "summary": "High-value harness hardening: add explicit last-good snapshot fallback inside fetch_web_context for failed:no_text and scrape exceptions using existing_snapshots, with clear provenance fields (fallback_used/status_detail=fallback:last_good_snapshot) so extraction remains complete under source flakiness; extend harness_invariants_v1 to record and surface baseline/current fallbacks in both debug and harness_warning_v1; and restore the invariant that Evolution injection runs suppress Δt.",
+            "files": ["REFACTOR75.py"],
+            "supersedes": ["REFACTOR74"],
         })
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
