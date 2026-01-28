@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR84'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR85'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -9047,7 +9047,17 @@ def scrape_url(url: str) -> Optional[str]:
                 return None
 
             ctype = (resp.headers.get("Content-Type") or "").lower()
-            if "application/pdf" in ctype:
+
+
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            # REFACTOR85: handle PDFs (IEA/others) instead of treating them as failed:no_text
+            if ("application/pdf" in ctype) or u.lower().endswith(".pdf"):
+                try:
+                    _pdf_txt = _extract_pdf_text_from_bytes(resp.content, max_pages=8, max_chars=7000)
+                    if isinstance(_pdf_txt, str) and _pdf_txt.strip():
+                        return _pdf_txt.strip()[:7000]
+                except Exception:
+                    return None
                 return None
 
             cleaned = _clean_html_to_text(resp.text or "")
@@ -9842,6 +9852,54 @@ def fetch_web_context(
                 if isinstance(nums, list):
                     meta["extracted_numbers"] = nums
                     meta["numbers_found"] = len(nums)
+                    # REFACTOR85: last-good numbers fallback when fetch succeeded but extractor yields 0 numbers
+                    # (common when a source returns a bot-wall / placeholder page that still has text).
+                    if int(meta.get("numbers_found") or 0) == 0:
+                        try:
+                            _prev = _get_prev_snapshot(url, existing_snapshots)
+                        except Exception:
+                            _prev = None
+                        try:
+                            _prev_nums = (_prev.get("extracted_numbers") or []) if isinstance(_prev, dict) else []
+                        except Exception:
+                            _prev_nums = []
+                        if _prev_nums:
+                            try:
+                                _low = (cleaned or "").lower()
+                            except Exception:
+                                _low = ""
+                            _looks_blocked = False
+                            try:
+                                if len(cleaned or "") < 500:
+                                    _looks_blocked = True
+                            except Exception:
+                                pass
+                            if not _looks_blocked:
+                                for _tok in ("captcha", "access denied", "enable javascript", "cloudflare", "unusual traffic", "verify you are", "blocked", "please wait"):
+                                    if _tok in _low:
+                                        _looks_blocked = True
+                                        break
+                            if _looks_blocked:
+                                try:
+                                    meta["status_detail_original"] = str(meta.get("status_detail") or "")
+                                except Exception:
+                                    pass
+                                try:
+                                    meta["status_detail"] = "fallback:last_good_snapshot_numbers"
+                                except Exception:
+                                    pass
+                                try:
+                                    meta["fallback_used"] = True
+                                    meta["reused_snapshot"] = True
+                                    meta["fallback_reason"] = "zero_numbers_blocked_or_short_text"
+                                    meta["fallback_snapshot_fetched_at"] = (_prev.get("fetched_at") if isinstance(_prev, dict) else None)
+                                except Exception:
+                                    pass
+                                try:
+                                    meta["extracted_numbers"] = _prev_nums
+                                    meta["numbers_found"] = len(_prev_nums)
+                                except Exception:
+                                    pass
 
                     # ---- ADDITIVE: stable IDs + ordering (Change #2 / Part 1) ----
                     urlv = meta.get("url") or url
@@ -42810,8 +42868,23 @@ def _refactor83_normalize_evolution_source_caches_v1(payload: dict) -> dict:
     if not isinstance(payload, dict):
         return payload
 
-    # Most evolution payloads store the main envelope under "results"
-    res = payload.get("results") if isinstance(payload.get("results"), dict) else payload
+    # REFACTOR85: Some evolution payloads have a nested "results" mirror dict
+    # (e.g., res["results"]={"code_version", ...}) while the real results envelope
+    # lives at the top-level of this dict. Prefer the dict that actually contains
+    # evolution-run fields like status/metric_changes/source caches.
+    _inner = payload.get("results") if isinstance(payload.get("results"), dict) else None
+    _payload_looks_like_results = bool(
+        isinstance(payload.get("status"), str)
+        or isinstance(payload.get("metric_changes"), list)
+        or isinstance(payload.get("baseline_sources_cache_current"), list)
+        or isinstance(payload.get("source_results"), list)
+    )
+    if _payload_looks_like_results:
+        res = payload
+    elif isinstance(_inner, dict):
+        res = _inner
+    else:
+        res = payload
     if not isinstance(res, dict):
         return payload
 
@@ -42984,6 +43057,33 @@ try:
                 "summary": "Bump the frozen code-version lock to REFACTOR84 so JSON stamping (code_version) matches the active patch and the harness version self-check stops flagging false mismatches. Add patch tracker entry for REFACTOR84. No schema/key-grammar changes; Streamlit-safe.",
                 "files": ["REFACTOR84.py"],
                 "supersedes": ["REFACTOR83"],
+            })
+        globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+    except Exception:
+        pass
+
+    # ============================================================
+    # REFACTOR85
+    # ============================================================
+    try:
+        PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+        if not isinstance(PATCH_TRACKER_V1, list):
+            PATCH_TRACKER_V1 = []
+        _already = False
+        try:
+            for _e in PATCH_TRACKER_V1:
+                if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR85":
+                    _already = True
+                    break
+        except Exception:
+            _already = False
+        if not _already:
+            PATCH_TRACKER_V1.append({
+                "patch_id": "REFACTOR85",
+                "date": "2026-01-28",
+                "summary": "Optional high-value hardening: (1) handle PDF sources in scrape_url (extract text instead of failed:no_text), (2) add explicit last-good snapshot fallback when extractor returns 0 numbers on blocked/placeholder pages, and (3) normalize evolution source caches even when payload contains a nested 'results' mirror dict. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.",
+                "files": ["REFACTOR85.py"],
+                "supersedes": ["REFACTOR84"],
             })
         globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
     except Exception:
