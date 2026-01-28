@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR90A"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR91"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # =============================================================================
@@ -1238,6 +1238,17 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25',
   ],
   'files': ['REFACTOR90A.py'],
   'supersedes': ['REFACTOR90']},
+{ 'id': 'REFACTOR91',
+  'date': '2026-01-28',
+  'summary': 'Add toggle to hide missing_both (coverage gap) rows in Metric Changes table by default.',
+  'notes': [
+      'Adds a Streamlit checkbox: “Show missing-both rows (coverage gaps)”. Default off.',
+      'Shows a coverage gaps counter so users know rows are hidden.',
+      'Filtering is presentation-only; diff output remains unchanged.'
+  ],
+  'files': ['REFACTOR91.py'],
+  'supersedes': ['REFACTOR90A']},
+
 ]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
@@ -28072,6 +28083,41 @@ def render_source_anchored_results(results, query: str):
     if not isinstance(rows, list) or not rows:
         st.info("No metric changes to display.")
         return
+
+    # REFACTOR91: hide "missing_both" rows by default (coverage gaps), with an opt-in toggle.
+    def _refactor91__row_change_type(_r: dict) -> str:
+        try:
+            return str(_r.get("change_type") or _r.get("status") or "").strip().lower()
+        except Exception:
+            return ""
+
+    _refactor91_missing_both_count = 0
+    try:
+        _refactor91_missing_both_count = sum(
+            1 for _r in rows
+            if isinstance(_r, dict) and _refactor91__row_change_type(_r) == "missing_both"
+        )
+    except Exception:
+        _refactor91_missing_both_count = 0
+
+    if _refactor91_missing_both_count:
+        st.caption(f"Coverage gaps (missing_both): {_refactor91_missing_both_count}")
+        _refactor91_show_missing_both = st.checkbox(
+            "Show missing-both rows (coverage gaps)",
+            value=False,
+            key="yureeka_show_missing_both_rows_v1",
+        )
+        if not _refactor91_show_missing_both:
+            _refactor91_filtered = [
+                _r for _r in rows
+                if not (isinstance(_r, dict) and _refactor91__row_change_type(_r) == "missing_both")
+            ]
+            if _refactor91_filtered:
+                rows = _refactor91_filtered
+            else:
+                st.info("All rows are coverage gaps (missing_both). Enable the toggle to view them.")
+                return
+
 
     def _is_v2_row(_r: dict) -> bool:
         try:
