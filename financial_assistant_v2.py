@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR87"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR88"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # =============================================================================
@@ -1197,6 +1197,14 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25',
              '(schema frozen, strict unit comparability, percent-year poisoning guards, Streamlit-safe).',
   'files': ['REFACTOR87.py'],
   'supersedes': ['REFACTOR86']},
+
+ {'patch_id': 'REFACTOR88',
+  'date': '2026-01-28',
+  'summary': 'Hotfix after downsizing: restore/guard the FIX2D55 prev-lift helper used by the FIX24 changed-case '
+             'evolution recompute path. Prevents the “FIX24: Evolution recompute failed (compute_source_anchored_diff path)” '
+             'banner caused by missing helper after pruning legacy ladder. No schema/key-grammar changes; Streamlit-safe.',
+  'files': ['REFACTOR88.py'],
+  'supersedes': ['REFACTOR87']},
 ]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
@@ -33665,6 +33673,134 @@ def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
 # PATCH FIX41G: removed misplaced top-level web_context normalization block (was causing NameError)
 
 
+
+# =====================================================================
+# REFACTOR88 (HOTFIX): Restore/guard FIX2D55 prev-lift helper used by FIX24 recompute
+# Why:
+# - REFACTOR87 pruned a legacy ladder block which previously defined _fix2d55_apply_prev_lift.
+# - The FIX24 changed-case evolution recompute path calls this helper before compute_source_anchored_diff.
+# - Without it, Evolution shows: "FIX24: Evolution recompute failed (compute_source_anchored_diff path)."
+# What:
+# - Provide a small, deterministic "lift" that copies canonical maps/schema/anchors from any nested
+#   containers onto the expected keys in prev_full (purely additive; no schema/key grammar changes).
+# - Idempotent and safe: if nothing is found, it becomes a no-op.
+# =====================================================================
+
+def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict = None) -> None:
+    try:
+        if not isinstance(prev_full, dict):
+            return
+
+        # Find a primary_response container if present
+        pr = None
+        try:
+            pr = prev_full.get("primary_response") if isinstance(prev_full.get("primary_response"), dict) else None
+            if pr is None and isinstance(prev_full.get("results"), dict):
+                pr = prev_full["results"].get("primary_response") if isinstance(prev_full["results"].get("primary_response"), dict) else None
+        except Exception:
+            pr = None
+
+        # Locate canonical metrics map from common storage shapes
+        pmc = None
+        try:
+            for cand in [
+                prev_full.get("primary_metrics_canonical"),
+                (prev_full.get("results") or {}).get("primary_metrics_canonical") if isinstance(prev_full.get("results"), dict) else None,
+                (pr or {}).get("primary_metrics_canonical") if isinstance(pr, dict) else None,
+                ((pr or {}).get("results") or {}).get("primary_metrics_canonical") if isinstance(pr, dict) and isinstance(pr.get("results"), dict) else None,
+            ]:
+                if isinstance(cand, dict) and cand:
+                    pmc = cand
+                    break
+        except Exception:
+            pmc = None
+
+        # Locate schema + anchors similarly
+        schema = None
+        anchors = None
+        try:
+            for cand in [
+                prev_full.get("metric_schema_frozen"),
+                (prev_full.get("results") or {}).get("metric_schema_frozen") if isinstance(prev_full.get("results"), dict) else None,
+                (pr or {}).get("metric_schema_frozen") if isinstance(pr, dict) else None,
+                ((pr or {}).get("results") or {}).get("metric_schema_frozen") if isinstance(pr, dict) and isinstance(pr.get("results"), dict) else None,
+            ]:
+                if isinstance(cand, dict) and cand:
+                    schema = cand
+                    break
+        except Exception:
+            schema = None
+
+        try:
+            for cand in [
+                prev_full.get("metric_anchors"),
+                (prev_full.get("results") or {}).get("metric_anchors") if isinstance(prev_full.get("results"), dict) else None,
+                (pr or {}).get("metric_anchors") if isinstance(pr, dict) else None,
+                ((pr or {}).get("results") or {}).get("metric_anchors") if isinstance(pr, dict) and isinstance(pr.get("results"), dict) else None,
+            ]:
+                if isinstance(cand, dict) and cand:
+                    anchors = cand
+                    break
+        except Exception:
+            anchors = None
+
+        # Apply lifts (additive only; do not overwrite non-empty)
+        try:
+            if isinstance(pmc, dict) and pmc:
+                if not isinstance(prev_full.get("primary_metrics_canonical"), dict) or not prev_full.get("primary_metrics_canonical"):
+                    prev_full["primary_metrics_canonical"] = pmc
+                if isinstance(pr, dict):
+                    if not isinstance(pr.get("primary_metrics_canonical"), dict) or not pr.get("primary_metrics_canonical"):
+                        pr["primary_metrics_canonical"] = pmc
+        except Exception:
+            pass
+
+        try:
+            if isinstance(schema, dict) and schema:
+                if not isinstance(prev_full.get("metric_schema_frozen"), dict) or not prev_full.get("metric_schema_frozen"):
+                    prev_full["metric_schema_frozen"] = schema
+                if isinstance(pr, dict):
+                    if not isinstance(pr.get("metric_schema_frozen"), dict) or not pr.get("metric_schema_frozen"):
+                        pr["metric_schema_frozen"] = schema
+        except Exception:
+            pass
+
+        try:
+            if isinstance(anchors, dict) and anchors:
+                if not isinstance(prev_full.get("metric_anchors"), dict) or not prev_full.get("metric_anchors"):
+                    prev_full["metric_anchors"] = anchors
+                if isinstance(pr, dict):
+                    if not isinstance(pr.get("metric_anchors"), dict) or not pr.get("metric_anchors"):
+                        pr["metric_anchors"] = anchors
+        except Exception:
+            pass
+
+        # Ensure primary_response container is present if we found one
+        try:
+            if isinstance(pr, dict):
+                prev_full.setdefault("primary_response", pr)
+        except Exception:
+            pass
+
+        # Debug stamp (safe)
+        try:
+            prev_full.setdefault("debug", {})
+            if isinstance(prev_full.get("debug"), dict):
+                prev_full["debug"].setdefault("fix2d55_prev_lift_v1", {})
+                if isinstance(prev_full["debug"].get("fix2d55_prev_lift_v1"), dict):
+                    prev_full["debug"]["fix2d55_prev_lift_v1"].update({
+                        "lifted_pmc": bool(isinstance(pmc, dict) and pmc),
+                        "lifted_schema": bool(isinstance(schema, dict) and schema),
+                        "lifted_anchors": bool(isinstance(anchors, dict) and anchors),
+                    })
+        except Exception:
+            pass
+    except Exception:
+        # Never block evolution recompute due to lift helper
+        return
+
+
+
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
     """
     PATCH FIX24 (ADDITIVE): Evolution flow is:
@@ -34618,7 +34754,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         try:
             # FIX2D55: lift prev_full onto schema keys BEFORE diff computation
 
-            _fix2d55_apply_prev_lift(prev_full, wc)
+            try:
+                _fix2d55_apply_prev_lift(prev_full, wc)
+            except Exception:
+                pass
 
             out_changed = fn(prev_full, web_context=wc)
             # =====================================================================
