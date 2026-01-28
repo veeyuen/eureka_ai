@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR89"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR90"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # =============================================================================
@@ -1215,6 +1215,18 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25',
              'for explicit diagnostics. No schema/key-grammar changes; strict unit comparability preserved; Streamlit-safe.',
   'files': ['REFACTOR89.py'],
   'supersedes': ['REFACTOR88']},
+
+{ 'id': 'REFACTOR90',
+ 'date': '2026-01-28',
+ 'summary': 'Fix missing baseline for investment metric by improving PDF coverage and supporting space-separated thousands in numeric extraction.',
+ 'notes': [
+     'PDF fetch now extracts first 10 pages plus an evenly-spaced spread sample up to ~50 pages total, to reach late-report tables (IEA PDFs).',
+     'Number regex now accepts space as a thousands separator (e.g., "2 131.89") and numeric parsing strips both commas and spaces.',
+     'Extractor fingerprint bumped to invalidate cached extracted_numbers and force recompute.'
+ ],
+ 'files': ['REFACTOR90.py'],
+ 'supersedes': ['REFACTOR89']},
+
 
 ]
 
@@ -16087,15 +16099,43 @@ def fetch_url_content_with_status(url: str, timeout: int = 25):
                 import io
                 import pdfplumber  # type: ignore
                 with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
-                    out = []
-                    for page in pdf.pages[:20]:
-                        t = page.extract_text() or ""
-                        if t.strip():
-                            out.append(t)
-                text = "\n".join(out).strip()
-                if not text:
-                    return None, "empty"
-                return text, "success_pdf"
+    out = []
+    total_pages = int(len(pdf.pages) if getattr(pdf, "pages", None) is not None else 0)
+
+    # REFACTOR90: sample across long PDFs (not only front matter)
+    # - Extract first N pages + an evenly-spaced spread across the remainder.
+    # - Keeps runtime bounded while reaching tables often located later.
+    first_n = 10
+    target_total = 50
+
+    idxs = set(range(min(first_n, total_pages)))
+    remaining_budget = max(0, min(target_total - len(idxs), total_pages - len(idxs)))
+
+    if remaining_budget > 0 and total_pages > first_n:
+        start_idx = first_n
+        end_idx = max(first_n, total_pages - 1)
+        denom = max(1, remaining_budget - 1)
+        for s in range(remaining_budget):
+            try:
+                idx = int(round(start_idx + (end_idx - start_idx) * (s / denom)))
+            except Exception:
+                idx = start_idx
+            if 0 <= idx < total_pages:
+                idxs.add(idx)
+
+    for pi in sorted(idxs):
+        try:
+            page = pdf.pages[pi]
+            t = page.extract_text() or ""
+            if t.strip():
+                out.append(t)
+        except Exception:
+            continue
+
+text = "\n".join(out).strip()
+if not text:
+    return None, "empty"
+return text, f"success_pdf_pages={len(idxs)}/{total_pages}"
             except Exception as e:
                 return None, f"exception:{type(e).__name__}"
 
@@ -16150,7 +16190,7 @@ def get_extractor_fingerprint() -> str:
     Bump this string whenever you change extraction or normalization behavior.
     Used to decide whether cached extracted_numbers are still valid.
     """
-    return "extract_v2_normunits_2026-01-02"
+    return "extract_v3_pdfspread_spacesep_2026-01-28"
 
 
 
@@ -27592,7 +27632,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         # - We'll still allow negatives generally, but we'll tag the special "2025-2030" case below.
         # (No behavior change for real negatives like -1.2% etc.)
         # =========================
-        r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)(?!\d)\s*"
+        r"(-?\d{1,3}(?:[,\s]\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)(?!\d)\s*"
         # =========================
         # PATCH N3 (ADDITIVE, BUGFIX): capture 'tn' magnitude explicitly
         # - Keep your A5 safeguard: single-letter magnitudes only match if NOT followed by a letter.
@@ -27618,7 +27658,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
         # numeric parse
         try:
-            val = float(num_s.replace(",", ""))
+            val = float(num_s.replace(",", "").replace(" ", ""))
         except Exception:
             pass
             continue
