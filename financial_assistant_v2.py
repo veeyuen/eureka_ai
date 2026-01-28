@@ -90,8 +90,1132 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR85'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR86'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
+
+# =============================================================================
+# PATCH TRACKER V1 (CONSOLIDATED): REFACTOR86
+# - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
+# - Registers a canonical entries list idempotently at import time.
+# =============================================================================
+
+_PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25',
+  'date': '2026-01-24',
+  'summary': 'Add production-only Analysis→Evolution run delta column for metric changes. Standardize top-level '
+             'timestamps to UTC (+00:00), compute/stamp run_timing_v1 (delta_seconds/human) in Evolution results, and '
+             'gate per-row delta display when current metric is sourced from injected URLs.',
+  'files': ['REFACTOR25_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR24']},
+ {'patch_id': 'REFACTOR26',
+  'date': '2026-01-24',
+  'summary': 'Tighten and centralize current metric source_url attribution for reliable row-level injection gating. '
+             'Add a hydrator that fills primary_metrics_canonical[*].source_url from evidence/provenance, expose '
+             'current_source_url fields on diff rows, and enhance per-row injection detection to prefer row-attributed '
+             'URLs before falling back to canonical maps.',
+  'files': ['REFACTOR26_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR25']},
+ {'patch_id': 'REFACTOR27',
+  'date': '2026-01-24',
+  'summary': 'Harden unit comparability and candidate eligibility for currency metrics. Reject date-fragment currency '
+             "candidates (e.g., 'July 01, 2025') during schema-only rebuild, and strengthen currency unit mismatch "
+             'detection so mixed scale/code representations do not emit nonsense deltas. Also expose '
+             'current_source_url on diff rows for clearer row-level injection attribution.',
+  'files': ['REFACTOR27_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR26']},
+ {'patch_id': 'REFACTOR28',
+  'date': '2026-01-24',
+  'summary': 'Consolidate schema-only rebuild authority to eliminate stale wrapper capture chains and ensure '
+             'REFACTOR27 candidate filters (especially currency date-fragment rejection) are active at runtime. This '
+             "prevents day-of-month tokens like '01' from binding as currency values, restoring comparable currency "
+             'baselines while preserving percent-year poisoning sanitization.',
+  'files': ['REFACTOR28_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR27']},
+ {'patch_id': 'REFACTOR29',
+  'date': '2026-01-24',
+  'summary': 'Refine REFACTOR25 run-delta harness and diagnostics: replace overly-strict global injection assertion '
+             'with per-row gating stats (injected rows must have blank delta, production rows should show delta when '
+             'available). Persist row_delta_gating_v1 into run_timing_v1 for easier debugging, without changing '
+             'schema/key grammar or diff behavior.',
+  'files': ['REFACTOR29_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR28']},
+ {'patch_id': 'REFACTOR30',
+  'date': '2026-01-24',
+  'summary': 'Fix REFACTOR29 run_timing_v1 row_delta_gating_v1 double-counting: apply per-row Analysis→Evolution delta '
+             'stamping once (primary metric_changes list) and propagate to metric_changes_v2 by canonical_key, so '
+             'diagnostic counts match the displayed table while keeping injection gating behavior unchanged.',
+  'files': ['REFACTOR30_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR29']},
+ {'patch_id': 'REFACTOR31',
+  'date': '2026-01-24',
+  'summary': 'Add runtime_identity_v1 stamp (code_version lock + __file__ + SHA1) to Analysis/Evolution debug for '
+             'diagnosing stale-version runs; and harden run_timing_v1 row_delta_gating_v1 stats to count unique '
+             'canonical_keys only (prevents double-counting when both metric_changes and metric_changes_v2 exist). No '
+             'schema/key-grammar changes.',
+  'files': ['REFACTOR31_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR30']},
+ {'patch_id': 'REFACTOR32',
+  'date': '2026-01-24',
+  'summary': 'Clarify injected URL semantics: treat only UI-provided extra_urls_ui(_raw) (or explicit internal marker) '
+             'as injected for debug + run-delta gating, preventing production source URLs from being misclassified as '
+             'injected. Add __yureeka_extra_urls_are_injection_v1 markers when Evolution wires injected URLs into '
+             "web_context['extra_urls']. No schema/key-grammar changes.",
+  'files': ['REFACTOR32_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR31']},
+ {'patch_id': 'REFACTOR33',
+  'date': '2026-01-24',
+  'summary': 'Downsize footprint by deleting shadowed duplicate top-level function definitions and redundant '
+             'metric_changes_legacy preservation block, keeping only the final authoritative implementations. No '
+             'schema/key-grammar changes.',
+  'files': ['REFACTOR33_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR32']},
+ {'patch_id': 'REFACTOR34',
+  'date': '2026-01-24',
+  'summary': 'Fix a missing return in rebuild_metrics_from_snapshots_schema_only_fix17 that caused schema-only '
+             'rebuilds to return None, breaking Analysis primary_metrics_canonical persistence and Evolution diffing '
+             'after REFACTOR33 deletions. No schema/key-grammar changes.',
+  'files': ['REFACTOR34_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR33']},
+ {'patch_id': 'REFACTOR24',
+  'date': '2026-01-23',
+  'summary': 'Fix REFACTOR23 syntax regression (mis-indented try block) and make currency-aware unit_cmp construction '
+             'consistent across all get_canonical_value_and_unit() definitions (USD:B, EUR:B, etc.) so cross-currency '
+             'deltas are vetoed deterministically.',
+  'files': ['REFACTOR24_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR23']},
+ {'patch_id': 'REFACTOR23',
+  'date': '2026-01-23',
+  'summary': 'Unit consistency hardening: carry currency_code through candidate canonicalization & schema-only '
+             'rebuild; include currency_code in diff unit_cmp token for currency metrics (detect USD vs EUR rather '
+             'than silently comparing); and fix a small anchor-rebuild NameError to keep anchor path safe.',
+  'files': ['REFACTOR23_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR22']},
+ {'patch_id': 'REFACTOR22',
+  'date': '2026-01-23',
+  'summary': 'Fix unit-family noise for yearlike tokens: normalize_unit_family() no longer infers '
+             'percent/currency/magnitude from surrounding context when unit_tag is empty and raw token is a plain '
+             '4-digit year (1900–2100). This reduces unit inconsistencies in baseline_sources_cache and prevents '
+             "misleading 'percent_tag' traces on year/range endpoints, without changing canonical binding or diff "
+             'behavior.',
+  'files': ['REFACTOR23_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR21']},
+ {'patch_id': 'REFACTOR21',
+  'date': '2026-01-23',
+  'summary': 'Harden unit inference against year/range artifacts: mark 4-digit year tokens as junk (year_token) when '
+             'unitless, prevent context-driven unit backfill for yearlike candidates, and tag negative endpoints '
+             "produced by hyphen ranges (e.g., '151-300' -> '-300') as junk (hyphen_range_negative_endpoint). Reduces "
+             "unit inconsistencies and percent/currency 'poisoning' from nearby context.",
+  'files': ['REFACTOR21_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR20']},
+ {'patch_id': 'REFACTOR20',
+  'date': '2026-01-23',
+  'summary': "Fix false currency evidence hits caused by substring matches (e.g., 'eur'/'euro' inside 'Europe'). "
+             'Introduce boundary-aware currency detection helper and use it in infer_unit_tag_from_context() and '
+             "normalize_unit_family(), preventing 'million units' candidates from being misclassified as currency in "
+             'Europe contexts.',
+  'files': ['REFACTOR20_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR19']},
+ {'patch_id': 'REFACTOR19',
+  'date': '2026-01-23',
+  'summary': 'Restore Analysis/Evolution parity for schema_only_rebuild outputs by including unit_tag, unit_family, '
+             'base_unit, and multiplier_to_base (plus raw) on rebuilt primary_metrics_canonical entries. This keeps '
+             'diff comparability deterministic and prevents downstream re-parsing of current values.',
+  'files': ['REFACTOR19_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR18']},
+ {'patch_id': 'REFACTOR18',
+  'date': '2026-01-23',
+  'summary': 'Harden authoritative diff binding signal: ensure diff_metrics_by_name always carries a reliable '
+             '__YUREEKA_AUTHORITATIVE_BINDING__ tag (with globals fallback when callable wrappers reject setattr). '
+             'Make binding_manifest_v1 self-contained (use local bound_from values) and update harness report IDs to '
+             'the current refactor version for cleaner diagnostics.',
+  'files': ['REFACTOR18_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR17']},
+ {'patch_id': 'REFACTOR17',
+  'date': '2026-01-23',
+  'summary': 'Add concise in-file debug playbook and surface an authoritative binding manifest for Diff Panel V2 '
+             'entrypoint (plus legacy diff_metrics_by_name when available). Improves manifest resilience when '
+             'Streamlit triggers execution before later defs.',
+  'files': ['REFACTOR17_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR16']},
+ {'patch_id': 'REFACTOR16',
+  'date': '2026-01-23',
+  'summary': 'Hard-lock CODE_VERSION to REFACTOR16 across legacy override sites; expand FINAL BINDINGS candidate set '
+             'to include _yureeka_diff_metrics_by_name_v24; make binding_manifest_v1 resolve/report the actual diff '
+             'entrypoint even when Streamlit executes before later diff wrapper defs.',
+  'files': ['REFACTOR16_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR15']},
+ {'patch_id': 'REFACTOR02',
+  'date': '2026-01-21',
+  'summary': 'Add refactor regression harness (Analysis→Evolution) gated by explicit flag; emits JSON report + asserts '
+             'diff invariants (both_count > 0, no prev-metrics sentinel, percent-year token rule).',
+  'files': ['REFACTOR02_full_codebase_streamlit_safe.py'],
+  'supersedes': ['FIX2D86']},
+ {'patch_id': 'REFACTOR03',
+  'date': '2026-01-21',
+  'summary': 'Fix REFACTOR02 regression: enforce unit-family + scale eligibility in schema-only rebuild; detect unit '
+             'mismatch in diff panel and mark as unit_mismatch (avoid bogus B vs M diffs).',
+  'files': ['REFACTOR03_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR02']},
+ {'patch_id': 'REFACTOR10',
+  'date': '2026-01-21',
+  'summary': 'Fix false unit_mismatch caused by context_snippet percent leakage; enrich schema-anchored rebuilt PMC '
+             'with unit_tag/unit_family/multiplier_to_base; tighten unit-family evidence checks to prefer token/raw '
+             'evidence over broad context for magnitude keys; update refactor harness labels to REFACTOR04.',
+  'files': ['REFACTOR04_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR03']},
+ {'patch_id': 'REFACTOR05',
+  'date': '2026-01-21',
+  'summary': 'Selection gating + harness fix: block currency/percent candidates from __unit_* keys, promote raw/unit '
+             'metadata into PMC for parity, and make harness read evidence lists.',
+  'files': ['REFACTOR05_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR04']},
+ {'patch_id': 'REFACTOR07',
+  'date': '2026-01-22',
+  'summary': 'Freeze versioning as single-source-of-truth using a refactor version lock; ensure JSON outputs use the '
+             'locked version; add binding_manifest_v1 and harness assertions for version + authoritative diff binding; '
+             'update FINAL BINDINGS and harness report labels to REFACTOR07.',
+  'files': ['REFACTOR07_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR06']},
+ {'patch_id': 'REFACTOR08',
+  'date': '2026-01-22',
+  'summary': 'Enhance refactor regression harness with consistent REFACTOR08 labels/versioning, dynamic authoritative '
+             'diff binding expectation, and summary consistency checks '
+             '(rows_total/partition/found/not_found/key_overlap). Update FINAL BINDINGS tag and locked CODE_VERSION to '
+             'REFACTOR08.',
+  'files': ['REFACTOR08_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR07']},
+ {'patch_id': 'REFACTOR06',
+  'date': '2026-01-22',
+  'summary': 'Freeze authoritative runtime bindings: add FINAL BINDINGS section for diff_metrics_by_name, tag '
+             'authoritative function for harness verification, and update harness report/version labels.',
+  'files': ['REFACTOR06_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR05']},
+ {'patch_id': 'REFACTOR46',
+  'date': '2026-01-25',
+  'summary': 'Prevent refactor harness from terminating Streamlit runtime (disable harness under Streamlit; '
+             'double-guard EOF harness dispatch).',
+  'files': ['REFACTOR46_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR45']},
+ {'patch_id': 'FIX2D71',
+  'date': '2026-01-19',
+  'summary': 'Commit schema-keyed baseline canonical metrics during Analysis: if schema authority selection yields no '
+             'winners but baseline_schema_metrics_v1 is non-empty, promote that schema-keyed (auditable proxy) map '
+             'into primary_metrics_canonical so Evolution has prev canonical metrics for metric_changes_v2 diffing.',
+  'files': ['FIX2D71_full_codebase.py'],
+  'supersedes': ['FIX2D70']},
+ {'patch_id': 'FIX2D70',
+  'date': '2026-01-19',
+  'summary': 'Controlled schema-candidate reconciliation during schema-anchored rebuild: relax key-year matching (±1 '
+             'for single-year keys, overlap for ranges) and keyword gating only when strict prefilter yields zero '
+             'candidates, while emitting FIX2D70 rejection counts and relax flags for audit. This closes the last-mile '
+             'binding gap without reintroducing heuristic matching.',
+  'files': ['FIX2D70_full_codebase.py'],
+  'supersedes': ['FIX2D69B']},
+ {'patch_id': 'FIX2D69',
+  'date': '2026-01-19',
+  'summary': 'Hard-wire numeric extraction on injected snapshot_text: when injected placeholders are fetched '
+             '(FIX41AFC16), convert HTML to plain text if needed, always extract numbers from the non-empty text, and '
+             'store content_len/clean_text_len plus FIX2D68 extraction diagnostics and errors. Also defensively '
+             'initialize observed_rows_filtered_noninjected to prevent UnboundLocalError in Diff Panel V2 summary.',
+  'files': ['FIX2D69_full_codebase.py'],
+  'supersedes': ['FIX2D68']},
+ {'patch_id': 'FIX2D66G',
+  'date': '2026-01-19',
+  'summary': 'Google Sheets write resiliency: always mirror saved analyses into session_state history; if Sheets write '
+             'fails, set a flag and record _SHEETS_LAST_WRITE_ERROR so get_history() falls back to session_state when '
+             'Sheet reads are empty. Prevents Evolution from being blocked by transient Sheets save failures. No '
+             'changes to extraction/diffing.',
+  'files': ['FIX2D66G_full_codebase.py'],
+  'supersedes': ['FIX2D66']},
+ {'patch_id': 'FIX2D66',
+  'date': '2026-01-19',
+  'summary': 'Deterministic injected-URL admission: promote UI raw/diag injection fields into web_context.extra_urls '
+             'and synthesize diag_injected_urls when missing, so inj_diag/inj_trace_v1 reliably reflect injected URLs '
+             'in snapshot pool and hash inputs (auditable). No UI/diff changes.',
+  'files': ['FIX2D66_full_codebase.py'],
+  'supersedes': ['FIX2D65D']},
+ {'patch_id': 'FIX2D65A',
+  'date': '2026-01-19',
+  'summary': 'Hotfix for FIX2D65: repair syntax-corrupted duplicate selector block; make yearlike prune non-fatal '
+             "(never empties pool); make 'rebuild empty with snapshots' non-fatal so Evolution can still emit JSON "
+             'diagnostics.',
+  'files': ['FIX2D65A_full_codebase.py'],
+  'supersedes': ['FIX2D65']},
+ {'patch_id': 'FIX2D44',
+  'date': '2026-01-17',
+  'summary': 'Fix Analysis baseline schema baseline materialisation: define _core in '
+             'attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 baseline_schema_metrics_v1 builder executes; emit '
+             'results.baseline_schema_metrics_v1 for Evolution diff join.',
+  'files': ['FIX2D44.py'],
+  'supersedes': ['FIX2D43']},
+ {'patch_id': 'FIX2D59',
+  'summary': 'Canonical identity resolver v1: define identity tuple + schema-first resolver; route canonical key '
+             'minting through resolver to align Analysis and Evolution key authority.'},
+ {'patch_id': 'FIX2D60',
+  'summary': 'Enforce schema-only canonical store (Analysis) and hard-reject bare-year candidates for unit/count keys '
+             'at schema_only_rebuild commit point (Evolution).'},
+ {'patch_id': 'FIX2D61',
+  'summary': 'Option A schema extension: generate promotion proposals from primary_metrics_provisional and '
+             '(optionally) promote them into metric_schema_frozen with full audit metadata; enables closing remaining '
+             'coverage gaps without reintroducing heuristic canonical minting.'},
+ {'patch_id': 'FIX2D62',
+  'summary': 'Normalize time tokens into identity tuple (year/YTD/forecast) + schema-first resolver uses '
+             'metric_token+time_scope to match schema; prevents 2024/2025 contamination of metric_token and improves '
+             'Analysis/Evolution convergence.'},
+ {'patch_id': 'FIX2D63',
+  'summary': 'Harden schema_only_rebuild_fix17 against injected-year pollution for unit/count metrics: fix _c variable '
+             'typo in FIX2D2U gate and reject yearlike candidates without unit evidence upstream.'},
+ {'patch_id': 'FIX2D64',
+  'summary': 'Add Canonical Identity Spine V1 module (shadow mode only) + minimal regressions: centralizes identity '
+             'tuple, schema-first resolver contract, and value selection with yearlike rejection immune to context '
+             'unit backfill.',
+  'files': ['canonical_identity_spine.py', 'FIX2D64_full_codebase.py'],
+  'supersedes': ['FIX2D63']},
+ {'patch_id': 'FIX2D65',
+  'date': '2026-01-19',
+  'summary': 'Authority takeover: make Canonical Identity Spine V1 the only key-resolution authority '
+             '(Analysis+Evolution) and add hard gates; prune yearlike candidates for unit/count metrics immune to '
+             'context unit backfill.',
+  'files': ['canonical_identity_spine.py', 'FIX2D65_full_codebase.py'],
+  'supersedes': ['FIX2D64']},
+ {'patch_id': 'FIX2D40',
+  'summary': 'Analysis: when schema is frozen, remap best-fit baseline metrics from generic canonical keys onto schema '
+             'canonical keys (one-to-one) to enable baseline diffing; stamps explicit schema_remap audit fields; '
+             'retains FIX2D39 hard unit/dimension rejection.',
+  'files': ['FIX2D40.py'],
+  'supersedes': ['FIX2D39']},
+ {'patch_id': 'FIX2D32',
+  'date': '2026-01-17',
+  'summary': 'Diff Panel V2: treat anchor_hash mismatches as still diffable when canonical_key + unit-family gates '
+             'pass; stamp row-level anchor_mismatch_diffable_v1 diagnostics and count such joins for audit.',
+  'files': ['FIX2D32.py'],
+  'supersedes': ['FIX2D31']},
+ {'patch_id': 'FIX2D33',
+  'date': '2026-01-17',
+  'summary': 'Analysis schema-primary rebuild: baseline commitment for schema keys by backfilling missing value_norm '
+             'from raw/value via deterministic parser when selector chooses a candidate but value_norm is None; '
+             'improves baseline comparability without weakening semantic gates.',
+  'files': ['FIX2D33.py'],
+  'supersedes': ['FIX2D32']},
+ {'patch_id': 'FIX2D25',
+  'date': '2026-01-16',
+  'summary': 'Re-enable Analysis→Evolution diffing by adding deterministic, unit-family-guarded inference for baseline '
+             'keys in Diff Panel V2 when ckey/anchor joins miss; keep FIX2D20/FIX2D24 tracing and yearlike current '
+             'blocking.',
+  'files': ['FIX2D25.py'],
+  'supersedes': ['FIX2D23']},
+ {'patch_id': 'FIX2D2D',
+  'date': '2026-01-16',
+  'summary': 'Fix Diff Panel V2 crash (prev_v/cur_v NameError) by using correctly scoped norm variables in traces; '
+             'simplify end-of-file version stamping to a single final override.',
+  'files': ['FIX2D2D.py'],
+  'supersedes': ['FIX2D2C']},
+ {'patch_id': 'FIX2D2E',
+  'date': '2026-01-16',
+  'summary': 'Make Diff Panel V2 binding inference authoritative in the active FIX2J override path by committing '
+             'inferred current_value/current_value_norm/current_source/current_method when joins miss; add explicit '
+             'inference_commit trace; keep FIX2D24 year blocking and unit-first eligibility.',
+  'files': ['FIX2D2E.py'],
+  'supersedes': ['FIX2D2D']},
+ {'patch_id': 'FIX2D2I',
+  'date': '2026-01-16',
+  'summary': 'Enable binding inference fallback when a joined current value is blocked as unitless yearlike; add '
+             'unit-family backfill for extracted_numbers pool candidates and trace the backfill/override in Diff Panel '
+             'V2 __rows.',
+  'files': ['FIX2D2I.py'],
+  'supersedes': ['FIX2D2G']},
+ {'patch_id': 'FIX2D2J',
+  'date': '2026-01-16',
+  'summary': 'Deterministic unit/measure classifier for extracted numeric candidates: backfill unit_family from '
+             'unit_tag and currency evidence in context; correct measure_kind/measure_assoc for currency-like '
+             'candidates; attach classifier trace fields.',
+  'files': ['FIX2D2J.py'],
+  'supersedes': ['FIX2D2I']},
+ {'patch_id': 'FIX2D2K',
+  'date': '2026-01-16',
+  'summary': 'Context-driven unit backfill when unit_tag is empty, plus unit_family/measure_kind corrections trace '
+             '(context_unit_backfill_v1).'},
+ {'patch_id': 'FIX2D2Z',
+  'date': '2026-01-17',
+  'summary': 'Make injected candidates first-class for Diff Panel inference by unwrapping injected scraped_meta into '
+             'extracted_numbers pools; enforce hard unit-family rejection (percent/currency/units/magnitude) in '
+             'fallback inference scoring to prevent leakage.',
+  'files': ['FIX2D2Z.py'],
+  'supersedes': ['FIX2D2Y']},
+ {'patch_id': 'FIX2D30',
+  'date': '2026-01-17',
+  'summary': "Contextual unit-family correction: prevent magnitude tags (e.g., M/million) in 'million units / units "
+             "sold / chargers / vehicles' contexts from being misclassified as currency; remove keyword-only currency "
+             'upgrades to enable clean baseline comparability without weakening hard unit-family rejection.',
+  'files': ['FIX2D30.py'],
+  'supersedes': ['FIX2D2Z']},
+ {'patch_id': 'FIX2D31',
+  'date': '2026-01-17',
+  'summary': 'Option A schema authority: when metric_schema_frozen is present in Analysis, rebuild '
+             'primary_metrics_canonical by running the authoritative Analysis selector '
+             '(_analysis_canonical_final_selector_v1) constrained to the frozen schema keys. This makes Analysis emit '
+             'schema-aligned baseline metrics so Evolution injection can overlap and Diff Panel V2 can activate '
+             'without weakening semantics.',
+  'files': ['FIX2D31.py'],
+  'supersedes': ['FIX2D30']},
+ {'patch_id': 'FIX2D2U',
+  'date': '2026-01-17',
+  'summary': 'Introduce shared semantic eligibility gate (Analysis parity) using local context_snippet; enforce it in '
+             'Evolution schema-only rebuild(s) and Analysis selector to prevent cross-metric pollution (e.g., China '
+             'sales value mapping into chargers 2040).',
+  'files': ['FIX2D2U.py'],
+  'supersedes': ['FIX2D2T']},
+ {'patch_id': 'FIX2D26',
+  'date': '2026-01-16',
+  'summary': 'Unit-first, context-bound inference candidate picker for Diff Panel V2 (Analysis→Evolution). Prefers '
+             'percent/units/currency matches with keyword binding; rejects bare-year tokens pre-score; adds per-row '
+             'trace counters.',
+  'files': ['FIX2D26.py'],
+  'supersedes': ['FIX2D25']},
+ {'patch_id': 'FIX2D28',
+  'date': '2026-01-16',
+  'summary': 'Close Diff Panel V2 binding gap: when inference selects a current value, commit it into UI/diff-read '
+             'fields (current_value, current_value_norm, current_source, current_method) and mark '
+             'baseline_is_comparable once all guards pass.',
+  'files': ['FIX2D28.py'],
+  'supersedes': ['FIX2D27']},
+ {'patch_id': 'FIX2D29',
+  'date': '2026-01-16',
+  'summary': 'Fix FIX2D28 insertion placement and complete write-through: commit inference/joined current values into '
+             'metric_changes fields used by UI/diff (current_value, current_value_norm, current_source, '
+             'current_method) and set baseline_is_comparable when numeric.',
+  'files': ['FIX2D29.py'],
+  'supersedes': ['FIX2D28']},
+ {'patch_id': 'FIX2D2A',
+  'date': '2026-01-16',
+  'summary': 'Enable guarded inference in Diff Panel V2 regardless of join mode; add explicit inference gate + '
+             'attempted traces so binding inference can commit current values.',
+  'files': ['FIX2D2A.py']},
+ {'patch_id': 'FIX2D2B',
+  'date': '2026-01-16',
+  'summary': 'Correct version stamping for FIX2D2A runtime by bumping CODE_VERSION and adding final end-of-file '
+             'override to prevent legacy late assignments from masking patch id.',
+  'files': ['FIX2D2B.py'],
+  'supersedes': ['FIX2D2A']},
+ {'patch_id': 'FIX2D2C',
+  'date': '2026-01-16',
+  'summary': 'Fix Diff Panel V2 NameError by defining guarded inference gate in the active builder '
+             '(build_diff_metrics_panel_v2) and emitting explicit inference gate trace; no heuristic changes.',
+  'files': ['FIX2D2C.py'],
+  'supersedes': ['FIX2D2B']},
+ {'patch_id': 'FIX2D18',
+  'date': '2026-01-15',
+  'summary': 'Re-enable schema-only rebuild eligibility gates (domain token + unit-family) and strengthen unit-sales '
+             'expectations to prevent bare-year (e.g., 2030) contamination; improves baseline comparables for '
+             'Analysis→Evolution diffing.',
+  'files': ['FIX2D18.py']},
+ {'patch_id': 'FIX2D19',
+  'date': '2026-01-16',
+  'summary': 'Harden schema_only_rebuild_fix17 with required domain-token binding (prevents generic keyword matches) '
+             'and add deterministic baseline soft-match fallback in Diff Panel V2 to enable Analysis→Evolution '
+             'comparable diffs when strict joins fail.',
+  'files': ['FIX2D19.py']},
+ {'patch_id': 'FIX2D20',
+  'date': '2026-01-15',
+  'summary': 'Diagnostic-first trace: record every year-like (1900-2100) value committed to primary_metrics_canonical, '
+             'including callsite tags and metric object metadata; also disable FIX2D18/FIX2D19 logic while tracing.',
+  'files': ['FIX2D20.py']},
+ {'patch_id': 'FIX2D24',
+  'date': '2026-01-16',
+  'summary': 'Last-mile guard for dashboard Current: block unitless year-like values (1900-2100, including 2030.0) '
+             'from metric_changes hydration for non-year metrics; keep FIX2D20 tracing; supersedes FIX2D23 '
+             'observed-only filter.',
+  'files': ['FIX2D24.py']},
+ {'patch_id': 'FIX2D21',
+  'date': '2026-01-16',
+  'summary': 'Evolution baseline-key schema: derive metric_schema_frozen from Analysis primary_metrics_canonical keys, '
+             'and fix bare-year detection to reject tokens like 2030.0/2024.0; keep FIX2D20 year-commit tracing for '
+             'verification.',
+  'files': ['FIX2D21.py']},
+ {'patch_id': 'FIX2D22',
+  'date': '2026-01-16',
+  'summary': 'Schema-only rebuild: enforce *eligibility-before-scoring* (hard reject bare-year tokens incl 2024/2030 '
+             'and require unit-family + required domain tokens) so years cannot win; supersedes FIX2D21 selector '
+             'hardening but retains baseline-key schema derivation.',
+  'files': ['FIX2D22.py'],
+  'supersedes': ['FIX2D21']},
+ {'patch_id': 'FIX2D11c',
+  'date': '2026-01-15',
+  'summary': 'Fix indentation/scope of FIX2D11 render fallback by ensuring it remains inside '
+             'compute_source_anchored_diff (4-space indent) to avoid parse-time try/indent errors.',
+  'files': ['FIX2D11c.py']},
+ {'patch_id': 'FIX2D12',
+  'date': '2026-01-15',
+  'summary': 'Fix Diff Panel V2 premature return that prevented row emission; ensure UNION mode can emit current-only '
+             'rows (added) and populate Current column.',
+  'files': ['FIX2D12.py']},
+ {'patch_id': 'FIX2D15',
+  'date': '2026-01-15',
+  'summary': 'Reject bare-year tokens (e.g., 2030) during schema-only rebuild for non-year metrics; add diagnostics to '
+             'prevent year pollution and restore stable baseline comparables.',
+  'files': ['FIX2D15.py']},
+ {'patch_id': 'FIX2D16',
+  'date': '2026-01-15',
+  'summary': 'Add soft-match fallback to fill current values for baseline rows when anchor/ckey join fails; add '
+             'last-mile bare-year reject for schema-only rebuild promotions. Disable FIX2D15 gating.',
+  'files': ['FIX2D16.py']},
+ {'patch_id': 'FIX2D17',
+  'date': '2026-01-15',
+  'summary': 'Harden canonical selector: reject bare-year tokens as metric values and require domain keyword overlap '
+             'to prevent cross-metric pollution; deprecate FIX2D16 soft-match/year guards.',
+  'files': ['FIX2D17.py']},
+ {'patch_id': 'FIX2D13',
+  'date': '2026-01-15',
+  'summary': 'Add baseline-focused diff semantics to Diff Panel V2: classify rows as comparable/added/not_found and '
+             'emit baseline delta fields + summary counters without requiring injected URLs in Analysis.',
+  'files': ['FIX2D13.py']},
+ {'patch_id': 'FIX2D11b',
+  'date': '2026-01-15',
+  'summary': 'Syntax-safe render-gate fallback: union-mode unanchored canonical_for_render without introducing nested '
+             'try blocks.',
+  'files': ['FIX2D11b.py']},
+ {'patch_id': 'FIX2D11',
+  'date': '2026-01-15',
+  'summary': 'Render gate fallback in union mode: if V28 anchor-enforce yields 0 hits, populate canonical_for_render '
+             'from current primary_metrics_canonical and label as unanchored-for-render.',
+  'files': ['FIX2D11.py']},
+ {'patch_id': 'FIX2D73',
+  'date': '2026-01-20',
+  'summary': 'HistoryFull persistence gap: promote baseline primary_metrics_canonical into rehydrated previous_data + '
+             'ensure compute_source_anchored_diff prev_response carries canonical metrics so Diff Panel V2 can compute '
+             'deltas.',
+  'files': ['FIX2D73_full_codebase.py']},
+ {'patch_id': 'FIX2D75',
+  'date': '2026-01-20',
+  'summary': 'Option B fork: materialize Analysis baseline primary_metrics_canonical (schema-anchored rebuild) and '
+             'persist it (incl. primary_response) so HistoryFull replay exposes previous canonical values for diffing.',
+  'files': ['FIX2D75_full_codebase.py'],
+  'supersedes': ['FIX2D73']},
+ {'patch_id': 'FIX2D10',
+  'date': '2026-01-15',
+  'summary': 'Materialize output_debug.canonical_for_render_v1 from results.primary_metrics_canonical so dashboard can '
+             'hydrate Current and diagnostics stop falsely flagging missing.',
+  'files': ['FIX2D10.py']},
+ {'patch_id': 'FIX2D9',
+  'date': '2026-01-15',
+  'summary': 'Schema-anchored current-side canonical rebuild for diff/render: prefer schema_only rebuild so keys '
+             'overlap and Current can populate.',
+  'files': ['FIX2D9.py']},
+ {'patch_id': 'FIX2D8',
+  'date': '2026-01-15',
+  'summary': 'Normalize output shape by promoting nested results.results.* into results.* for diff/render Current '
+             'hydration.',
+  'files': ['FIX2D8_fixed.py']},
+ {'patch_id': 'FIX2D1',
+  'date': '2026-01-15',
+  'summary': 'Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound '
+             'summary crash.',
+  'files': ['fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py']},
+ {'patch_id': 'FIX2D3',
+  'date': '2026-01-15',
+  'summary': 'Fix FIX41AFC19 v19 display-rebuild pool resolution + callable lookup; harden Diff Panel V2 injected-set '
+             'detection (support cur_response without debug wrapper).',
+  'files': ['FIX2D3.py']},
+ {'patch_id': 'FIX2D4',
+  'date': '2026-01-15',
+  'summary': 'Add debug.key_overlap_v1 to explicitly report prev/cur canonical key counts, overlap, and target key '
+             'presence for deterministic diff feasibility checks.',
+  'files': ['FIX2D4.py']},
+ {'patch_id': 'FIX2D5',
+  'date': '2026-01-15',
+  'summary': 'Mirror canonical_for_render_v1 diagnostics into results.debug so dashboard/diff diagnostics can see it; '
+             'additive only.',
+  'files': ['FIX2D5.py']},
+ {'patch_id': 'FIX2D6',
+  'date': '2026-01-15',
+  'summary': 'Option B engine completeness: Diff Panel V2 row universe can be prev∪cur (union) behind '
+             'EVO_DIFF_JOIN_MODE flag; adds added/removed change_type and summary counts; default remains strict.',
+  'files': ['FIX2D6.py']},
+ {'patch_id': 'FIX2D6_HARDCODE',
+  'date': '2026-01-15',
+  'summary': 'Hardcode diff join mode override via FORCE_DIFF_JOIN_MODE and route Diff Panel V2 join-mode selection '
+             'through helper.',
+  'files': ['FIX2D6.py']},
+ {'patch_id': 'FIX2D2',
+  'date': '2026-01-15',
+  'summary': 'Anchor-fill current_metrics for diff/display when schema_frozen is misaligned; add rebuild-fn name '
+             'fallbacks to prevent fn_missing.',
+  'files': ['FIX2D2.py']},
+ {'patch_id': 'FIX2D2M',
+  'date': '2026-01-16',
+  'summary': 'Injected-first current-value inference: two-pass selection (injected-only pool then global fallback) '
+             'with explicit trace fields and authoritative commit into metric_changes.current_value(_norm).',
+  'files': ['FIX2D2M.py']},
+ {'patch_id': 'FIX2D2N',
+  'date': '2026-01-16',
+  'summary': 'Baseline-keyed current mapping: for each Analysis baseline canonical key, synthesize a current metric '
+             'via injected-first, unit-family-guarded inference from extracted_numbers pools when Evolution canonical '
+             'keys diverge; enables deterministic Analysis→Evolution diff joins even under key parity gaps.',
+  'files': ['FIX2D2N.py'],
+  'supersedes': ['FIX2D2M']},
+ {'patch_id': 'FIX2D2O',
+  'date': '2026-01-16',
+  'summary': 'Persist baseline-keyed current mapping for diffing: when baseline keys are synthesized into cur_can, '
+             'expose them as primary_metrics_canonical_for_diff and mirror into primary_metrics_canonical so Evolution '
+             'output keys align with Analysis for the diff demo.',
+  'files': ['FIX2D2O.py'],
+  'supersedes': ['FIX2D2N']},
+ {'patch_id': 'FIX2D2Q',
+  'date': '2026-01-16',
+  'summary': 'Baseline-aligned current selection for diffing: injected-first with optional base fallback; stamps '
+             'provenance fields (source_type, selection_mode) to prevent confusion while preserving union pool '
+             'behavior.',
+  'files': ['FIX2D2Q.py'],
+  'supersedes': ['FIX2D2O']},
+ {'patch_id': 'FIX2D2R',
+  'date': '2026-01-16',
+  'summary': 'Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a '
+             'unit-qualified sibling candidate exists in the same snippet; improves Analysis/Evolution parity for '
+             'injected content.',
+  'files': ['FIX2D2R.py'],
+  'supersedes': ['FIX2D2Q']},
+ {'patch_id': 'FIX2D2S',
+  'date': '2026-01-16',
+  'summary': 'Schema-only rebuild hardening: when non-year candidates exist for a schema key, skip bare-year tokens '
+             'during winner selection (down-rank/skip) and record diagnostics; reduces year-token pollution before '
+             'downstream year-blocking.',
+  'files': ['FIX2D2S.py'],
+  'supersedes': ['FIX2D2R']},
+ {'patch_id': 'FIX2D42',
+  'date': '2026-01-17',
+  'summary': 'Serialize/promote baseline_schema_metrics_v1 into Analysis primary_response/results so Evolution diff '
+             'can consume it; extend nested results promotion to mirror baseline_schema_metrics_v1.',
+  'files': ['FIX2D42.py']},
+ {'patch_id': 'FIX2D2T',
+  'summary': 'Add explicit baseline->current projection in diff layer: if baseline row is missing CURRENT but '
+             'cur_response has same canonical_key in primary_metrics_canonical_for_diff/primary_metrics_canonical, '
+             'project into metric_changes current_value/_norm and recompute diff counters; attach debug summary.',
+  'ts': '2026-01-16'},
+ {'patch_id': 'FIX2D2W',
+  'date': '2026-01-17',
+  'summary': 'Fix parity leak: ensure schema_only_rebuild commit-time semantic gate is always active (avoid NameError '
+             'when _FIX2D2U_ENABLE defined later) and fix year-token extraction regex for required-year checks; bump '
+             'CODE_VERSION.',
+  'files': ['FIX2D2W.py'],
+  'supersedes': ['FIX2D2V']},
+ {'patch_id': 'FIX2D2X',
+  'date': '2026-01-17',
+  'summary': 'Parity patch: replace Evolution schema-only slot filling for baseline-key current with Analysis '
+             'authoritative selector (_analysis_canonical_final_selector_v1) using injected-first two-pass selection '
+             'and synthesized keyword hints from canonical_key/name; prevents cross-metric misassignment (e.g., China '
+             'sales -> chargers 2040) and aligns gating with Analysis.',
+  'files': ['FIX2D2X.py'],
+  'supersedes': ['FIX2D2W', 'FIX2D2V', 'FIX2D2U']},
+ {'patch_id': 'FIX2D2Y',
+  'date': '2026-01-17',
+  'summary': 'Hardwire Evolution rebuild_metrics_from_snapshots_analysis_canonical_v1 to use the shared Analysis final '
+             'selector for baseline-keyed diff current metrics (fix41afc19 parity); eliminates disjoint keyset that '
+             'blocks diff activation.',
+  'files': ['FIX2D2Y.py'],
+  'supersedes': ['FIX2D2X']},
+ {'patch_id': 'FIX2D65B',
+  'date': '2026-01-19',
+  'summary': 'Force canonical pipeline materialisation when injected URLs exist (seed schema via deterministic '
+             'extensions so FIX2D31 schema-authority rebuild can run even for narrative queries).',
+  'files': ['FIX2D65B_full_codebase.py'],
+  'supersedes': ['FIX2D65A']},
+ {'patch_id': 'FIX2D65C',
+  'date': '2026-01-19',
+  'summary': 'Restore analysis->evolution diff contract: broaden injected URL detection (ui_raw + legacy keys) so '
+             'schema seeding and FIX2D31 schema-authority rebuild reliably run when injection is used; bump version.',
+  'files': ['FIX2D65C_full_codebase.py'],
+  'supersedes': ['FIX2D65B']},
+ {'patch_id': 'FIX2D65D',
+  'date': '2026-01-19',
+  'summary': 'Restore analysis->evolution diff contract by always serializing/seeding metric_schema_frozen '
+             '(deterministic schema extensions), so Evolution schema-only rebuild has a stable keyspace even when LLM '
+             'emits no primary_metrics; bump version.',
+  'files': ['FIX2D65D_full_codebase.py'],
+  'supersedes': ['FIX2D65C']},
+ {'patch_id': 'FIX2D66H',
+  'date': '2026-01-19',
+  'summary': 'Fix Google Sheets history save return semantics: add_to_history() now returns True on successful Sheets '
+             "append and False on failure (previously fell through as None, triggering spurious 'Saved to session "
+             "only' warning). Keeps session fallback and captures last Sheets error for diagnostics.",
+  'files': ['FIX2D66H_full_codebase.py']},
+ {'patch_id': 'FIX2D67',
+  'date': '2026-01-19',
+  'summary': 'Fix injected numeric extraction missing-link: fetch_web_context() now calls numeric extractor with '
+             'correct parameter name (source_url vs url), preventing silent TypeError and empty extracted_numbers; '
+             'restores injected HTML numbers into snapshot pools feeding schema-only rebuild.',
+  'files': ['FIX2D67_full_codebase.py'],
+  'supersedes': ['FIX2D66H']},
+ {'patch_id': 'FIX2D77',
+  'date': '2026-01-20',
+  'summary': 'Percent-schema guardrail: prevent schema-only rebuild from binding year-like tokens (e.g., 2040) to '
+             '__percent keys by requiring percent evidence and rejecting yearlike-without-percent raw; fixes incorrect '
+             'prev value for CAGR percent metrics.',
+  'files': ['FIX2D77_full_codebase.py'],
+  'supersedes': ['FIX2D76']},
+ {'patch_id': 'FIX2D82',
+  'date': '2026-01-20',
+  'summary': 'Definitive fix for year-token leakage into __percent metrics: drop year-token values when raw token is '
+             'YYYY regardless of context % signs; force-apply at schema_only rebuild (Analysis baseline materialize) '
+             'and sanitize previous_data before diff join (cleans old HistoryFull snapshots). Adds debug: '
+             'fix2d82_percent_sanitize_schema_only / fix2d82_prev_percent_sanitize.',
+  'files': ['FIX2D82_full_codebase.py'],
+  'supersedes': ['FIX2D80']},
+ {'patch_id': 'FIX2D83',
+  'date': '2026-01-20',
+  'summary': 'Cleanup consolidation: remove obsolete percent-key guard wrappers (FIX2D78/FIX2D79) now superseded by '
+             'definitive FIX2D82 sanitizer; stabilize CODE_VERSION with final override to avoid stale late '
+             'assignments; reduce patch clutter without changing diff behavior.',
+  'files': ['FIX2D83_full_codebase.py'],
+  'supersedes': ['FIX2D78', 'FIX2D79', 'FIX2D80']},
+ {'patch_id': 'REFACTOR45',
+  'date': '2026-01-25',
+  'summary': 'Evolution: fix Diff Panel V2 empty rows by hardening the V2 builder call against RecursionError (minimal '
+             'wrappers, traceback capture, preserve existing rows, strict canonical-join fallback).',
+  'files': ['REFACTOR45_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR44']},
+ {'patch_id': 'REFACTOR11',
+  'date': '2026-01-23',
+  'summary': 'Fix evolution JSON/UI counters: recompute summary (increased/decreased/unchanged/added) from final '
+             'metric_changes rows; recompute stability_score accordingly; bump final binding/version locks to '
+             'REFACTOR11 for hygiene.',
+  'files': ['REFACTOR11_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR10']},
+ {'patch_id': 'REFACTOR13',
+  'date': '2026-01-23',
+  'summary': 'Summary/stability correctness: recompute evolution results.summary and stability_score from '
+             'canonical-first diff rows (metric_changes_v2/metric_changes). Add graded stability fallback (100 - mean '
+             'abs % change) when discrete unchanged/small-change scoring would yield 0, and mirror counts into '
+             'diff_panel_v2_summary for auditability.',
+  'files': ['REFACTOR13_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR12']},
+ {'patch_id': 'REFACTOR14',
+  'date': '2026-01-23',
+  'summary': 'Diff engine consolidation: eliminate diff_metrics_by_name override chain by renaming legacy impls and '
+             'introducing a single public wrapper entrypoint. Preserve legacy/fix31/v24 impls under stable names; '
+             'update base capture vars and keep binding manifest stable/streamlit-safe.',
+  'files': ['REFACTOR14_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR13']},
+ {'patch_id': 'REFACTOR15',
+  'date': '2026-01-23',
+  'summary': 'Restore diffing after REFACTOR14: harden diff_metrics_by_name resolution in FINAL BINDINGS, eliminate V2 '
+             'UnboundLocalError (cur_resp_for_diff), and add safe fallback extraction for canonical_for_render/current '
+             "PMC when nested under output['results'].",
+  'files': ['REFACTOR15_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR14']},
+ {'patch_id': 'REFACTOR12',
+  'date': '2026-01-23',
+  'summary': 'Truth-lock version stamping + binding manifest hygiene: freeze _yureeka_get_code_version() via locked '
+             'default arg; re-assert globals for observability; ensure FINAL BINDINGS tag + diff function '
+             'authoritative tag always present; standardize canonical_for_render_v1 debug block to avoid stale missing '
+             'diagnostics.',
+  'files': ['REFACTOR12_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR11']},
+ {'patch_id': 'REFACTOR09',
+  'date': '2026-01-22',
+  'summary': 'Introduce a single authoritative diff engine wrapper (_refactor09_diff_metrics_by_name) and bind '
+             'diff_metrics_by_name to it in final bindings; prepare for safe removal of legacy duplicate diff '
+             'definitions.',
+  'files': ['REFACTOR09_full_codebase_streamlit_safe.py']},
+ {'patch_id': 'REFACTOR60',
+  'date': '2026-01-26',
+  'summary': 'Fix REFACTOR09 diff wrapper regression by robustly capturing a callable legacy diff implementation (and '
+             'adding a signature-safe base fallback). Restores Evolution metric_changes so the dashboard no longer '
+             "shows 'no metrics to display'.",
+  'files': ['REFACTOR60.py']},
+ {'patch_id': 'REFACTOR35',
+  'summary': 'Move main() invocation to EOF so late refactor defs/overrides are active during runs; add schema-key '
+             'filter to baseline PMC materialization to prevent debug-key leakage.',
+  'files': ['REFACTOR35_full_codebase_streamlit_safe.py']},
+ {'patch_id': 'REFACTOR36',
+  'summary': "Fix Evolution fatal 'NoneType has no attribute get' by hardening add_to_history() against None callers "
+             'and coercing run_source_anchored_evolution inputs (previous_data/web_context) to dicts.',
+  'files': ['REFACTOR36_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR35']},
+ {'patch_id': 'REFACTOR37',
+  'summary': 'Add a final crash-proof wrapper for run_source_anchored_evolution to prevent fatal NoneType.get '
+             'exceptions from aborting Streamlit Evolution; coerce inputs to dict and return renderer-safe failed '
+             'payload with traceback.',
+  'files': ['REFACTOR37_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR36']},
+ {'patch_id': 'REFACTOR38',
+  'summary': 'Fix FIX24 helper regressions causing None.get crashes in Evolution: ensure '
+             '_fix24_get_prev_full_payload/_fix24_get_prev_hashes/_fix24_compute_current_hashes always return dicts; '
+             'enhance REFACTOR37 evolution wrapper to persist full traceback under debug.error_traceback, surface a '
+             'callsite hint in message/debug, and guard against non-dict impl returns.',
+  'files': ['REFACTOR38_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR37']},
+ {'patch_id': 'REFACTOR39',
+  'summary': 'Fix source-anchored evolution snapshot gating regression: when baseline_sources_cache is omitted from '
+             'HistoryFull payload (Sheets cell limit), rehydrate snapshots deterministically via '
+             'snapshot_store_ref/snapshot_store_ref_v2 and source_snapshot_hash_v2/source_snapshot_hash (Snapshots '
+             'worksheet and local snapshot store). Attach snapshot_store_debug into output.debug on failure for fast '
+             'diagnosis. No heuristic matching added; remains strict snapshot-gated without valid cached source text.',
+  'files': ['REFACTOR39_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR38']},
+ {'patch_id': 'REFACTOR83',
+  'date': '2026-01-28',
+  'summary': 'Hardening + clarity pass: (1) normalize Evolution output so baseline_sources_cache is never accidentally '
+             'reduced to an injected-only row when baseline_sources_cache_current contains the full current pool '
+             '(keeps UI/harness consistent), and (2) fix a latent NameError in canonical_for_render_v1 diagnostic '
+             'extension (baseline_sources_cache_prev_rows) so diag_ext reliably populates. No schema/key-grammar '
+             'changes; no unit conversion changes; Streamlit-safe.',
+  'files': ['REFACTOR83.py'],
+  'supersedes': ['REFACTOR82']},
+ {'patch_id': 'REFACTOR84',
+  'date': '2026-01-28',
+  'summary': 'Bump the frozen code-version lock to REFACTOR84 so JSON stamping (code_version) matches the active patch '
+             'and the harness version self-check stops flagging false mismatches. Add patch tracker entry for '
+             'REFACTOR84. No schema/key-grammar changes; Streamlit-safe.',
+  'files': ['REFACTOR84.py'],
+  'supersedes': ['REFACTOR83']},
+ {'patch_id': 'REFACTOR85',
+  'date': '2026-01-28',
+  'summary': 'Optional high-value hardening: (1) handle PDF sources in scrape_url (extract text instead of '
+             'failed:no_text), (2) add explicit last-good snapshot fallback when extractor returns 0 numbers on '
+             'blocked/placeholder pages, and (3) normalize evolution source caches even when payload contains a nested '
+             "'results' mirror dict. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.",
+  'files': ['REFACTOR85.py'],
+  'supersedes': ['REFACTOR84']},
+ {'patch_id': 'REFACTOR40',
+  'summary': 'Fix recent snapshot retrievability and partial snapshot corruption in Snapshots sheet store. '
+             'load_full_snapshots_from_sheet now bypasses stale cache on hash miss, and selects the most recent '
+             '*complete* write batch (grouped by created_at) to avoid mixed/partial merges. '
+             "store_full_snapshots_to_sheet no longer treats any existing rows as 'complete'; it validates loadability "
+             'first and attempts repair writes when prior batch is incomplete, and invalidates snapshot worksheet '
+             'cache after successful writes.',
+  'files': ['REFACTOR40_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR39']},
+ {'patch_id': 'REFACTOR41',
+  'date': '2026-01-25',
+  'summary': 'Fix recent snapshot rehydration failures by (1) preventing fake snapshot_store_ref_v2 '
+             '(gsheet:Snapshots:<hash>) from being emitted unless the mirror-write actually succeeded, (2) emitting '
+             'snapshot_store_ref_stable pointing to a verified store (v2 sheet > v1 sheet > local) plus a compact '
+             'snapshot_store_write_v1 debug manifest, and (3) making store_full_snapshots_to_sheet more reliable via '
+             'smaller default chunk size and batched append_rows to reduce API payload size / rate-limit failures.',
+  'files': ['REFACTOR41_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR40']},
+ {'patch_id': 'REFACTOR42',
+  'date': '2026-01-25',
+  'summary': 'Fix snapshot-gate failures caused by large baseline_sources_cache writes silently failing under Sheets '
+             "rate limits. Snapshots sheet store now compresses very large payloads (zlib+base64 with 'zlib64:' "
+             'prefix) to drastically reduce chunk count and API calls, adds a small throttle between batch appends for '
+             'very large writes, and the loader transparently detects/decompresses compressed payloads while remaining '
+             'backward-compatible with existing uncompressed snapshots.',
+  'files': ['REFACTOR42_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR41']},
+ {'patch_id': 'REFACTOR43',
+  'date': '2026-01-25',
+  'summary': "BUGFIX: make Snapshots sheet loader actually decode REFACTOR42 compressed payloads ('zlib64:' prefix). "
+             'Previously store_full_snapshots_to_sheet could write compressed snapshots but '
+             'load_full_snapshots_from_sheet attempted json.loads() on the compressed string and returned empty, '
+             'causing Evolution to be snapshot-gated for recent runs while older (uncompressed) snapshots still '
+             'loaded.',
+  'files': ['REFACTOR43_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR42']},
+ {'patch_id': 'REFACTOR44',
+  'date': '2026-01-25',
+  'summary': 'BUGFIX: Fix local snapshot persistence path creation. _snapshot_store_dir() previously omitted a return '
+             'on the success path, returning None and causing local snapshot store/load to fail '
+             '(os.path.join(None,...)). Wrapped local snapshot write call in add_to_history with guards to prevent '
+             'snapshot persistence block from aborting. Also hardened store_full_snapshots_local to compute path '
+             'safely. This restores reliable snapshot persistence for recent runs when Sheets snapshot store is '
+             'unavailable/partial, eliminating Evolution snapshot-gate failures caused by missing '
+             'baseline_sources_cache.',
+  'files': ['REFACTOR44_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR43']},
+ {'patch_id': 'REFACTOR47',
+  'date': '2026-01-25',
+  'summary': 'Fix Diff Panel V2 recursion (maximum recursion depth exceeded) caused by FIX2D2I wrapper chains '
+             'capturing already-wrapped __rows implementations. Provide a deterministic, non-recursive canonical-first '
+             'join builder (strict unit comparability + percent/year poisoning containment) and rebind '
+             'build_diff_metrics_panel_v2__rows (and FIX2D2I aliases) as last-wins entrypoint so Evolution no longer '
+             'sets diff_panel_v2_error or falls back to strict_fallback_v2.',
+  'files': ['REFACTOR47_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR46']},
+ {'patch_id': 'REFACTOR48',
+  'date': '2026-01-25',
+  'summary': 'Fix source-anchored Metric Changes table to render metric_changes_v2 fields '
+             '(delta_abs/delta_pct/comparability/method) while keeping legacy fallback; bump version lock to '
+             'REFACTOR48.'},
+ {'patch_id': 'REFACTOR49',
+  'date': '2026-01-25',
+  'summary': 'Eliminate Diff Panel V2 RecursionError by making FIX2D2I-style __rows wrapper idempotent and '
+             'non-recursive across duplicate wrapper blocks and Streamlit reruns. Store a stable base __rows '
+             'implementation, avoid re-wrapping an already wrapped function, and keep trace augmentation without '
+             'affecting schema/key grammar or diff semantics.',
+  'files': ['REFACTOR49_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR48']},
+ {'patch_id': 'REFACTOR50',
+  'date': '2026-01-25',
+  'summary': "Fix Evolution stability calculation: prevent unchanged rows from being double-counted as 'small change' "
+             '(<10%), clamp discrete stability to 0–100, and compute stable/small counts from comparable rows only. '
+             'Removes impossible 150% stability when all rows are unchanged; no schema/key-grammar changes.',
+  'files': ['REFACTOR50_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR49']},
+ {'patch_id': 'REFACTOR51',
+  'date': '2026-01-25',
+  'summary': 'Fix evolution stability graded fallback: cap per-row abs % change at 100 before averaging so '
+             "injected/outlier deltas don't force 0% stability. Add debug fields mean_abs_pct_raw/capped.",
+  'files': ['REFACTOR51_full_codebase_streamlit_safe.py']},
+ {'patch_id': 'REFACTOR52',
+  'date': '2026-01-25',
+  'summary': 'Add authority_manifest_v1 (runtime last-wins introspection) into binding_manifest_v1 to make refactor '
+             'deletions safer. No schema/key-grammar changes; no behavior changes.',
+  'files': ['REFACTOR52_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR51']},
+ {'patch_id': 'REFACTOR53',
+  'date': '2026-01-25',
+  'summary': 'Make metric_changes rows self-attributing for injected-vs-production gating. Extend source_url '
+             'extraction to include provenance.best_candidate.source_url; stamp rows with cur/current/source_url '
+             'fields; change Δt gating to suppress only when row source URL matches injected URL set (missing '
+             'attribution no longer treated as injected). Add debug counters '
+             'rows_with_source_url/rows_missing_source_url/rows_suppressed_by_injection.',
+  'files': ['REFACTOR53_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR52']},
+ {'patch_id': 'REFACTOR54',
+  'date': '2026-01-25',
+  'summary': 'Safe downsizing + durability diagnostics: remove duplicated FIX2D2I Diff Panel V2 wrapper block '
+             '(redundant after recursion hardening); add snapshot_roundtrip_v1 (best-effort readback of '
+             'snapshot_store_ref_stable) into Analysis persistence debug to catch recent snapshot save/retrieve issues '
+             'early. No schema/key-grammar changes.',
+  'files': ['REFACTOR54_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR53']},
+ {'patch_id': 'REFACTOR55',
+  'date': '2026-01-25',
+  'summary': "Consolidate metric changes outputs to a single canonical feed: output['metric_changes'] is "
+             "authoritative; output['metric_changes_v2'] mirrors the same list for backward/UI compatibility; drop "
+             "output['metric_changes_legacy'] (no longer maintained). Add a late-stage consolidation block in "
+             'compute_source_anchored_diff_BASE to enforce invariants. No schema/key-grammar changes.',
+  'files': ['REFACTOR55_full_codebase_streamlit_safe.py'],
+  'supersedes': ['REFACTOR54']},
+ {'patch_id': 'REFACTOR56',
+  'date': '2026-01-26',
+  'summary': 'Controlled downsizing: stop emitting metric_changes_legacy entirely (remove late-stage re-add), add '
+             'end-of-function safety rail to pop it before returning. No schema/key-grammar changes; Diff Panel V2 '
+             'remains authoritative and metric_changes_v2 continues to mirror metric_changes.',
+  'files': ['REFACTOR56.py'],
+  'supersedes': ['REFACTOR55']},
+ {'patch_id': 'REFACTOR57',
+  'date': '2026-01-26',
+  'summary': 'Stabilize diff harness prior to further downsizing: prefer REFACTOR47 V2 row builder when present; '
+             'suppress emission of debug.diff_panel_v2_error/traceback (legacy V2 builder can fail before late '
+             'rebinds). Canonical-first strict fallback remains authoritative; no schema/key-grammar changes.',
+  'files': ['REFACTOR57.py'],
+  'supersedes': ['REFACTOR56']},
+ {'patch_id': 'REFACTOR58',
+  'date': '2026-01-26',
+  'summary': "Fix latent UnboundLocalError in Diff Panel V2 row builder by initializing 'effective' locals on loop "
+             "entry and removing a duplicate 'current_value_norm' key in an early fallback row. This eliminates "
+             'recurring debug.diff_panel_v2_traceback noise while preserving canonical-first diffing semantics. No '
+             'schema/key-grammar changes.',
+  'files': ['REFACTOR58.py'],
+  'supersedes': ['REFACTOR57']},
+ {'patch_id': 'REFACTOR59',
+  'date': '2026-01-26',
+  'summary': 'Controlled downsizing: removed redundant legacy Diff Panel V2 builders/wrappers (incl. Fix2K inference '
+             'path + FIX2D2I wrapper) and deleted an identical duplicated mid-file block that redefined '
+             'FIX2D47/FIX2D48/FIX2D49-era helpers. REFACTOR47 canonical-first join remains the sole authoritative '
+             'diff-row builder. No schema/key-grammar changes; preserves strict unit comparability and percent-year '
+             'poisoning guardrails.',
+  'files': ['REFACTOR59.py'],
+  'supersedes': ['REFACTOR58']},
+ {'patch_id': 'REFACTOR61',
+  'date': '2026-01-26',
+  'summary': 'Restore minimal Diff Panel V2 canonical-first join row builder '
+             '(build_diff_metrics_panel_v2__rows_refactor47) so Evolution always populates metric_changes_v2 (and thus '
+             'metric_changes) even when Streamlit triggers execution before late diff wrapper defs. Strict unit '
+             'comparability preserved; no schema/key-grammar changes.',
+  'files': ['REFACTOR61.py'],
+  'supersedes': ['REFACTOR60']},
+ {'patch_id': 'REFACTOR62',
+  'date': '2026-01-26',
+  'summary': 'Add an early, schema-agnostic Diff Panel V2 failsafe canonical-first row builder to prevent Streamlit '
+             "ordering hazards from producing 'no metrics to display' during controlled downsizing. Also remove "
+             'obsolete commented CODE_VERSION bump blocks (comment-only clutter). No schema/key-grammar changes; '
+             'strict unit comparability preserved.',
+  'files': ['REFACTOR62.py'],
+  'supersedes': ['REFACTOR61']},
+ {'patch_id': 'REFACTOR63',
+  'date': '2026-01-26',
+  'summary': 'Controlled downsizing: remove the unused FIX2D47 Diff Panel V2 builder + shadow helper defs, while '
+             'retaining (and hardening) the deterministic collision resolver used by schema/key remapping. No '
+             'schema/key-grammar changes; diffing + unit comparability preserved.',
+  'files': ['REFACTOR63.py'],
+  'supersedes': ['REFACTOR62']},
+ {'patch_id': 'REFACTOR64',
+  'date': '2026-01-26',
+  'summary': 'Controlled downsizing (low-risk): remove redundant early Diff Panel V2 failsafe builder (REFACTOR62) and '
+             'delete a dead post-main REFACTOR47 rebind block that never affects runtime diffing. No '
+             'schema/key-grammar changes; preserves strict unit comparability + canonical-first diffing.',
+  'files': ['REFACTOR64.py'],
+  'supersedes': ['REFACTOR63']},
+ {'patch_id': 'REFACTOR65',
+  'date': '2026-01-26',
+  'summary': 'Controlled downsizing (low-risk): remove unused preserved BASE implementations '
+             '(diff_metrics_by_name_BASE and compute_source_anchored_diff_BASE) along with their wrap scaffolding. Add '
+             'code_version to Evolution report export so all JSON artifacts carry the patch ID. No schema/key-grammar '
+             'changes; preserves canonical-first diffing + strict unit comparability + snapshot rehydration.',
+  'files': ['REFACTOR65.py'],
+  'supersedes': ['REFACTOR64']},
+ {'patch_id': 'REFACTOR66',
+  'date': '2026-01-26',
+  'summary': "Controlled downsizing + safety rail: de-duplicate the redundant nested output['results'] mirror in "
+             'Evolution payloads by shrinking it to a lightweight compatibility stub (prevents baseline_sources_cache '
+             'duplication and reduces JSON/Sheets footprint). No schema/key-grammar changes; preserves canonical-first '
+             'diffing, unit comparability, snapshot rehydration, Δt injection gating, and stability scoring.',
+  'files': ['REFACTOR66.py'],
+  'supersedes': ['REFACTOR65']},
+ {'patch_id': 'REFACTOR67',
+  'date': '2026-01-26',
+  'summary': 'Controlled downsizing: remove legacy run_source_anchored_evolution_BASE preservation path and the old '
+             'pre-FIX24 evolution wrapper. FIX24 changed-case recompute now routes directly through '
+             'compute_source_anchored_diff (single authoritative path), while retaining FIX24 debug markers, snapshot '
+             'hash trace, Δt injection gating, and stability scoring. No schema/key-grammar changes.',
+  'files': ['REFACTOR67.py'],
+  'supersedes': ['REFACTOR66']},
+ {'patch_id': 'REFACTOR68',
+  'date': '2026-01-26',
+  'summary': 'Fix Evolution stability + summary regression: stop overwriting stability_score with legacy '
+             '(unchanged/total) formula and recompute results.summary + stability_score from the final canonical-first '
+             'metric_changes rows (V2-first). Restores correct increased/decreased/unchanged counters and non-zero '
+             'graded stability for injection runs, while keeping strict unit comparability and schema/key-grammar '
+             'freeze.',
+  'files': ['REFACTOR68.py'],
+  'supersedes': ['REFACTOR67']},
+ {'patch_id': 'REFACTOR69',
+  'date': '2026-01-26',
+  'summary': 'Controlled downsizing + safety fix: promote _fmt_currency_first to a shared top-level helper (prevents '
+             'NameError in render_native_comparison and removes an unnecessary nested duplicate). Also make the '
+             "Source-Anchored Evolution Metric Changes table prefer output['metric_changes'] (authoritative) while "
+             'retaining metric_changes_v2 as a mirror for compatibility. No schema/key-grammar changes.',
+  'files': ['REFACTOR69.py'],
+  'supersedes': ['REFACTOR68']},
+ {'patch_id': 'REFACTOR70',
+  'date': '2026-01-27',
+  'summary': 'Safety rail + simplification: add a late-stage output bridge in compute_source_anchored_diff to enforce '
+             'a single authoritative metric_changes list (mirrored to metric_changes_v2) and a clamped top-level '
+             'stability_score, while hard-removing metric_changes_legacy. This stabilizes the Evolution UI/export path '
+             'during controlled downsizing. No schema/key-grammar changes.',
+  'files': ['REFACTOR70.py'],
+  'supersedes': ['REFACTOR69']},
+ {'patch_id': 'REFACTOR71',
+  'date': '2026-01-27',
+  'summary': 'Safety rail: stamp harness_invariants_v1 into Evolution results to prevent silent degradation when '
+             'external sources flake (e.g., failed:no_text). Records schema-frozen key count vs baseline/current '
+             'canonical counts, missing keys, and source failure summaries, plus an additive harness_warning_v1 banner '
+             'string. No schema/key-grammar changes.',
+  'files': ['REFACTOR71.py'],
+  'supersedes': ['REFACTOR70']},
+ {'patch_id': 'REFACTOR72',
+  'date': '2026-01-27',
+  'summary': 'Completeness-first diffs: upgrade Diff Panel V2 strict canonical join to prefer frozen schema keys (when '
+             'metric_schema_frozen is available) and emit explicit completeness rows when either side is missing '
+             '(missing_baseline / missing_current / missing_both). Keeps strict unit comparability and delta '
+             'computation only for unit-matching pairs; no schema/key-grammar changes; Streamlit-safe.',
+  'files': ['REFACTOR72.py'],
+  'supersedes': ['REFACTOR71']},
+ {'patch_id': 'REFACTOR73',
+  'date': '2026-01-27',
+  'summary': 'Fix REFACTOR72 indentation regression in _refactor13_recompute_summary_and_stability_v1 (rows loop '
+             'escaped to module scope, causing runtime error). Restores Streamlit-safe execution and preserves '
+             'completeness-first change_type counting.'},
+ {'patch_id': 'REFACTOR74',
+  'date': '2026-01-27',
+  'summary': 'Completeness-first diffs hardening: guarantee schema-complete Metric Changes rows even if the Diff Panel '
+             'V2 builder errors by upgrading the strict fallback to iterate frozen schema keys (or union fallback) and '
+             'emit explicit missing_baseline/missing_current/missing_both rows. Also extend harness_invariants_v1 to '
+             'record metric_changes row_count vs schema size and surface row_count_mismatch in harness_warning_v1 when '
+             'violated. No schema/key-grammar changes; Streamlit-safe.',
+  'files': ['REFACTOR74.py'],
+  'supersedes': ['REFACTOR73']},
+ {'patch_id': 'REFACTOR75',
+  'date': '2026-01-27',
+  'summary': 'High-value harness hardening: add explicit last-good snapshot fallback inside fetch_web_context for '
+             'failed:no_text and scrape exceptions using existing_snapshots, with clear provenance fields '
+             '(fallback_used/status_detail=fallback:last_good_snapshot) so extraction remains complete under source '
+             'flakiness; extend harness_invariants_v1 to record and surface baseline/current fallbacks in both debug '
+             'and harness_warning_v1; and restore the invariant that Evolution injection runs suppress Δt.',
+  'files': ['REFACTOR75.py'],
+  'supersedes': ['REFACTOR74']},
+ {'patch_id': 'REFACTOR76',
+  'date': '2026-01-27',
+  'summary': 'Fix injection-mode detection and completeness-first harness guards: suppress '
+             'results.run_delta_seconds/human whenever injected URLs are present using canonical debug.inj_trace_v1 '
+             'signals (not legacy lists); prefer inj_trace_v1 for per-row injection gating; extend '
+             'harness_invariants_v1 with schema-key coverage checks (missing/extra/duplicate canonical keys) and '
+             'warning-only change_type integrity validation for missing_baseline/missing_current rows, surfacing '
+             'count-only warning banners.',
+  'files': ['REFACTOR76.py'],
+  'supersedes': ['REFACTOR75']},
+ {'patch_id': 'REFACTOR77',
+  'date': '2026-01-27',
+  'summary': 'Fix version stamping and add a self-check: bump the locked code version stamp to REFACTOR77, and extend '
+             'harness_invariants_v1 with a warning-only comparison of output.code_version vs the latest REFACTOR '
+             'patch_id in PATCH_TRACKER_V1, surfacing version_mismatch in harness_warning_v1 if they diverge (catches '
+             'stale version locks / wrong file deployments).',
+  'files': ['REFACTOR77.py'],
+  'supersedes': ['REFACTOR76']},
+ {'patch_id': 'REFACTOR80',
+  'date': '2026-01-27',
+  'summary': 'Fix injection-mode detection so production runs do not get falsely flagged as suppressed_by_injection; '
+             'suppress run-delta only when true UI/intake injection URLs exist. Also improve row_delta_gating_v1 '
+             'source-attribution counters (rows_with_source_url/rows_missing_source_url) even when no injection is '
+             'present. No schema/key-grammar changes; Streamlit-safe.',
+  'files': ['REFACTOR80.py'],
+  'supersedes': ['REFACTOR79']},
+ {'patch_id': 'REFACTOR81',
+  'date': '2026-01-27',
+  'summary': 'Last-good snapshot fallback hardening: expand existing_snapshots lookup to match URL variants '
+             '(scheme/www/trailing slash) and fall back not only on failed:no_text/exception but also when extraction '
+             'yields zero numbers (explicit status_detail=fallback:last_good_snapshot, never silent). Add telemetry '
+             'debug_counts.fallback_last_good_snapshot_used(+urls). Also fill units for schema-complete missing rows '
+             "from metric_schema_frozen when safe (avoid currency placeholder unit 'U'). Streamlit-safe; no "
+             'schema/key-grammar changes.',
+  'files': ['REFACTOR81.py'],
+  'supersedes': ['REFACTOR80']},
+ {'patch_id': 'REFACTOR82',
+  'date': '2026-01-27',
+  'summary': 'Fix patch tracker/version self-check false positives by registering the current REFACTOR patch before '
+             'main() executes (Streamlit load-order safe). Also make the main() crash banner use the active code '
+             'version instead of a hardcoded patch id. No schema/key-grammar changes; Streamlit-safe.',
+  'files': ['REFACTOR82.py'],
+  'supersedes': ['REFACTOR81']},
+ {'patch_id': 'REFACTOR86',
+  'date': '2026-01-28',
+  'summary': 'Controlled downsizing (step 1): collapse the accumulated patch-tracker try/append blocks into a single '
+             'consolidated registry. Keep all existing patch metadata as a static canonical entries list, register '
+             'idempotently at import-time, and remove redundant patch-tracker scaffolding to reduce file size and risk '
+             'of syntax/indentation drift. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe; '
+             'core pipeline unchanged.',
+  'files': ['REFACTOR86.py'],
+  'supersedes': ['REFACTOR85']}]
+
+def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
+    try:
+        PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+        if not isinstance(PATCH_TRACKER_V1, list):
+            PATCH_TRACKER_V1 = []
+        _existing = set()
+        for _e in PATCH_TRACKER_V1:
+            if isinstance(_e, dict) and _e.get("patch_id") is not None:
+                _existing.add(str(_e.get("patch_id")))
+        for _e in (_entries or []):
+            if not isinstance(_e, dict):
+                continue
+            _pid = _e.get("patch_id")
+            if _pid is None:
+                continue
+            _pid_s = str(_pid)
+            if _pid_s in _existing:
+                continue
+            PATCH_TRACKER_V1.append(dict(_e))
+            _existing.add(_pid_s)
+        globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+    except Exception:
+        pass
+
+# Register immediately (Streamlit rerun-safe, idempotent).
+_yureeka_register_patch_tracker_v1()
+
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
@@ -373,649 +1497,48 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
 # ============================================================
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR25
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR25":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR25",
-            "date": "2026-01-24",
-            "summary": "Add production-only Analysis→Evolution run delta column for metric changes. Standardize top-level timestamps to UTC (+00:00), compute/stamp run_timing_v1 (delta_seconds/human) in Evolution results, and gate per-row delta display when current metric is sourced from injected URLs.",
-            "files": ["REFACTOR25_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR24"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR26
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR26":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR26",
-            "date": "2026-01-24",
-            "summary": "Tighten and centralize current metric source_url attribution for reliable row-level injection gating. Add a hydrator that fills primary_metrics_canonical[*].source_url from evidence/provenance, expose current_source_url fields on diff rows, and enhance per-row injection detection to prefer row-attributed URLs before falling back to canonical maps.",
-            "files": ["REFACTOR26_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR25"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# PATCH TRACKER V1 (ADD): REFACTOR27
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR27":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR27",
-            "date": "2026-01-24",
-            "summary": "Harden unit comparability and candidate eligibility for currency metrics. Reject date-fragment currency candidates (e.g., 'July 01, 2025') during schema-only rebuild, and strengthen currency unit mismatch detection so mixed scale/code representations do not emit nonsense deltas. Also expose current_source_url on diff rows for clearer row-level injection attribution.",
-            "files": ["REFACTOR27_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR26"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
-
-# PATCH TRACKER V1 (ADD): REFACTOR28
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR28":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR28",
-            "date": "2026-01-24",
-            "summary": "Consolidate schema-only rebuild authority to eliminate stale wrapper capture chains and ensure REFACTOR27 candidate filters (especially currency date-fragment rejection) are active at runtime. This prevents day-of-month tokens like '01' from binding as currency values, restoring comparable currency baselines while preserving percent-year poisoning sanitization.",
-            "files": ["REFACTOR28_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR27"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR29
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR29":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR29",
-            "date": "2026-01-24",
-            "summary": "Refine REFACTOR25 run-delta harness and diagnostics: replace overly-strict global injection assertion with per-row gating stats (injected rows must have blank delta, production rows should show delta when available). Persist row_delta_gating_v1 into run_timing_v1 for easier debugging, without changing schema/key grammar or diff behavior.",
-            "files": ["REFACTOR29_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR28"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
+# ============================================================
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR30
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR30":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR30",
-            "date": "2026-01-24",
-            "summary": "Fix REFACTOR29 run_timing_v1 row_delta_gating_v1 double-counting: apply per-row Analysis→Evolution delta stamping once (primary metric_changes list) and propagate to metric_changes_v2 by canonical_key, so diagnostic counts match the displayed table while keeping injection gating behavior unchanged.",
-            "files": ["REFACTOR30_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR29"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR31
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR31":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR31",
-            "date": "2026-01-24",
-            "summary": "Add runtime_identity_v1 stamp (code_version lock + __file__ + SHA1) to Analysis/Evolution debug for diagnosing stale-version runs; and harden run_timing_v1 row_delta_gating_v1 stats to count unique canonical_keys only (prevents double-counting when both metric_changes and metric_changes_v2 exist). No schema/key-grammar changes.",
-            "files": ["REFACTOR31_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR30"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR32
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR32":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR32",
-            "date": "2026-01-24",
-            "summary": "Clarify injected URL semantics: treat only UI-provided extra_urls_ui(_raw) (or explicit internal marker) as injected for debug + run-delta gating, preventing production source URLs from being misclassified as injected. Add __yureeka_extra_urls_are_injection_v1 markers when Evolution wires injected URLs into web_context['extra_urls']. No schema/key-grammar changes.",
-            "files": ["REFACTOR32_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR31"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR33
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR33":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR33",
-            "date": "2026-01-24",
-            "summary": "Downsize footprint by deleting shadowed duplicate top-level function definitions and redundant metric_changes_legacy preservation block, keeping only the final authoritative implementations. No schema/key-grammar changes.",
-            "files": ["REFACTOR33_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR32"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR34
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR34":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR34",
-            "date": "2026-01-24",
-            "summary": "Fix a missing return in rebuild_metrics_from_snapshots_schema_only_fix17 that caused schema-only rebuilds to return None, breaking Analysis primary_metrics_canonical persistence and Evolution diffing after REFACTOR33 deletions. No schema/key-grammar changes.",
-            "files": ["REFACTOR34_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR33"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR24
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR24":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR24",
-            "date": "2026-01-23",
-            "summary": "Fix REFACTOR23 syntax regression (mis-indented try block) and make currency-aware unit_cmp construction consistent across all get_canonical_value_and_unit() definitions (USD:B, EUR:B, etc.) so cross-currency deltas are vetoed deterministically.",
-            "files": ["REFACTOR24_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR23"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR23
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR23":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR23",
-            "date": "2026-01-23",
-            "summary": "Unit consistency hardening: carry currency_code through candidate canonicalization & schema-only rebuild; include currency_code in diff unit_cmp token for currency metrics (detect USD vs EUR rather than silently comparing); and fix a small anchor-rebuild NameError to keep anchor path safe.",
-            "files": ["REFACTOR23_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR22"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR22
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR22":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR22",
-            "date": "2026-01-23",
-            "summary": "Fix unit-family noise for yearlike tokens: normalize_unit_family() no longer infers percent/currency/magnitude from surrounding context when unit_tag is empty and raw token is a plain 4-digit year (1900–2100). This reduces unit inconsistencies in baseline_sources_cache and prevents misleading 'percent_tag' traces on year/range endpoints, without changing canonical binding or diff behavior.",
-            "files": ["REFACTOR23_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR21"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# PATCH TRACKER V1 (ADD): REFACTOR21
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR21":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR21",
-            "date": "2026-01-23",
-            "summary": "Harden unit inference against year/range artifacts: mark 4-digit year tokens as junk (year_token) when unitless, prevent context-driven unit backfill for yearlike candidates, and tag negative endpoints produced by hyphen ranges (e.g., '151-300' -> '-300') as junk (hyphen_range_negative_endpoint). Reduces unit inconsistencies and percent/currency 'poisoning' from nearby context.",
-            "files": ["REFACTOR21_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR20"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR20
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR20":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR20",
-            "date": "2026-01-23",
-            "summary": "Fix false currency evidence hits caused by substring matches (e.g., 'eur'/'euro' inside 'Europe'). Introduce boundary-aware currency detection helper and use it in infer_unit_tag_from_context() and normalize_unit_family(), preventing 'million units' candidates from being misclassified as currency in Europe contexts.",
-            "files": ["REFACTOR20_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR19"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR19
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR19":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR19",
-            "date": "2026-01-23",
-            "summary": "Restore Analysis/Evolution parity for schema_only_rebuild outputs by including unit_tag, unit_family, base_unit, and multiplier_to_base (plus raw) on rebuilt primary_metrics_canonical entries. This keeps diff comparability deterministic and prevents downstream re-parsing of current values.",
-            "files": ["REFACTOR19_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR18"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR18
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR18":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR18",
-            "date": "2026-01-23",
-            "summary": "Harden authoritative diff binding signal: ensure diff_metrics_by_name always carries a reliable __YUREEKA_AUTHORITATIVE_BINDING__ tag (with globals fallback when callable wrappers reject setattr). Make binding_manifest_v1 self-contained (use local bound_from values) and update harness report IDs to the current refactor version for cleaner diagnostics.",
-            "files": ["REFACTOR18_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR17"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR17
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR17":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR17",
-            "date": "2026-01-23",
-            "summary": "Add concise in-file debug playbook and surface an authoritative binding manifest for Diff Panel V2 entrypoint (plus legacy diff_metrics_by_name when available). Improves manifest resilience when Streamlit triggers execution before later defs.",
-            "files": ["REFACTOR17_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR16"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR16
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR16":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR16",
-            "date": "2026-01-23",
-            "summary": "Hard-lock CODE_VERSION to REFACTOR16 across legacy override sites; expand FINAL BINDINGS candidate set to include _yureeka_diff_metrics_by_name_v24; make binding_manifest_v1 resolve/report the actual diff entrypoint even when Streamlit executes before later diff wrapper defs.",
-            "files": ["REFACTOR16_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR15"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR01
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "REFACTOR02",
-        "date": "2026-01-21",
-        "summary": "Add refactor regression harness (Analysis→Evolution) gated by explicit flag; emits JSON report + asserts diff invariants (both_count > 0, no prev-metrics sentinel, percent-year token rule).",
-        "files": ["REFACTOR02_full_codebase_streamlit_safe.py"],
-        "supersedes": ["FIX2D86"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR03
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR03":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR03",
-            "date": "2026-01-21",
-            "summary": "Fix REFACTOR02 regression: enforce unit-family + scale eligibility in schema-only rebuild; detect unit mismatch in diff panel and mark as unit_mismatch (avoid bogus B vs M diffs).",
-            "files": ["REFACTOR03_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR02"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR04
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR04":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR10",
-            "date": "2026-01-21",
-            "summary": "Fix false unit_mismatch caused by context_snippet percent leakage; enrich schema-anchored rebuilt PMC with unit_tag/unit_family/multiplier_to_base; tighten unit-family evidence checks to prefer token/raw evidence over broad context for magnitude keys; update refactor harness labels to REFACTOR04.",
-            "files": ["REFACTOR04_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR03"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR05
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR05":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR05",
-            "date": "2026-01-21",
-            "summary": "Selection gating + harness fix: block currency/percent candidates from __unit_* keys, promote raw/unit metadata into PMC for parity, and make harness read evidence lists.",
-            "files": ["REFACTOR05_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR04"],
-        })
-except Exception:
-    pass
-
-
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR06
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR07
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR07":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR07",
-            "date": "2026-01-22",
-            "summary": "Freeze versioning as single-source-of-truth using a refactor version lock; ensure JSON outputs use the locked version; add binding_manifest_v1 and harness assertions for version + authoritative diff binding; update FINAL BINDINGS and harness report labels to REFACTOR07.",
-            "files": ["REFACTOR07_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR06"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR08
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR08":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR08",
-            "date": "2026-01-22",
-            "summary": "Enhance refactor regression harness with consistent REFACTOR08 labels/versioning, dynamic authoritative diff binding expectation, and summary consistency checks (rows_total/partition/found/not_found/key_overlap). Update FINAL BINDINGS tag and locked CODE_VERSION to REFACTOR08.",
-            "files": ["REFACTOR08_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR07"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR06":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR06",
-            "date": "2026-01-22",
-            "summary": "Freeze authoritative runtime bindings: add FINAL BINDINGS section for diff_metrics_by_name, tag authoritative function for harness verification, and update harness report/version labels.",
-            "files": ["REFACTOR06_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR05"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR02
-# ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "REFACTOR02",
-        "date": "2026-01-21",
-        "summary": "Harden candidate eligibility against cross-dimension leakage (magnitude/count vs currency/percent) and enforce percent-year token rejection in eligibility; upgrade refactor harness invariants (baseline PMC dimensional sanity + percent-year check on prev+cur).",
-        "files": ["REFACTOR02_full_codebase_streamlit_safe.py"],
-        "supersedes": ["REFACTOR01"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
 # REFACTOR02: HARNESS FLAG (ADDITIVE)
 # - Streamlit-safe: does nothing unless explicitly invoked.
@@ -1068,630 +1591,85 @@ except Exception:
     _REFACTOR01_HARNESS_REQUESTED = False
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR46
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "REFACTOR46",
-        "date": "2026-01-25",
-        "summary": "Prevent refactor harness from terminating Streamlit runtime (disable harness under Streamlit; double-guard EOF harness dispatch).",
-        "files": ["REFACTOR46_full_codebase_streamlit_safe.py"],
-        "supersedes": ["REFACTOR45"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D71
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D71",
-        "date": "2026-01-19",
-        "summary": "Commit schema-keyed baseline canonical metrics during Analysis: if schema authority selection yields no winners but baseline_schema_metrics_v1 is non-empty, promote that schema-keyed (auditable proxy) map into primary_metrics_canonical so Evolution has prev canonical metrics for metric_changes_v2 diffing.",
-        "files": ["FIX2D71_full_codebase.py"],
-        "supersedes": ["FIX2D70"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D70
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D70",
-        "date": "2026-01-19",
-        "summary": "Controlled schema-candidate reconciliation during schema-anchored rebuild: relax key-year matching (±1 for single-year keys, overlap for ranges) and keyword gating only when strict prefilter yields zero candidates, while emitting FIX2D70 rejection counts and relax flags for audit. This closes the last-mile binding gap without reintroducing heuristic matching.",
-        "files": ["FIX2D70_full_codebase.py"],
-        "supersedes": ["FIX2D69B"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D69
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D69",
-        "date": "2026-01-19",
-        "summary": "Hard-wire numeric extraction on injected snapshot_text: when injected placeholders are fetched (FIX41AFC16), convert HTML to plain text if needed, always extract numbers from the non-empty text, and store content_len/clean_text_len plus FIX2D68 extraction diagnostics and errors. Also defensively initialize observed_rows_filtered_noninjected to prevent UnboundLocalError in Diff Panel V2 summary.",
-        "files": ["FIX2D69_full_codebase.py"],
-        "supersedes": ["FIX2D68"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
   # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D66G
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D66G",
-        "date": "2026-01-19",
-        "summary": "Google Sheets write resiliency: always mirror saved analyses into session_state history; if Sheets write fails, set a flag and record _SHEETS_LAST_WRITE_ERROR so get_history() falls back to session_state when Sheet reads are empty. Prevents Evolution from being blocked by transient Sheets save failures. No changes to extraction/diffing.",
-        "files": ["FIX2D66G_full_codebase.py"],
-        "supersedes": ["FIX2D66"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D66
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D66",
-        "date": "2026-01-19",
-        "summary": "Deterministic injected-URL admission: promote UI raw/diag injection fields into web_context.extra_urls and synthesize diag_injected_urls when missing, so inj_diag/inj_trace_v1 reliably reflect injected URLs in snapshot pool and hash inputs (auditable). No UI/diff changes.",
-        "files": ["FIX2D66_full_codebase.py"],
-        "supersedes": ["FIX2D65D"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D65A
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D65A",
-        "date": "2026-01-19",
-        "summary": "Hotfix for FIX2D65: repair syntax-corrupted duplicate selector block; make yearlike prune non-fatal (never empties pool); make 'rebuild empty with snapshots' non-fatal so Evolution can still emit JSON diagnostics.",
-        "files": ["FIX2D65A_full_codebase.py"],
-        "supersedes": ["FIX2D65"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D58F
 # ============================================================
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D41
 # ============================================================
 
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D44
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D44",
-        "date": "2026-01-17",
-        "summary": "Fix Analysis baseline schema baseline materialisation: define _core in attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 baseline_schema_metrics_v1 builder executes; emit results.baseline_schema_metrics_v1 for Evolution diff join.",
-        "files": ["FIX2D44.py"],
-        "supersedes": ["FIX2D43"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-
-except Exception:
-    pass
-
 # =========================
 # PATCH FIX2D59 (ADDITIVE): Canonical Identity Resolver (shared authority)
 # - Introduces a single deterministic identity tuple and a schema-first resolver.
 # - Cuts old direct key-mint paths by routing canonical_key assignment through the resolver.
 # =========================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D59",
-        "summary": "Canonical identity resolver v1: define identity tuple + schema-first resolver; route canonical key minting through resolver to align Analysis and Evolution key authority.",
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # =========================
 # PATCH FIX2D60 (ADDITIVE): schema-only canonical enforcement + yearlike rejection at schema-only commit
 # - Analysis: after identity rekey, keep ONLY schema-bound metrics in primary_metrics_canonical.
 # - Evolution schema_only rebuild: never allow a bare year token to commit for expected_kind=='unit' keys.
 # =========================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D60",
-        "summary": "Enforce schema-only canonical store (Analysis) and hard-reject bare-year candidates for unit/count keys at schema_only_rebuild commit point (Evolution).",
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # =========================
 # PATCH FIX2D61 (ADDITIVE): Schema Promotion Path (Option A)
 # - Propose schema entries from primary_metrics_provisional
 # - Allow deterministic promotion into metric_schema_frozen (analysis-side)
 # - Record proposals and promotions for audit
 # =========================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D61",
-        "summary": "Option A schema extension: generate promotion proposals from primary_metrics_provisional and (optionally) promote them into metric_schema_frozen with full audit metadata; enables closing remaining coverage gaps without reintroducing heuristic canonical minting.",
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # =========================
 # PATCH FIX2D62 (ADDITIVE): Time token normalization into identity tuple
 # - Split embedded year/YTD/forecast tokens out of metric_token and into time_scope.
 # - Resolver matches schema on metric_token + '_' + time_scope, preventing 2024/2025 being glued into metric_token.
 # - Also adds required except/pass closure for early patch-tracker try block.
 # =========================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D62",
-        "summary": "Normalize time tokens into identity tuple (year/YTD/forecast) + schema-first resolver uses metric_token+time_scope to match schema; prevents 2024/2025 contamination of metric_token and improves Analysis/Evolution convergence.",
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # =========================
 # PATCH FIX2D63 (ADDITIVE): schema_only_rebuild yearlike hardening for unit/count metrics
 # - Fixes a variable typo that could disable FIX2D2U gating in the prefilter.
 # - Rejects yearlike numeric candidates for unit/count schema keys unless they carry unit evidence.
 # - Records reject counts under _evolution_rebuild_debug.fix2d63_reject_yearlike_no_unit_evidence.
 # =========================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D63",
-        "summary": "Harden schema_only_rebuild_fix17 against injected-year pollution for unit/count metrics: fix _c variable typo in FIX2D2U gate and reject yearlike candidates without unit evidence upstream.",
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # =========================
 # PATCH FIX2D64 (ADDITIVE): Canonical Identity Spine V1 (shadow mode)
 # - Introduces canonical_identity_spine.py as the single future authority for identity normalization,
 #   schema-first key resolution, and value selection (incl. yearlike hard rejection immune to window backfill).
 # - Adds minimal regression tests as callable self-checks (no runtime behavior change unless explicitly enabled).
 # =========================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D64",
-        "summary": "Add Canonical Identity Spine V1 module (shadow mode only) + minimal regressions: centralizes identity tuple, schema-first resolver contract, and value selection with yearlike rejection immune to context unit backfill.",
-        "files": ["canonical_identity_spine.py", "FIX2D64_full_codebase.py"],
-        "supersedes": ["FIX2D63"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # =========================
 # PATCH FIX2D65 (AUTHORITY TAKEOVER): Canonical Identity Spine V1 becomes the only authority
 # - Rewire Analysis + Evolution to resolve canonical keys via canonical_identity_spine.resolve_key_v1 (schema-first)
 # - Enforce no-canonical-outside-spine gate at primary_metrics_canonical commit and schema_only_rebuild selection
 # - Prune yearlike candidates for unit/count metrics even when unit evidence was context/window backfilled
 # =========================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D65",
-        "date": "2026-01-19",
-        "summary": "Authority takeover: make Canonical Identity Spine V1 the only key-resolution authority (Analysis+Evolution) and add hard gates; prune yearlike candidates for unit/count metrics immune to context unit backfill.",
-        "files": ["canonical_identity_spine.py", "FIX2D65_full_codebase.py"],
-        "supersedes": ["FIX2D64"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-# PATCH TRACKER V1 (ADD): FIX2D40
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D40",
-        "summary": "Analysis: when schema is frozen, remap best-fit baseline metrics from generic canonical keys onto schema canonical keys (one-to-one) to enable baseline diffing; stamps explicit schema_remap audit fields; retains FIX2D39 hard unit/dimension rejection.",
-        "files": ["FIX2D40.py"],
-        "supersedes": ["FIX2D39"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# PATCH TRACKER V1 (ADD): FIX2D32
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D32",
-        "date": "2026-01-17",
-        "summary": "Diff Panel V2: treat anchor_hash mismatches as still diffable when canonical_key + unit-family gates pass; stamp row-level anchor_mismatch_diffable_v1 diagnostics and count such joins for audit.",
-        "files": ["FIX2D32.py"],
-        "supersedes": ["FIX2D31"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D33
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D33",
-        "date": "2026-01-17",
-        "summary": "Analysis schema-primary rebuild: baseline commitment for schema keys by backfilling missing value_norm from raw/value via deterministic parser when selector chooses a candidate but value_norm is None; improves baseline comparability without weakening semantic gates.",
-        "files": ["FIX2D33.py"],
-        "supersedes": ["FIX2D32"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D25
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D25",
-        "date": "2026-01-16",
-        "summary": "Re-enable Analysis→Evolution diffing by adding deterministic, unit-family-guarded inference for baseline keys in Diff Panel V2 when ckey/anchor joins miss; keep FIX2D20/FIX2D24 tracing and yearlike current blocking.",
-        "files": ["FIX2D25.py"],
-        "supersedes": ["FIX2D23"],
-    })
-
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2D",
-        "date": "2026-01-16",
-        "summary": "Fix Diff Panel V2 crash (prev_v/cur_v NameError) by using correctly scoped norm variables in traces; simplify end-of-file version stamping to a single final override.",
-        "files": ["FIX2D2D.py"],
-        "supersedes": ["FIX2D2C"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2E",
-        "date": "2026-01-16",
-        "summary": "Make Diff Panel V2 binding inference authoritative in the active FIX2J override path by committing inferred current_value/current_value_norm/current_source/current_method when joins miss; add explicit inference_commit trace; keep FIX2D24 year blocking and unit-first eligibility.",
-        "files": ["FIX2D2E.py"],
-        "supersedes": ["FIX2D2D"],
-    })
-
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2I",
-        "date": "2026-01-16",
-        "summary": "Enable binding inference fallback when a joined current value is blocked as unitless yearlike; add unit-family backfill for extracted_numbers pool candidates and trace the backfill/override in Diff Panel V2 __rows.",
-        "files": ["FIX2D2I.py"],
-        "supersedes": ["FIX2D2G"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2J",
-        "date": "2026-01-16",
-        "summary": "Deterministic unit/measure classifier for extracted numeric candidates: backfill unit_family from unit_tag and currency evidence in context; correct measure_kind/measure_assoc for currency-like candidates; attach classifier trace fields.",
-        "files": ["FIX2D2J.py"],
-        "supersedes": ["FIX2D2I"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2K",
-        "date": "2026-01-16",
-        "summary": "Context-driven unit backfill when unit_tag is empty, plus unit_family/measure_kind corrections trace (context_unit_backfill_v1).",
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2Z",
-        "date": "2026-01-17",
-        "summary": "Make injected candidates first-class for Diff Panel inference by unwrapping injected scraped_meta into extracted_numbers pools; enforce hard unit-family rejection (percent/currency/units/magnitude) in fallback inference scoring to prevent leakage.",
-        "files": ["FIX2D2Z.py"],
-        "supersedes": ["FIX2D2Y"],
-    })
-
-
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D30",
-        "date": "2026-01-17",
-        "summary": "Contextual unit-family correction: prevent magnitude tags (e.g., M/million) in 'million units / units sold / chargers / vehicles' contexts from being misclassified as currency; remove keyword-only currency upgrades to enable clean baseline comparability without weakening hard unit-family rejection.",
-        "files": ["FIX2D30.py"],
-        "supersedes": ["FIX2D2Z"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D31",
-        "date": "2026-01-17",
-        "summary": "Option A schema authority: when metric_schema_frozen is present in Analysis, rebuild primary_metrics_canonical by running the authoritative Analysis selector (_analysis_canonical_final_selector_v1) constrained to the frozen schema keys. This makes Analysis emit schema-aligned baseline metrics so Evolution injection can overlap and Diff Panel V2 can activate without weakening semantics.",
-        "files": ["FIX2D31.py"],
-        "supersedes": ["FIX2D30"],
-    })
-
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2U",
-        "date": "2026-01-17",
-        "summary": "Introduce shared semantic eligibility gate (Analysis parity) using local context_snippet; enforce it in Evolution schema-only rebuild(s) and Analysis selector to prevent cross-metric pollution (e.g., China sales value mapping into chargers 2040).",
-        "files": ["FIX2D2U.py"],
-        "supersedes": ["FIX2D2T"],
-    })
-
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D26
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D26",
-        "date": "2026-01-16",
-        "summary": "Unit-first, context-bound inference candidate picker for Diff Panel V2 (Analysis→Evolution). Prefers percent/units/currency matches with keyword binding; rejects bare-year tokens pre-score; adds per-row trace counters.",
-        "files": ["FIX2D26.py"],
-        "supersedes": ["FIX2D25"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D28
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D28",
-        "date": "2026-01-16",
-        "summary": "Close Diff Panel V2 binding gap: when inference selects a current value, commit it into UI/diff-read fields (current_value, current_value_norm, current_source, current_method) and mark baseline_is_comparable once all guards pass.",
-        "files": ["FIX2D28.py"],
-        "supersedes": ["FIX2D27"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D29
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D29",
-        "date": "2026-01-16",
-        "summary": "Fix FIX2D28 insertion placement and complete write-through: commit inference/joined current values into metric_changes fields used by UI/diff (current_value, current_value_norm, current_source, current_method) and set baseline_is_comparable when numeric.",
-        "files": ["FIX2D29.py"],
-        "supersedes": ["FIX2D28"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2A",
-        "date": "2026-01-16",
-        "summary": "Enable guarded inference in Diff Panel V2 regardless of join mode; add explicit inference gate + attempted traces so binding inference can commit current values.",
-        "files": ["FIX2D2A.py"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2B",
-        "date": "2026-01-16",
-        "summary": "Correct version stamping for FIX2D2A runtime by bumping CODE_VERSION and adding final end-of-file override to prevent legacy late assignments from masking patch id.",
-        "files": ["FIX2D2B.py"],
-        "supersedes": ["FIX2D2A"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2C",
-        "date": "2026-01-16",
-        "summary": "Fix Diff Panel V2 NameError by defining guarded inference gate in the active builder (build_diff_metrics_panel_v2) and emitting explicit inference gate trace; no heuristic changes.",
-        "files": ["FIX2D2C.py"],
-        "supersedes": ["FIX2D2B"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D18
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D18",
-        "date": "2026-01-15",
-        "summary": "Re-enable schema-only rebuild eligibility gates (domain token + unit-family) and strengthen unit-sales expectations to prevent bare-year (e.g., 2030) contamination; improves baseline comparables for Analysis→Evolution diffing.",
-        "files": ["FIX2D18.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D19
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D19",
-        "date": "2026-01-16",
-        "summary": "Harden schema_only_rebuild_fix17 with required domain-token binding (prevents generic keyword matches) and add deterministic baseline soft-match fallback in Diff Panel V2 to enable Analysis→Evolution comparable diffs when strict joins fail.",
-        "files": ["FIX2D19.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-# PATCH TRACKER V1 (ADD): FIX2D20
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D20",
-        "date": "2026-01-15",
-        "summary": "Diagnostic-first trace: record every year-like (1900-2100) value committed to primary_metrics_canonical, including callsite tags and metric object metadata; also disable FIX2D18/FIX2D19 logic while tracing.",
-        "files": ["FIX2D20.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# PATCH TRACKER V1 (ADD): FIX2D24
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D24",
-        "date": "2026-01-16",
-        "summary": "Last-mile guard for dashboard Current: block unitless year-like values (1900-2100, including 2030.0) from metric_changes hydration for non-year metrics; keep FIX2D20 tracing; supersedes FIX2D23 observed-only filter.",
-        "files": ["FIX2D24.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-# PATCH TRACKER V1 (ADD): FIX2D21
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D21",
-        "date": "2026-01-16",
-        "summary": "Evolution baseline-key schema: derive metric_schema_frozen from Analysis primary_metrics_canonical keys, and fix bare-year detection to reject tokens like 2030.0/2024.0; keep FIX2D20 year-commit tracing for verification.",
-        "files": ["FIX2D21.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
-# PATCH TRACKER V1 (ADD): FIX2D22
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D22",
-        "date": "2026-01-16",
-        "summary": "Schema-only rebuild: enforce *eligibility-before-scoring* (hard reject bare-year tokens incl 2024/2030 and require unit-family + required domain tokens) so years cannot win; supersedes FIX2D21 selector hardening but retains baseline-key schema derivation.",
-        "files": ["FIX2D22.py"],
-        "supersedes": ["FIX2D21"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # =====================================================================
 # PATCH FIX2D20 (ADD): Disable earlier speculative selection tweaks while tracing
 # =====================================================================
@@ -1802,131 +1780,18 @@ def _fix2d20_trace_year_like_commits(output: dict, stage: str, callsite: str) ->
         return
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D11c
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D11c",
-        "date": "2026-01-15",
-        "summary": "Fix indentation/scope of FIX2D11 render fallback by ensuring it remains inside compute_source_anchored_diff (4-space indent) to avoid parse-time try/indent errors.",
-        "files": ["FIX2D11c.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D12
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D12",
-        "date": "2026-01-15",
-        "summary": "Fix Diff Panel V2 premature return that prevented row emission; ensure UNION mode can emit current-only rows (added) and populate Current column.",
-        "files": ["FIX2D12.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D15
 # NOTE: FIX2D15 supersedes and removes FIX2D15 year-token guard implementation (replaced with stricter schema-only eligibility gates).
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D15",
-        "date": "2026-01-15",
-        "summary": "Reject bare-year tokens (e.g., 2030) during schema-only rebuild for non-year metrics; add diagnostics to prevent year pollution and restore stable baseline comparables.",
-        "files": ["FIX2D15.py"],
-    })
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D16",
-        "date": "2026-01-15",
-        "summary": "Add soft-match fallback to fill current values for baseline rows when anchor/ckey join fails; add last-mile bare-year reject for schema-only rebuild promotions. Disable FIX2D15 gating.",
-        "files": ["FIX2D16.py"],
-    })
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D17",
-        "date": "2026-01-15",
-        "summary": "Harden canonical selector: reject bare-year tokens as metric values and require domain keyword overlap to prevent cross-metric pollution; deprecate FIX2D16 soft-match/year guards.",
-        "files": ["FIX2D17.py"],
-    })
-
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D13
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D13",
-        "date": "2026-01-15",
-        "summary": "Add baseline-focused diff semantics to Diff Panel V2: classify rows as comparable/added/not_found and emit baseline delta fields + summary counters without requiring injected URLs in Analysis.",
-        "files": ["FIX2D13.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D11b
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D11b",
-        "date": "2026-01-15",
-        "summary": "Syntax-safe render-gate fallback: union-mode unanchored canonical_for_render without introducing nested try blocks.",
-        "files": ["FIX2D11b.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D11
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D11",
-        "date": "2026-01-15",
-        "summary": "Render gate fallback in union mode: if V28 anchor-enforce yields 0 hits, populate canonical_for_render from current primary_metrics_canonical and label as unanchored-for-render.",
-        "files": ["FIX2D11.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
 # PATCH START: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_V1
 # Purpose:
@@ -2078,57 +1943,11 @@ def _fix2d73_promote_rehydrated_prevdata_v1(prev_full: dict) -> dict:
 # PATCH END: FIX2D73_HISTORYFULL_PREV_CANON_PROMOTION_V1
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D73
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D73",
-        "date": "2026-01-20",
-        "summary": "HistoryFull persistence gap: promote baseline primary_metrics_canonical into rehydrated previous_data + ensure compute_source_anchored_diff prev_response carries canonical metrics so Diff Panel V2 can compute deltas.",
-        "files": ["FIX2D73_full_codebase.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D75
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D75",
-        "date": "2026-01-20",
-        "summary": "Option B fork: materialize Analysis baseline primary_metrics_canonical (schema-anchored rebuild) and persist it (incl. primary_response) so HistoryFull replay exposes previous canonical values for diffing.",
-        "files": ["FIX2D75_full_codebase.py"],
-        "supersedes": ["FIX2D73"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D10
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D10",
-        "date": "2026-01-15",
-        "summary": "Materialize output_debug.canonical_for_render_v1 from results.primary_metrics_canonical so dashboard can hydrate Current and diagnostics stop falsely flagging missing.",
-        "files": ["FIX2D10.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # ============================================================
 
 
@@ -2207,22 +2026,7 @@ def _fix2d9_schema_anchored_rebuild_current_metrics_v1(prev_response, pool, web_
 # PATCH END: FIX2D9_SCHEMA_ANCHORED_REBUILD_V1
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D9
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D9",
-        "date": "2026-01-15",
-        "summary": "Schema-anchored current-side canonical rebuild for diff/render: prefer schema_only rebuild so keys overlap and Current can populate.",
-        "files": ["FIX2D9.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
 
 
@@ -2339,21 +2143,7 @@ def _fix2d8_promote_nested_results_v1(output_obj):
 # PATCH END: FIX2D8_PROMOTE_NESTED_RESULTS_V1
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D8
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D8",
-        "date": "2026-01-15",
-        "summary": "Normalize output shape by promoting nested results.results.* into results.* for diff/render Current hydration.",
-        "files": ["FIX2D8_fixed.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # ============================================================
 
 
@@ -2435,59 +2225,7 @@ def _fix2d6_get_diff_join_mode_v1():
 # ============================================================
 
 # =====================================================================
-# PATCH TRACKER V1 (ADD): minimal patch tracker for consolidation
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D1",
-        "date": "2026-01-15",
-        "summary": "Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.",
-        "files": ["fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D3",
-        "date": "2026-01-15",
-        "summary": "Fix FIX41AFC19 v19 display-rebuild pool resolution + callable lookup; harden Diff Panel V2 injected-set detection (support cur_response without debug wrapper).",
-        "files": ["FIX2D3.py"],
-    })
-
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D4",
-        "date": "2026-01-15",
-        "summary": "Add debug.key_overlap_v1 to explicitly report prev/cur canonical key counts, overlap, and target key presence for deterministic diff feasibility checks.",
-        "files": ["FIX2D4.py"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D5",
-        "date": "2026-01-15",
-        "summary": "Mirror canonical_for_render_v1 diagnostics into results.debug so dashboard/diff diagnostics can see it; additive only.",
-        "files": ["FIX2D5.py"],
-    })
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D6",
-        "date": "2026-01-15",
-        "summary": "Option B engine completeness: Diff Panel V2 row universe can be prev∪cur (union) behind EVO_DIFF_JOIN_MODE flag; adds added/removed change_type and summary counts; default remains strict.",
-        "files": ["FIX2D6.py"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D6_HARDCODE",
-        "date": "2026-01-15",
-        "summary": "Hardcode diff join mode override via FORCE_DIFF_JOIN_MODE and route Diff Panel V2 join-mode selection through helper.",
-        "files": ["FIX2D6.py"],
-    })
-
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # =====================================================================
 # PATCH START: FIX2D4_key_overlap_debug_v1
 # Purpose:
@@ -36198,42 +35936,9 @@ except Exception:
 # - Version bump + patch tracker entry
 # =====================================================================
 
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2",
-        "date": "2026-01-15",
-        "summary": "Anchor-fill current_metrics for diff/display when schema_frozen is misaligned; add rebuild-fn name fallbacks to prevent fn_missing.",
-        "files": ["FIX2D2.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
-
 # =====================================================================
 # PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2I",
-        "date": "2026-01-16",
-        "summary": "Authoritative Diff Panel V2 wiring to __rows builder; adds pool/selection/commit trace and preserves guarded inference year-blocking. by defining deterministic extracted_numbers pool unwrapping for Diff Panel V2 __rows (previously undefined, silently disabling inference). Harden sentinel trace, add explicit per-row inference_commit trace fields, and bump CODE_VERSION with final override.",
-        "files": ["FIX2D2I.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # =====================================================================
 # PATCH FIX2D2I (AUTHORITATIVE): Diff Panel V2 — binding inference commit
 # + trace + simplified wiring
@@ -36248,23 +35953,6 @@ except Exception:
 # - Trace fields: pass1_injected_pool_size, pass1_selected, fallback_used, selected_source_url
 # - Final version bump
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2M",
-        "date": "2026-01-16",
-        "summary": "Injected-first current-value inference: two-pass selection (injected-only pool then global fallback) with explicit trace fields and authoritative commit into metric_changes.current_value(_norm).",
-        "files": ["FIX2D2M.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
 # =====================================================================
 # PATCH TRACKER ENTRY: FIX2D2N (ADDITIVE)
 # - Baseline-keyed current mapping for Analysis→Evolution diffing
@@ -36274,22 +35962,6 @@ except Exception:
 # - This closes Analysis/Evolution key parity gaps for the diff join without
 #   changing canonical key generation.
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2N",
-        "date": "2026-01-16",
-        "summary": "Baseline-keyed current mapping: for each Analysis baseline canonical key, synthesize a current metric via injected-first, unit-family-guarded inference from extracted_numbers pools when Evolution canonical keys diverge; enables deterministic Analysis→Evolution diff joins even under key parity gaps.",
-        "files": ["FIX2D2N.py"],
-        "supersedes": ["FIX2D2M"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # =====================================================================
 # PATCH TRACKER ENTRY: FIX2D2O (ADDITIVE)
 # - Persist baseline-keyed augmented current canonical map into the
@@ -36298,76 +35970,12 @@ except Exception:
 # - This makes Evolution JSON inspection show Analysis keys as the
 #   effective current authority for diffing, while keeping extras possible.
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2O",
-        "date": "2026-01-16",
-        "summary": "Persist baseline-keyed current mapping for diffing: when baseline keys are synthesized into cur_can, expose them as primary_metrics_canonical_for_diff and mirror into primary_metrics_canonical so Evolution output keys align with Analysis for the diff demo.",
-        "files": ["FIX2D2O.py"],
-        "supersedes": ["FIX2D2N"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # =====================================================================
 # PATCH TRACKER ENTRIES (CLEAN): FIX2D2Q / FIX2D2R / FIX2D2S
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2Q",
-        "date": "2026-01-16",
-        "summary": "Baseline-aligned current selection for diffing: injected-first with optional base fallback; stamps provenance fields (source_type, selection_mode) to prevent confusion while preserving union pool behavior.",
-        "files": ["FIX2D2Q.py"],
-        "supersedes": ["FIX2D2O"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2R",
-        "date": "2026-01-16",
-        "summary": "Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; improves Analysis/Evolution parity for injected content.",
-        "files": ["FIX2D2R.py"],
-        "supersedes": ["FIX2D2Q"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2S",
-        "date": "2026-01-16",
-        "summary": "Schema-only rebuild hardening: when non-year candidates exist for a schema key, skip bare-year tokens during winner selection (down-rank/skip) and record diagnostics; reduces year-token pollution before downstream year-blocking.",
-        "files": ["FIX2D2S.py"],
-        "supersedes": ["FIX2D2R"],
-    })
-
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # =========================
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D42
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D42",
-        "date": "2026-01-17",
-        "summary": "Serialize/promote baseline_schema_metrics_v1 into Analysis primary_response/results so Evolution diff can consume it; extend nested results promotion to mirror baseline_schema_metrics_v1.",
-        "files": ["FIX2D42.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # FINAL VERSION OVERRIDE
 # =========================
 try:
@@ -36610,32 +36218,6 @@ except Exception:
 
 # Patch tracker + version bump
 try:
-    if isinstance(globals().get('PATCH_TRACKER_V1'), list):
-        PATCH_TRACKER_V1.append({
-            "patch_id": "FIX2D2T",
-            "summary": "Add explicit baseline->current projection in diff layer: if baseline row is missing CURRENT but cur_response has same canonical_key in primary_metrics_canonical_for_diff/primary_metrics_canonical, project into metric_changes current_value/_norm and recompute diff counters; attach debug summary.",
-            "ts": "2026-01-16",
-        })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2U",
-        "date": "2026-01-17",
-        "summary": "Introduce shared semantic eligibility gate (local-snippet required tokens) and apply it across Analysis selector and Evolution schema-only rebuild paths to prevent cross-metric pollution (e.g., China sales value mapping to chargers 2040).",
-        "files": ["FIX2D2U.py"],
-        "supersedes": ["FIX2D2T"],
-    })
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2W",
-        "date": "2026-01-17",
-        "summary": "Fix parity leak: ensure schema_only_rebuild commit-time semantic gate is always active (avoid NameError when _FIX2D2U_ENABLE defined later) and fix year-token extraction regex for required-year checks; bump CODE_VERSION.",
-        "files": ["FIX2D2W.py"],
-        "supersedes": ["FIX2D2V"],
-    })
-
-except Exception:
-    pass
-
-try:
     CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
@@ -36668,22 +36250,6 @@ except Exception:
 # ---------------------------------------------------------------------
 # Supersedes (functionally): FIX2D2U/FIX2D2V/FIX2D2W schema_only_rebuild gating patches.
 # =====================================================================
-
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2X",
-        "date": "2026-01-17",
-        "summary": "Parity patch: replace Evolution schema-only slot filling for baseline-key current with Analysis authoritative selector (_analysis_canonical_final_selector_v1) using injected-first two-pass selection and synthesized keyword hints from canonical_key/name; prevents cross-metric misassignment (e.g., China sales -> chargers 2040) and aligns gating with Analysis.",
-        "files": ["FIX2D2X.py"],
-        "supersedes": ["FIX2D2W", "FIX2D2V", "FIX2D2U"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 
 def _fix2d2x_parse_injected_urls(web_context: dict) -> list:
     """Best-effort extraction of injected/extra URLs from web_context."""
@@ -37063,22 +36629,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # Version stamp (ensure last-wins in monolithic file)
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # Patch tracker entry
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2Y",
-        "date": "2026-01-17",
-        "summary": "Hardwire Evolution rebuild_metrics_from_snapshots_analysis_canonical_v1 to use the shared Analysis final selector for baseline-keyed diff current metrics (fix41afc19 parity); eliminates disjoint keyset that blocks diff activation.",
-        "files": ["FIX2D2Y.py"],
-        "supersedes": ["FIX2D2X"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response, snapshot_pool, web_context=None):
     """FIX2D2Y override: baseline-keyed current rebuild using Analysis selector.
 
@@ -39289,21 +38839,6 @@ except Exception:
 # =====================================================================
 
 # Patch tracker entry
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D65",
-        "date": "2026-01-19",
-        "summary": "Authority takeover: route schema-first identity resolution through canonical_identity_spine (single authority), enforce no-canonical-outside-spine at Analysis commit split, and prune yearlike candidates (immune to WINDOW_BACKFILL) before Evolution selector selection.",
-        "files": ["canonical_identity_spine.py", "FIX2D65_full_codebase.py"],
-        "supersedes": ["FIX2D64"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # Ensure spine module is importable
 try:
     import canonical_identity_spine as _cis
@@ -39425,20 +38960,6 @@ try:
 except Exception:
     pass
 
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D65B",
-        "date": "2026-01-19",
-        "summary": "Force canonical pipeline materialisation when injected URLs exist (seed schema via deterministic extensions so FIX2D31 schema-authority rebuild can run even for narrative queries).",
-        "files": ["FIX2D65B_full_codebase.py"],
-        "supersedes": ["FIX2D65A"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # =====================================================================
 
 
@@ -39450,20 +38971,6 @@ try:
 except Exception:
     pass
 
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D65C",
-        "date": "2026-01-19",
-        "summary": "Restore analysis->evolution diff contract: broaden injected URL detection (ui_raw + legacy keys) so schema seeding and FIX2D31 schema-authority rebuild reliably run when injection is used; bump version.",
-        "files": ["FIX2D65C_full_codebase.py"],
-        "supersedes": ["FIX2D65B"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # =====================================================================
 
 
@@ -39475,20 +38982,6 @@ try:
 except Exception:
     pass
 
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D65D",
-        "date": "2026-01-19",
-        "summary": "Restore analysis->evolution diff contract by always serializing/seeding metric_schema_frozen (deterministic schema extensions), so Evolution schema-only rebuild has a stable keyspace even when LLM emits no primary_metrics; bump version.",
-        "files": ["FIX2D65D_full_codebase.py"],
-        "supersedes": ["FIX2D65C"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # =====================================================================
 
 
@@ -39500,81 +38993,17 @@ try:
 except Exception:
     pass
 
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D66",
-        "date": "2026-01-19",
-        "summary": "Deterministic injected-URL admission: promote UI raw/diag injection fields into web_context.extra_urls; synthesize diag_injected_urls when missing; ensure inj_trace_v1 and inj_diag reflect injected URLs in snapshot pool and hash inputs (auditable).",
-        "files": ["FIX2D66_full_codebase.py"],
-        "supersedes": ["FIX2D65D"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # =====================================================================
 
 # =====================================================================
 # PATCH TRACKER ENTRY (ADDITIVE): FIX2D66H
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D66H",
-        "date": "2026-01-19",
-        "summary": "Fix Google Sheets history save return semantics: add_to_history() now returns True on successful Sheets append and False on failure (previously fell through as None, triggering spurious 'Saved to session only' warning). Keeps session fallback and captures last Sheets error for diagnostics.",
-        "files": ["FIX2D66H_full_codebase.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # =====================================================================
 # PATCH TRACKER ENTRY (ADDITIVE): FIX2D67
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D67",
-        "date": "2026-01-19",
-        "summary": "Fix injected numeric extraction missing-link: fetch_web_context() now calls numeric extractor with correct parameter name (source_url vs url), preventing silent TypeError and empty extracted_numbers; restores injected HTML numbers into snapshot pools feeding schema-only rebuild.",
-        "files": ["FIX2D67_full_codebase.py"],
-        "supersedes": ["FIX2D66H"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # =====================================================================
 # PATCH FIX2D68 PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
-
-
-
-
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2",
-        "date": "2026-01-15",
-        "summary": "Anchor-fill current_metrics for diff/display when schema_frozen is misaligned; add rebuild-fn name fallbacks to prevent fn_missing.",
-        "files": ["FIX2D2.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 
 
 
@@ -39591,22 +39020,6 @@ except Exception:
 # - This closes Analysis/Evolution key parity gaps for the diff join without
 #   changing canonical key generation.
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2N",
-        "date": "2026-01-16",
-        "summary": "Baseline-keyed current mapping: for each Analysis baseline canonical key, synthesize a current metric via injected-first, unit-family-guarded inference from extracted_numbers pools when Evolution canonical keys diverge; enables deterministic Analysis→Evolution diff joins even under key parity gaps.",
-        "files": ["FIX2D2N.py"],
-        "supersedes": ["FIX2D2M"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # =====================================================================
 # PATCH TRACKER ENTRY: FIX2D2O (ADDITIVE)
 # - Persist baseline-keyed augmented current canonical map into the
@@ -39615,76 +39028,12 @@ except Exception:
 # - This makes Evolution JSON inspection show Analysis keys as the
 #   effective current authority for diffing, while keeping extras possible.
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2O",
-        "date": "2026-01-16",
-        "summary": "Persist baseline-keyed current mapping for diffing: when baseline keys are synthesized into cur_can, expose them as primary_metrics_canonical_for_diff and mirror into primary_metrics_canonical so Evolution output keys align with Analysis for the diff demo.",
-        "files": ["FIX2D2O.py"],
-        "supersedes": ["FIX2D2N"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # =====================================================================
 # PATCH TRACKER ENTRIES (CLEAN): FIX2D2Q / FIX2D2R / FIX2D2S
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2Q",
-        "date": "2026-01-16",
-        "summary": "Baseline-aligned current selection for diffing: injected-first with optional base fallback; stamps provenance fields (source_type, selection_mode) to prevent confusion while preserving union pool behavior.",
-        "files": ["FIX2D2Q.py"],
-        "supersedes": ["FIX2D2O"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2R",
-        "date": "2026-01-16",
-        "summary": "Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; improves Analysis/Evolution parity for injected content.",
-        "files": ["FIX2D2R.py"],
-        "supersedes": ["FIX2D2Q"],
-    })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2S",
-        "date": "2026-01-16",
-        "summary": "Schema-only rebuild hardening: when non-year candidates exist for a schema key, skip bare-year tokens during winner selection (down-rank/skip) and record diagnostics; reduces year-token pollution before downstream year-blocking.",
-        "files": ["FIX2D2S.py"],
-        "supersedes": ["FIX2D2R"],
-    })
-
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # =========================
 # ============================================================
-# PATCH TRACKER V1 (ADD): FIX2D42
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D42",
-        "date": "2026-01-17",
-        "summary": "Serialize/promote baseline_schema_metrics_v1 into Analysis primary_response/results so Evolution diff can consume it; extend nested results promotion to mirror baseline_schema_metrics_v1.",
-        "files": ["FIX2D42.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # FINAL VERSION OVERRIDE
 # =========================
 try:
@@ -39927,32 +39276,6 @@ except Exception:
 
 # Patch tracker + version bump
 try:
-    if isinstance(globals().get('PATCH_TRACKER_V1'), list):
-        PATCH_TRACKER_V1.append({
-            "patch_id": "FIX2D2T",
-            "summary": "Add explicit baseline->current projection in diff layer: if baseline row is missing CURRENT but cur_response has same canonical_key in primary_metrics_canonical_for_diff/primary_metrics_canonical, project into metric_changes current_value/_norm and recompute diff counters; attach debug summary.",
-            "ts": "2026-01-16",
-        })
-
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2U",
-        "date": "2026-01-17",
-        "summary": "Introduce shared semantic eligibility gate (local-snippet required tokens) and apply it across Analysis selector and Evolution schema-only rebuild paths to prevent cross-metric pollution (e.g., China sales value mapping to chargers 2040).",
-        "files": ["FIX2D2U.py"],
-        "supersedes": ["FIX2D2T"],
-    })
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2W",
-        "date": "2026-01-17",
-        "summary": "Fix parity leak: ensure schema_only_rebuild commit-time semantic gate is always active (avoid NameError when _FIX2D2U_ENABLE defined later) and fix year-token extraction regex for required-year checks; bump CODE_VERSION.",
-        "files": ["FIX2D2W.py"],
-        "supersedes": ["FIX2D2V"],
-    })
-
-except Exception:
-    pass
-
-try:
     CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 except Exception:
     pass
@@ -39985,22 +39308,6 @@ except Exception:
 # ---------------------------------------------------------------------
 # Supersedes (functionally): FIX2D2U/FIX2D2V/FIX2D2W schema_only_rebuild gating patches.
 # =====================================================================
-
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2X",
-        "date": "2026-01-17",
-        "summary": "Parity patch: replace Evolution schema-only slot filling for baseline-key current with Analysis authoritative selector (_analysis_canonical_final_selector_v1) using injected-first two-pass selection and synthesized keyword hints from canonical_key/name; prevents cross-metric misassignment (e.g., China sales -> chargers 2040) and aligns gating with Analysis.",
-        "files": ["FIX2D2X.py"],
-        "supersedes": ["FIX2D2W", "FIX2D2V", "FIX2D2U"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 
 def _fix2d2x_parse_injected_urls(web_context: dict) -> list:
     """Best-effort extraction of injected/extra URLs from web_context."""
@@ -40335,22 +39642,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix17(prev_response: dict, baseli
 # Version stamp (ensure last-wins in monolithic file)
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # Patch tracker entry
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "FIX2D2Y",
-        "date": "2026-01-17",
-        "summary": "Hardwire Evolution rebuild_metrics_from_snapshots_analysis_canonical_v1 to use the shared Analysis final selector for baseline-keyed diff current metrics (fix41afc19 parity); eliminates disjoint keyset that blocks diff activation.",
-        "files": ["FIX2D2Y.py"],
-        "supersedes": ["FIX2D2X"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response, snapshot_pool, web_context=None):
     """FIX2D2Y override: baseline-keyed current rebuild using Analysis selector.
 
@@ -40821,21 +40112,6 @@ except Exception:
 # =====================================================================
 # PATCH FIX2D77 PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D77',
-        'date': '2026-01-20',
-        'summary': 'Percent-schema guardrail: prevent schema-only rebuild from binding year-like tokens (e.g., 2040) to __percent keys by requiring percent evidence and rejecting yearlike-without-percent raw; fixes incorrect prev value for CAGR percent metrics.',
-        'files': ['FIX2D77_full_codebase.py'],
-        'supersedes': ['FIX2D76'],
-    })
-    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # FIX2D77_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
     CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
@@ -41117,21 +40393,6 @@ except Exception:
 # =====================================================================
 # PATCH FIX2D82 PATCH TRACKER ENTRY (ADDITIVE)
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D82',
-        'date': '2026-01-20',
-        'summary': 'Definitive fix for year-token leakage into __percent metrics: drop year-token values when raw token is YYYY regardless of context % signs; force-apply at schema_only rebuild (Analysis baseline materialize) and sanitize previous_data before diff join (cleans old HistoryFull snapshots). Adds debug: fix2d82_percent_sanitize_schema_only / fix2d82_prev_percent_sanitize.',
-        'files': ['FIX2D82_full_codebase.py'],
-        'supersedes': ['FIX2D80'],
-    })
-    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # FIX2D82_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
     CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
@@ -41147,29 +40408,6 @@ except Exception:
 # - Ensures a single authoritative CODE_VERSION at end-of-file
 # - Adds patch tracker entry
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get('PATCH_TRACKER_V1')
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        'patch_id': 'FIX2D83',
-        'date': '2026-01-20',
-        'summary': 'Cleanup consolidation: remove obsolete percent-key guard wrappers (FIX2D78/FIX2D79) now superseded by definitive FIX2D82 sanitizer; stabilize CODE_VERSION with final override to avoid stale late assignments; reduce patch clutter without changing diff behavior.',
-        'files': ['FIX2D83_full_codebase.py'],
-        'supersedes': ['FIX2D78', 'FIX2D79', 'FIX2D80'],
-    })
-    PATCH_TRACKER_V1.append({
-        'patch_id': 'REFACTOR45',
-        'date': '2026-01-25',
-        'summary': 'Evolution: fix Diff Panel V2 empty rows by hardening the V2 builder call against RecursionError (minimal wrappers, traceback capture, preserve existing rows, strict canonical-join fallback).',
-        'files': ['REFACTOR45_full_codebase_streamlit_safe.py'],
-        'supersedes': ['REFACTOR44'],
-    })
-
-    globals()['PATCH_TRACKER_V1'] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # FIX2D86_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
 try:
     CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
@@ -41825,215 +41063,13 @@ def _refactor02_run_harness_v2():
 # ============================================================
 
 
-# PATCH TRACKER V1 (ADD): REFACTOR11
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR11":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR11",
-            "date": "2026-01-23",
-            "summary": "Fix evolution JSON/UI counters: recompute summary (increased/decreased/unchanged/added) from final metric_changes rows; recompute stability_score accordingly; bump final binding/version locks to REFACTOR11 for hygiene.",
-            "files": ["REFACTOR11_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR10"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-# PATCH TRACKER V1 (ADD): REFACTOR13
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR13":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR13",
-            "date": "2026-01-23",
-            "summary": "Summary/stability correctness: recompute evolution results.summary and stability_score from canonical-first diff rows (metric_changes_v2/metric_changes). Add graded stability fallback (100 - mean abs % change) when discrete unchanged/small-change scoring would yield 0, and mirror counts into diff_panel_v2_summary for auditability.",
-            "files": ["REFACTOR13_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR12"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR14
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR14":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR14",
-            "date": "2026-01-23",
-            "summary": "Diff engine consolidation: eliminate diff_metrics_by_name override chain by renaming legacy impls and introducing a single public wrapper entrypoint. Preserve legacy/fix31/v24 impls under stable names; update base capture vars and keep binding manifest stable/streamlit-safe.",
-            "files": ["REFACTOR14_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR13"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR15
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR15":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR15",
-            "date": "2026-01-23",
-            "summary": "Restore diffing after REFACTOR14: harden diff_metrics_by_name resolution in FINAL BINDINGS, eliminate V2 UnboundLocalError (cur_resp_for_diff), and add safe fallback extraction for canonical_for_render/current PMC when nested under output['results'].",
-            "files": ["REFACTOR15_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR14"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-# PATCH TRACKER V1 (ADD): REFACTOR12
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR12":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR12",
-            "date": "2026-01-23",
-            "summary": "Truth-lock version stamping + binding manifest hygiene: freeze _yureeka_get_code_version() via locked default arg; re-assert globals for observability; ensure FINAL BINDINGS tag + diff function authoritative tag always present; standardize canonical_for_render_v1 debug block to avoid stale missing diagnostics.",
-            "files": ["REFACTOR12_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR11"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-# PATCH TRACKER V1 (ADD): REFACTOR10
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR10":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR10",
-            "date": "2026-01-22",
-            "summary": "Fix refactor versioning + binding hygiene: set CODE_VERSION/_YUREEKA_CODE_VERSION_LOCK to REFACTOR10; make binding_manifest_v1 report diff function name/qualname; tighten harness binding expectation to _yureeka_get_code_version(); update final bindings tag to REFACTOR10.",
-            "files": ["REFACTOR10_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR09"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-# PATCH TRACKER V1 (ADD): REFACTOR09
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR09":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR09",
-            "date": "2026-01-22",
-            "summary": "Introduce a single authoritative diff engine wrapper (_refactor09_diff_metrics_by_name) and bind diff_metrics_by_name to it in final bindings; prepare for safe removal of legacy duplicate diff definitions.",
-            "files": ["REFACTOR09_full_codebase_streamlit_safe.py"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
-
 # ============================================================
 # REFACTOR60: PATCH TRACKER ENTRY (ADDITIVE)
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR60":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR60",
-            "date": "2026-01-26",
-            "summary": "Fix REFACTOR09 diff wrapper regression by robustly capturing a callable legacy diff implementation (and adding a signature-safe base fallback). Restores Evolution metric_changes so the dashboard no longer shows 'no metrics to display'.",
-            "files": ["REFACTOR60.py"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # ============================================================
 # REFACTOR09: DIFF ENGINE CONSOLIDATION (WRAPPER)
 #
@@ -42721,107 +41757,11 @@ if not _refactor28__schema_only_wrapped:
         pass
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR35
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    PATCH_TRACKER_V1.append({
-        "patch_id": "REFACTOR35",
-        "summary": "Move main() invocation to EOF so late refactor defs/overrides are active during runs; add schema-key filter to baseline PMC materialization to prevent debug-key leakage.",
-        "files": ["REFACTOR35_full_codebase_streamlit_safe.py"],
-    })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR36
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR36":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR36",
-            "summary": "Fix Evolution fatal 'NoneType has no attribute get' by hardening add_to_history() against None callers and coercing run_source_anchored_evolution inputs (previous_data/web_context) to dicts.",
-            "files": ["REFACTOR36_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR35"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # REFACTOR37 patch tracker
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR37":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR37",
-            "summary": "Add a final crash-proof wrapper for run_source_anchored_evolution to prevent fatal NoneType.get exceptions from aborting Streamlit Evolution; coerce inputs to dict and return renderer-safe failed payload with traceback.",
-            "files": ["REFACTOR37_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR36"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # REFACTOR38 patch tracker
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR38":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR38",
-            "summary": "Fix FIX24 helper regressions causing None.get crashes in Evolution: ensure _fix24_get_prev_full_payload/_fix24_get_prev_hashes/_fix24_compute_current_hashes always return dicts; enhance REFACTOR37 evolution wrapper to persist full traceback under debug.error_traceback, surface a callsite hint in message/debug, and guard against non-dict impl returns.",
-            "files": ["REFACTOR38_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR37"],
-        })
-
-        # =====================================================================
-        # PATCH TRACKER: REFACTOR39
-        # =====================================================================
-        _already = False
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR39":
-                _already = True
-                break
-        if not _already:
-            PATCH_TRACKER_V1.append({
-                "patch_id": "REFACTOR39",
-                "summary": "Fix source-anchored evolution snapshot gating regression: when baseline_sources_cache is omitted from HistoryFull payload (Sheets cell limit), rehydrate snapshots deterministically via snapshot_store_ref/snapshot_store_ref_v2 and source_snapshot_hash_v2/source_snapshot_hash (Snapshots worksheet and local snapshot store). Attach snapshot_store_debug into output.debug on failure for fast diagnosis. No heuristic matching added; remains strict snapshot-gated without valid cached source text.",
-                "files": ["REFACTOR39_full_codebase_streamlit_safe.py"],
-                "supersedes": ["REFACTOR38"],
-            })
-
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
 # REFACTOR35: EOF entrypoint (Streamlit-safe)
 # - We intentionally call main() only after ALL patch blocks and helper defs have executed,
@@ -43010,89 +41950,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 # ============================================================
 # ============================================================
 # ============================================================
-# PATCH TRACKER V1 (EARLY ADD): REFACTOR83
 # ============================================================
 # Why:
 # - Streamlit can execute main() before later end-of-file patch-tracker "ADD" blocks run.
 # - This block registers the current patch *before* main() executes, so harness/version checks see an up-to-date tracker.
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    try:
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR83":
-                _already = True
-                break
-    except Exception:
-        _already = False
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR83",
-            "date": "2026-01-28",
-            "summary": "Hardening + clarity pass: (1) normalize Evolution output so baseline_sources_cache is never accidentally reduced to an injected-only row when baseline_sources_cache_current contains the full current pool (keeps UI/harness consistent), and (2) fix a latent NameError in canonical_for_render_v1 diagnostic extension (baseline_sources_cache_prev_rows) so diag_ext reliably populates. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.",
-            "files": ["REFACTOR83.py"],
-            "supersedes": ["REFACTOR82"],
-        })
-    # ============================================================
-    # REFACTOR84
-    # ============================================================
-    try:
-        PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-        if not isinstance(PATCH_TRACKER_V1, list):
-            PATCH_TRACKER_V1 = []
-        _already = False
-        try:
-            for _e in PATCH_TRACKER_V1:
-                if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR84":
-                    _already = True
-                    break
-        except Exception:
-            _already = False
-        if not _already:
-            PATCH_TRACKER_V1.append({
-                "patch_id": "REFACTOR84",
-                "date": "2026-01-28",
-                "summary": "Bump the frozen code-version lock to REFACTOR84 so JSON stamping (code_version) matches the active patch and the harness version self-check stops flagging false mismatches. Add patch tracker entry for REFACTOR84. No schema/key-grammar changes; Streamlit-safe.",
-                "files": ["REFACTOR84.py"],
-                "supersedes": ["REFACTOR83"],
-            })
-        globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-    except Exception:
-        pass
-
-    # ============================================================
-    # REFACTOR85
-    # ============================================================
-    try:
-        PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-        if not isinstance(PATCH_TRACKER_V1, list):
-            PATCH_TRACKER_V1 = []
-        _already = False
-        try:
-            for _e in PATCH_TRACKER_V1:
-                if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR85":
-                    _already = True
-                    break
-        except Exception:
-            _already = False
-        if not _already:
-            PATCH_TRACKER_V1.append({
-                "patch_id": "REFACTOR85",
-                "date": "2026-01-28",
-                "summary": "Optional high-value hardening: (1) handle PDF sources in scrape_url (extract text instead of failed:no_text), (2) add explicit last-good snapshot fallback when extractor returns 0 numbers on blocked/placeholder pages, and (3) normalize evolution source caches even when payload contains a nested 'results' mirror dict. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.",
-                "files": ["REFACTOR85.py"],
-                "supersedes": ["REFACTOR84"],
-            })
-        globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-    except Exception:
-        pass
-
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
 # MAIN ENTRYPOINT (Streamlit-safe)
 # ============================================================
@@ -43109,955 +41970,77 @@ except Exception:
         pass
 
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR40
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR40":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR40",
-            "summary": "Fix recent snapshot retrievability and partial snapshot corruption in Snapshots sheet store. load_full_snapshots_from_sheet now bypasses stale cache on hash miss, and selects the most recent *complete* write batch (grouped by created_at) to avoid mixed/partial merges. store_full_snapshots_to_sheet no longer treats any existing rows as 'complete'; it validates loadability first and attempts repair writes when prior batch is incomplete, and invalidates snapshot worksheet cache after successful writes.",
-            "files": ["REFACTOR40_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR39"],
-        })
-
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR41
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR41":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR41",
-            "date": "2026-01-25",
-            "summary": "Fix recent snapshot rehydration failures by (1) preventing fake snapshot_store_ref_v2 (gsheet:Snapshots:<hash>) from being emitted unless the mirror-write actually succeeded, (2) emitting snapshot_store_ref_stable pointing to a verified store (v2 sheet > v1 sheet > local) plus a compact snapshot_store_write_v1 debug manifest, and (3) making store_full_snapshots_to_sheet more reliable via smaller default chunk size and batched append_rows to reduce API payload size / rate-limit failures.",
-            "files": ["REFACTOR41_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR40"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR42
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR42":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR42",
-            "date": "2026-01-25",
-            "summary": "Fix snapshot-gate failures caused by large baseline_sources_cache writes silently failing under Sheets rate limits. Snapshots sheet store now compresses very large payloads (zlib+base64 with 'zlib64:' prefix) to drastically reduce chunk count and API calls, adds a small throttle between batch appends for very large writes, and the loader transparently detects/decompresses compressed payloads while remaining backward-compatible with existing uncompressed snapshots.",
-            "files": ["REFACTOR42_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR41"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ===========================================================
-# PATCH TRACKER V1 (ADD): REFACTOR43
 # ===========================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR43":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR43",
-            "date": "2026-01-25",
-            "summary": "BUGFIX: make Snapshots sheet loader actually decode REFACTOR42 compressed payloads ('zlib64:' prefix). Previously store_full_snapshots_to_sheet could write compressed snapshots but load_full_snapshots_from_sheet attempted json.loads() on the compressed string and returned empty, causing Evolution to be snapshot-gated for recent runs while older (uncompressed) snapshots still loaded.",
-            "files": ["REFACTOR43_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR42"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ===================== PATCH TRACKER ENTRY: REFACTOR44 =====================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR44":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR44",
-            "date": "2026-01-25",
-            "summary": "BUGFIX: Fix local snapshot persistence path creation. _snapshot_store_dir() previously omitted a return on the success path, returning None and causing local snapshot store/load to fail (os.path.join(None,...)). Wrapped local snapshot write call in add_to_history with guards to prevent snapshot persistence block from aborting. Also hardened store_full_snapshots_local to compute path safely. This restores reliable snapshot persistence for recent runs when Sheets snapshot store is unavailable/partial, eliminating Evolution snapshot-gate failures caused by missing baseline_sources_cache.",
-            "files": ["REFACTOR44_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR43"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR47
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR47":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR47",
-            "date": "2026-01-25",
-            "summary": "Fix Diff Panel V2 recursion (maximum recursion depth exceeded) caused by FIX2D2I wrapper chains capturing already-wrapped __rows implementations. Provide a deterministic, non-recursive canonical-first join builder (strict unit comparability + percent/year poisoning containment) and rebind build_diff_metrics_panel_v2__rows (and FIX2D2I aliases) as last-wins entrypoint so Evolution no longer sets diff_panel_v2_error or falls back to strict_fallback_v2.",
-            "files": ["REFACTOR47_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR46"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR48
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR48":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR48",
-            "date": "2026-01-25",
-            "summary": "Fix source-anchored Metric Changes table to render metric_changes_v2 fields (delta_abs/delta_pct/comparability/method) while keeping legacy fallback; bump version lock to REFACTOR48.",
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR49
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR49":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR49",
-            "date": "2026-01-25",
-            "summary": "Eliminate Diff Panel V2 RecursionError by making FIX2D2I-style __rows wrapper idempotent and non-recursive across duplicate wrapper blocks and Streamlit reruns. Store a stable base __rows implementation, avoid re-wrapping an already wrapped function, and keep trace augmentation without affecting schema/key grammar or diff semantics.",
-            "files": ["REFACTOR49_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR48"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR50
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR50":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR50",
-            "date": "2026-01-25",
-            "summary": "Fix Evolution stability calculation: prevent unchanged rows from being double-counted as 'small change' (<10%), clamp discrete stability to 0–100, and compute stable/small counts from comparable rows only. Removes impossible 150% stability when all rows are unchanged; no schema/key-grammar changes.",
-            "files": ["REFACTOR50_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR49"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR51
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR51":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR51",
-            "date": "2026-01-25",
-            "summary": "Fix evolution stability graded fallback: cap per-row abs % change at 100 before averaging so injected/outlier deltas don't force 0% stability. Add debug fields mean_abs_pct_raw/capped.",
-            "files": ["REFACTOR51_full_codebase_streamlit_safe.py"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR52
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR52":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR52",
-            "date": "2026-01-25",
-            "summary": "Add authority_manifest_v1 (runtime last-wins introspection) into binding_manifest_v1 to make refactor deletions safer. No schema/key-grammar changes; no behavior changes.",
-            "files": ["REFACTOR52_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR51"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR53
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR53":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR53",
-            "date": "2026-01-25",
-            "summary": "Make metric_changes rows self-attributing for injected-vs-production gating. Extend source_url extraction to include provenance.best_candidate.source_url; stamp rows with cur/current/source_url fields; change Δt gating to suppress only when row source URL matches injected URL set (missing attribution no longer treated as injected). Add debug counters rows_with_source_url/rows_missing_source_url/rows_suppressed_by_injection.",
-            "files": ["REFACTOR53_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR52"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR54
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR54":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR54",
-            "date": "2026-01-25",
-            "summary": "Safe downsizing + durability diagnostics: remove duplicated FIX2D2I Diff Panel V2 wrapper block (redundant after recursion hardening); add snapshot_roundtrip_v1 (best-effort readback of snapshot_store_ref_stable) into Analysis persistence debug to catch recent snapshot save/retrieve issues early. No schema/key-grammar changes.",
-            "files": ["REFACTOR54_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR53"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR55
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR55":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR55",
-            "date": "2026-01-25",
-            "summary": "Consolidate metric changes outputs to a single canonical feed: output['metric_changes'] is authoritative; output['metric_changes_v2'] mirrors the same list for backward/UI compatibility; drop output['metric_changes_legacy'] (no longer maintained). Add a late-stage consolidation block in compute_source_anchored_diff_BASE to enforce invariants. No schema/key-grammar changes.",
-            "files": ["REFACTOR55_full_codebase_streamlit_safe.py"],
-            "supersedes": ["REFACTOR54"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR56
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR56":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR56",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing: stop emitting metric_changes_legacy entirely (remove late-stage re-add), add end-of-function safety rail to pop it before returning. No schema/key-grammar changes; Diff Panel V2 remains authoritative and metric_changes_v2 continues to mirror metric_changes.",
-            "files": ["REFACTOR56.py"],
-            "supersedes": ["REFACTOR55"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR57
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR57":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR57",
-            "date": "2026-01-26",
-            "summary": "Stabilize diff harness prior to further downsizing: prefer REFACTOR47 V2 row builder when present; suppress emission of debug.diff_panel_v2_error/traceback (legacy V2 builder can fail before late rebinds). Canonical-first strict fallback remains authoritative; no schema/key-grammar changes.",
-            "files": ["REFACTOR57.py"],
-            "supersedes": ["REFACTOR56"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR58
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR58":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR58",
-            "date": "2026-01-26",
-            "summary": "Fix latent UnboundLocalError in Diff Panel V2 row builder by initializing 'effective' locals on loop entry and removing a duplicate 'current_value_norm' key in an early fallback row. This eliminates recurring debug.diff_panel_v2_traceback noise while preserving canonical-first diffing semantics. No schema/key-grammar changes.",
-            "files": ["REFACTOR58.py"],
-            "supersedes": ["REFACTOR57"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-
-    # =====================================================================
-    # PATCH TRACKER ENTRY: REFACTOR59 (ADDITIVE)
-    # - Controlled downsizing: delete redundant/unused legacy Diff Panel V2 builders and wrappers
-    # - Remove duplicated FIX2D47→FIX2Dxx mid-file segment (identical shadow copy)
-    # - Keep REFACTOR47 canonical-first join row builder as the sole authoritative diff path
-    # - No schema/key-grammar changes; preserves strict unit comparability + percent-year poisoning guardrails
-    # =====================================================================
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        try:
-            if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR59":
-                _already = True
-                break
-        except Exception:
-            pass
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR59",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing: removed redundant legacy Diff Panel V2 builders/wrappers (incl. Fix2K inference path + FIX2D2I wrapper) and deleted an identical duplicated mid-file block that redefined FIX2D47/FIX2D48/FIX2D49-era helpers. REFACTOR47 canonical-first join remains the sole authoritative diff-row builder. No schema/key-grammar changes; preserves strict unit comparability and percent-year poisoning guardrails.",
-            "files": ["REFACTOR59.py"],
-            "supersedes": ["REFACTOR58"],
-        })
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR60
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR60":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR60",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing continuation: removed additional shadowed Diff Panel helpers and tightened consolidation of metric_changes outputs. This inadvertently exposed a missing Diff Panel V2 row-builder dependency when early Streamlit execution triggered evolution before later defs were reached.",
-            "files": ["REFACTOR60.py"],
-            "supersedes": ["REFACTOR59"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR61
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR61":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR61",
-            "date": "2026-01-26",
-            "summary": "Restore minimal Diff Panel V2 canonical-first join row builder (build_diff_metrics_panel_v2__rows_refactor47) so Evolution always populates metric_changes_v2 (and thus metric_changes) even when Streamlit triggers execution before late diff wrapper defs. Strict unit comparability preserved; no schema/key-grammar changes.",
-            "files": ["REFACTOR61.py"],
-            "supersedes": ["REFACTOR60"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR62
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR62":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR62",
-            "date": "2026-01-26",
-            "summary": "Add an early, schema-agnostic Diff Panel V2 failsafe canonical-first row builder to prevent Streamlit ordering hazards from producing 'no metrics to display' during controlled downsizing. Also remove obsolete commented CODE_VERSION bump blocks (comment-only clutter). No schema/key-grammar changes; strict unit comparability preserved.",
-            "files": ["REFACTOR62.py"],
-            "supersedes": ["REFACTOR61"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR63
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR63":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR63",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing: remove the unused FIX2D47 Diff Panel V2 builder + shadow helper defs, while retaining (and hardening) the deterministic collision resolver used by schema/key remapping. No schema/key-grammar changes; diffing + unit comparability preserved.",
-            "files": ["REFACTOR63.py"],
-            "supersedes": ["REFACTOR62"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR64
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR64":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR64",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing (low-risk): remove redundant early Diff Panel V2 failsafe builder (REFACTOR62) and delete a dead post-main REFACTOR47 rebind block that never affects runtime diffing. No schema/key-grammar changes; preserves strict unit comparability + canonical-first diffing.",
-            "files": ["REFACTOR64.py"],
-            "supersedes": ["REFACTOR63"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR65
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR65":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR65",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing (low-risk): remove unused preserved BASE implementations (diff_metrics_by_name_BASE and compute_source_anchored_diff_BASE) along with their wrap scaffolding. Add code_version to Evolution report export so all JSON artifacts carry the patch ID. No schema/key-grammar changes; preserves canonical-first diffing + strict unit comparability + snapshot rehydration.",
-            "files": ["REFACTOR65.py"],
-            "supersedes": ["REFACTOR64"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR66
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR66":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR66",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing + safety rail: de-duplicate the redundant nested output['results'] mirror in Evolution payloads by shrinking it to a lightweight compatibility stub (prevents baseline_sources_cache duplication and reduces JSON/Sheets footprint). No schema/key-grammar changes; preserves canonical-first diffing, unit comparability, snapshot rehydration, Δt injection gating, and stability scoring.",
-            "files": ["REFACTOR66.py"],
-            "supersedes": ["REFACTOR65"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # =====================================================================
-# PATCH TRACKER V1 (ADD): REFACTOR67
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        try:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR67":
-                _already = True
-                break
-        except Exception:
-            pass
-
-
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR67",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing: remove legacy run_source_anchored_evolution_BASE preservation path and the old pre-FIX24 evolution wrapper. FIX24 changed-case recompute now routes directly through compute_source_anchored_diff (single authoritative path), while retaining FIX24 debug markers, snapshot hash trace, Δt injection gating, and stability scoring. No schema/key-grammar changes.",
-            "files": ["REFACTOR67.py"],
-            "supersedes": ["REFACTOR66"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # =====================================================================
-# PATCH TRACKER V1 (ADD): REFACTOR68
 # =====================================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        try:
-            if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR68":
-                _already = True
-                break
-        except Exception:
-            pass
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR68",
-            "date": "2026-01-26",
-            "summary": "Fix Evolution stability + summary regression: stop overwriting stability_score with legacy (unchanged/total) formula and recompute results.summary + stability_score from the final canonical-first metric_changes rows (V2-first). Restores correct increased/decreased/unchanged counters and non-zero graded stability for injection runs, while keeping strict unit comparability and schema/key-grammar freeze.",
-            "files": ["REFACTOR68.py"],
-            "supersedes": ["REFACTOR67"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR69
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR69":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR69",
-            "date": "2026-01-26",
-            "summary": "Controlled downsizing + safety fix: promote _fmt_currency_first to a shared top-level helper (prevents NameError in render_native_comparison and removes an unnecessary nested duplicate). Also make the Source-Anchored Evolution Metric Changes table prefer output['metric_changes'] (authoritative) while retaining metric_changes_v2 as a mirror for compatibility. No schema/key-grammar changes.",
-            "files": ["REFACTOR69.py"],
-            "supersedes": ["REFACTOR68"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR70
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR70":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR70",
-            "date": "2026-01-27",
-            "summary": "Safety rail + simplification: add a late-stage output bridge in compute_source_anchored_diff to enforce a single authoritative metric_changes list (mirrored to metric_changes_v2) and a clamped top-level stability_score, while hard-removing metric_changes_legacy. This stabilizes the Evolution UI/export path during controlled downsizing. No schema/key-grammar changes.",
-            "files": ["REFACTOR70.py"],
-            "supersedes": ["REFACTOR69"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR71
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR71":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR71",
-            "date": "2026-01-27",
-            "summary": "Safety rail: stamp harness_invariants_v1 into Evolution results to prevent silent degradation when external sources flake (e.g., failed:no_text). Records schema-frozen key count vs baseline/current canonical counts, missing keys, and source failure summaries, plus an additive harness_warning_v1 banner string. No schema/key-grammar changes.",
-            "files": ["REFACTOR71.py"],
-            "supersedes": ["REFACTOR70"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR72
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR72":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR72",
-            "date": "2026-01-27",
-            "summary": "Completeness-first diffs: upgrade Diff Panel V2 strict canonical join to prefer frozen schema keys (when metric_schema_frozen is available) and emit explicit completeness rows when either side is missing (missing_baseline / missing_current / missing_both). Keeps strict unit comparability and delta computation only for unit-matching pairs; no schema/key-grammar changes; Streamlit-safe.",
-            "files": ["REFACTOR72.py"],
-            "supersedes": ["REFACTOR71"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR73
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR73":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR73",
-            "date": "2026-01-27",
-            "summary": "Fix REFACTOR72 indentation regression in _refactor13_recompute_summary_and_stability_v1 (rows loop escaped to module scope, causing runtime error). Restores Streamlit-safe execution and preserves completeness-first change_type counting.",
-        })
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR74
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR74":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR74",
-            "date": "2026-01-27",
-            "summary": "Completeness-first diffs hardening: guarantee schema-complete Metric Changes rows even if the Diff Panel V2 builder errors by upgrading the strict fallback to iterate frozen schema keys (or union fallback) and emit explicit missing_baseline/missing_current/missing_both rows. Also extend harness_invariants_v1 to record metric_changes row_count vs schema size and surface row_count_mismatch in harness_warning_v1 when violated. No schema/key-grammar changes; Streamlit-safe.",
-            "files": ["REFACTOR74.py"],
-            "supersedes": ["REFACTOR73"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR75
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR75":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR75",
-            "date": "2026-01-27",
-            "summary": "High-value harness hardening: add explicit last-good snapshot fallback inside fetch_web_context for failed:no_text and scrape exceptions using existing_snapshots, with clear provenance fields (fallback_used/status_detail=fallback:last_good_snapshot) so extraction remains complete under source flakiness; extend harness_invariants_v1 to record and surface baseline/current fallbacks in both debug and harness_warning_v1; and restore the invariant that Evolution injection runs suppress Δt.",
-            "files": ["REFACTOR75.py"],
-            "supersedes": ["REFACTOR74"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR76
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR76":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR76",
-            "date": "2026-01-27",
-            "summary": "Fix injection-mode detection and completeness-first harness guards: suppress results.run_delta_seconds/human whenever injected URLs are present using canonical debug.inj_trace_v1 signals (not legacy lists); prefer inj_trace_v1 for per-row injection gating; extend harness_invariants_v1 with schema-key coverage checks (missing/extra/duplicate canonical keys) and warning-only change_type integrity validation for missing_baseline/missing_current rows, surfacing count-only warning banners.",
-            "files": ["REFACTOR76.py"],
-            "supersedes": ["REFACTOR75"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR77
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR77":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR77",
-            "date": "2026-01-27",
-            "summary": "Fix version stamping and add a self-check: bump the locked code version stamp to REFACTOR77, and extend harness_invariants_v1 with a warning-only comparison of output.code_version vs the latest REFACTOR patch_id in PATCH_TRACKER_V1, surfacing version_mismatch in harness_warning_v1 if they diverge (catches stale version locks / wrong file deployments).",
-            "files": ["REFACTOR77.py"],
-            "supersedes": ["REFACTOR76"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR80
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR80":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR80",
-            "date": "2026-01-27",
-            "summary": "Fix injection-mode detection so production runs do not get falsely flagged as suppressed_by_injection; suppress run-delta only when true UI/intake injection URLs exist. Also improve row_delta_gating_v1 source-attribution counters (rows_with_source_url/rows_missing_source_url) even when no injection is present. No schema/key-grammar changes; Streamlit-safe.",
-            "files": ["REFACTOR80.py"],
-            "supersedes": ["REFACTOR79"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
-
-
-
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR81
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR81":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR81",
-            "date": "2026-01-27",
-            "summary": "Last-good snapshot fallback hardening: expand existing_snapshots lookup to match URL variants (scheme/www/trailing slash) and fall back not only on failed:no_text/exception but also when extraction yields zero numbers (explicit status_detail=fallback:last_good_snapshot, never silent). Add telemetry debug_counts.fallback_last_good_snapshot_used(+urls). Also fill units for schema-complete missing rows from metric_schema_frozen when safe (avoid currency placeholder unit 'U'). Streamlit-safe; no schema/key-grammar changes.",
-            "files": ["REFACTOR81.py"],
-            "supersedes": ["REFACTOR80"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
 # ============================================================
-# PATCH TRACKER V1 (ADD): REFACTOR82
 # ============================================================
-try:
-    PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-    if not isinstance(PATCH_TRACKER_V1, list):
-        PATCH_TRACKER_V1 = []
-    _already = False
-    for _e in PATCH_TRACKER_V1:
-        if isinstance(_e, dict) and _e.get("patch_id") == "REFACTOR82":
-            _already = True
-            break
-    if not _already:
-        PATCH_TRACKER_V1.append({
-            "patch_id": "REFACTOR82",
-            "date": "2026-01-27",
-            "summary": "Fix patch tracker/version self-check false positives by registering the current REFACTOR patch before main() executes (Streamlit load-order safe). Also make the main() crash banner use the active code version instead of a hardcoded patch id. No schema/key-grammar changes; Streamlit-safe.",
-            "files": ["REFACTOR82.py"],
-            "supersedes": ["REFACTOR81"],
-        })
-    globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-except Exception:
-    pass
