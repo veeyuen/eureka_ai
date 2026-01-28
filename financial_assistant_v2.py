@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR88"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR89"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # =============================================================================
@@ -1205,6 +1205,17 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25',
              'banner caused by missing helper after pruning legacy ladder. No schema/key-grammar changes; Streamlit-safe.',
   'files': ['REFACTOR88.py'],
   'supersedes': ['REFACTOR87']},
+
+ {'patch_id': 'REFACTOR89',
+  'date': '2026-01-28',
+  'summary': 'Restore baseline hydration into diff: add robust PMC locator and define the Diff Panel V2 unwrap helper '
+             'to prevent silent baseline drop; treat empty baseline dict as a failure requiring fallback; broaden HF5 '
+             'HistoryFull rehydrate trigger to also rehydrate when baseline primary_metrics_canonical is missing; add '
+             'deterministic FIX24 rehydrate fallback and emit debug.prev_payload_probe_v1 + debug.baseline_missing_reason_v1 '
+             'for explicit diagnostics. No schema/key-grammar changes; strict unit comparability preserved; Streamlit-safe.',
+  'files': ['REFACTOR89.py'],
+  'supersedes': ['REFACTOR88']},
+
 ]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
@@ -21958,6 +21969,49 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
 
     # =====================================================================
+
+    # =====================================================================
+    # REFACTOR89 (ADDITIVE): Robust PMC locator + Diff Panel V2 unwrap helper
+    # Why:
+    # - Diff Panel V2 previously called an undefined helper and silently fell back to {}
+    #   which then prevented baseline fallback from ever running ({} is a dict).
+    # - Provide one deterministic locator for baseline/current primary_metrics_canonical
+    #   across the common payload shapes (top-level, primary_response, results, etc.).
+    # =====================================================================
+    def _refactor89_locate_pmc_dict(obj) -> dict:
+        try:
+            if not isinstance(obj, dict):
+                return {}
+            # Most common: top-level
+            pmc = obj.get("primary_metrics_canonical")
+            if isinstance(pmc, dict) and pmc:
+                return pmc
+            # Common wrappers
+            candidates = [
+                ("primary_response", "primary_metrics_canonical"),
+                ("results", "primary_metrics_canonical"),
+                ("results", "primary_response", "primary_metrics_canonical"),
+                ("primary_response", "results", "primary_metrics_canonical"),
+                ("primary_response", "results", "primary_response", "primary_metrics_canonical"),
+            ]
+            for path in candidates:
+                x = obj
+                ok = True
+                for k in path:
+                    if not isinstance(x, dict):
+                        ok = False
+                        break
+                    x = x.get(k)
+                if ok and isinstance(x, dict) and x:
+                    return x
+        except Exception:
+            pass
+        return {}
+
+    # Diff Panel V2 expects this name; define it so it can never NameError.
+    def _diffpanel_v2__unwrap_primary_metrics_canonical(obj) -> dict:
+        return _refactor89_locate_pmc_dict(obj)
+    # =====================================================================
     # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
     # Why:
     # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
@@ -21971,15 +22025,41 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     _prev_rehydrated = False
     _prev_rehydrated_ref = ""
 
+    # REFACTOR89 (ADDITIVE): capture wrapper-level baseline probe (pre-rehydrate)
+    _refactor89_prev_keys_sample_pre = []
+    _refactor89_prev_pmc_count_pre = 0
+    _refactor89_prev_pmc_keys_sample_pre = []
+    _refactor89_prev_has_full_store_ref = False
+    _refactor89_prev_has_snapshot_store_ref = False
+    try:
+        if isinstance(previous_data, dict):
+            _refactor89_prev_keys_sample_pre = list(previous_data.keys())[:25]
+            _refactor89_prev_has_full_store_ref = bool(previous_data.get("full_store_ref") or (previous_data.get("results") or {}).get("full_store_ref") or "")
+            _refactor89_prev_has_snapshot_store_ref = bool(previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref") or "")
+            _pmc_pre = _refactor89_locate_pmc_dict(previous_data)
+            if isinstance(_pmc_pre, dict):
+                _refactor89_prev_pmc_count_pre = int(len(_pmc_pre))
+                _refactor89_prev_pmc_keys_sample_pre = list(_pmc_pre.keys())[:12]
+    except Exception:
+        pass
+
     try:
         if isinstance(previous_data, dict):
             _pr = previous_data.get("primary_response")
 
             # Determine if we are missing rebuild essentials
+            _pmc_present = False
+            try:
+                _pmc_present = bool(_refactor89_locate_pmc_dict(previous_data) or (_refactor89_locate_pmc_dict(_pr) if isinstance(_pr, dict) else {}))
+            except Exception:
+                _pmc_present = False
+
+            # Determine if we are missing rebuild essentials (schema OR baseline PMC)
             _need = (
                 (not isinstance(_pr, dict))
                 or (not _pr)
                 or (not isinstance(_pr.get("metric_schema_frozen"), dict))
+                or (not _pmc_present)
             )
 
             if _need:
@@ -22009,6 +22089,57 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _prev_rehydrated_ref = _ref
     except Exception:
         pass
+    # =====================================================================
+
+
+
+    # =====================================================================
+    # REFACTOR89 (ADDITIVE): deterministic FIX24 rehydrate fallback when PMC still missing
+    # =====================================================================
+    try:
+        if isinstance(previous_data, dict):
+            _pmc_now = _refactor89_locate_pmc_dict(previous_data)
+            if not (isinstance(_pmc_now, dict) and _pmc_now):
+                try:
+                    _pf = _fix24_get_prev_full_payload(previous_data)
+                except Exception:
+                    _pf = {}
+                if isinstance(_pf, dict) and _pf:
+                    previous_data = _pf
+                    _prev_rehydrated = True
+                    if not _prev_rehydrated_ref:
+                        try:
+                            _prev_rehydrated_ref = str(previous_data.get("full_store_ref") or previous_data.get("snapshot_store_ref") or "fix24_get_prev_full_payload")
+                        except Exception:
+                            _prev_rehydrated_ref = "fix24_get_prev_full_payload"
+    except Exception:
+        pass
+    # =====================================================================
+    # =====================================================================
+    # REFACTOR89 (ADDITIVE): prev_payload_probe_v1 (baseline hydration diagnostics)
+    # =====================================================================
+    _refactor89_prev_payload_probe_v1 = {}
+    try:
+        _pmc_post = _refactor89_locate_pmc_dict(previous_data) if isinstance(previous_data, dict) else {}
+        _refactor89_prev_payload_probe_v1 = {
+            "prev_keys_sample": list(_refactor89_prev_keys_sample_pre or []),
+            "prev_keys_sample_post": list(previous_data.keys())[:25] if isinstance(previous_data, dict) else [],
+            "has_primary_metrics_canonical": bool(_refactor89_prev_pmc_count_pre),
+            "has_full_store_ref": bool(_refactor89_prev_has_full_store_ref),
+            "has_snapshot_store_ref": bool(_refactor89_prev_has_snapshot_store_ref),
+            "rehydrated_prev_ok": bool(_prev_rehydrated),
+            "rehydrated_ref": str(_prev_rehydrated_ref or ""),
+            "baseline_pmc_count": int(len(_pmc_post)) if isinstance(_pmc_post, dict) else 0,
+            "baseline_pmc_keys_sample": list(_pmc_post.keys())[:12] if isinstance(_pmc_post, dict) else [],
+            "baseline_pmc_count_pre": int(_refactor89_prev_pmc_count_pre or 0),
+            "baseline_pmc_keys_sample_pre": list(_refactor89_prev_pmc_keys_sample_pre or []),
+        }
+    except Exception:
+        _refactor89_prev_payload_probe_v1 = {
+            "prev_keys_sample": list(_refactor89_prev_keys_sample_pre or []),
+            "rehydrated_prev_ok": bool(_prev_rehydrated),
+            "rehydrated_ref": str(_prev_rehydrated_ref or ""),
+        }
     # =====================================================================
 
     # ---------- Pull baseline snapshots (VALID only) ----------
@@ -22230,6 +22361,18 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         "invalid_snapshot_count": int(invalid_count),
         "generated_at": _now(),
     }
+
+    # =====================================================================
+    # REFACTOR89 (ADDITIVE): attach baseline rehydration probe
+    # =====================================================================
+    try:
+        output.setdefault("debug", {})
+        if isinstance(output.get("debug"), dict) and isinstance(locals().get("_refactor89_prev_payload_probe_v1"), dict):
+            output["debug"]["prev_payload_probe_v1"] = dict(locals().get("_refactor89_prev_payload_probe_v1") or {})
+    except Exception:
+        pass
+    # =====================================================================
+
 
     # =====================================================================
     # PATCH FIX35 (ADDITIVE): emit origin + hash debugging for process-of-elimination
@@ -25475,13 +25618,28 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _prev_can_v2 = _diffpanel_v2__unwrap_primary_metrics_canonical(prev_response)
             except Exception:
                 _prev_can_v2 = {}
-            if not isinstance(_prev_can_v2, dict):
+            # If the unwrap returned an empty dict (a past silent failure mode), fall back.
+            if (not isinstance(_prev_can_v2, dict)) or (not _prev_can_v2):
                 try:
-                    _prev_can_v2 = prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else {}
+                    _prev_can_v2 = (
+                        _refactor89_locate_pmc_dict(prev_response)
+                        or _refactor89_locate_pmc_dict(previous_data)
+                        or (prev_response.get("primary_metrics_canonical") if isinstance(prev_response, dict) else {})
+                    )
                 except Exception:
                     _prev_can_v2 = {}
             if not isinstance(_prev_can_v2, dict):
                 _prev_can_v2 = {}
+
+            # Make baseline failure mode explicit (diagnostic only; do not fabricate deltas)
+            try:
+                if isinstance(output.get("debug"), dict) and not _prev_can_v2:
+                    _reason = "baseline_pmc_not_found"
+                    if bool(locals().get("_prev_rehydrated")):
+                        _reason += "_after_rehydrate"
+                    output["debug"]["baseline_missing_reason_v1"] = str(_reason)
+            except Exception:
+                pass
 
             # Current canonical map (prefer already rebuilt current_metrics)
             try:
