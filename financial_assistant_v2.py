@@ -90,7 +90,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR82'
+_YUREEKA_CODE_VERSION_LOCK = 'REFACTOR84'
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -42962,6 +42962,33 @@ try:
             "files": ["REFACTOR83.py"],
             "supersedes": ["REFACTOR82"],
         })
+    # ============================================================
+    # REFACTOR84
+    # ============================================================
+    try:
+        PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
+        if not isinstance(PATCH_TRACKER_V1, list):
+            PATCH_TRACKER_V1 = []
+        _already = False
+        try:
+            for _e in PATCH_TRACKER_V1:
+                if isinstance(_e, dict) and str(_e.get("patch_id")) == "REFACTOR84":
+                    _already = True
+                    break
+        except Exception:
+            _already = False
+        if not _already:
+            PATCH_TRACKER_V1.append({
+                "patch_id": "REFACTOR84",
+                "date": "2026-01-28",
+                "summary": "Bump the frozen code-version lock to REFACTOR84 so JSON stamping (code_version) matches the active patch and the harness version self-check stops flagging false mismatches. Add patch tracker entry for REFACTOR84. No schema/key-grammar changes; Streamlit-safe.",
+                "files": ["REFACTOR84.py"],
+                "supersedes": ["REFACTOR83"],
+            })
+        globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
+    except Exception:
+        pass
+
     globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
 except Exception:
     pass
