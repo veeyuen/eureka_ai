@@ -85,7 +85,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR98"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR99"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -1161,8 +1161,7 @@ def _fix2af_ledger_put(ledger: dict, url_raw: str, stage: str, reason: str = "",
         rec["stages"].append({
             "stage": str(stage or ""),
             "reason": str(reason or ""),
-            "extra": extra if isinstance(extra, dict) else {},
-        })
+            "extra": extra if isinstance(extra, dict) else {}, })
         ledger[u] = rec
     except Exception:
         pass
@@ -1383,7 +1382,9 @@ def end_state_validation_harness(baseline_analysis: dict, evolution_output: dict
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
+    "https://www.googleapis.com/auth/drive",
+    {'patch_id': 'REFACTOR99', 'date': '2026-01-29', 'summary': 'Fix Evolution baseline selection to use latest Analysis payload only; add FIX31 fastpath safety gate when prev PMC is too sparse; improve FIX41AFC19 rebuild_exception diagnostics.', 'files': ['REFACTOR99.py']},
+
 ]
 MAX_HISTORY_ITEMS = 50
 
@@ -20414,6 +20415,37 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             except Exception:
                 pass
 
+            # REFACTOR99 safety: do NOT take FIX31 authoritative reuse when previous canonical metrics are too sparse.
+            # This prevents being "stuck" with a thin prior run (e.g., 1/4 keys) even though sources are stable.
+            try:
+                _fix99_prev_pmc = _refactor89_locate_pmc_dict(prev_response) if isinstance(prev_response, dict) else {}
+                _fix99_schema = (
+                    (prev_response or {}).get("metric_schema_frozen")
+                    or ((prev_response or {}).get("primary_response") or {}).get("metric_schema_frozen")
+                    or ((prev_response or {}).get("results") or {}).get("metric_schema_frozen")
+                    or {}
+                )
+                _fix99_prev_pmc_count = int(len(_fix99_prev_pmc) if isinstance(_fix99_prev_pmc, dict) else 0)
+                _fix99_schema_count = int(len(_fix99_schema) if isinstance(_fix99_schema, dict) else 0)
+                _fix99_min_needed = 0
+                try:
+                    if _fix99_schema_count >= 2:
+                        _fix99_min_needed = max(2, int((_fix99_schema_count + 1) // 2))
+                except Exception:
+                    _fix99_min_needed = 2 if _fix99_schema_count >= 2 else 0
+                if _fix99_schema_count and _fix99_min_needed and (_fix99_prev_pmc_count < _fix99_min_needed):
+                    _prev_hash_pref = ""  # bypass hash-match fastpath
+                    try:
+                        if isinstance(output.get("debug"), dict) and isinstance(output.get("debug", {}).get("fix35"), dict):
+                            output["debug"]["fix35"]["fastpath_reason"] = f"hash_match_but_prev_pmc_sparse_bypass_fastpath:{_fix99_prev_pmc_count}/{_fix99_schema_count}"
+                            output["debug"]["fix35"]["fastpath_eligible"] = False
+                            output["debug"]["fix35"]["prev_pmc_count"] = _fix99_prev_pmc_count
+                            output["debug"]["fix35"]["schema_key_count"] = _fix99_schema_count
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
                 _fix31_authoritative_reuse = True
                 try:
@@ -20836,6 +20868,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 except Exception as _e:
                     _rebuilt = None
                     _fix41afc19_skip_reason_v19 = "rebuild_exception:" + str(type(_e).__name__)
+                    try:
+                        _m = str(_e) if _e is not None else ""
+                        if _m:
+                            _fix41afc19_skip_reason_v19 = _fix41afc19_skip_reason_v19 + ":" + _m[:160]
+                    except Exception:
+                        pass
 
                 # REFACTOR35: guard against schema-only rebuilds leaking debug keys into PMC
                 # Keep only keys that exist in the frozen schema.
@@ -26060,8 +26098,38 @@ def main():
                 help="Debug only: forces evolution to rebuild even if sources+data are unchanged."
             )
 
-        # ✅ FIX: your codebase uses get_history(), not load_history()
-        history = get_history()
+        # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
+        history_all = get_history() or []
+
+        def _r99_is_analysis_payload(h: dict) -> bool:
+            try:
+                if not isinstance(h, dict):
+                    return False
+                # Evolution reports use analysis_type='source_anchored' at top-level
+                if str(h.get("analysis_type") or "").strip().lower() in ("source_anchored", "evolution"):
+                    return False
+                # If it looks like an evolution report shape (minimal wrapper with results+interpretation), exclude
+                if ("interpretation" in h) and ("primary_response" not in h) and (h.get("analysis_type") == "source_anchored"):
+                    return False
+                # Must have schema to be a valid baseline candidate
+                ms = h.get("metric_schema_frozen") or (h.get("primary_response") or {}).get("metric_schema_frozen") or (h.get("results") or {}).get("metric_schema_frozen")
+                if not isinstance(ms, dict) or not ms:
+                    return False
+                return True
+            except Exception:
+                return False
+
+        history = [h for h in history_all if _r99_is_analysis_payload(h)]
+        # Sort newest-first so the default selection is the most recent baseline.
+        def _r99_ts_key(h: dict):
+            try:
+                _t = h.get("timestamp") or ""
+                _dt = _parse_iso_dt(_t) if _t else None
+                return _dt.timestamp() if _dt else 0.0
+            except Exception:
+                return 0.0
+
+        history.sort(key=_r99_ts_key, reverse=True)
 
         if not history:
             st.info("📭 No previous analyses found. Run an analysis in the 'New Analysis' tab first.")
@@ -26071,7 +26139,8 @@ def main():
             f"{i+1}. {h.get('question', 'N/A')}  ({h.get('timestamp', '')})"
             for i, h in enumerate(history)
         ]
-        baseline_choice = st.selectbox("Select baseline analysis:", baseline_options)
+        # Default to the most recent baseline (index=0 because list is newest-first).
+        baseline_choice = st.selectbox("Select baseline analysis:", baseline_options, index=0)
         baseline_idx = int(baseline_choice.split(".")[0]) - 1
         baseline_data = history[baseline_idx]
 
@@ -26181,6 +26250,25 @@ def main():
                 # REFACTOR25: Analysis→Evolution timing delta (production only)
                 # - Standardize timestamps to UTC with offset (+00:00)
                 # - Compute/stamp run_timing_v1 in Evolution results
+                # REFACTOR99: record which baseline payload was selected (helps detect accidental evolution-as-baseline)
+                try:
+                    if isinstance(results, dict):
+                        _dbg = results.get("debug") if isinstance(results.get("debug"), dict) else None
+                        if _dbg is None:
+                            results["debug"] = {}
+                            _dbg = results["debug"]
+                        _pmc = _refactor89_locate_pmc_dict(baseline_data) if isinstance(baseline_data, dict) else {}
+                        _ms = (baseline_data or {}).get("metric_schema_frozen") or ((baseline_data or {}).get("primary_response") or {}).get("metric_schema_frozen") or ((baseline_data or {}).get("results") or {}).get("metric_schema_frozen") or {}
+                        _dbg["baseline_selector_v1"] = {
+                            "selected_timestamp": (baseline_data or {}).get("timestamp"),
+                            "selected_code_version": (baseline_data or {}).get("code_version"),
+                            "selected_analysis_type": (baseline_data or {}).get("analysis_type"),
+                            "baseline_pmc_count": int(len(_pmc) if isinstance(_pmc, dict) else 0),
+                            "schema_key_count": int(len(_ms) if isinstance(_ms, dict) else 0),
+                        }
+                except Exception:
+                    pass
+
                 # - Attach per-row delta fields; blank when current metric is injected-sourced
                 _analysis_ts_raw = None
                 _analysis_ts_norm = None
